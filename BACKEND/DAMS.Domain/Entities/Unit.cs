@@ -1,0 +1,29 @@
+namespace DAMS.Domain.Entities
+{
+    public class Unit
+    {
+        public int Id { get; set; }
+
+        public int ProjectId { get; set; }
+
+        public string UnitNumber { get; set; } = string.Empty;
+
+        public string UnitType { get; set; } = string.Empty;
+
+        public int FloorNumber { get; set; }
+
+        public decimal Size { get; set; }
+
+        public decimal Price { get; set; }
+
+        public string Status { get; set; } = "Available";
+
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public DateTime? UpdatedAt { get; set; }
+
+        // Navigation
+        public Project Project { get; set; } = null!;
+        public ICollection<UnitMedia> MediaFiles { get; set; } = new List<UnitMedia>();
+    }
+}
