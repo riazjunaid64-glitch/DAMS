@@ -26,6 +26,7 @@ export default function ProjectsPage({ user }: Props) {
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [showProjectModal, setShowProjectModal] = useState(false);
   const [projectForm, setProjectForm] = useState({
     projectName: "",
     location: "",
@@ -63,9 +64,9 @@ export default function ProjectsPage({ user }: Props) {
     setProjectsLoading(true);
     setProjectsError(null);
     try {
-      const res = await api("/api/Project");
+      const res = await api("/api/Project", undefined, false);
       if (!res.ok) {
-        setProjectsError("Unable to load projects. Please login again.");
+        setProjectsError("Unable to load projects right now.");
         return;
       }
       const data = (await res.json()) as Project[];
@@ -78,11 +79,7 @@ export default function ProjectsPage({ user }: Props) {
   };
 
   useEffect(() => {
-    if (user) {
-      loadProjects();
-    } else {
-      setProjects([]);
-    }
+    loadProjects();
   }, [user]);
 
   const resetProjectForm = () => {
@@ -95,10 +92,12 @@ export default function ProjectsPage({ user }: Props) {
       status: 1,
     });
     setEditingId(null);
+    setShowProjectModal(false);
   };
 
   const startEditProject = (project: Project) => {
     setEditingId(project.id);
+    setShowProjectModal(true);
     setProjectForm({
       projectName: project.projectName,
       location: project.location,
@@ -107,7 +106,6 @@ export default function ProjectsPage({ user }: Props) {
       expectedCompletionDate: toInputDate(project.expectedCompletionDate),
       status: typeof project.status === "number" ? project.status : 1,
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const submitProject = async (event: FormEvent) => {
@@ -158,13 +156,31 @@ export default function ProjectsPage({ user }: Props) {
         className="bg-slate-950 py-16 sm:py-20"
       >
         <Container>
-          <div className="grid gap-10 lg:grid-cols-[1.2fr_0.8fr] lg:items-start">
-            <div className="space-y-6">
-              {!user && (
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
-                  Login to see project data and timelines.
-                </div>
+          <div className="space-y-6">
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-sm text-slate-300">
+                Projects are visible to all users. Only admins can create or edit projects.
+              </p>
+              {isAdmin && (
+                <Button
+                  onClick={() => {
+                    setEditingId(null);
+                    setProjectForm({
+                      projectName: "",
+                      location: "",
+                      description: "",
+                      startingDate: "",
+                      expectedCompletionDate: "",
+                      status: 1,
+                    });
+                    setShowProjectModal(true);
+                  }}
+                >
+                  Create Project
+                </Button>
               )}
+            </div>
+            <div className="space-y-6">
               {projectsLoading && (
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
                   Loading projects...
@@ -175,7 +191,7 @@ export default function ProjectsPage({ user }: Props) {
                   {projectsError}
                 </div>
               )}
-              {!projectsLoading && user && projects.length === 0 && (
+              {!projectsLoading && projects.length === 0 && (
                 <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-slate-200">
                   No projects yet. Create your first project to get started.
                 </div>
@@ -229,108 +245,103 @@ export default function ProjectsPage({ user }: Props) {
                 })}
               </div>
             </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-8">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-300">
-                    {isAdmin ? "Admin Panel" : "Project Access"}
-                  </p>
-                  <h3 className="mt-2 text-xl font-semibold">
-                    {isAdmin ? "Create or Update Projects" : "Member View"}
-                  </h3>
-                </div>
-              </div>
-
-              {isAdmin ? (
-                <form onSubmit={submitProject} className="mt-6 grid gap-4">
-                  <Field
-                    label="Project Name"
-                    value={projectForm.projectName}
-                    onChange={(e) =>
-                      setProjectForm((prev) => ({ ...prev, projectName: e.target.value }))
-                    }
-                    placeholder="Project name"
-                  />
-                  <Field
-                    label="Location"
-                    value={projectForm.location}
-                    onChange={(e) => setProjectForm((prev) => ({ ...prev, location: e.target.value }))}
-                    placeholder="City, Country"
-                  />
-                  <Field
-                    label="Description"
-                    as="textarea"
-                    value={projectForm.description}
-                    onChange={(e) =>
-                      setProjectForm((prev) => ({ ...prev, description: e.target.value }))
-                    }
-                    placeholder="Short summary"
-                  />
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field
-                      label="Starting Date"
-                      type="date"
-                      value={projectForm.startingDate}
-                      onChange={(e) =>
-                        setProjectForm((prev) => ({
-                          ...prev,
-                          startingDate: e.target.value,
-                        }))
-                      }
-                    />
-                    <Field
-                      label="Expected Completion"
-                      type="date"
-                      value={projectForm.expectedCompletionDate}
-                      onChange={(e) =>
-                        setProjectForm((prev) => ({
-                          ...prev,
-                          expectedCompletionDate: e.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-                  {editingId && (
-                    <label className="flex flex-col gap-2 text-sm font-medium text-slate-200">
-                      Status
-                      <select
-                        className="w-full rounded-2xl border border-slate-200/40 bg-white/5 px-4 py-3 text-sm text-white focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300/30"
-                        value={projectForm.status}
-                        onChange={(e) =>
-                          setProjectForm((prev) => ({
-                            ...prev,
-                            status: Number(e.target.value),
-                          }))
-                        }
-                      >
-                        {Object.entries(statusLabels).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <div className="flex flex-wrap gap-3">
-                    <Button type="submit">{editingId ? "Update Project" : "Create Project"}</Button>
-                    {editingId && (
-                      <Button type="button" variant="outline" onClick={resetProjectForm}>
-                        Cancel Edit
-                      </Button>
-                    )}
-                  </div>
-                </form>
-              ) : (
-                <p className="mt-4 text-sm text-slate-300">
-                  Login with an admin account to create or update project details. All authenticated
-                  users can view the portfolio.
-                </p>
-              )}
-            </div>
           </div>
         </Container>
       </Section>
+      {isAdmin && showProjectModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            onClick={resetProjectForm}
+          />
+          <div className="relative z-10 w-full max-w-2xl rounded-3xl border border-white/10 bg-slate-900 p-8">
+            <div className="flex items-center justify-between gap-4">
+              <h3 className="text-xl font-semibold">
+                {editingId ? "Update Project" : "Create Project"}
+              </h3>
+              <Button variant="outline" onClick={resetProjectForm}>
+                Close
+              </Button>
+            </div>
+            <form onSubmit={submitProject} className="mt-6 grid gap-4">
+              <Field
+                label="Project Name"
+                value={projectForm.projectName}
+                onChange={(e) =>
+                  setProjectForm((prev) => ({ ...prev, projectName: e.target.value }))
+                }
+                placeholder="Project name"
+              />
+              <Field
+                label="Location"
+                value={projectForm.location}
+                onChange={(e) => setProjectForm((prev) => ({ ...prev, location: e.target.value }))}
+                placeholder="City, Country"
+              />
+              <Field
+                label="Description"
+                as="textarea"
+                value={projectForm.description}
+                onChange={(e) =>
+                  setProjectForm((prev) => ({ ...prev, description: e.target.value }))
+                }
+                placeholder="Short summary"
+              />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Starting Date"
+                  type="date"
+                  value={projectForm.startingDate}
+                  onChange={(e) =>
+                    setProjectForm((prev) => ({
+                      ...prev,
+                      startingDate: e.target.value,
+                    }))
+                  }
+                />
+                <Field
+                  label="Expected Completion"
+                  type="date"
+                  value={projectForm.expectedCompletionDate}
+                  onChange={(e) =>
+                    setProjectForm((prev) => ({
+                      ...prev,
+                      expectedCompletionDate: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+              {editingId && (
+                <label className="flex flex-col gap-2 text-sm font-medium text-slate-200">
+                  Status
+                  <select
+                    className="w-full rounded-2xl border border-slate-200/40 bg-white/5 px-4 py-3 text-sm text-white focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300/30"
+                    value={projectForm.status}
+                    onChange={(e) =>
+                      setProjectForm((prev) => ({
+                        ...prev,
+                        status: Number(e.target.value),
+                      }))
+                    }
+                  >
+                    {Object.entries(statusLabels).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <div className="flex flex-wrap gap-3">
+                <Button type="submit">{editingId ? "Update Project" : "Create Project"}</Button>
+                <Button type="button" variant="outline" onClick={resetProjectForm}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
