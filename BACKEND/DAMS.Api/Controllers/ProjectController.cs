@@ -42,8 +42,8 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        // GET ALL PROJECTS (Admin + Client)
-        [Authorize]
+        // GET ALL PROJECTS (Public)
+        [AllowAnonymous]
         [HttpGet]
         public async Task<IActionResult> GetAllProjects()
         {
@@ -51,8 +51,8 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        // GET PROJECT BY ID (Admin + Client)
-        [Authorize]
+        // GET PROJECT BY ID (Public)
+        [AllowAnonymous]
         [HttpGet("{id}")]
         public async Task<IActionResult> GetProjectById(int id)
         {
