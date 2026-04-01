@@ -19,7 +19,7 @@ export default function Field(props: FieldProps) {
     "w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all duration-200 focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)] focus:bg-[var(--input-bg-focus)] hover:border-[var(--border-hover)]";
 
   if (props.as === "textarea") {
-    const { label, as: _as, hint, className, ...rest } = props;
+    const { label, as: _as, hint, className, ...rest } = props as TextareaProps;
     return (
       <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
         <span className="flex items-center justify-between">
@@ -27,14 +27,14 @@ export default function Field(props: FieldProps) {
           {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
         </span>
         <textarea
-          {...rest}
+          {...(rest as any)}
           className={`${shared} min-h-[120px] resize-none ${className ?? ""}`}
         />
       </label>
     );
   }
 
-  const { label, as: _as, hint, className, ...rest } = props;
+  const { label, as: _as, hint, className, ...rest } = props as InputProps;
   return (
     <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
       <span className="flex items-center justify-between">
@@ -42,7 +42,7 @@ export default function Field(props: FieldProps) {
         {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
       </span>
       <input
-        {...(rest as InputHTMLAttributes<HTMLInputElement>)}
+        {...(rest as any)}
         className={`${shared} ${className ?? ""}`}
       />
     </label>
