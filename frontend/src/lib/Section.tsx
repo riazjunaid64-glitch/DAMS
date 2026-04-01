@@ -7,6 +7,7 @@ type SectionProps = {
   description?: string;
   children: ReactNode;
   className?: string;
+  align?: "center" | "left";
 };
 
 export default function Section({
@@ -16,23 +17,30 @@ export default function Section({
   description,
   children,
   className,
+  align = "center",
 }: SectionProps) {
+  const alignment = align === "center" ? "text-center" : "text-left";
+
   return (
-    <section id={id} className={className ?? ""}>
+    <section id={id} className={`relative ${className ?? ""}`}>
       {(eyebrow || title || description) && (
-        <div className="mb-10 space-y-3 text-center">
+        <div className={`mb-12 space-y-4 ${alignment}`}>
           {eyebrow && (
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-400">
-              {eyebrow}
-            </p>
+            <div className="inline-flex items-center gap-2">
+              <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400">
+                {eyebrow}
+              </p>
+              <span className="h-px w-8 bg-gradient-to-l from-transparent to-indigo-500" />
+            </div>
           )}
           {title && (
-            <h2 className="text-3xl font-semibold text-slate-100 sm:text-4xl">
+            <h2 className="text-3xl font-bold text-white sm:text-4xl lg:text-5xl">
               {title}
             </h2>
           )}
           {description && (
-            <p className="mx-auto max-w-2xl text-base text-slate-300 sm:text-lg">
+            <p className={`${align === "center" ? "mx-auto" : ""} max-w-2xl text-base text-[#a1a1b5] sm:text-lg leading-relaxed`}>
               {description}
             </p>
           )}

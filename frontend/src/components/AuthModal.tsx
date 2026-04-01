@@ -14,10 +14,12 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     setLoading(true);
+    setError(null);
 
     try {
       if (mode === "login") {
@@ -27,7 +29,7 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
         });
 
         if (!res.ok) {
-          alert("Login failed");
+          setError("Invalid email or password. Please try again.");
           return;
         }
 
@@ -51,78 +53,126 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
 
         if (!res.ok) {
           const text = await res.text();
-          alert("Signup failed: " + text);
+          setError(text || "Signup failed. Please try again.");
           return;
         }
 
-        alert("Signup successful. Please login.");
+        setError(null);
+        alert("Account created successfully! Please login.");
         onClose();
       }
+    } catch {
+      setError("Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
+        onClick={onClose}
+      />
 
+      {/* Modal */}
       <form
         onSubmit={handleSubmit}
-        className="relative z-10 w-[420px] max-w-[90vw] overflow-hidden rounded-3xl border border-white/10 bg-slate-950/90 p-8 shadow-[0_40px_120px_-60px_rgba(15,23,42,0.9)]"
+        className="relative z-10 w-[440px] max-w-[92vw] animate-scale-in overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111118] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="absolute right-[-40%] top-[-40%] h-64 w-64 rounded-full bg-amber-400/10 blur-3xl" />
-        <div className="absolute left-[-30%] bottom-[-40%] h-56 w-56 rounded-full bg-cyan-400/10 blur-3xl" />
+        {/* Decorative gradient */}
+        <div className="absolute right-0 top-0 h-32 w-32 rounded-full bg-indigo-500/[0.08] blur-[60px]" />
+        <div className="absolute bottom-0 left-0 h-24 w-24 rounded-full bg-violet-500/[0.06] blur-[40px]" />
 
-        <div className="relative">
-          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-300">
-            {mode === "login" ? "Welcome back" : "Create account"}
-          </p>
-          <h3 className="mt-3 text-2xl font-semibold text-white">
-            {mode === "login" ? "Login to your dashboard" : "Sign up for access"}
-          </h3>
-          <p className="mt-2 text-sm text-slate-300">
+        {/* Header */}
+        <div className="relative border-b border-white/[0.06] px-6 py-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="mb-1 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-2.5 py-0.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300">
+                  {mode === "login" ? "Welcome back" : "Get started"}
+                </span>
+              </div>
+              <h3 className="text-lg font-semibold text-white">
+                {mode === "login" ? "Sign in to your account" : "Create your account"}
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[#6b6b80] transition hover:bg-white/[0.06] hover:text-white"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <p className="mt-1.5 text-sm text-[#6b6b80]">
             {mode === "login"
               ? "Enter your credentials to continue."
-              : "Fill in the details below and we will set up your account."}
+              : "Fill in the details below to set up your account."}
           </p>
+        </div>
 
-          <div className="mt-6 grid gap-4">
-            {mode === "signup" && (
-              <Field
-                label="Full Name"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="Full name"
-              />
+        {/* Body */}
+        <div className="relative space-y-4 px-6 py-5">
+          {mode === "signup" && (
+            <Field
+              label="Full Name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="John Doe"
+            />
+          )}
+
+          <Field
+            label="Email Address"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            type="email"
+          />
+
+          <Field
+            label="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            type="password"
+          />
+
+          {error && (
+            <div className="rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-300 flex items-center gap-2 animate-scale-in">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="relative flex items-center justify-between border-t border-white/[0.06] px-6 py-4 bg-white/[0.01]">
+          <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={loading}>
+            {loading ? (
+              <>
+                <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 12a9 9 0 11-6.219-8.56"/>
+                </svg>
+                Please wait...
+              </>
+            ) : mode === "login" ? (
+              "Sign In"
+            ) : (
+              "Create Account"
             )}
-
-            <Field
-              label="Email Address"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Email"
-              type="email"
-            />
-
-            <Field
-              label="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
-              type="password"
-            />
-          </div>
-
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-between">
-            <Button type="button" variant="outline" onClick={onClose} disabled={loading}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={loading} className="sm:min-w-[140px]">
-              {loading ? "Please wait..." : mode === "login" ? "Login" : "Sign Up"}
-            </Button>
-          </div>
+          </Button>
         </div>
       </form>
     </div>
