@@ -3,30 +3,38 @@ import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 type InputProps = InputHTMLAttributes<HTMLInputElement> & {
   label: string;
   as?: "input";
+  hint?: string;
 };
 
 type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
   label: string;
   as: "textarea";
+  hint?: string;
 };
 
 type FieldProps = InputProps | TextareaProps;
 
 export default function Field(props: FieldProps) {
-  const { label, as = "input" } = props;
+  const { label, as = "input", hint, className, ...rest } = props;
   const shared =
-    "w-full rounded-2xl border border-slate-200/40 bg-white/5 px-4 py-3 text-sm text-white placeholder:text-slate-300/60 focus:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300/30";
+    "w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all duration-200 focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)] focus:bg-[var(--input-bg-focus)] hover:border-[var(--border-hover)]";
 
   return (
-    <label className="flex flex-col gap-2 text-sm font-medium text-slate-200">
-      {label}
+    <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+      <span className="flex items-center justify-between">
+        <span>{label}</span>
+        {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
+      </span>
       {as === "textarea" ? (
         <textarea
-          {...props}
-          className={`${shared} min-h-[140px] resize-none ${props.className ?? ""}`}
+          {...(rest as TextareaHTMLAttributes<HTMLTextAreaElement>)}
+          className={`${shared} min-h-[120px] resize-none ${className ?? ""}`}
         />
       ) : (
-        <input {...props} className={`${shared} ${props.className ?? ""}`} />
+        <input
+          {...(rest as InputHTMLAttributes<HTMLInputElement>)}
+          className={`${shared} ${className ?? ""}`}
+        />
       )}
     </label>
   );
