@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/api";
 import type { User } from "../App";
 import Button from "../lib/Button";
@@ -233,13 +234,16 @@ export default function ProjectsPage({ user }: Props) {
                           </span>
                         </div>
                       </div>
-                      {isAdmin && (
-                        <div className="mt-6">
+                      <div className="mt-6 flex flex-wrap items-center gap-2">
+                        <Link to={`/projects/${project.id}`}>
+                          <Button>Details</Button>
+                        </Link>
+                        {isAdmin && (
                           <Button variant="outline" onClick={() => startEditProject(project)}>
                             Edit Project
                           </Button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   );
                 })}

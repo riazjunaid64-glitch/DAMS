@@ -7,6 +7,7 @@ import Container from "./lib/Container";
 import AboutPage from "./pages/AboutPage";
 import ContactPage from "./pages/ContactPage";
 import LandingPage from "./pages/LandingPage";
+import ProjectDetailPage from "./pages/ProjectDetailPage";
 import ProjectsPage from "./pages/ProjectsPage";
 
 export interface User {
@@ -151,6 +152,7 @@ function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/projects" element={<ProjectsPage user={user} />} />
+        <Route path="/projects/:id" element={<ProjectDetailPage user={user} />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="/contact" element={<ContactPage />} />
       </Routes>
