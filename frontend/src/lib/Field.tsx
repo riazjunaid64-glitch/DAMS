@@ -15,27 +15,36 @@ type TextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
 type FieldProps = InputProps | TextareaProps;
 
 export default function Field(props: FieldProps) {
-  const { label, as = "input", hint, className, ...rest } = props;
   const shared =
     "w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all duration-200 focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)] focus:bg-[var(--input-bg-focus)] hover:border-[var(--border-hover)]";
 
+  if (props.as === "textarea") {
+    const { label, as: _as, hint, className, ...rest } = props;
+    return (
+      <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+        <span className="flex items-center justify-between">
+          <span>{label}</span>
+          {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
+        </span>
+        <textarea
+          {...rest}
+          className={`${shared} min-h-[120px] resize-none ${className ?? ""}`}
+        />
+      </label>
+    );
+  }
+
+  const { label, as: _as, hint, className, ...rest } = props;
   return (
     <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
       <span className="flex items-center justify-between">
         <span>{label}</span>
         {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
       </span>
-      {as === "textarea" ? (
-        <textarea
-          {...(rest as TextareaHTMLAttributes<HTMLTextAreaElement>)}
-          className={`${shared} min-h-[120px] resize-none ${className ?? ""}`}
-        />
-      ) : (
-        <input
-          {...(rest as InputHTMLAttributes<HTMLInputElement>)}
-          className={`${shared} ${className ?? ""}`}
-        />
-      )}
+      <input 
+        {...(rest as InputHTMLAttributes<HTMLInputElement>)}
+        className={`${shared} ${className ?? ""}`} 
+      />
     </label>
   );
 }
