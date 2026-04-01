@@ -41,9 +41,9 @@ export default function Field(props: FieldProps) {
         <span>{label}</span>
         {hint && <span className="text-xs text-[var(--text-muted)] font-normal">{hint}</span>}
       </span>
-      <input 
-        {...(rest as InputHTMLAttributes<HTMLInputElement>)}
-        className={`${shared} ${className ?? ""}`} 
+      <input
+        {...rest}
+        className={`${shared} ${className ?? ""}`}
       />
     </label>
   );
