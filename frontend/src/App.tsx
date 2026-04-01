@@ -123,7 +123,7 @@ function App() {
                   Log in
                 </Button>
                 <Button size="sm" onClick={() => setModal("signup")}>
-                  Get Started
+                  Sign Up
                 </Button>
               </>
             ) : (
@@ -190,7 +190,7 @@ function App() {
                         Log in
                       </Button>
                       <Button onClick={() => setModal("signup")}>
-                        Get Started
+                        Sign Up
                       </Button>
                     </>
                   ) : (
@@ -241,7 +241,7 @@ function App() {
                 </span>
               </div>
               <p className="max-w-sm text-sm leading-relaxed text-[#6b6b80]">
-                A modern workspace to track projects, manage units, and keep every stakeholder informed from start to finish.
+                Project management and unit tracking portal for Deen Associate.
               </p>
             </div>
 
@@ -281,11 +281,9 @@ function App() {
             <p className="text-xs text-[#6b6b80]">
               © {new Date().getFullYear()} Deen Associate. All rights reserved.
             </p>
-            <div className="flex items-center gap-4">
-              <span className="text-xs text-[#6b6b80]">Built with precision</span>
-              <span className="h-1 w-1 rounded-full bg-indigo-500" />
-              <span className="text-xs text-[#6b6b80]">DAMS v2.0</span>
-            </div>
+            <p className="text-xs text-[#6b6b80]">
+              Deen Associate Management System
+            </p>
           </div>
         </Container>
       </footer>

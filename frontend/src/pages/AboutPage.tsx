@@ -1,13 +1,6 @@
 import Container from "../lib/Container";
 import Section from "../lib/Section";
 
-const TEAM = [
-  { name: "Ahmed Khan", role: "CEO & Founder", initials: "AK" },
-  { name: "Sara Malik", role: "Head of Operations", initials: "SM" },
-  { name: "Usman Ali", role: "Lead Architect", initials: "UA" },
-  { name: "Fatima Noor", role: "Client Relations", initials: "FN" },
-];
-
 const VALUES = [
   {
     icon: (
@@ -25,7 +18,7 @@ const VALUES = [
       </svg>
     ),
     title: "Efficiency",
-    description: "Streamlined workflows and smart tools to reduce delays and maximize output.",
+    description: "Streamlined workflows and processes to reduce delays and maximize output.",
   },
   {
     icon: (
@@ -48,7 +41,7 @@ export default function AboutPage() {
           <Section
             eyebrow="About Us"
             title="Building more than structures"
-            description="At Deen Associate, we combine modern management with deep industry expertise to deliver exceptional results for every project."
+            description="At Deen Associate, we focus on transparency, efficiency, and modern management practices to deliver exceptional results."
           >
             <div />
           </Section>
@@ -79,7 +72,7 @@ export default function AboutPage() {
         </Container>
       </div>
 
-      {/* Story Section */}
+      {/* Story + Values */}
       <div className="relative border-y border-white/[0.04] py-16 sm:py-20">
         <div className="absolute inset-0 mesh-gradient-subtle" />
         <Container className="relative">
@@ -90,7 +83,7 @@ export default function AboutPage() {
                 <span className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400">Our Story</span>
               </div>
               <h2 className="text-2xl font-bold text-white sm:text-3xl">
-                Driven by a vision for modern project management
+                Driven by a vision for quality and accountability
               </h2>
               <div className="space-y-4 text-sm leading-relaxed text-[#a1a1b5]">
                 <p>
@@ -99,9 +92,9 @@ export default function AboutPage() {
                   and management, ensuring every project meets the highest standards.
                 </p>
                 <p>
-                  We believe in building lasting relationships with our clients through trust,
-                  consistent delivery, and a commitment to innovation. Our digital-first approach
-                  sets us apart from traditional management firms.
+                  We believe in building lasting relationships through trust,
+                  consistent delivery, and a commitment to excellence. Our approach
+                  to project management emphasizes clear communication and operational transparency.
                 </p>
               </div>
             </div>
@@ -124,38 +117,6 @@ export default function AboutPage() {
                 </div>
               ))}
             </div>
-          </div>
-        </Container>
-      </div>
-
-      {/* Team Section */}
-      <div className="py-16 sm:py-20">
-        <Container>
-          <div className="mb-12 text-center">
-            <div className="mb-4 inline-flex items-center gap-2">
-              <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
-              <span className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400">Our Team</span>
-              <span className="h-px w-8 bg-gradient-to-l from-transparent to-indigo-500" />
-            </div>
-            <h2 className="text-2xl font-bold text-white sm:text-3xl">
-              The people behind the projects
-            </h2>
-          </div>
-
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {TEAM.map((member, i) => (
-              <div
-                key={member.name}
-                className="glass-card group p-6 text-center animate-fade-in-up"
-                style={{ animationDelay: `${i * 80}ms` }}
-              >
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-violet-500/20 border border-indigo-500/10 text-xl font-bold text-indigo-300 transition-transform group-hover:scale-105">
-                  {member.initials}
-                </div>
-                <h3 className="text-sm font-semibold text-white">{member.name}</h3>
-                <p className="mt-1 text-xs text-[#6b6b80]">{member.role}</p>
-              </div>
-            ))}
           </div>
         </Container>
       </div>
