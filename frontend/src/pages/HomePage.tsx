@@ -21,14 +21,14 @@ export default function HomePage() {
         <Container className="relative flex min-h-[85vh] items-center justify-center py-24">
           <div className="mx-auto max-w-4xl text-center">
             {/* Badge */}
-            <div className="animate-fade-in-up mb-6 inline-flex items-center gap-2 rounded-full border border-indigo-500/20 bg-indigo-500/[0.08] px-4 py-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
-              <span className="text-xs font-medium text-indigo-300">Deen Associate</span>
+            <div className="animate-fade-in-up mb-6 inline-flex items-center gap-2 rounded-full border border-indigo-500/20 bg-indigo-500/[0.08] px-4 py-1.5 shadow-sm">
+              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-indigo-500">Deen Associate</span>
             </div>
 
             {/* Title */}
             <h1 className="animate-fade-in-up-delay-1 text-4xl font-bold leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
-              <span className="text-white">Welcome to</span>
+              <span className="text-[var(--text-heading)]">Welcome to</span>
               <br />
               <span className="bg-gradient-to-r from-indigo-400 via-violet-400 to-purple-400 bg-clip-text text-transparent animate-gradient">
                 Deen Associate
@@ -36,7 +36,7 @@ export default function HomePage() {
             </h1>
 
             {/* Subtitle */}
-            <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-2xl text-base text-[#a1a1b5] sm:text-lg leading-relaxed">
+            <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-2xl text-base text-[var(--text-secondary)] sm:text-lg leading-relaxed">
               Manage and track all your projects, units, and progress — everything in one place.
             </p>
 
@@ -106,14 +106,14 @@ export default function HomePage() {
                 className="glass-card group block p-6 animate-fade-in-up"
                 style={{ animationDelay: `${i * 80}ms` }}
               >
-                <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-400 transition-colors group-hover:bg-indigo-500/[0.15]">
+                <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--accent-glow)] text-[var(--accent)] transition-colors group-hover:bg-[var(--accent-glow-strong)]">
                   {card.icon}
                 </div>
-                <h3 className="text-base font-semibold text-white">{card.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-[#a1a1b5]">{card.description}</p>
-                <div className="mt-4 flex items-center gap-1.5 text-xs font-medium text-indigo-400 opacity-0 transition-opacity group-hover:opacity-100">
-                  Go to {card.title.toLowerCase()}
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <h3 className="text-base font-semibold text-[var(--text-heading)]">{card.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">{card.description}</p>
+                <div className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] opacity-70 transition-all group-hover:translate-x-1 group-hover:opacity-100">
+                  <span>Go to {card.title.toLowerCase()}</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
                   </svg>
                 </div>

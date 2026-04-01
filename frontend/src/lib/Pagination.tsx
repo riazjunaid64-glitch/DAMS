@@ -28,7 +28,7 @@ export default function Pagination({ currentPage, totalPages, onPageChange }: Pr
       <button
         disabled={currentPage <= 1}
         onClick={() => onPageChange(currentPage - 1)}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.02] text-sm text-[#a1a1b5] transition-all hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-glass)] text-sm text-[var(--text-secondary)] transition-all hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M10 12L6 8L10 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -37,7 +37,7 @@ export default function Pagination({ currentPage, totalPages, onPageChange }: Pr
 
       {getPageNumbers().map((page, i) =>
         page === "..." ? (
-          <span key={`dot-${i}`} className="flex h-9 w-9 items-center justify-center text-sm text-[#6b6b80]">
+          <span key={`dot-${i}`} className="flex h-9 w-9 items-center justify-center text-sm text-[var(--text-muted)]">
             ···
           </span>
         ) : (
@@ -45,8 +45,8 @@ export default function Pagination({ currentPage, totalPages, onPageChange }: Pr
             key={page}
             className={`h-9 min-w-9 rounded-lg px-3 text-sm font-medium transition-all ${
               page === currentPage
-                ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30"
-                : "border border-transparent text-[#a1a1b5] hover:bg-white/[0.06] hover:text-white"
+                ? "bg-[var(--accent-glow)] text-[var(--accent)] border border-[var(--accent-glow-strong)]"
+                : "border border-transparent text-[var(--text-secondary)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
             }`}
             onClick={() => onPageChange(page)}
           >

@@ -28,19 +28,19 @@ export default function Section({
           {eyebrow && (
             <div className="inline-flex items-center gap-2">
               <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-500">
                 {eyebrow}
               </p>
               <span className="h-px w-8 bg-gradient-to-l from-transparent to-indigo-500" />
             </div>
           )}
           {title && (
-            <h2 className="text-3xl font-bold text-white sm:text-4xl lg:text-5xl">
+            <h2 className="text-3xl font-bold text-[var(--text-heading)] sm:text-4xl lg:text-5xl">
               {title}
             </h2>
           )}
           {description && (
-            <p className={`${align === "center" ? "mx-auto" : ""} max-w-2xl text-base text-[#a1a1b5] sm:text-lg leading-relaxed`}>
+            <p className={`${align === "center" ? "mx-auto" : ""} max-w-2xl text-base text-[var(--text-secondary)] sm:text-lg leading-relaxed`}>
               {description}
             </p>
           )}

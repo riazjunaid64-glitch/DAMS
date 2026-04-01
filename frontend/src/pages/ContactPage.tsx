@@ -58,7 +58,7 @@ export default function ContactPage() {
   return (
     <>
       {/* Header */}
-      <div className="relative overflow-hidden border-b border-white/[0.04]">
+      <div className="relative overflow-hidden border-b border-[var(--border)]">
         <div className="absolute inset-0 mesh-gradient-subtle" />
         <Container className="relative py-16 sm:py-20">
           <Section
@@ -83,12 +83,12 @@ export default function ContactPage() {
                   className="glass-card flex items-start gap-4 p-5 animate-fade-in-up"
                   style={{ animationDelay: `${i * 80}ms` }}
                 >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-400">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-500">
                     {info.icon}
                   </div>
                   <div>
-                    <h3 className="text-sm font-semibold text-white">{info.label}</h3>
-                    <p className="mt-1 text-sm text-[#a1a1b5]">{info.value}</p>
+                    <h3 className="text-sm font-semibold text-[var(--text-heading)]">{info.label}</h3>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{info.value}</p>
                   </div>
                 </div>
               ))}
@@ -98,10 +98,10 @@ export default function ContactPage() {
                 <div className="relative h-48 bg-gradient-to-br from-[#16161f] to-[#111118] flex items-center justify-center">
                   <div className="dot-grid absolute inset-0 opacity-40" />
                   <div className="relative text-center">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-[#6b6b80]" strokeLinecap="round">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-[var(--text-muted)]" strokeLinecap="round">
                       <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
                     </svg>
-                    <p className="mt-2 text-xs text-[#6b6b80]">123 Business Avenue</p>
+                    <p className="mt-2 text-xs text-[var(--text-muted)]">123 Business Avenue</p>
                   </div>
                 </div>
               </div>
@@ -110,9 +110,9 @@ export default function ContactPage() {
             {/* Contact Form */}
             <div className="lg:col-span-3">
               <div className="glass-card animate-fade-in-up overflow-hidden" style={{ animationDelay: "160ms" }}>
-                <div className="border-b border-white/[0.06] px-6 py-4">
-                  <h3 className="text-lg font-semibold text-white">Send us a message</h3>
-                  <p className="mt-0.5 text-xs text-[#6b6b80]">Fill out the form and we'll get back to you within 24 hours.</p>
+                <div className="border-b border-[var(--border)] px-6 py-4">
+                  <h3 className="text-lg font-semibold text-[var(--text-heading)]">Send us a message</h3>
+                  <p className="mt-0.5 text-xs text-[var(--text-muted)]">Fill out the form and we'll get back to you within 24 hours.</p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6 space-y-4">

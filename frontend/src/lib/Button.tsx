@@ -12,15 +12,15 @@ const sizeClasses: Record<NonNullable<ButtonProps["size"]>, string> = {
 };
 
 const base =
-  "inline-flex items-center justify-center font-semibold transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a0a0f] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none cursor-pointer";
+  "inline-flex items-center justify-center font-semibold transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none cursor-pointer";
 
 const variants: Record<NonNullable<ButtonProps["variant"]>, string> = {
   primary:
-    "rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-[0_4px_16px_rgba(99,102,241,0.3)] hover:shadow-[0_6px_24px_rgba(99,102,241,0.4)] hover:from-indigo-400 hover:to-indigo-500 active:scale-[0.97] focus-visible:ring-indigo-400",
+    "rounded-xl bg-gradient-to-r from-[var(--btn-primary-start)] to-[var(--btn-primary-end)] text-[var(--btn-primary-text)] shadow-[var(--btn-primary-shadow)] hover:shadow-lg [background-size:200%] hover:[background-position:right_center] transition-all duration-300 active:scale-[0.97] focus-visible:ring-[var(--accent)]",
   outline:
-    "rounded-xl border border-white/[0.08] text-[#a1a1b5] bg-white/[0.02] hover:bg-white/[0.06] hover:text-white hover:border-white/[0.15] active:scale-[0.97] focus-visible:ring-white/30",
+    "rounded-xl border border-[var(--btn-outline-border)] text-[var(--btn-outline-text)] bg-transparent hover:bg-[var(--btn-outline-hover-bg)] hover:text-[var(--btn-outline-hover-text)] hover:border-[var(--border-hover)] active:scale-[0.97] focus-visible:ring-[var(--accent-glow)]",
   ghost:
-    "rounded-xl text-[#a1a1b5] hover:text-white hover:bg-white/[0.06] active:scale-[0.97] focus-visible:ring-white/30",
+    "rounded-xl text-[var(--btn-ghost-text)] hover:text-[var(--btn-ghost-hover-text)] hover:bg-[var(--btn-ghost-hover-bg)] active:scale-[0.97] focus-visible:ring-[var(--accent-glow)]",
   danger:
     "rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 text-white shadow-[0_4px_16px_rgba(251,113,133,0.2)] hover:shadow-[0_6px_24px_rgba(251,113,133,0.3)] hover:from-rose-400 hover:to-rose-500 active:scale-[0.97] focus-visible:ring-rose-400",
 };

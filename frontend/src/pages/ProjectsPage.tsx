@@ -170,9 +170,9 @@ export default function ProjectsPage({ user }: Props) {
             description="Track every project with timelines, locations, and status updates in one view."
           >
             <div className="flex flex-wrap items-center justify-center gap-4">
-              <div className="flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-4 py-2">
-                <span className="h-2 w-2 rounded-full bg-indigo-400" />
-                <span className="text-sm text-[#a1a1b5]">
+              <div className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-2">
+                <span className="h-2 w-2 rounded-full bg-indigo-500" />
+                <span className="text-sm text-[var(--text-secondary)]">
                   {projects.length} project{projects.length !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -209,7 +209,7 @@ export default function ProjectsPage({ user }: Props) {
           {projectsLoading && (
             <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
               {[...Array(6)].map((_, i) => (
-                <div key={i} className="rounded-2xl border border-white/[0.04] bg-white/[0.02] p-6">
+                <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
                   <div className="skeleton mb-4 h-5 w-2/3" />
                   <div className="skeleton mb-3 h-4 w-1/3" />
                   <div className="skeleton mb-2 h-3 w-full" />
@@ -232,13 +232,13 @@ export default function ProjectsPage({ user }: Props) {
           {/* Empty State */}
           {!projectsLoading && projects.length === 0 && !projectsError && (
             <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-white/[0.03] border border-white/[0.06]">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[#6b6b80]" strokeLinecap="round">
+              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--surface-glass)] border border-[var(--border)]">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--text-muted)]" strokeLinecap="round">
                   <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>
                 </svg>
               </div>
-              <h3 className="text-lg font-semibold text-white">No projects yet</h3>
-              <p className="mt-2 max-w-sm text-sm text-[#6b6b80]">
+              <h3 className="text-lg font-semibold text-[var(--text-heading)]">No projects yet</h3>
+              <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
                 Create your first project to get started with tracking and management.
               </p>
             </div>
@@ -264,10 +264,10 @@ export default function ProjectsPage({ user }: Props) {
                       {/* Header */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <h3 className="truncate text-lg font-semibold text-white group-hover:text-indigo-300 transition-colors">
+                          <h3 className="truncate text-lg font-semibold text-[var(--text-heading)] group-hover:text-[var(--accent-light)] transition-colors">
                             {project.projectName}
                           </h3>
-                          <div className="mt-1.5 flex items-center gap-1.5 text-xs text-[#6b6b80]">
+                          <div className="mt-1.5 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                               <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
                             </svg>
@@ -280,19 +280,19 @@ export default function ProjectsPage({ user }: Props) {
                       </div>
 
                       {/* Description */}
-                      <p className="mt-4 text-sm leading-relaxed text-[#a1a1b5] line-clamp-2">
+                      <p className="mt-4 text-sm leading-relaxed text-[var(--text-secondary)] line-clamp-2">
                         {project.description || "No description provided."}
                       </p>
 
                       {/* Dates */}
-                      <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-white/[0.02] border border-white/[0.04] p-3">
+                      <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-[var(--surface-glass)] border border-[var(--border)] p-3">
                         <div>
-                          <p className="text-[10px] uppercase tracking-wider text-[#6b6b80]">Start</p>
-                          <p className="mt-0.5 text-xs font-medium text-[#a1a1b5]">{formatDate(project.startingDate)}</p>
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Start</p>
+                          <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.startingDate)}</p>
                         </div>
                         <div>
-                          <p className="text-[10px] uppercase tracking-wider text-[#6b6b80]">Expected End</p>
-                          <p className="mt-0.5 text-xs font-medium text-[#a1a1b5]">{formatDate(project.expectedCompletionDate)}</p>
+                          <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Expected End</p>
+                          <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.expectedCompletionDate)}</p>
                         </div>
                       </div>
 
@@ -330,20 +330,20 @@ export default function ProjectsPage({ user }: Props) {
             className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
             onClick={resetProjectForm}
           />
-          <div className="relative z-10 w-full max-w-2xl animate-scale-in overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111118] shadow-2xl">
+          <div className="relative z-10 w-full max-w-2xl animate-scale-in overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
               <div>
-                <h3 className="text-lg font-semibold text-white">
+                <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                   {editingId ? "Update Project" : "Create Project"}
                 </h3>
-                <p className="mt-0.5 text-xs text-[#6b6b80]">
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
                   {editingId ? "Edit the project details below" : "Fill in the details to create a new project"}
                 </p>
               </div>
               <button
                 onClick={resetProjectForm}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-[#6b6b80] transition hover:bg-white/[0.06] hover:text-white"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -404,10 +404,10 @@ export default function ProjectsPage({ user }: Props) {
                   />
                 </div>
                 {editingId && (
-                  <label className="flex flex-col gap-1.5 text-sm font-medium text-[#a1a1b5]">
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                     Status
                     <select
-                      className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white transition-all focus:border-indigo-500/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
                       value={projectForm.status}
                       onChange={(e) =>
                         setProjectForm((prev) => ({
@@ -417,7 +417,7 @@ export default function ProjectsPage({ user }: Props) {
                       }
                     >
                       {Object.entries(statusLabels).map(([value, label]) => (
-                        <option key={value} value={value}>
+                        <option key={value} value={value} className="bg-[var(--bg-card)]">
                           {label}
                         </option>
                       ))}
@@ -427,7 +427,7 @@ export default function ProjectsPage({ user }: Props) {
               </div>
 
               {/* Modal Footer */}
-              <div className="mt-6 flex items-center justify-end gap-3 border-t border-white/[0.06] pt-6">
+              <div className="mt-6 flex items-center justify-end gap-3 border-t border-[var(--border)] pt-6">
                 <Button type="button" variant="ghost" onClick={resetProjectForm}>
                   Cancel
                 </Button>

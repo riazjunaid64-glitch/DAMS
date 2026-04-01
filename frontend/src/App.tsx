@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/api";
 import AuthModal from "./components/AuthModal";
+import { useTheme } from "./context/ThemeContext";
 import Button from "./lib/Button";
 import Container from "./lib/Container";
 import AboutPage from "./pages/AboutPage";
@@ -30,6 +31,7 @@ function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const location = useLocation();
+  const { theme, toggleTheme } = useTheme();
 
   const displayName = useMemo(
     () => (user?.email ? user.email.split("@")[0] : "User"),
@@ -77,18 +79,18 @@ function App() {
       <header
         className={`sticky top-0 z-50 transition-all duration-300 ${
           scrolled
-            ? "border-b border-white/[0.06] bg-[#0a0a0f]/80 backdrop-blur-xl shadow-[0_1px_3px_rgba(0,0,0,0.3)]"
+            ? "border-b border-[var(--nav-border)] bg-[var(--nav-bg)] backdrop-blur-xl shadow-sm"
             : "bg-transparent"
         }`}
       >
         <Container className="flex h-16 items-center justify-between">
           {/* Logo */}
           <Link to="/" className="group flex items-center gap-3">
-            <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-[0_4px_12px_rgba(99,102,241,0.3)] transition-transform group-hover:scale-105">
+            <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-md transition-transform group-hover:scale-105">
               <span className="text-sm font-bold text-white">DA</span>
             </div>
-            <span className="text-base font-semibold tracking-tight text-white">
-              Deen<span className="text-indigo-400">Associate</span>
+            <span className="text-base font-semibold tracking-tight text-[var(--text-heading)]">
+              Deen<span className="text-indigo-500">Associate</span>
             </span>
           </Link>
 
@@ -102,8 +104,8 @@ function App() {
                   to={link.to}
                   className={`relative rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
                     active
-                      ? "text-white bg-white/[0.06]"
-                      : "text-[#a1a1b5] hover:text-white hover:bg-white/[0.04]"
+                      ? "text-[var(--text-heading)] bg-[var(--surface-glass-active)] shadow-sm"
+                      : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-glass-hover)]"
                   }`}
                 >
                   {link.label}
@@ -115,8 +117,24 @@ function App() {
             })}
           </nav>
 
-          {/* Desktop Actions */}
+          {/* Actions & Theme Toggle */}
           <div className="hidden items-center gap-3 sm:flex">
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleTheme}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-glass)] text-[var(--text-primary)] transition-all hover:bg-[var(--surface-glass-hover)] hover:border-[var(--border-hover)]"
+              aria-label="Toggle theme"
+            >
+              {theme === "dark" ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+              )}
+            </button>
             {!user ? (
               <>
                 <Button variant="ghost" size="sm" onClick={() => setModal("login")}>
@@ -128,11 +146,11 @@ function App() {
               </>
             ) : (
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2.5 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1.5">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white">
+                <div className="flex items-center gap-2.5 rounded-full border border-[var(--border)] bg-[var(--surface-glass)] px-3 py-1.5 shadow-sm">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white shadow-sm">
                     {displayInitial}
                   </div>
-                  <span className="text-sm font-medium text-[#a1a1b5]">{displayName}</span>
+                  <span className="text-sm font-medium text-[var(--text-secondary)]">{displayName}</span>
                 </div>
                 <Button variant="ghost" size="sm" onClick={logout}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -146,7 +164,7 @@ function App() {
           {/* Mobile Toggle */}
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03] text-white transition hover:bg-white/[0.06] sm:hidden"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] text-[var(--text-primary)] transition hover:bg-[var(--surface-glass-hover)] sm:hidden"
             aria-label="Toggle navigation"
             onClick={() => setMobileOpen((prev) => !prev)}
           >
@@ -164,7 +182,7 @@ function App() {
 
         {/* Mobile Menu */}
         {mobileOpen && (
-          <div className="animate-fade-in border-t border-white/[0.06] bg-[#0a0a0f]/95 backdrop-blur-xl sm:hidden">
+          <div className="animate-fade-in border-t border-[var(--border)] bg-[var(--nav-bg)] backdrop-blur-xl sm:hidden">
             <Container className="py-5">
               <div className="flex flex-col gap-1">
                 {NAV_LINKS.map((link) => {
@@ -175,15 +193,34 @@ function App() {
                       to={link.to}
                       className={`rounded-xl px-4 py-3 text-sm font-medium transition-all ${
                         active
-                          ? "text-white bg-white/[0.06]"
-                          : "text-[#a1a1b5] hover:text-white hover:bg-white/[0.04]"
+                          ? "text-[var(--accent)] bg-[var(--accent-glow)]"
+                          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-glass-hover)]"
                       }`}
                     >
                       {link.label}
                     </Link>
                   );
                 })}
-                <div className="mt-4 flex flex-col gap-2 border-t border-white/[0.06] pt-4">
+                <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-4 px-1">
+                  <span className="text-sm font-medium text-[var(--text-secondary)]">Theme</span>
+                  <button
+                    onClick={toggleTheme}
+                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] text-[var(--text-primary)] transition hover:bg-[var(--surface-glass-hover)]"
+                    aria-label="Toggle theme"
+                  >
+                    {theme === "dark" ? (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                      </svg>
+                    ) : (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
+
+                <div className="mt-2 flex flex-col gap-2 border-t border-[var(--border)] pt-4">
                   {!user ? (
                     <>
                       <Button variant="outline" onClick={() => setModal("login")}>
@@ -196,10 +233,10 @@ function App() {
                   ) : (
                     <>
                       <div className="flex items-center gap-2.5 px-1 py-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white shadow-sm">
                           {displayInitial}
                         </div>
-                        <span className="text-sm font-medium text-white">{displayName}</span>
+                        <span className="text-sm font-medium text-[var(--text-primary)]">{displayName}</span>
                       </div>
                       <Button variant="outline" onClick={logout}>
                         Logout
@@ -226,28 +263,28 @@ function App() {
       </main>
 
       {/* ─── Footer ─── */}
-      <footer className="relative border-t border-white/[0.06] bg-[#0a0a0f]">
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-indigo-500/20 to-transparent" />
+      <footer className="relative border-t border-[var(--border)] bg-[var(--bg-secondary)]">
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-glow-strong)] to-transparent" />
         <Container className="py-12">
           <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
             {/* Brand */}
             <div className="space-y-4 lg:col-span-2">
               <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-bold text-white">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-bold text-white shadow-md">
                   DA
                 </div>
-                <span className="text-base font-semibold text-white">
-                  Deen<span className="text-indigo-400">Associate</span>
+                <span className="text-base font-semibold text-[var(--text-heading)]">
+                  Deen<span className="text-[var(--accent)]">Associate</span>
                 </span>
               </div>
-              <p className="max-w-sm text-sm leading-relaxed text-[#6b6b80]">
+              <p className="max-w-sm text-sm leading-relaxed text-[var(--text-muted)]">
                 Project management and unit tracking portal for Deen Associate.
               </p>
             </div>
 
             {/* Quick Links */}
             <div>
-              <h4 className="mb-4 text-xs font-semibold uppercase tracking-[0.15em] text-[#6b6b80]">
+              <h4 className="mb-4 text-xs font-semibold uppercase tracking-[0.15em] text-[var(--text-muted)]">
                 Navigation
               </h4>
               <ul className="space-y-2.5">
@@ -255,7 +292,7 @@ function App() {
                   <li key={link.to}>
                     <Link
                       to={link.to}
-                      className="text-sm text-[#a1a1b5] transition-colors hover:text-white"
+                      className="text-sm text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                     >
                       {link.label}
                     </Link>
@@ -266,10 +303,10 @@ function App() {
 
             {/* Contact */}
             <div>
-              <h4 className="mb-4 text-xs font-semibold uppercase tracking-[0.15em] text-[#6b6b80]">
+              <h4 className="mb-4 text-xs font-semibold uppercase tracking-[0.15em] text-[var(--text-muted)]">
                 Contact
               </h4>
-              <ul className="space-y-2.5 text-sm text-[#a1a1b5]">
+              <ul className="space-y-2.5 text-sm text-[var(--text-secondary)]">
                 <li>contact@deenassociate.com</li>
                 <li>+1 (555) 123-4567</li>
                 <li>123 Business Avenue</li>
@@ -277,11 +314,11 @@ function App() {
             </div>
           </div>
 
-          <div className="mt-10 flex flex-col items-center justify-between gap-4 border-t border-white/[0.06] pt-8 sm:flex-row">
-            <p className="text-xs text-[#6b6b80]">
+          <div className="mt-10 flex flex-col items-center justify-between gap-4 border-t border-[var(--border)] pt-8 sm:flex-row">
+            <p className="text-xs text-[var(--text-muted)]">
               © {new Date().getFullYear()} Deen Associate. All rights reserved.
             </p>
-            <p className="text-xs text-[#6b6b80]">
+            <p className="text-xs text-[var(--text-muted)]">
               Deen Associate Management System
             </p>
           </div>

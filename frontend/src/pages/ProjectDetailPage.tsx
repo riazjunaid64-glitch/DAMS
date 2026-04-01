@@ -198,20 +198,20 @@ export default function ProjectDetailPage({ user }: Props) {
         <div className="absolute inset-0 mesh-gradient-subtle" />
         <Container className="relative py-12 sm:py-16">
           {/* Breadcrumb */}
-          <div className="mb-6 flex items-center gap-2 text-sm text-[#6b6b80]">
-            <button onClick={() => navigate("/projects")} className="hover:text-white transition-colors">
+          <div className="mb-6 flex items-center gap-2 text-sm text-[var(--text-muted)]">
+            <button onClick={() => navigate("/projects")} className="hover:text-[var(--text-primary)] transition-colors">
               Projects
             </button>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <polyline points="9 18 15 12 9 6"/>
             </svg>
-            <span className="text-[#a1a1b5]">{project?.projectName ?? "Loading..."}</span>
+            <span className="text-[var(--text-secondary)]">{project?.projectName ?? "Loading..."}</span>
           </div>
 
           <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-3">
-                <h1 className="text-3xl font-bold text-white sm:text-4xl">
+                <h1 className="text-3xl font-bold text-[var(--text-heading)] sm:text-4xl">
                   {project ? project.projectName : "Loading..."}
                 </h1>
                 {project && (
@@ -220,7 +220,7 @@ export default function ProjectDetailPage({ user }: Props) {
                   </span>
                 )}
               </div>
-              <p className="max-w-2xl text-sm leading-relaxed text-[#a1a1b5]">
+              <p className="max-w-2xl text-sm leading-relaxed text-[var(--text-secondary)]">
                 {project?.description ?? "Loading project details..."}
               </p>
             </div>
@@ -286,13 +286,13 @@ export default function ProjectDetailPage({ user }: Props) {
               ].map((stat) => (
                 <div
                   key={stat.label}
-                  className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4"
                 >
-                  <div className="flex items-center gap-2 text-[#6b6b80]">
+                  <div className="flex items-center gap-2 text-[var(--text-muted)]">
                     {stat.icon}
                     <span className="text-[11px] uppercase tracking-wider">{stat.label}</span>
                   </div>
-                  <p className="mt-2 text-sm font-semibold text-white">{stat.value}</p>
+                  <p className="mt-2 text-sm font-semibold text-[var(--text-heading)]">{stat.value}</p>
                 </div>
               ))}
             </div>
@@ -305,8 +305,8 @@ export default function ProjectDetailPage({ user }: Props) {
         <Container>
           {/* Create Unit Form */}
           {showUnitForm && isAdmin && (
-            <div className="mb-8 animate-scale-in rounded-2xl border border-indigo-500/20 bg-indigo-500/[0.04] p-6">
-              <h4 className="mb-4 text-sm font-semibold text-white">Create New Unit</h4>
+            <div className="mb-8 animate-scale-in rounded-2xl border border-[var(--accent-glow-strong)] bg-[var(--accent-glow)] p-6 shadow-sm">
+              <h4 className="mb-4 text-sm font-semibold text-[var(--text-heading)]">Create New Unit</h4>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <Field
                   label="Unit Number"
@@ -361,7 +361,7 @@ export default function ProjectDetailPage({ user }: Props) {
           {loading && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {[...Array(6)].map((_, i) => (
-                <div key={i} className="rounded-2xl border border-white/[0.04] bg-white/[0.02] p-5">
+                <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5">
                   <div className="skeleton mb-3 h-5 w-1/2" />
                   <div className="skeleton mb-2 h-3 w-3/4" />
                   <div className="skeleton h-3 w-1/2" />
@@ -385,13 +385,13 @@ export default function ProjectDetailPage({ user }: Props) {
             <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-1 gap-3">
                 <div className="relative flex-1 max-w-sm">
-                  <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#6b6b80]" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <svg className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                   </svg>
                   <input
                     value={search}
                     onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                    className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] py-2.5 pl-10 pr-4 text-sm text-white placeholder:text-[#6b6b80] transition-all focus:border-indigo-500/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] py-2.5 pl-10 pr-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
                     placeholder="Search units..."
                   />
                 </div>

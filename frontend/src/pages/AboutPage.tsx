@@ -35,7 +35,7 @@ export default function AboutPage() {
   return (
     <>
       {/* Hero Section */}
-      <div className="relative overflow-hidden border-b border-white/[0.04]">
+      <div className="relative overflow-hidden border-b border-[var(--border)]">
         <div className="absolute inset-0 mesh-gradient-subtle" />
         <Container className="relative py-16 sm:py-24">
           <Section
@@ -64,8 +64,8 @@ export default function AboutPage() {
                 style={{ animationDelay: `${i * 80}ms` }}
               >
                 <div className={`pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-gradient-to-br ${stat.color} opacity-[0.06] blur-xl transition-opacity group-hover:opacity-[0.12]`} />
-                <p className="relative text-3xl font-bold text-white">{stat.value}</p>
-                <p className="relative mt-1.5 text-sm text-[#6b6b80]">{stat.label}</p>
+                <p className="relative text-3xl font-bold text-[var(--text-heading)]">{stat.value}</p>
+                <p className="relative mt-1.5 text-sm text-[var(--text-muted)]">{stat.label}</p>
               </div>
             ))}
           </div>
@@ -80,12 +80,12 @@ export default function AboutPage() {
             <div className="space-y-6">
               <div className="inline-flex items-center gap-2">
                 <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
-                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-400">Our Story</span>
+                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-500">Our Story</span>
               </div>
-              <h2 className="text-2xl font-bold text-white sm:text-3xl">
+              <h2 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
                 Driven by a vision for quality and accountability
               </h2>
-              <div className="space-y-4 text-sm leading-relaxed text-[#a1a1b5]">
+              <div className="space-y-4 text-sm leading-relaxed text-[var(--text-secondary)]">
                 <p>
                   At Deen Associate, we focus on transparency, efficiency, and modern management
                   practices. Our team brings over 15 years of experience in project development
@@ -107,12 +107,12 @@ export default function AboutPage() {
                   className="glass-card flex items-start gap-4 p-5 animate-fade-in-up"
                   style={{ animationDelay: `${i * 100}ms` }}
                 >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-400">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-500">
                     {value.icon}
                   </div>
                   <div>
-                    <h3 className="text-sm font-semibold text-white">{value.title}</h3>
-                    <p className="mt-1 text-sm text-[#a1a1b5]">{value.description}</p>
+                    <h3 className="text-sm font-semibold text-[var(--text-heading)]">{value.title}</h3>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{value.description}</p>
                   </div>
                 </div>
               ))}

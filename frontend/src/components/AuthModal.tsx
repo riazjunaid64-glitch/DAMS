@@ -79,7 +79,7 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
       {/* Modal */}
       <form
         onSubmit={handleSubmit}
-        className="relative z-10 w-[440px] max-w-[92vw] animate-scale-in overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111118] shadow-2xl"
+        className="relative z-10 w-[440px] max-w-[92vw] animate-scale-in overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Decorative gradient */}
@@ -87,30 +87,30 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
         <div className="absolute bottom-0 left-0 h-24 w-24 rounded-full bg-violet-500/[0.06] blur-[40px]" />
 
         {/* Header */}
-        <div className="relative border-b border-white/[0.06] px-6 py-5">
+        <div className="relative border-b border-[var(--border)] px-6 py-5">
           <div className="flex items-center justify-between">
             <div>
               <div className="mb-1 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-2.5 py-0.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
                   {mode === "login" ? "Welcome back" : "Get started"}
                 </span>
               </div>
-              <h3 className="text-lg font-semibold text-white">
+              <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {mode === "login" ? "Sign in to your account" : "Create your account"}
               </h3>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[#6b6b80] transition hover:bg-white/[0.06] hover:text-white"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
           </div>
-          <p className="mt-1.5 text-sm text-[#6b6b80]">
+          <p className="mt-1.5 text-sm text-[var(--text-muted)]">
             {mode === "login"
               ? "Enter your credentials to continue."
               : "Fill in the details below to set up your account."}
@@ -155,7 +155,7 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
         </div>
 
         {/* Footer */}
-        <div className="relative flex items-center justify-between border-t border-white/[0.06] px-6 py-4 bg-white/[0.01]">
+        <div className="relative flex items-center justify-between border-t border-[var(--border)] px-6 py-4 bg-[var(--surface-glass)]">
           <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
