@@ -76,7 +76,7 @@ export default function ProjectDetailPage({ user }: Props) {
     price: 0,
   });
 
-  const itemsPerPage = 9;
+  const UNITS_PER_PAGE = 9;
   const isAdmin = user?.role === "Admin";
 
   useEffect(() => {
@@ -140,8 +140,8 @@ export default function ProjectDetailPage({ user }: Props) {
     });
   }, [search, typeFilter, units]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredUnits.length / itemsPerPage));
-  const paginatedUnits = filteredUnits.slice((page - 1) * itemsPerPage, page * itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(filteredUnits.length / UNITS_PER_PAGE));
+  const paginatedUnits = filteredUnits.slice((page - 1) * UNITS_PER_PAGE, page * UNITS_PER_PAGE);
 
   useEffect(() => {
     if (page > totalPages) setPage(1);
@@ -360,7 +360,7 @@ export default function ProjectDetailPage({ user }: Props) {
           {/* Loading */}
           {loading && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[...Array(6)].map((_, i) => (
+              {[...Array(UNITS_PER_PAGE)].map((_, i) => (
                 <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5">
                   <div className="skeleton mb-3 h-5 w-1/2" />
                   <div className="skeleton mb-2 h-3 w-3/4" />
@@ -398,11 +398,15 @@ export default function ProjectDetailPage({ user }: Props) {
                 <select
                   value={typeFilter}
                   onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }}
-                  className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white transition-all focus:border-indigo-500/60 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)] [color-scheme:dark]"
                 >
-                  <option value="">All types</option>
+                  <option value="" className="bg-[var(--bg-card)] text-[var(--text-primary)]">All types</option>
                   {availableTypes.map((type) =>
-                    type ? <option key={type} value={type}>{type}</option> : null
+                    type ? (
+                      <option key={type} value={type} className="bg-[var(--bg-card)] text-[var(--text-primary)]">
+                        {type}
+                      </option>
+                    ) : null
                   )}
                 </select>
               </div>
