@@ -14,10 +14,12 @@ namespace DAMS.Api.Controllers
     public class ProjectController : ControllerBase
     {
         private readonly IProjectService _projectService;
+        private readonly IMediaService _mediaService;
 
-        public ProjectController(IProjectService projectService)
+        public ProjectController(IProjectService projectService, IMediaService mediaService)
         {
             _projectService = projectService;
+            _mediaService = mediaService;
         }
 
         // CREATE PROJECT (Admin only)
@@ -62,6 +64,36 @@ namespace DAMS.Api.Controllers
                 return NotFound();
 
             return Ok(result);
+        }
+
+        [AllowAnonymous]
+        [HttpGet("{projectId:int}/media")]
+        public async Task<IActionResult> GetProjectMedia(int projectId)
+        {
+            var result = await _mediaService.GetProjectMediaAsync(projectId);
+            return Ok(result);
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpPost("{projectId:int}/media")]
+        public async Task<IActionResult> UploadProjectMedia(int projectId, IFormFile file)
+        {
+            if (file == null || file.Length == 0)
+            {
+                return BadRequest("Please provide a media file.");
+            }
+
+            await using var stream = file.OpenReadStream();
+            var result = await _mediaService.UploadProjectMediaAsync(projectId, stream, file.FileName, file.ContentType);
+            return Ok(result);
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpDelete("{projectId:int}/media/{mediaId:int}")]
+        public async Task<IActionResult> DeleteProjectMedia(int projectId, int mediaId)
+        {
+            await _mediaService.DeleteProjectMediaAsync(mediaId);
+            return Ok("Project media deleted successfully.");
         }
     }
 }
