@@ -1,3 +1,4 @@
+using DAMS.Domain.Enums;
 namespace DAMS.Domain.Entities
 {
     public class Unit
@@ -16,7 +17,7 @@ namespace DAMS.Domain.Entities
 
         public decimal Price { get; set; }
 
-        public string Status { get; set; } = "Available";
+        public string Status { get; set; } = UnitStatus.Available;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
