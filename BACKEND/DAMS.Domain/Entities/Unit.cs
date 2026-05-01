@@ -15,9 +15,9 @@ namespace DAMS.Domain.Entities
 
         public decimal Size { get; set; }
 
-        public decimal Price { get; set; }
+        public decimal Price { get; set; }   // Current price (snapshot at booking time)
 
-        public string Status { get; set; } = UnitStatus.Available;
+        public UnitStatus Status { get; set; } = UnitStatus.Available;  // Updated when booking is created/cancelled
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
