@@ -11,10 +11,44 @@ namespace DAMS.Application.Services
         private readonly AppDbContext _context;
         private readonly IFileStorageService _fileStorageService;
 
+        // Configuration for file validation
+        private const long MaxFileSize = 50 * 1024 * 1024; // 50 MB
+        private static readonly string[] AllowedImageTypes = { "image/jpeg", "image/png", "image/gif", "image/webp" };
+        private static readonly string[] AllowedVideoTypes = { "video/mp4", "video/webm", "video/quicktime" };
+        private static readonly string[] AllowedDocumentTypes = { "application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+
         public MediaService(AppDbContext context, IFileStorageService fileStorageService)
         {
             _context = context;
             _fileStorageService = fileStorageService;
+        }
+
+        private void ValidateFile(Stream fileStream, string contentType, string fileName)
+        {
+            // Check file size
+            if (fileStream.Length > MaxFileSize)
+            {
+                throw new Exception($"File size exceeds maximum allowed size of {MaxFileSize / 1024 / 1024} MB.");
+            }
+
+            // Check MIME type
+            var isAllowedType = AllowedImageTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase) ||
+                                AllowedVideoTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase) ||
+                                AllowedDocumentTypes.Contains(contentType, StringComparer.OrdinalIgnoreCase) ||
+                                contentType.Contains("application/octet-stream");
+
+            if (!isAllowedType)
+            {
+                throw new Exception($"File type '{contentType}' is not allowed.");
+            }
+
+            // Check file extension safety
+            var ext = Path.GetExtension(fileName).ToLowerInvariant();
+            var dangerousExtensions = new[] { ".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".sys" };
+            if (dangerousExtensions.Contains(ext))
+            {
+                throw new Exception($"File extension '{ext}' is not allowed for security reasons.");
+            }
         }
 
         public async Task<ProjectMediaResponseDto> UploadProjectMediaAsync(int projectId, Stream fileStream, string fileName, string contentType)
@@ -25,12 +59,16 @@ namespace DAMS.Application.Services
                 throw new Exception("Project not found.");
             }
 
+            // Validate file before uploading
+            ValidateFile(fileStream, contentType, fileName);
+
             var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, fileName, $"projects/{projectId}");
 
             var media = new ProjectMedia
             {
                 ProjectId = projectId,
                 MediaUrl = mediaUrl,
+                MediaType = ResolveMediaType(contentType, fileName),
                 UploadedAt = DateTime.UtcNow
             };
 
@@ -42,7 +80,7 @@ namespace DAMS.Application.Services
                 Id = media.Id,
                 ProjectId = media.ProjectId,
                 MediaUrl = media.MediaUrl,
-                MediaType = ResolveMediaType(contentType, fileName),
+                MediaType = media.MediaType,
                 UploadedAt = media.UploadedAt
             };
         }
@@ -65,7 +103,7 @@ namespace DAMS.Application.Services
                 Id = pm.Id,
                 ProjectId = pm.ProjectId,
                 MediaUrl = pm.MediaUrl,
-                MediaType = ResolveMediaType(string.Empty, pm.MediaUrl),
+                MediaType = pm.MediaType,
                 UploadedAt = pm.UploadedAt
             }).ToList();
         }
@@ -92,6 +130,9 @@ namespace DAMS.Application.Services
             {
                 throw new Exception("Unit not found.");
             }
+
+            // Validate file before uploading
+            ValidateFile(fileStream, contentType, fileName);
 
             var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, fileName, $"units/{unitId}");
 
