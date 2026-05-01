@@ -24,6 +24,7 @@ namespace DAMS.Domain.Entities
         public DateTime? UpdatedAt { get; set; }
 
         // Navigation
+        public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
         public Project Project { get; set; } = null!;
         public ICollection<UnitMedia> MediaFiles { get; set; } = new List<UnitMedia>();
     }
