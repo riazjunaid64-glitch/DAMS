@@ -5,8 +5,8 @@ namespace  DAMS.Domain.Entities
         public int UserId { get; set; }
 
         // Foreign Key to Role table
-         public int RoleId { get; set; }
-         public Role Role { get; set; } = null!;
+        public int RoleId { get; set; }
+        public Role Role { get; set; } = null!;
         public string FullName { get; set; } = null!;
 
         public string Email { get; set; } = null!;
