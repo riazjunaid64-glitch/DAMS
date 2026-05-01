@@ -16,6 +16,11 @@ namespace DAMS.Domain.Entities
 
         public PaymentMethod PaymentMethod { get; set; }
 
+        public string? PaymentReference { get; set; }
+
+        // Data Safety - Preserve financial records (no delete)
+        public bool IsDeleted { get; set; } = false;
+
         // Navigation
         public Booking Booking { get; set; } = null!;
         public Installment? Installment { get; set; }

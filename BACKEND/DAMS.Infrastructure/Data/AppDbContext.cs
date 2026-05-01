@@ -19,6 +19,9 @@ namespace DAMS.Infrastructure.Data
           public DbSet<Unit> Units { get; set; }
           public DbSet<ProjectMedia> ProjectMedias { get; set; }
           public DbSet<UnitMedia> UnitMedias { get; set; }
+          public DbSet<Booking> Bookings { get; set; }
+          public DbSet<Installment> Installments { get; set; }
+          public DbSet<Payment> Payments { get; set; }
 
 
 
@@ -91,6 +94,61 @@ modelBuilder.Entity<UnitMedia>(entity =>
           .WithMany(u => u.MediaFiles)
           .HasForeignKey(um => um.UnitId)
           .OnDelete(DeleteBehavior.Cascade);
+});
+
+modelBuilder.Entity<Booking>(entity =>
+{
+    entity.Property(b => b.TotalPrice)
+          .HasColumnType("decimal(18,2)");
+
+    entity.Property(b => b.DownPayment)
+          .HasColumnType("decimal(18,2)");
+
+    entity.Property(b => b.RemainingAmount)
+          .HasColumnType("decimal(18,2)");
+
+    entity.Property(b => b.AmountPaid)
+          .HasColumnType("decimal(18,2)");
+
+    entity.HasOne(b => b.Client)
+          .WithMany(u => u.Bookings)
+          .HasForeignKey(b => b.ClientId)
+          .OnDelete(DeleteBehavior.Restrict);
+
+    entity.HasOne(b => b.Unit)
+          .WithMany(u => u.Bookings)
+          .HasForeignKey(b => b.UnitId)
+          .OnDelete(DeleteBehavior.Restrict);
+});
+
+modelBuilder.Entity<Installment>(entity =>
+{
+    entity.Property(i => i.Amount)
+          .HasColumnType("decimal(18,2)");
+
+    entity.HasOne(i => i.Booking)
+          .WithMany(b => b.Installments)
+          .HasForeignKey(i => i.BookingId)
+          .OnDelete(DeleteBehavior.Cascade);
+});
+
+modelBuilder.Entity<Payment>(entity =>
+{
+    entity.Property(p => p.Amount)
+          .HasColumnType("decimal(18,2)");
+
+    entity.Property(p => p.PaymentReference)
+          .HasMaxLength(250);
+
+    entity.HasOne(p => p.Booking)
+          .WithMany(b => b.Payments)
+          .HasForeignKey(p => p.BookingId)
+          .OnDelete(DeleteBehavior.Cascade);
+
+    entity.HasOne(p => p.Installment)
+          .WithMany()
+          .HasForeignKey(p => p.InstallmentId)
+          .OnDelete(DeleteBehavior.Restrict);
 });
 
 }
