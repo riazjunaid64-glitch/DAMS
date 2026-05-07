@@ -61,6 +61,9 @@ namespace DAMS.Infrastructure.Data
     entity.Property(u => u.Size)
           .HasColumnType("decimal(18,2)");
 
+    entity.Property(u => u.Status)
+          .HasConversion<string>();
+
     entity.HasOne(u => u.Project)
           .WithMany(p => p.Units)
           .HasForeignKey(u => u.ProjectId)

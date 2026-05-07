@@ -7,6 +7,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Application.DTOs.UnitDtos;
 using DAMS.Infrastructure.Data;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Services
 {
@@ -64,7 +65,11 @@ namespace DAMS.Application.Services
         unit.FloorNumber = dto.FloorNumber;
         unit.Size = dto.Size;
         unit.Price = dto.Price;
-        unit.Status = dto.Status;
+
+        if (!Enum.TryParse<UnitStatus>(dto.Status, true, out var parsedStatus))
+            throw new Exception("Invalid unit status provided.");
+
+        unit.Status = parsedStatus;
         unit.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
@@ -96,7 +101,7 @@ namespace DAMS.Application.Services
             FloorNumber = unit.FloorNumber,
             Size = unit.Size,
             Price = unit.Price,
-            Status = unit.Status
+            Status = unit.Status.ToString()
         };
     }
 }

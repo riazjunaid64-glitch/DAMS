@@ -17,7 +17,7 @@ namespace DAMS.Domain.Entities
 
         public decimal Price { get; set; }
 
-        public string Status { get; set; } = UnitStatus.Available;
+        public UnitStatus Status { get; set; } = UnitStatus.Available;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
