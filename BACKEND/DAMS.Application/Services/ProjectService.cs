@@ -2,6 +2,7 @@ using DAMS.Application.DTOs.ProjectDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
@@ -9,10 +10,14 @@ namespace DAMS.Application.Services
     public class ProjectService : IProjectService
     {
         private readonly AppDbContext _context;
+        private readonly IMemoryCache _cache;
+        private static readonly TimeSpan ProjectsCacheDuration = TimeSpan.FromSeconds(30);
+        private const string AllProjectsCacheKey = "projects:all";
 
-        public ProjectService(AppDbContext context)
+        public ProjectService(AppDbContext context, IMemoryCache cache)
         {
             _context = context;
+            _cache = cache;
         }
 
         public async Task<ProjectResponseDto> CreateProjectAsync(CreateProjectDto dto, int adminId)
@@ -33,6 +38,7 @@ namespace DAMS.Application.Services
 
             _context.Projects.Add(project);
             await _context.SaveChangesAsync();
+            _cache.Remove(AllProjectsCacheKey);
 
             return MapToResponse(project);
         }
@@ -53,21 +59,55 @@ namespace DAMS.Application.Services
             project.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+            _cache.Remove(AllProjectsCacheKey);
 
             return MapToResponse(project);
         }
 
         public async Task<List<ProjectResponseDto>> GetAllProjectsAsync()
         {
-            var projects = await _context.Projects.ToListAsync();
-            return projects.Select(MapToResponse).ToList();
+            if (_cache.TryGetValue(AllProjectsCacheKey, out List<ProjectResponseDto>? cached) && cached != null)
+            {
+                return cached;
+            }
+
+            var projects = await _context.Projects
+                .AsNoTracking()
+                .OrderByDescending(p => p.CreatedAt)
+                .Select(p => new ProjectResponseDto
+                {
+                    Id = p.Id,
+                    ProjectName = p.ProjectName,
+                    Location = p.Location,
+                    Description = p.Description,
+                    StartingDate = p.StartingDate,
+                    ExpectedCompletionDate = p.ExpectedCompletionDate,
+                    Status = p.Status,
+                    CreatedAt = p.CreatedAt
+                })
+                .ToListAsync();
+
+            _cache.Set(AllProjectsCacheKey, projects, ProjectsCacheDuration);
+            return projects;
         }
 
         public async Task<ProjectResponseDto?> GetProjectByIdAsync(int id)
         {
-            var project = await _context.Projects.FindAsync(id);
-
-            return project == null ? null : MapToResponse(project);
+            return await _context.Projects
+                .AsNoTracking()
+                .Where(p => p.Id == id)
+                .Select(p => new ProjectResponseDto
+                {
+                    Id = p.Id,
+                    ProjectName = p.ProjectName,
+                    Location = p.Location,
+                    Description = p.Description,
+                    StartingDate = p.StartingDate,
+                    ExpectedCompletionDate = p.ExpectedCompletionDate,
+                    Status = p.Status,
+                    CreatedAt = p.CreatedAt
+                })
+                .FirstOrDefaultAsync();
         }
 
         private static ProjectResponseDto MapToResponse(Project project)

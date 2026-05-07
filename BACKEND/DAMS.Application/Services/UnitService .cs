@@ -8,16 +8,20 @@ using DAMS.Application.DTOs.UnitDtos;
 using DAMS.Infrastructure.Data;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace DAMS.Application.Services
 {
     public class UnitService : IUnitService
 {
     private readonly AppDbContext _context;
+    private readonly IMemoryCache _cache;
+    private static readonly TimeSpan UnitsCacheDuration = TimeSpan.FromSeconds(30);
 
-    public UnitService(AppDbContext context)
+    public UnitService(AppDbContext context, IMemoryCache cache)
     {
         _context = context;
+        _cache = cache;
     }
 
     public async Task<UnitResponseDto> CreateUnitAsync(CreateUnitDto dto)
@@ -40,17 +44,29 @@ namespace DAMS.Application.Services
 
         _context.Units.Add(unit);
         await _context.SaveChangesAsync();
+        _cache.Remove(GetUnitsCacheKey(dto.ProjectId));
 
         return Map(unit);
     }
 
     public async Task<List<UnitResponseDto>> GetUnitsByProjectIdAsync(int projectId)
     {
+        var cacheKey = GetUnitsCacheKey(projectId);
+        if (_cache.TryGetValue(cacheKey, out List<UnitResponseDto>? cached) && cached != null)
+        {
+            return cached;
+        }
+
         var units = await _context.Units
+            .AsNoTracking()
             .Where(u => u.ProjectId == projectId)
+            .OrderBy(u => u.FloorNumber)
+            .ThenBy(u => u.UnitNumber)
             .ToListAsync();
 
-        return units.Select(Map).ToList();
+        var result = units.Select(Map).ToList();
+        _cache.Set(cacheKey, result, UnitsCacheDuration);
+        return result;
     }
 
     public async Task<UnitResponseDto> UpdateUnitAsync(int id, UpdateUnitDto dto)
@@ -73,6 +89,7 @@ namespace DAMS.Application.Services
         unit.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
+        _cache.Remove(GetUnitsCacheKey(unit.ProjectId));
 
         return Map(unit);
     }
@@ -84,11 +101,15 @@ namespace DAMS.Application.Services
         if (unit == null)
             throw new Exception("Unit not found");
 
+        var projectId = unit.ProjectId;
         _context.Units.Remove(unit);
         await _context.SaveChangesAsync();
+        _cache.Remove(GetUnitsCacheKey(projectId));
 
         return true;
     }
+
+    private static string GetUnitsCacheKey(int projectId) => $"units:project:{projectId}";
 
     private static UnitResponseDto Map(Unit unit)
     {
