@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using DAMS.Application.Interfaces;
 using DAMS.Application.DTOs.UnitDtos;
+using DAMS.Application.DTOs.MediaDtos;
 
 namespace DAMS.Api.Controllers
 {
