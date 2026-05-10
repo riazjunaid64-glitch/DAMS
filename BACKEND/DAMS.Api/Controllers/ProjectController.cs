@@ -123,7 +123,7 @@ namespace DAMS.Api.Controllers
         [HttpPut("{projectId:int}/media/{mediaId:int}")]
         public async Task<IActionResult> UpdateProjectMedia(int projectId, int mediaId, UpdateMediaDto updateDto)
         {
-            var result = await _mediaService.UpdateProjectMediaAsync(mediaId, updateDto);
+            var result = await _mediaService.UpdateProjectMediaAsync(projectId, mediaId, updateDto);
             return Ok(result);
         }
 
@@ -131,7 +131,7 @@ namespace DAMS.Api.Controllers
         [HttpDelete("{projectId:int}/media/{mediaId:int}")]
         public async Task<IActionResult> DeleteProjectMedia(int projectId, int mediaId)
         {
-            await _mediaService.DeleteProjectMediaAsync(mediaId);
+            await _mediaService.DeleteProjectMediaAsync(projectId, mediaId);
             return Ok("Project media deleted successfully.");
         }
 

@@ -83,8 +83,14 @@ namespace DAMS.Application.Services
                 throw new Exception("Project not found.");
             }
 
+            var batchRequestsCover = files.Exists(f => f.uploadDto?.IsCover == true);
+            if (batchRequestsCover)
+            {
+                await RemoveCoverFromProjectMediaAsync(projectId);
+            }
+
             var results = new List<ProjectMediaResponseDto>();
-            var hasCover = false;
+            var coverSlotUsed = false;
 
             foreach (var (fileStream, fileName, contentType, uploadDto) in files)
             {
@@ -97,6 +103,13 @@ namespace DAMS.Application.Services
 
                     var (width, height) = FileValidationService.GetImageDimensions(fileStream, contentType);
 
+                    var wantsCover = uploadDto?.IsCover ?? false;
+                    var isCover = wantsCover && !coverSlotUsed;
+                    if (isCover)
+                    {
+                        coverSlotUsed = true;
+                    }
+
                     var media = new ProjectMedia
                     {
                         ProjectId = projectId,
@@ -104,7 +117,7 @@ namespace DAMS.Application.Services
                         MediaType = ResolveMediaType(contentType, fileName),
                         UploadedAt = DateTime.UtcNow,
                         Category = uploadDto?.Category ?? Domain.Enums.MediaCategory.Gallery,
-                        IsCover = uploadDto?.IsCover ?? false,
+                        IsCover = isCover,
                         AltText = uploadDto?.AltText,
                         Description = uploadDto?.Description,
                         FileSize = fileStream.Length,
@@ -114,11 +127,6 @@ namespace DAMS.Application.Services
                         MimeType = contentType
                     };
 
-                    if (media.IsCover)
-                    {
-                        hasCover = true;
-                    }
-
                     results.Add(MapToProjectMediaResponse(media));
                     _context.ProjectMedias.Add(media);
                 }
@@ -127,11 +135,6 @@ namespace DAMS.Application.Services
                     // Log error but continue with other files
                     Console.WriteLine($"Error uploading file {fileName}: {ex.Message}");
                 }
-            }
-
-            if (hasCover)
-            {
-                await RemoveCoverFromProjectMediaAsync(projectId);
             }
 
             await _context.SaveChangesAsync();
@@ -156,9 +159,10 @@ namespace DAMS.Application.Services
             return media.Select(MapToProjectMediaResponse).ToList();
         }
 
-        public async Task<ProjectMediaResponseDto?> UpdateProjectMediaAsync(int mediaId, UpdateMediaDto updateDto)
+        public async Task<ProjectMediaResponseDto?> UpdateProjectMediaAsync(int projectId, int mediaId, UpdateMediaDto updateDto)
         {
-            var media = await _context.ProjectMedias.FindAsync(mediaId);
+            var media = await _context.ProjectMedias
+                .FirstOrDefaultAsync(pm => pm.Id == mediaId && pm.ProjectId == projectId);
             if (media == null)
             {
                 throw new Exception("Project media not found.");
@@ -191,9 +195,10 @@ namespace DAMS.Application.Services
             return MapToProjectMediaResponse(media);
         }
 
-        public async Task<bool> DeleteProjectMediaAsync(int mediaId)
+        public async Task<bool> DeleteProjectMediaAsync(int projectId, int mediaId)
         {
-            var media = await _context.ProjectMedias.FindAsync(mediaId);
+            var media = await _context.ProjectMedias
+                .FirstOrDefaultAsync(pm => pm.Id == mediaId && pm.ProjectId == projectId);
             if (media == null)
             {
                 throw new Exception("Project media not found.");
@@ -298,8 +303,14 @@ namespace DAMS.Application.Services
                 throw new Exception("Unit not found.");
             }
 
+            var batchRequestsCover = files.Exists(f => f.uploadDto?.IsCover == true);
+            if (batchRequestsCover)
+            {
+                await RemoveCoverFromUnitMediaAsync(unitId);
+            }
+
             var results = new List<UnitMediaResponseDto>();
-            var hasCover = false;
+            var coverSlotUsed = false;
 
             foreach (var (fileStream, fileName, contentType, uploadDto) in files)
             {
@@ -312,6 +323,13 @@ namespace DAMS.Application.Services
 
                     var (width, height) = FileValidationService.GetImageDimensions(fileStream, contentType);
 
+                    var wantsCover = uploadDto?.IsCover ?? false;
+                    var isCover = wantsCover && !coverSlotUsed;
+                    if (isCover)
+                    {
+                        coverSlotUsed = true;
+                    }
+
                     var media = new UnitMedia
                     {
                         UnitId = unitId,
@@ -319,7 +337,7 @@ namespace DAMS.Application.Services
                         MediaType = ResolveMediaType(contentType, fileName),
                         UploadedAt = DateTime.UtcNow,
                         Category = uploadDto?.Category ?? Domain.Enums.MediaCategory.Gallery,
-                        IsCover = uploadDto?.IsCover ?? false,
+                        IsCover = isCover,
                         AltText = uploadDto?.AltText,
                         Description = uploadDto?.Description,
                         FileSize = fileStream.Length,
@@ -329,11 +347,6 @@ namespace DAMS.Application.Services
                         MimeType = contentType
                     };
 
-                    if (media.IsCover)
-                    {
-                        hasCover = true;
-                    }
-
                     results.Add(MapToUnitMediaResponse(media));
                     _context.UnitMedias.Add(media);
                 }
@@ -341,11 +354,6 @@ namespace DAMS.Application.Services
                 {
                     Console.WriteLine($"Error uploading file {fileName}: {ex.Message}");
                 }
-            }
-
-            if (hasCover)
-            {
-                await RemoveCoverFromUnitMediaAsync(unitId);
             }
 
             await _context.SaveChangesAsync();
@@ -386,9 +394,10 @@ namespace DAMS.Application.Services
             return media.Select(MapToUnitMediaResponse).ToList();
         }
 
-        public async Task<UnitMediaResponseDto?> UpdateUnitMediaAsync(int mediaId, UpdateMediaDto updateDto)
+        public async Task<UnitMediaResponseDto?> UpdateUnitMediaAsync(int unitId, int mediaId, UpdateMediaDto updateDto)
         {
-            var media = await _context.UnitMedias.FindAsync(mediaId);
+            var media = await _context.UnitMedias
+                .FirstOrDefaultAsync(um => um.Id == mediaId && um.UnitId == unitId);
             if (media == null)
             {
                 throw new Exception("Unit media not found.");
@@ -421,9 +430,10 @@ namespace DAMS.Application.Services
             return MapToUnitMediaResponse(media);
         }
 
-        public async Task<bool> DeleteUnitMediaAsync(int mediaId)
+        public async Task<bool> DeleteUnitMediaAsync(int unitId, int mediaId)
         {
-            var media = await _context.UnitMedias.FindAsync(mediaId);
+            var media = await _context.UnitMedias
+                .FirstOrDefaultAsync(um => um.Id == mediaId && um.UnitId == unitId);
             if (media == null)
             {
                 throw new Exception("Unit media not found.");

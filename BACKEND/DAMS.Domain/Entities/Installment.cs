@@ -8,15 +8,18 @@ namespace DAMS.Domain.Entities
 
         public int BookingId { get; set; }
 
+        public int SequenceNumber { get; set; }
+
         public DateTime DueDate { get; set; }
 
         public decimal Amount { get; set; }
 
         public InstallmentStatus Status { get; set; } = InstallmentStatus.Pending;
 
-        public DateTime? PaidDate { get; set; }
+        public DateTime? PaidAt { get; set; }
 
-        // Navigation
         public Booking Booking { get; set; } = null!;
+
+        public ICollection<Payment> Payments { get; set; } = new List<Payment>();
     }
 }

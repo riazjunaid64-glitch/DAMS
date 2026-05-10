@@ -161,13 +161,7 @@ namespace DAMS.Infrastructure.Migrations
                 type: "datetime2",
                 nullable: true);
 
-            // Add MediaType column if it doesn't exist
-            migrationBuilder.AddColumn<string>(
-                name: "MediaType",
-                table: "UnitMedias",
-                type: "nvarchar(50)",
-                nullable: false,
-                defaultValue: "");
+            // UnitMedias.MediaType already exists from AddProjectModule — do not add again
 
             // Create indexes for ProjectMedias
             migrationBuilder.CreateIndex(
@@ -323,10 +317,6 @@ namespace DAMS.Infrastructure.Migrations
 
             migrationBuilder.DropColumn(
                 name: "Category",
-                table: "UnitMedias");
-
-            migrationBuilder.DropColumn(
-                name: "MediaType",
                 table: "UnitMedias");
         }
     }

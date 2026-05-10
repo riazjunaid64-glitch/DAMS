@@ -110,7 +110,7 @@ namespace DAMS.Api.Controllers
     [HttpPut("{unitId:int}/media/{mediaId:int}")]
     public async Task<IActionResult> UpdateUnitMedia(int unitId, int mediaId, UpdateMediaDto updateDto)
     {
-        var result = await _mediaService.UpdateUnitMediaAsync(mediaId, updateDto);
+        var result = await _mediaService.UpdateUnitMediaAsync(unitId, mediaId, updateDto);
         return Ok(result);
     }
 
@@ -118,7 +118,7 @@ namespace DAMS.Api.Controllers
     [HttpDelete("{unitId:int}/media/{mediaId:int}")]
     public async Task<IActionResult> DeleteUnitMedia(int unitId, int mediaId)
     {
-        await _mediaService.DeleteUnitMediaAsync(mediaId);
+        await _mediaService.DeleteUnitMediaAsync(unitId, mediaId);
         return Ok("Unit media deleted successfully.");
     }
 

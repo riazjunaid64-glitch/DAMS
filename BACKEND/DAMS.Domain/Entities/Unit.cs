@@ -27,5 +27,6 @@ namespace DAMS.Domain.Entities
         public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
         public Project Project { get; set; } = null!;
         public ICollection<UnitMedia> MediaFiles { get; set; } = new List<UnitMedia>();
+        public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
     }
 }

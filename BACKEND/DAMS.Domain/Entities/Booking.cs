@@ -6,22 +6,28 @@ namespace DAMS.Domain.Entities
     {
         public int Id { get; set; }
 
-        public int ClientId { get; set; }   // User
+        public int ClientId { get; set; }
+
         public int UnitId { get; set; }
 
-        public decimal TotalPrice { get; set; }
-        public decimal DownPayment { get; set; }
-        public decimal RemainingAmount { get; set; }
+        public BookingStatus Status { get; set; } = BookingStatus.Pending;
 
         public DateTime BookingDate { get; set; } = DateTime.UtcNow;
 
-        public BookingStatus Status { get; set; }
+        public decimal UnitPriceAtBooking { get; set; }
 
-        // Navigation
+        public decimal DownPaymentAmount { get; set; }
+
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public DateTime? UpdatedAt { get; set; }
+
         public User Client { get; set; } = null!;
+
         public Unit Unit { get; set; } = null!;
 
         public ICollection<Installment> Installments { get; set; } = new List<Installment>();
+
         public ICollection<Payment> Payments { get; set; } = new List<Payment>();
     }
 }
