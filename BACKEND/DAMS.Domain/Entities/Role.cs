@@ -6,7 +6,6 @@ namespace DAMS.Domain.Entities
         
         public int RoleId { get; set; }
 
-       
         public string Role_name { get; set; } = null!;
     }
 }

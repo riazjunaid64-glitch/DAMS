@@ -16,7 +16,7 @@ namespace DAMS.Domain.Entities
 
         public DateTime? ExpectedCompletionDate { get; set; }
 
-        public ProjectStatus Status { get; set; } = ProjectStatus.Planning;
+        public ProjectStatus Status { get; set; } = ProjectStatus.Ongoing;
 
       
 
