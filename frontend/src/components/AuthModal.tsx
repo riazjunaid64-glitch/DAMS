@@ -23,10 +23,14 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
 
     try {
       if (mode === "login") {
-        const res = await api("/api/Auth/login", {
-          method: "POST",
-          body: JSON.stringify({ email, password }),
-        });
+        const res = await api(
+          "/api/Auth/login",
+          {
+            method: "POST",
+            body: JSON.stringify({ email, password }),
+          },
+          false
+        );
 
         if (!res.ok) {
           setError("Invalid email or password. Please try again.");
@@ -41,15 +45,19 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
       }
 
       if (mode === "signup") {
-        const res = await api("/api/Auth/register", {
-          method: "POST",
-          body: JSON.stringify({
-            fullName,
-            email,
-            password,
-            roleId: 1,
-          }),
-        });
+        const res = await api(
+          "/api/Auth/register",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              fullName,
+              email,
+              password,
+              roleId: 1,
+            }),
+          },
+          false
+        );
 
         if (!res.ok) {
           const text = await res.text();

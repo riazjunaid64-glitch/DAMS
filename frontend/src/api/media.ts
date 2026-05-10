@@ -1,6 +1,24 @@
 import { api } from "./api";
 import type { ProjectMedia, UnitMedia, UploadMediaDto, UpdateMediaDto } from "../types/media";
 
+// Backend expects category as a string enum name, not a number
+const categoryNameMap: Record<number, string> = {
+  1: "Gallery",
+  2: "Thumbnail",
+  3: "FloorPlan",
+  4: "Brochure",
+  5: "ConstructionProgress",
+  6: "Interior",
+  7: "Exterior",
+  8: "Document",
+  9: "Video",
+};
+
+const getCategoryName = (category?: number): string | undefined => {
+  if (category === undefined) return undefined;
+  return categoryNameMap[category] || "Gallery";
+};
+
 // Project Media API
 export const getProjectMedia = async (projectId: number): Promise<ProjectMedia[]> => {
   const res = await api(`/api/Project/${projectId}/media`, undefined, false);
@@ -16,7 +34,7 @@ export const uploadProjectMedia = async (
   const formData = new FormData();
   formData.append("file", file);
   if (uploadDto) {
-    if (uploadDto.category) formData.append("category", uploadDto.category.toString());
+    if (uploadDto.category) formData.append("category", getCategoryName(uploadDto.category) || "Gallery");
     if (uploadDto.altText) formData.append("altText", uploadDto.altText);
     if (uploadDto.description) formData.append("description", uploadDto.description);
     if (uploadDto.isCover) formData.append("isCover", "true");
@@ -39,7 +57,7 @@ export const uploadProjectMediaBulk = async (
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
   if (uploadDto) {
-    if (uploadDto.category) formData.append("category", uploadDto.category.toString());
+    if (uploadDto.category) formData.append("category", getCategoryName(uploadDto.category) || "Gallery");
     if (uploadDto.altText) formData.append("altText", uploadDto.altText);
     if (uploadDto.description) formData.append("description", uploadDto.description);
     if (uploadDto.isCover) formData.append("isCover", "true");
@@ -110,7 +128,7 @@ export const uploadUnitMedia = async (
   const formData = new FormData();
   formData.append("file", file);
   if (uploadDto) {
-    if (uploadDto.category) formData.append("category", uploadDto.category.toString());
+    if (uploadDto.category) formData.append("category", getCategoryName(uploadDto.category) || "Gallery");
     if (uploadDto.altText) formData.append("altText", uploadDto.altText);
     if (uploadDto.description) formData.append("description", uploadDto.description);
     if (uploadDto.isCover) formData.append("isCover", "true");
@@ -133,7 +151,7 @@ export const uploadUnitMediaBulk = async (
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
   if (uploadDto) {
-    if (uploadDto.category) formData.append("category", uploadDto.category.toString());
+    if (uploadDto.category) formData.append("category", getCategoryName(uploadDto.category) || "Gallery");
     if (uploadDto.altText) formData.append("altText", uploadDto.altText);
     if (uploadDto.description) formData.append("description", uploadDto.description);
     if (uploadDto.isCover) formData.append("isCover", "true");
