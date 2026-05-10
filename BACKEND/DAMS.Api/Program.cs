@@ -6,15 +6,18 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using DAMS.Api.Middleware;
-using Microsoft.AspNetCore.ResponseCompression;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
+builder.Services.AddMemoryCache();
+builder.Services.AddResponseCompression();
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
     {
+        o.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
         o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
@@ -30,6 +33,7 @@ builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IUnitService, UnitService>();
 builder.Services.AddScoped<IMediaService, MediaService>();
 builder.Services.AddScoped<IBookingService, BookingService>();
+builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IFileStorageService>(sp =>
 {
     var env = sp.GetRequiredService<IWebHostEnvironment>();
@@ -80,6 +84,21 @@ var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
 
+// JSON API: discourage caching so clients never get empty bodies on 304 with fetch().
+app.Use(async (context, next) =>
+{
+    context.Response.OnStarting(static (state) =>
+    {
+        var ctx = (HttpContext)state!;
+        if (ctx.Request.Path.StartsWithSegments("/api"))
+        {
+            ctx.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+            ctx.Response.Headers.Pragma = "no-cache";
+        }
+        return Task.CompletedTask;
+    }, context);
+    await next();
+});
 
 if (app.Environment.IsDevelopment())
 {

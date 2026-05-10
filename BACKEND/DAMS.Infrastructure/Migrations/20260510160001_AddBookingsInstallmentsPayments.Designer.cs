@@ -96,6 +96,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("ProjectMedias");
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany("MediaFiles")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Project");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
@@ -172,6 +180,21 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("Units");
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany("Units")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
+                {
+                    b.Navigation("MediaFiles");
+
+                    b.Navigation("Units");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
@@ -202,6 +225,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId");
 
                     b.ToTable("UnitMedias");
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany("MediaFiles")
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Unit");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -238,6 +269,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("RoleId");
 
                     b.ToTable("Users");
+
+                    b.HasOne("DAMS.Domain.Entities.Role", "Role")
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Role");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
@@ -279,6 +318,22 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId");
 
                     b.ToTable("Bookings");
+
+                    b.HasOne("DAMS.Domain.Entities.User", "Client")
+                        .WithMany("Bookings")
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany("Bookings")
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Client");
+
+                    b.Navigation("Unit");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -313,6 +368,14 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Installments");
+
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Installments")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -349,79 +412,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("InstallmentId");
 
                     b.ToTable("Payments");
-                });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
-                        .WithMany("MediaFiles")
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
-                        .WithMany("Units")
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
-                        .WithMany("MediaFiles")
-                        .HasForeignKey("UnitId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Unit");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.User", "Client")
-                        .WithMany("Bookings")
-                        .HasForeignKey("ClientId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
-                        .WithMany("Bookings")
-                        .HasForeignKey("UnitId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Client");
-
-                    b.Navigation("Installments");
-
-                    b.Navigation("Payments");
-
-                    b.Navigation("Unit");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
-                        .WithMany("Installments")
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Booking");
-
-                    b.Navigation("Payments");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
-                {
                     b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
                         .WithMany("Payments")
                         .HasForeignKey("BookingId")
@@ -438,24 +429,16 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Installment");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
+            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
                 {
-                    b.HasOne("DAMS.Domain.Entities.Role", "Role")
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                    b.Navigation("Installments");
 
-                    b.Navigation("Bookings");
-
-                    b.Navigation("Role");
+                    b.Navigation("Payments");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
+            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
                 {
-                    b.Navigation("MediaFiles");
-
-                    b.Navigation("Units");
+                    b.Navigation("Payments");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -464,6 +447,12 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Navigation("MediaFiles");
                 });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
+                {
+                    b.Navigation("Bookings");
+                });
+
 #pragma warning restore 612, 618
         }
     }

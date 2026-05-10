@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
+import { parseProjectRow } from "../utils/parseProject.ts";
+import { parseUnitsPayload } from "../utils/parseUnit.ts";
 import { getProjectMedia } from "../api/media.ts";
 import type { User } from "../App.tsx";
 import type { ProjectMedia } from "../types/media.ts";
@@ -38,6 +40,8 @@ const statusLabels: Record<number, string> = { 1: "Planning", 2: "Ongoing", 3: "
 const statusStyles: Record<number, string> = { 1: "status-planning", 2: "status-ongoing", 3: "status-completed", 4: "status-cancelled", 5: "status-archived" };
 const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
 
+const LOADING_PLACEHOLDER_CARDS = 6;
+
 export default function ProjectDetailPage({ user }: Props) {
   const { id } = useParams<{ id?: string }>();
   const navigate = useNavigate();
@@ -62,8 +66,21 @@ export default function ProjectDetailPage({ user }: Props) {
           api(`/api/Unit/project/${projectId}`, undefined, false),
         ]);
         if (!projRes.ok) { setError("Project not found."); setProject(null); setUnits([]); return; }
-        setProject((await projRes.json()) as Project);
-        if (unitRes.ok) setUnits((await unitRes.json()) as Unit[]);
+        const rawProj: unknown = await projRes.json();
+        const parsed = parseProjectRow(rawProj);
+        if (!parsed) {
+          setError("Project not found.");
+          setProject(null);
+          setUnits([]);
+          return;
+        }
+        setProject(parsed);
+        if (unitRes.ok) {
+          const rawUnits: unknown = await unitRes.json();
+          setUnits(parseUnitsPayload(rawUnits));
+        } else {
+          setUnits([]);
+        }
       } catch { setError("Unable to load project details right now."); }
       finally { setLoading(false); }
     };
@@ -143,7 +160,7 @@ export default function ProjectDetailPage({ user }: Props) {
         <div className="py-20">
           <Container>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[...Array(UNITS_PER_PAGE)].map((_, i) => (
+              {[...Array(LOADING_PLACEHOLDER_CARDS)].map((_, i) => (
                 <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5">
                   <div className="skeleton mb-3 h-5 w-1/2" />
                   <div className="skeleton mb-2 h-3 w-3/4" />

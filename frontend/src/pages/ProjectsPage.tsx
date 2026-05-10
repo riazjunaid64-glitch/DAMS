@@ -1,10 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/api.ts";
+import { parseProjectsPayload } from "../utils/parseProject.ts";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import Pagination from "../lib/Pagination.tsx";
 import Section from "../lib/Section.tsx";
 
 interface Project {
@@ -77,10 +79,27 @@ export default function ProjectsPage({ user }: Props) {
     try {
       const res = await api("/api/Project", undefined, false);
       if (!res.ok) {
-        setProjectsError("Unable to load projects right now.");
+        setProjectsError(
+          res.status === 0
+            ? "Cannot reach the API. Is the backend running (e.g. http://localhost:5219), and is npm dev restarted after vite proxy changes?"
+            : `Unable to load projects (HTTP ${res.status}).`
+        );
         return;
       }
-      const data = (await res.json()) as Project[];
+      const raw: unknown = await res.json();
+      if (!Array.isArray(raw)) {
+        setProjectsError("Unexpected API response (expected a JSON array of projects).");
+        setProjects([]);
+        return;
+      }
+      const data = parseProjectsPayload(raw);
+      if (raw.length > 0 && data.length === 0) {
+        setProjectsError(
+          "The API returned data but no valid project rows were parsed. Open the Network tab and confirm the JSON uses id/projectName (or Id/ProjectName)."
+        );
+        setProjects([]);
+        return;
+      }
       setProjects(data);
     } catch {
       setProjectsError("Unable to load projects right now.");

@@ -94,6 +94,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("ProjectMedias");
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany("MediaFiles")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Project");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
@@ -170,6 +178,21 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectId");
 
                     b.ToTable("Units");
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany("Units")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
+                {
+                    b.Navigation("MediaFiles");
+
+                    b.Navigation("Units");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
@@ -200,6 +223,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId");
 
                     b.ToTable("UnitMedias");
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany("MediaFiles")
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Unit");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -236,6 +267,14 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("RoleId");
 
                     b.ToTable("Users");
+
+                    b.HasOne("DAMS.Domain.Entities.Role", "Role")
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Role");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
@@ -277,6 +316,22 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId");
 
                     b.ToTable("Bookings");
+
+                    b.HasOne("DAMS.Domain.Entities.User", "Client")
+                        .WithMany("Bookings")
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany("Bookings")
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Client");
+
+                    b.Navigation("Unit");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -311,6 +366,14 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Installments");
+
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Installments")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -347,79 +410,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("InstallmentId");
 
                     b.ToTable("Payments");
-                });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
-                        .WithMany("MediaFiles")
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
-                        .WithMany("Units")
-                        .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Project");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
-                        .WithMany("MediaFiles")
-                        .HasForeignKey("UnitId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Unit");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.User", "Client")
-                        .WithMany("Bookings")
-                        .HasForeignKey("ClientId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
-                        .WithMany("Bookings")
-                        .HasForeignKey("UnitId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Client");
-
-                    b.Navigation("Installments");
-
-                    b.Navigation("Payments");
-
-                    b.Navigation("Unit");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
-                        .WithMany("Installments")
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Booking");
-
-                    b.Navigation("Payments");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
-                {
                     b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
                         .WithMany("Payments")
                         .HasForeignKey("BookingId")
@@ -436,24 +427,16 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Installment");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
+            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
                 {
-                    b.HasOne("DAMS.Domain.Entities.Role", "Role")
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                    b.Navigation("Installments");
 
-                    b.Navigation("Bookings");
-
-                    b.Navigation("Role");
+                    b.Navigation("Payments");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
+            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
                 {
-                    b.Navigation("MediaFiles");
-
-                    b.Navigation("Units");
+                    b.Navigation("Payments");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -462,6 +445,183 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Navigation("MediaFiles");
                 });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
+                {
+                    b.Navigation("Bookings");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("JobTitle")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Department")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<decimal>("Salary")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("JoinDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Employees");
+
+                    b.Navigation("Attendances");
+
+                    b.Navigation("Tasks");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.EmployeeAttendance", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<TimeSpan?>("CheckInTime")
+                        .HasColumnType("time");
+
+                    b.Property<TimeSpan?>("CheckOutTime")
+                        .HasColumnType("time");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId", "Date")
+                        .IsUnique();
+
+                    b.ToTable("EmployeeAttendances");
+
+                    b.HasOne("DAMS.Domain.Entities.Employee", "Employee")
+                        .WithMany("Attendances")
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Employee");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.EmployeeTask", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("DueDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.ToTable("EmployeeTasks");
+
+                    b.HasOne("DAMS.Domain.Entities.Employee", "Employee")
+                        .WithMany("Tasks")
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Employee");
+
+                    b.Navigation("Project");
+                });
+
 #pragma warning restore 612, 618
         }
     }

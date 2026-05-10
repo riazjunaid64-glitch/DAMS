@@ -27,20 +27,21 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
+    // Literal segment must come before "{id}" so /api/Unit/project/5 is not bound to GetById(id = "project").
     [AllowAnonymous]
-    [HttpGet("{id}")]
-    public async Task<IActionResult> GetById(int id)
+    [HttpGet("project/{projectId:int}")]
+    public async Task<IActionResult> GetByProject(int projectId)
     {
-        var result = await _unitService.GetUnitByIdAsync(id);
-        if (result == null) return NotFound();
+        var result = await _unitService.GetUnitsByProjectIdAsync(projectId);
         return Ok(result);
     }
 
     [AllowAnonymous]
-    [HttpGet("project/{projectId}")]
-    public async Task<IActionResult> GetByProject(int projectId)
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id)
     {
-        var result = await _unitService.GetUnitsByProjectIdAsync(projectId);
+        var result = await _unitService.GetUnitByIdAsync(id);
+        if (result == null) return NotFound();
         return Ok(result);
     }
 

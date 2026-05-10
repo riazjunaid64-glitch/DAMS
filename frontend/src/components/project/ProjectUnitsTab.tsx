@@ -5,6 +5,7 @@ import Button from "../../lib/Button.tsx";
 import Field from "../../lib/Field.tsx";
 import Pagination from "../../lib/Pagination.tsx";
 import { api } from "../../api/api.ts";
+import { parseUnitsPayload } from "../../utils/parseUnit.ts";
 
 interface Unit {
   id: number;
@@ -79,7 +80,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange 
       setShowUnitForm(false);
       setPage(1);
       const unitRes = await api(`/api/Unit/project/${projectId}`, undefined, false);
-      if (unitRes.ok) onUnitsChange((await unitRes.json()) as Unit[]);
+      if (unitRes.ok) onUnitsChange(parseUnitsPayload(await unitRes.json()));
     } catch { setUnitError("Unable to create unit right now."); }
   };
 

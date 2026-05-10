@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Infrastructure.Data
 {
@@ -63,7 +64,13 @@ namespace DAMS.Infrastructure.Data
                       .HasColumnType("decimal(18,2)");
 
                 entity.Property(u => u.Size)
-                      .HasColumnType("decimal(18,2)");
+                    .HasColumnType("decimal(18,2)");
+
+                // DB column is nvarchar (legacy migration); enum defaults to int in EF and caused InvalidCastException.
+                entity.Property(u => u.Status)
+                    .HasConversion(
+                        v => v.ToString(),
+                        v => Enum.Parse<UnitStatus>(v, true));
 
     entity.HasOne(u => u.Project)
           .WithMany(p => p.Units)

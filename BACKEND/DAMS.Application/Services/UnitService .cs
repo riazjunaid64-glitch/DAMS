@@ -16,7 +16,6 @@ namespace DAMS.Application.Services
 {
     private readonly AppDbContext _context;
     private readonly IMemoryCache _cache;
-    private static readonly TimeSpan UnitsCacheDuration = TimeSpan.FromSeconds(30);
 
     public UnitService(AppDbContext context, IMemoryCache cache)
     {
@@ -58,12 +57,7 @@ namespace DAMS.Application.Services
 
     public async Task<List<UnitResponseDto>> GetUnitsByProjectIdAsync(int projectId)
     {
-        var cacheKey = GetUnitsCacheKey(projectId);
-        if (_cache.TryGetValue(cacheKey, out List<UnitResponseDto>? cached) && cached != null)
-        {
-            return cached;
-        }
-
+        // No IMemoryCache here: a cached empty list (e.g. after DB changes outside the API) looked like "units never load".
         var units = await _context.Units
             .AsNoTracking()
             .Where(u => u.ProjectId == projectId)
@@ -71,9 +65,7 @@ namespace DAMS.Application.Services
             .ThenBy(u => u.UnitNumber)
             .ToListAsync();
 
-        var result = units.Select(Map).ToList();
-        _cache.Set(cacheKey, result, UnitsCacheDuration);
-        return result;
+        return units.Select(Map).ToList();
     }
 
     public async Task<UnitResponseDto> UpdateUnitAsync(int id, UpdateUnitDto dto)

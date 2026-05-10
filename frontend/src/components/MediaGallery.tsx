@@ -39,7 +39,6 @@ export default function MediaGallery({
   media,
   onDelete,
   onSetCover,
-  onUpdate,
   isAdmin = false,
   loading = false,
 }: MediaGalleryProps) {

@@ -27,8 +27,7 @@ namespace DAMS.Application.Services
             if (unit == null)
                 throw new Exception("Unit not found.");
 
-            var statusNormalized = unit.Status.Trim();
-            if (!string.Equals(statusNormalized, "Available", StringComparison.OrdinalIgnoreCase))
+            if (unit.Status != UnitStatus.Available)
                 throw new Exception("This unit is not available for booking.");
 
             var existing = await _context.Bookings
@@ -64,7 +63,7 @@ namespace DAMS.Application.Services
             };
             _context.Payments.Add(downPayment);
 
-            unit.Status = "Booked";
+            unit.Status = UnitStatus.Booked;
             unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();

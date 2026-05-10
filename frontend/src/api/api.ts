@@ -1,4 +1,17 @@
-const API_URL = import.meta.env.VITE_API_URL;
+/** Base URL for the DAMS API (no trailing slash). In dev, defaults to same-origin so Vite can proxy `/api`. */
+function apiBaseUrl(): string {
+  const fromEnv = import.meta.env.VITE_API_URL as string | undefined;
+  if (fromEnv != null && String(fromEnv).trim() !== "") {
+    return String(fromEnv).replace(/\/$/, "");
+  }
+  if (import.meta.env.DEV) {
+    return "";
+  }
+  console.warn(
+    "VITE_API_URL is not set. Set it in frontend/.env (e.g. VITE_API_URL=http://localhost:5219) for production builds."
+  );
+  return "";
+}
 
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -9,8 +22,9 @@ async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight === null) {
     refreshInFlight = (async (): Promise<boolean> => {
       try {
-        const res = await fetch(`${API_URL}/api/Auth/refresh`, {
+        const res = await fetch(`${apiBaseUrl()}/api/Auth/refresh`, {
           method: "POST",
+          cache: "no-store",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refreshToken: storedRefresh }),
         });
@@ -51,9 +65,18 @@ export const api = async (
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
+  if (!headers.has("Cache-Control")) {
+    headers.set("Cache-Control", "no-cache");
+  }
+  if (!headers.has("Pragma")) {
+    headers.set("Pragma", "no-cache");
+  }
+
+  const response = await fetch(`${apiBaseUrl()}${endpoint}`, {
     ...options,
     headers,
+    // Avoid cached 304s: fetch treats 304 as !ok and the body is empty, which breaks res.json().
+    cache: options?.cache ?? "no-store",
   });
 
   if (
