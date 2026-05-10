@@ -2,7 +2,7 @@ using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
 using DAMS.Application.DTOs.Auth;
 using DAMS.Application.Interfaces;
-using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
 {
@@ -22,12 +22,27 @@ namespace DAMS.Application.Services
 
         public async Task RegisterAsync(RegisterRequestDto request)
         {
+            if (string.IsNullOrWhiteSpace(request.FullName) ||
+                string.IsNullOrWhiteSpace(request.Email) ||
+                string.IsNullOrWhiteSpace(request.Password))
+            {
+                throw new Exception("Full name, email, and password are required");
+            }
+
+            var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+
             // Check if email already exists
-            var existingUser = _context.Users
-                .FirstOrDefault(u => u.Email == request.Email);
+            var existingUser = await _context.Users
+                .FirstOrDefaultAsync(u => u.Email.ToLower() == normalizedEmail);
 
             if (existingUser != null)
                 throw new Exception("Email already exists");
+
+            // Public registration can only create Client users.
+            var clientRole = await _context.Roles
+                .FirstOrDefaultAsync(r => r.Role_name.ToLower() == "client");
+            if (clientRole == null)
+                throw new Exception("Client role is not configured");
 
             // Hash password
             var hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.Password);
@@ -35,9 +50,9 @@ namespace DAMS.Application.Services
             var user = new User
             {
                 FullName = request.FullName,
-                Email = request.Email,
+                Email = normalizedEmail,
                 Password = hashedPassword,
-                RoleId = request.RoleId
+                RoleId = clientRole.RoleId
             };
 
             _context.Users.Add(user);

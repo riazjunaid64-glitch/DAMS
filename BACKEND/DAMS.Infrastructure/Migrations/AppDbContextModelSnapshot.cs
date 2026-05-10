@@ -238,6 +238,117 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
+                {
+                    b.Property<DateTime>("BookingDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ClientId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("DownPaymentAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UnitId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("UnitPriceAtBooking")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClientId");
+
+                    b.HasIndex("UnitId");
+
+                    b.ToTable("Bookings");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
+                {
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("DueDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("PaidAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("SequenceNumber")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId", "SequenceNumber")
+                        .IsUnique();
+
+                    b.ToTable("Installments");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
+                {
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("InstallmentId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("PaidAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PaymentReference")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("PaymentMethod")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("InstallmentId");
+
+                    b.ToTable("Payments");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Project", "Project")
@@ -271,6 +382,60 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Unit");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.User", "Client")
+                        .WithMany("Bookings")
+                        .HasForeignKey("ClientId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany("Bookings")
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Client");
+
+                    b.Navigation("Installments");
+
+                    b.Navigation("Payments");
+
+                    b.Navigation("Unit");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Installments")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Payments");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Payments")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Installment", "Installment")
+                        .WithMany("Payments")
+                        .HasForeignKey("InstallmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Installment");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Role", "Role")
@@ -278,6 +443,8 @@ namespace DAMS.Infrastructure.Migrations
                         .HasForeignKey("RoleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Bookings");
 
                     b.Navigation("Role");
                 });
@@ -291,6 +458,8 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
                 {
+                    b.Navigation("Bookings");
+
                     b.Navigation("MediaFiles");
                 });
 #pragma warning restore 612, 618

@@ -8,16 +8,18 @@ namespace DAMS.Domain.Entities
 
         public int BookingId { get; set; }
 
-        public int? InstallmentId { get; set; } // NULL = Down Payment
+        public int? InstallmentId { get; set; }
 
         public decimal Amount { get; set; }
 
-        public DateTime PaymentDate { get; set; } = DateTime.UtcNow;
-
         public PaymentMethod PaymentMethod { get; set; }
 
-        // Navigation
+        public string? PaymentReference { get; set; }
+
+        public DateTime PaidAt { get; set; } = DateTime.UtcNow;
+
         public Booking Booking { get; set; } = null!;
+
         public Installment? Installment { get; set; }
     }
 }

@@ -49,6 +49,13 @@ namespace DAMS.Application.Services
         return Map(unit);
     }
 
+    public async Task<UnitResponseDto?> GetUnitByIdAsync(int id)
+    {
+        var unit = await _context.Units.FindAsync(id);
+        if (unit == null) return null;
+        return Map(unit);
+    }
+
     public async Task<List<UnitResponseDto>> GetUnitsByProjectIdAsync(int projectId)
     {
         var cacheKey = GetUnitsCacheKey(projectId);

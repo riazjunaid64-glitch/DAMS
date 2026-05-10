@@ -12,13 +12,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 
 
-builder.Services.AddControllers();
-builder.Services.AddMemoryCache();
-builder.Services.AddResponseCompression(options =>
-{
-    options.EnableForHttps = true;
-    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[] { "application/json" });
-});
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
@@ -31,7 +29,12 @@ builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IUnitService, UnitService>();
 builder.Services.AddScoped<IMediaService, MediaService>();
-builder.Services.AddScoped<IFileStorageService>(sp => new LocalFileStorageService(sp.GetRequiredService<IWebHostEnvironment>().WebRootPath));
+builder.Services.AddScoped<IBookingService, BookingService>();
+builder.Services.AddScoped<IFileStorageService>(sp =>
+{
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    return new LocalFileStorageService(env.WebRootPath);
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

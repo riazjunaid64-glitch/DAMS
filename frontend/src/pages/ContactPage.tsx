@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from "react";
-import Button from "../lib/Button";
-import Container from "../lib/Container";
-import Field from "../lib/Field";
-import Section from "../lib/Section";
+import Button from "../lib/Button.tsx";
+import Container from "../lib/Container.tsx";
+import Field from "../lib/Field.tsx";
+import Section from "../lib/Section.tsx";
 
 const CONTACT_INFO = [
   {

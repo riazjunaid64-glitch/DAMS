@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import Button from "../lib/Button";
-import Container from "../lib/Container";
+import Button from "../lib/Button.tsx";
+import Container from "../lib/Container.tsx";
 
 export default function LandingPage() {
   return (

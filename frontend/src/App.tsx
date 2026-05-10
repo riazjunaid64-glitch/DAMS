@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/api";
-import AuthModal from "./components/AuthModal";
+import AuthModal from "./components/AuthModal.tsx";
 import { useTheme } from "./context/ThemeContext";
-import Button from "./lib/Button";
-import Container from "./lib/Container";
-import AboutPage from "./pages/AboutPage";
-import ContactPage from "./pages/ContactPage";
-import HomePage from "./pages/HomePage";
-import LandingPage from "./pages/LandingPage";
-import ProjectDetailPage from "./pages/ProjectDetailPage";
-import ProjectsPage from "./pages/ProjectsPage";
+import Button from "./lib/Button.tsx";
+import Container from "./lib/Container.tsx";
+import AboutPage from "./pages/AboutPage.tsx";
+import ContactPage from "./pages/ContactPage.tsx";
+import HomePage from "./pages/HomePage.tsx";
+import LandingPage from "./pages/LandingPage.tsx";
+import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
+import ProjectsPage from "./pages/ProjectsPage.tsx";
+import UnitDetailPage from "./pages/UnitDetailPage.tsx";
 
 export interface User {
   userId: string;
@@ -257,6 +258,7 @@ function App() {
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/projects" element={<ProjectsPage user={user} />} />
           <Route path="/projects/:id" element={<ProjectDetailPage user={user} />} />
+          <Route path="/units/:id" element={<UnitDetailPage user={user} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/contact" element={<ContactPage />} />
         </Routes>

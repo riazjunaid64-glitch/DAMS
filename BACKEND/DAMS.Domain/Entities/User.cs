@@ -15,5 +15,7 @@ namespace  DAMS.Domain.Entities
         public string? RefreshToken { get; set; }
         public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
         public DateTime? RefreshTokenExpiresAt { get; set; }
+
+        public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
     }
 }

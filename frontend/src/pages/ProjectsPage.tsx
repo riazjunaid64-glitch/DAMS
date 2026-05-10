@@ -1,12 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api/api";
-import type { User } from "../App";
-import Button from "../lib/Button";
-import Container from "../lib/Container";
-import Field from "../lib/Field";
-import Pagination from "../lib/Pagination";
-import Section from "../lib/Section";
+import { api } from "../api/api.ts";
+import type { User } from "../App.tsx";
+import Button from "../lib/Button.tsx";
+import Container from "../lib/Container.tsx";
+import Field from "../lib/Field.tsx";
+import Section from "../lib/Section.tsx";
 
 interface Project {
   id: number;

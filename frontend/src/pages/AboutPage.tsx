@@ -1,5 +1,5 @@
-import Container from "../lib/Container";
-import Section from "../lib/Section";
+import Container from "../lib/Container.tsx";
+import Section from "../lib/Section.tsx";
 
 const VALUES = [
   {

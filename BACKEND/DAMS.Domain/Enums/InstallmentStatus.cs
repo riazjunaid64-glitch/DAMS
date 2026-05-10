@@ -2,8 +2,8 @@ namespace DAMS.Domain.Enums
 {
     public enum InstallmentStatus
     {
-        Pending = 1,
-        Paid = 2,
-        Overdue = 3
+        Pending = 0,
+        Paid = 1,
+        Overdue = 2
     }
 }
