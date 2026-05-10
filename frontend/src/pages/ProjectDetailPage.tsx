@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../api/api";
-import type { User } from "../App";
-import Button from "../lib/Button";
-import Container from "../lib/Container";
-import Field from "../lib/Field";
-import Pagination from "../lib/Pagination";
+import { api } from "../api/api.ts";
+import { getProjectMedia, deleteProjectMedia, setProjectCoverMedia, uploadProjectMediaBulk } from "../api/media.ts";
+import type { User } from "../App.tsx";
+import type { ProjectMedia, UploadMediaDto } from "../types/media.ts";
+import Button from "../lib/Button.tsx";
+import Container from "../lib/Container.tsx";
+import Field from "../lib/Field.tsx";
+import Pagination from "../lib/Pagination.tsx";
+import MediaUpload from "../components/MediaUpload.tsx";
+import MediaGallery from "../components/MediaGallery.tsx";
 
 interface Project {
   id: number;
@@ -61,12 +65,16 @@ export default function ProjectDetailPage({ user }: Props) {
 
   const [project, setProject] = useState<Project | null>(null);
   const [units, setUnits] = useState<Unit[]>([]);
+  const [media, setMedia] = useState<ProjectMedia[]>([]);
   const [loading, setLoading] = useState(false);
+  const [mediaLoading, setMediaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showUnitForm, setShowUnitForm] = useState(false);
+  const [showMediaUpload, setShowMediaUpload] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const [unitError, setUnitError] = useState<string | null>(null);
   const [unitForm, setUnitForm] = useState({
     unitNumber: "",
@@ -121,6 +129,24 @@ export default function ProjectDetailPage({ user }: Props) {
     };
 
     load();
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || Number.isNaN(projectId)) return;
+
+    const loadMedia = async () => {
+      setMediaLoading(true);
+      try {
+        const mediaData = await getProjectMedia(projectId);
+        setMedia(mediaData);
+      } catch {
+        console.error("Failed to load media");
+      } finally {
+        setMediaLoading(false);
+      }
+    };
+
+    loadMedia();
   }, [projectId]);
 
   const availableTypes = useMemo(() => {
@@ -189,6 +215,40 @@ export default function ProjectDetailPage({ user }: Props) {
     }
   };
 
+  const handleMediaUpload = async (files: File[], uploadDto?: UploadMediaDto) => {
+    setUploadingMedia(true);
+    try {
+      const uploadedMedia = await uploadProjectMediaBulk(projectId, files, uploadDto);
+      setMedia((prev) => [...prev, ...uploadedMedia]);
+      setShowMediaUpload(false);
+    } catch (error) {
+      console.error("Upload failed:", error);
+      alert("Failed to upload media. Please try again.");
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
+  const handleMediaDelete = async (mediaId: number) => {
+    try {
+      await deleteProjectMedia(projectId, mediaId);
+      setMedia((prev) => prev.filter((m) => m.id !== mediaId));
+    } catch (error) {
+      console.error("Delete failed:", error);
+      alert("Failed to delete media. Please try again.");
+    }
+  };
+
+  const handleSetCover = async (mediaId: number) => {
+    try {
+      await setProjectCoverMedia(projectId, mediaId);
+      setMedia((prev) => prev.map((m) => ({ ...m, isCover: m.id === mediaId })));
+    } catch (error) {
+      console.error("Set cover failed:", error);
+      alert("Failed to set cover. Please try again.");
+    }
+  };
+
   const statusNum = project ? getStatusNum(project.status) : 1;
 
   return (
@@ -233,12 +293,22 @@ export default function ProjectDetailPage({ user }: Props) {
                 Back
               </Button>
               {isAdmin && projectId > 0 && (
-                <Button size="sm" onClick={() => setShowUnitForm((prev) => !prev)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                  </svg>
-                  {showUnitForm ? "Cancel" : "Add Unit"}
-                </Button>
+                <>
+                  <Button size="sm" onClick={() => setShowUnitForm((prev) => !prev)}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    {showUnitForm ? "Cancel" : "Add Unit"}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setShowMediaUpload((prev) => !prev)}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    {showMediaUpload ? "Cancel" : "Upload Media"}
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -303,6 +373,36 @@ export default function ProjectDetailPage({ user }: Props) {
       {/* ─── Content ─── */}
       <div className="py-10 sm:py-14">
         <Container>
+          {/* Media Upload Form */}
+          {showMediaUpload && isAdmin && (
+            <div className="mb-8 animate-scale-in rounded-2xl border border-[var(--accent-glow-strong)] bg-[var(--accent-glow)] p-6 shadow-sm">
+              <h4 className="mb-4 text-sm font-semibold text-[var(--text-heading)]">Upload Project Media</h4>
+              <MediaUpload
+                onUpload={handleMediaUpload}
+                multiple={true}
+                uploading={uploadingMedia}
+              />
+            </div>
+          )}
+
+          {/* Project Media Gallery */}
+          {!loading && !error && (
+            <div className="mb-12">
+              <div className="mb-6 flex items-center justify-between">
+                <h2 className="text-xl font-semibold text-[var(--text-heading)]">Project Gallery</h2>
+                <span className="text-sm text-[var(--text-muted)]">
+                  {media.length} media file{media.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <MediaGallery
+                media={media}
+                onDelete={isAdmin ? handleMediaDelete : undefined}
+                onSetCover={isAdmin ? handleSetCover : undefined}
+                isAdmin={isAdmin}
+                loading={mediaLoading}
+              />
+            </div>
+          )}
           {/* Create Unit Form */}
           {showUnitForm && isAdmin && (
             <div className="mb-8 animate-scale-in rounded-2xl border border-[var(--accent-glow-strong)] bg-[var(--accent-glow)] p-6 shadow-sm">
@@ -421,7 +521,8 @@ export default function ProjectDetailPage({ user }: Props) {
                 return (
                   <div
                     key={unit.id}
-                    className="glass-card group p-5 animate-fade-in-up"
+                    onClick={() => navigate(`/units/${unit.id}`)}
+                    className="glass-card group p-5 animate-fade-in-up cursor-pointer transition-all duration-200 hover:border-[var(--accent)] hover:shadow-lg hover:shadow-[var(--accent-glow)]"
                     style={{ animationDelay: `${i * 40}ms` }}
                   >
                     {/* Unit Header */}

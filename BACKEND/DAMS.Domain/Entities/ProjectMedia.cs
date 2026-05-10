@@ -10,6 +10,8 @@ namespace DAMS.Domain.Entities
 
         public string MediaUrl { get; set; } = string.Empty;
 
+        public string MediaType { get; set; } = string.Empty;
+
         public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
 
         

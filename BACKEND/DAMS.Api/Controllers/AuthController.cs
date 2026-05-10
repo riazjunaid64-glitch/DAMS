@@ -25,7 +25,7 @@ namespace DAMS.Api.Controllers
             try
             {
                 await _authService.RegisterAsync(request);
-                return Ok("User registered successfully");
+                return Ok(new { message = "Registration completed successfully. You can now sign in." });
             }
             catch (Exception ex)
             {

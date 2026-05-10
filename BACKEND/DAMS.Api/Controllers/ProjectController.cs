@@ -15,10 +15,12 @@ namespace DAMS.Api.Controllers
     public class ProjectController : ControllerBase
     {
         private readonly IProjectService _projectService;
+        private readonly IMediaService _mediaService;
 
-        public ProjectController(IProjectService projectService)
+        public ProjectController(IProjectService projectService, IMediaService mediaService)
         {
             _projectService = projectService;
+            _mediaService = mediaService;
         }
 
         // CREATE PROJECT (Admin only)

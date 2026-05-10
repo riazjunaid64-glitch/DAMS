@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { api } from "../api/api";
-import Button from "../lib/Button";
-import Field from "../lib/Field";
+import { api } from "../api/api.ts";
+import Button from "../lib/Button.tsx";
+import Field from "../lib/Field.tsx";
 
 type Props = {
   mode: "login" | "signup";
