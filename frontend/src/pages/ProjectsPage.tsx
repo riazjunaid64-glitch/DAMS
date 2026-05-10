@@ -39,7 +39,9 @@ const statusStyles: Record<number, string> = {
 };
 
 export default function ProjectsPage({ user }: Props) {
+  const PROJECTS_PER_PAGE = 6;
   const [projects, setProjects] = useState<Project[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -90,6 +92,13 @@ export default function ProjectsPage({ user }: Props) {
   useEffect(() => {
     loadProjects();
   }, [user]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, projects.length]);
 
   const resetProjectForm = () => {
     setProjectForm({
@@ -157,17 +166,20 @@ export default function ProjectsPage({ user }: Props) {
   };
 
   const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
+  const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
+  const paginatedProjects = projects.slice(
+    (currentPage - 1) * PROJECTS_PER_PAGE,
+    currentPage * PROJECTS_PER_PAGE
+  );
 
   return (
     <>
       {/* Page Header */}
       <div className="relative overflow-hidden border-b border-white/[0.04]">
         <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-16 sm:py-20">
+        <Container className="relative py-4 sm:py-4">
           <Section
-            eyebrow="Projects"
-            title="Active Portfolio"
-            description="Track every project with timelines, locations, and status updates in one view."
+           
           >
             <div className="flex flex-wrap items-center justify-center gap-4">
               <div className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-2">
@@ -246,79 +258,83 @@ export default function ProjectsPage({ user }: Props) {
 
           {/* Project Cards */}
           {!projectsLoading && projects.length > 0 && (
-            <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-              {projects.map((project, i) => {
-                const statusNum = getStatusNum(project.status);
-                const statusValue = statusLabels[statusNum] ?? "Unknown";
-                const statusClass = statusStyles[statusNum] ?? "status-archived";
-                return (
-                  <div
-                    key={project.id}
-                    className="glass-card group relative overflow-hidden p-6 animate-fade-in-up"
-                    style={{ animationDelay: `${i * 60}ms` }}
-                  >
-                    {/* Hover glow */}
-                    <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-indigo-500/[0.06] opacity-0 blur-2xl transition-opacity group-hover:opacity-100" />
+            <>
+              <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+                {paginatedProjects.map((project, i) => {
+                  const statusNum = getStatusNum(project.status);
+                  const statusValue = statusLabels[statusNum] ?? "Unknown";
+                  const statusClass = statusStyles[statusNum] ?? "status-archived";
+                  return (
+                    <div
+                      key={project.id}
+                      className="glass-card group relative overflow-hidden p-6 animate-fade-in-up"
+                      style={{ animationDelay: `${i * 60}ms` }}
+                    >
+                      {/* Hover glow */}
+                      <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-indigo-500/[0.06] opacity-0 blur-2xl transition-opacity group-hover:opacity-100" />
 
-                    <div className="relative">
-                      {/* Header */}
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1">
-                          <h3 className="truncate text-lg font-semibold text-[var(--text-heading)] group-hover:text-[var(--accent-light)] transition-colors">
-                            {project.projectName}
-                          </h3>
-                          <div className="mt-1.5 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
-                            </svg>
-                            {project.location}
+                      <div className="relative">
+                        {/* Header */}
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="truncate text-lg font-semibold text-[var(--text-heading)] group-hover:text-[var(--accent-light)] transition-colors">
+                              {project.projectName}
+                            </h3>
+                            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
+                              </svg>
+                              {project.location}
+                            </div>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${statusClass}`}>
+                            {statusValue}
+                          </span>
+                        </div>
+
+                        {/* Description */}
+                        <p className="mt-4 text-sm leading-relaxed text-[var(--text-secondary)] line-clamp-2">
+                          {project.description || "No description provided."}
+                        </p>
+
+                        {/* Dates */}
+                        <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-[var(--surface-glass)] border border-[var(--border)] p-3">
+                          <div>
+                            <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Start</p>
+                            <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.startingDate)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Expected End</p>
+                            <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.expectedCompletionDate)}</p>
                           </div>
                         </div>
-                        <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${statusClass}`}>
-                          {statusValue}
-                        </span>
-                      </div>
 
-                      {/* Description */}
-                      <p className="mt-4 text-sm leading-relaxed text-[var(--text-secondary)] line-clamp-2">
-                        {project.description || "No description provided."}
-                      </p>
-
-                      {/* Dates */}
-                      <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl bg-[var(--surface-glass)] border border-[var(--border)] p-3">
-                        <div>
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Start</p>
-                          <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.startingDate)}</p>
+                        {/* Actions */}
+                        <div className="mt-5 flex items-center gap-2">
+                          <Link to={`/projects/${project.id}`} className="flex-1">
+                            <Button variant="outline" size="sm" className="w-full">
+                              View Details
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                              </svg>
+                            </Button>
+                          </Link>
+                          {isAdmin && (
+                            <Button variant="ghost" size="sm" onClick={() => startEditProject(project)}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                              </svg>
+                            </Button>
+                          )}
                         </div>
-                        <div>
-                          <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Expected End</p>
-                          <p className="mt-0.5 text-xs font-medium text-[var(--text-secondary)]">{formatDate(project.expectedCompletionDate)}</p>
-                        </div>
-                      </div>
-
-                      {/* Actions */}
-                      <div className="mt-5 flex items-center gap-2">
-                        <Link to={`/projects/${project.id}`} className="flex-1">
-                          <Button variant="outline" size="sm" className="w-full">
-                            View Details
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                              <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                            </svg>
-                          </Button>
-                        </Link>
-                        {isAdmin && (
-                          <Button variant="ghost" size="sm" onClick={() => startEditProject(project)}>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                            </svg>
-                          </Button>
-                        )}
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+
+              <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+            </>
           )}
         </Container>
       </div>

@@ -143,7 +143,7 @@ export default function ProjectDetailPage({ user }: Props) {
         <div className="py-20">
           <Container>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {[...Array(6)].map((_, i) => (
+              {[...Array(UNITS_PER_PAGE)].map((_, i) => (
                 <div key={i} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5">
                   <div className="skeleton mb-3 h-5 w-1/2" />
                   <div className="skeleton mb-2 h-3 w-3/4" />
