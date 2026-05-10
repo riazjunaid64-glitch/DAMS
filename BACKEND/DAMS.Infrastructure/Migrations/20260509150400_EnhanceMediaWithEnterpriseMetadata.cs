@@ -1,4 +1,7 @@
 using System;
+using DAMS.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -6,6 +9,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace DAMS.Infrastructure.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(AppDbContext))]
+    [Migration("20260509150400_EnhanceMediaWithEnterpriseMetadata")]
     public partial class EnhanceMediaWithEnterpriseMetadata : Migration
     {
         /// <inheritdoc />

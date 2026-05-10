@@ -9,6 +9,7 @@ import AboutPage from "./pages/AboutPage.tsx";
 import ContactPage from "./pages/ContactPage.tsx";
 import HomePage from "./pages/HomePage.tsx";
 import LandingPage from "./pages/LandingPage.tsx";
+import EmployeesPage from "./pages/EmployeesPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
 import ProjectsPage from "./pages/ProjectsPage.tsx";
 import UnitDetailPage from "./pages/UnitDetailPage.tsx";
@@ -39,6 +40,14 @@ function App() {
     [user]
   );
   const displayInitial = displayName[0]?.toUpperCase() ?? "U";
+
+  const mainNavLinks = useMemo(
+    () =>
+      user?.role === "Admin"
+        ? [...NAV_LINKS, { to: "/employees", label: "Employees" }]
+        : NAV_LINKS,
+    [user]
+  );
 
   // close mobile nav on route change
   useEffect(() => {
@@ -97,7 +106,7 @@ function App() {
 
           {/* Desktop Nav */}
           <nav className="hidden items-center gap-1 sm:flex">
-            {NAV_LINKS.map((link) => {
+            {mainNavLinks.map((link) => {
               const active = location.pathname === link.to;
               return (
                 <Link
@@ -186,7 +195,7 @@ function App() {
             <Container className="relative">
               <div className="pointer-events-auto ml-auto mt-0 w-[min(20rem,calc(100vw-1.5rem))] animate-scale-in rounded-b-2xl border border-[var(--border)] bg-[var(--nav-bg)] p-3 shadow-2xl backdrop-blur-xl">
                 <div className="flex flex-col gap-1">
-                {NAV_LINKS.map((link) => {
+                {mainNavLinks.map((link) => {
                   const active = location.pathname === link.to;
                   return (
                     <Link
@@ -261,6 +270,7 @@ function App() {
           <Route path="/units/:id" element={<UnitDetailPage user={user} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/contact" element={<ContactPage />} />
+          <Route path="/employees" element={<EmployeesPage user={user} />} />
         </Routes>
       </main>
 
@@ -290,7 +300,7 @@ function App() {
                 Navigation
               </h4>
               <ul className="space-y-2.5">
-                {NAV_LINKS.map((link) => (
+                {mainNavLinks.map((link) => (
                   <li key={link.to}>
                     <Link
                       to={link.to}

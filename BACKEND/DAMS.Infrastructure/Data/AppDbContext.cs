@@ -201,7 +201,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(e => e.FullName).IsRequired().HasMaxLength(200);
                 entity.Property(e => e.JobTitle).IsRequired().HasMaxLength(100);
                 entity.Property(e => e.Department).IsRequired().HasMaxLength(100);
-                entity.Property(e => e.Phone).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.Phone).IsRequired().HasMaxLength(50);
                 entity.Property(e => e.Email).HasMaxLength(200);
                 entity.Property(e => e.Address).HasMaxLength(500);
                 entity.Property(e => e.Salary).HasColumnType("decimal(18,2)");

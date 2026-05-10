@@ -20,12 +20,22 @@ namespace DAMS.Application.Services
 
         public async Task<EmployeeResponseDto> CreateEmployeeAsync(CreateEmployeeDto dto)
         {
+            if (dto.Salary < 0)
+                throw new Exception("Salary cannot be negative.");
+
+            var phone = dto.Phone.Trim();
+            if (phone.Length > 50)
+                throw new Exception("Phone cannot exceed 50 characters.");
+
+            if (dto.JoinDate.Year < 1900)
+                throw new Exception("Join date is not valid.");
+
             var employee = new Employee
             {
                 FullName   = dto.FullName.Trim(),
                 JobTitle   = dto.JobTitle.Trim(),
                 Department = dto.Department.Trim(),
-                Phone      = dto.Phone.Trim(),
+                Phone      = phone,
                 Email      = dto.Email?.Trim(),
                 Address    = dto.Address?.Trim(),
                 Salary     = dto.Salary,
