@@ -23,6 +23,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Employee> Employees { get; set; }
         public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
         public DbSet<EmployeeTask> EmployeeTasks { get; set; }
+        public DbSet<BookingRequest> BookingRequests { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -235,6 +236,38 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(t => t.ProjectId)
                       .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<BookingRequest>(entity =>
+            {
+                entity.Property(br => br.FullName).IsRequired().HasMaxLength(200);
+                entity.Property(br => br.Phone).IsRequired().HasMaxLength(50);
+                entity.Property(br => br.Email).IsRequired().HasMaxLength(200);
+                entity.Property(br => br.CNIC).IsRequired().HasMaxLength(50);
+                entity.Property(br => br.Address).IsRequired().HasMaxLength(500);
+                entity.Property(br => br.Notes).HasMaxLength(1000);
+                entity.Property(br => br.RejectionReason).HasMaxLength(500);
+                entity.Property(br => br.Status).HasConversion<int>();
+
+                entity.HasIndex(br => br.UnitId);
+                entity.HasIndex(br => br.UserId);
+                entity.HasIndex(br => br.Status);
+                entity.HasIndex(br => br.RequestedAt);
+
+                entity.HasOne(br => br.Unit)
+                      .WithMany()
+                      .HasForeignKey(br => br.UnitId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(br => br.User)
+                      .WithMany()
+                      .HasForeignKey(br => br.UserId)
+                      .OnDelete(DeleteBehavior.NoAction);
+
+                entity.HasOne(br => br.ReviewedBy)
+                      .WithMany()
+                      .HasForeignKey(br => br.ReviewedByUserId)
+                      .OnDelete(DeleteBehavior.NoAction);
             });
         }
     }

@@ -10,6 +10,7 @@ import ContactPage from "./pages/ContactPage.tsx";
 import HomePage from "./pages/HomePage.tsx";
 import LandingPage from "./pages/LandingPage.tsx";
 import EmployeesPage from "./pages/EmployeesPage.tsx";
+import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
 import ProjectsPage from "./pages/ProjectsPage.tsx";
 import UnitDetailPage from "./pages/UnitDetailPage.tsx";
@@ -44,7 +45,7 @@ function App() {
   const mainNavLinks = useMemo(
     () =>
       user?.role === "Admin"
-        ? [...NAV_LINKS, { to: "/employees", label: "Employees" }]
+        ? [...NAV_LINKS, { to: "/bookings", label: "Bookings" }, { to: "/employees", label: "Employees" }]
         : NAV_LINKS,
     [user]
   );
@@ -270,6 +271,7 @@ function App() {
           <Route path="/units/:id" element={<UnitDetailPage user={user} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/contact" element={<ContactPage />} />
+          <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
           <Route path="/employees" element={<EmployeesPage user={user} />} />
         </Routes>
       </main>

@@ -5,6 +5,7 @@ namespace DAMS.Domain.Enums
         Available = 1,
         Booked = 2,
         Reserved = 3,
-        Sold = 4
+        Sold = 4,
+        PendingReview = 5
     }
 }
