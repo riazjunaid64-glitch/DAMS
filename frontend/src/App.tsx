@@ -10,6 +10,7 @@ import ContactPage from "./pages/ContactPage.tsx";
 import HomePage from "./pages/HomePage.tsx";
 import LandingPage from "./pages/LandingPage.tsx";
 import EmployeesPage from "./pages/EmployeesPage.tsx";
+import EmployeeDetailPage from "./pages/EmployeeDetailPage.tsx";
 import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
 import ProjectsPage from "./pages/ProjectsPage.tsx";
@@ -273,6 +274,7 @@ function App() {
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
           <Route path="/employees" element={<EmployeesPage user={user} />} />
+          <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
         </Routes>
       </main>
 
