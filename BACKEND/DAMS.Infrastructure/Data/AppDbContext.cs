@@ -19,6 +19,9 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<Employee> Employees { get; set; }
+        public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
+        public DbSet<EmployeeTask> EmployeeTasks { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -184,6 +187,47 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(i => i.Payments)
                       .HasForeignKey(p => p.InstallmentId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<Employee>(entity =>
+            {
+                entity.Property(e => e.FullName).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.JobTitle).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Department).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Phone).IsRequired().HasMaxLength(20);
+                entity.Property(e => e.Email).HasMaxLength(200);
+                entity.Property(e => e.Address).HasMaxLength(500);
+                entity.Property(e => e.Salary).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.Status).HasConversion<int>();
+            });
+
+            modelBuilder.Entity<EmployeeAttendance>(entity =>
+            {
+                entity.Property(a => a.Status).HasConversion<int>();
+                entity.Property(a => a.Notes).HasMaxLength(500);
+                entity.HasIndex(a => new { a.EmployeeId, a.Date }).IsUnique();
+                entity.HasOne(a => a.Employee)
+                      .WithMany(e => e.Attendances)
+                      .HasForeignKey(a => a.EmployeeId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<EmployeeTask>(entity =>
+            {
+                entity.Property(t => t.Title).IsRequired().HasMaxLength(200);
+                entity.Property(t => t.Description).HasMaxLength(1000);
+                entity.Property(t => t.Priority).HasConversion<int>();
+                entity.Property(t => t.Status).HasConversion<int>();
+                entity.HasIndex(t => t.EmployeeId);
+                entity.HasIndex(t => t.ProjectId);
+                entity.HasOne(t => t.Employee)
+                      .WithMany(e => e.Tasks)
+                      .HasForeignKey(t => t.EmployeeId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(t => t.Project)
+                      .WithMany()
+                      .HasForeignKey(t => t.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
             });
         }
     }
