@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useDeferredValue, useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "../../App.tsx";
 import Button from "../../lib/Button.tsx";
@@ -42,6 +42,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange 
   const [showUnitForm, setShowUnitForm] = useState(false);
   const [unitError, setUnitError] = useState<string | null>(null);
   const [unitForm, setUnitForm] = useState({ unitNumber: "", unitType: "", floorNumber: 1, size: 0, price: 0 });
+  const deferredSearch = useDeferredValue(search);
 
   const itemsPerPage = 12;
 
@@ -50,14 +51,14 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange 
   }, [units]);
 
   const filteredUnits = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = deferredSearch.trim().toLowerCase();
     return units.filter((unit) => {
       const matchesSearch = unit.unitNumber.toLowerCase().includes(term) || unit.unitType.toLowerCase().includes(term) || unit.status.toLowerCase().includes(term);
       const matchesType = typeFilter ? unit.unitType === typeFilter : true;
       const matchesStatus = statusFilter ? unit.status.toLowerCase() === statusFilter : true;
       return matchesSearch && matchesType && matchesStatus;
     });
-  }, [search, typeFilter, statusFilter, units]);
+  }, [deferredSearch, typeFilter, statusFilter, units]);
 
   const totalPages = Math.max(1, Math.ceil(filteredUnits.length / itemsPerPage));
   const paginatedUnits = filteredUnits.slice((page - 1) * itemsPerPage, page * itemsPerPage);
@@ -141,11 +142,11 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange 
         {/* Unit Grid */}
         {paginatedUnits.length > 0 ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {paginatedUnits.map((unit, i) => {
+            {paginatedUnits.map((unit) => {
               const statusKey = unit.status.toLowerCase();
               const statusColor = unitStatusColors[statusKey] ?? "text-[var(--text-secondary)] bg-[var(--surface-glass)] border-[var(--border)]";
               return (
-                <div key={unit.id} onClick={() => navigate(`/units/${unit.id}`)} className="glass-card group p-5 animate-fade-in-up cursor-pointer transition-all duration-200 hover:border-[var(--accent)] hover:shadow-lg hover:shadow-[var(--accent-glow)]" style={{ animationDelay: `${i * 40}ms` }}>
+                <div key={unit.id} onClick={() => navigate(`/units/${unit.id}`)} className="glass-card group p-5 animate-fade-in-up cursor-pointer transition-all duration-200 hover:border-[var(--accent)] hover:shadow-lg hover:shadow-[var(--accent-glow)]">
                   <div className="flex items-center justify-between">
                     <h3 className="text-base font-semibold text-[var(--text-heading)]">{unit.unitNumber}</h3>
                     <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${statusColor}`}>{unit.status}</span>

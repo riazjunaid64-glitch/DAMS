@@ -53,6 +53,9 @@ namespace DAMS.Infrastructure.Data
 
             modelBuilder.Entity<Unit>(entity =>
             {
+                entity.HasIndex(u => u.ProjectId);
+                entity.HasIndex(u => new { u.ProjectId, u.FloorNumber, u.UnitNumber });
+
                 entity.Property(u => u.UnitNumber)
                       .IsRequired()
                       .HasMaxLength(50);

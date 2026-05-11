@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { resolveMediaUrl } from "../api/api.ts";
 import type { ProjectMedia, UnitMedia, MediaCategory } from "../types/media";
 import MediaModal from "./MediaModal.tsx";
 
@@ -138,7 +139,7 @@ export default function MediaGallery({
                   </div>
                 ) : (
                   <img
-                    src={item.mediaUrl}
+                    src={resolveMediaUrl(item.mediaUrl)}
                     alt={item.altText || item.originalFileName || ""}
                     className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                     loading="lazy"

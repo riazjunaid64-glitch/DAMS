@@ -50,22 +50,42 @@ namespace DAMS.Application.Services
 
     public async Task<UnitResponseDto?> GetUnitByIdAsync(int id)
     {
-        var unit = await _context.Units.FindAsync(id);
-        if (unit == null) return null;
-        return Map(unit);
+        return await _context.Units
+            .AsNoTracking()
+            .Where(u => u.Id == id)
+            .Select(u => new UnitResponseDto
+            {
+                Id = u.Id,
+                ProjectId = u.ProjectId,
+                UnitNumber = u.UnitNumber,
+                UnitType = u.UnitType,
+                FloorNumber = u.FloorNumber,
+                Size = u.Size,
+                Price = u.Price,
+                Status = u.Status.ToString()
+            })
+            .FirstOrDefaultAsync();
     }
 
     public async Task<List<UnitResponseDto>> GetUnitsByProjectIdAsync(int projectId)
     {
-        // No IMemoryCache here: a cached empty list (e.g. after DB changes outside the API) looked like "units never load".
-        var units = await _context.Units
+        return await _context.Units
             .AsNoTracking()
             .Where(u => u.ProjectId == projectId)
             .OrderBy(u => u.FloorNumber)
             .ThenBy(u => u.UnitNumber)
+            .Select(u => new UnitResponseDto
+            {
+                Id = u.Id,
+                ProjectId = u.ProjectId,
+                UnitNumber = u.UnitNumber,
+                UnitType = u.UnitType,
+                FloorNumber = u.FloorNumber,
+                Size = u.Size,
+                Price = u.Price,
+                Status = u.Status.ToString()
+            })
             .ToListAsync();
-
-        return units.Select(Map).ToList();
     }
 
     public async Task<UnitResponseDto> UpdateUnitAsync(int id, UpdateUnitDto dto)

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { resolveMediaUrl } from "../api/api.ts";
 import type { ProjectMedia, UnitMedia } from "../types/media.ts";
 
 interface MediaModalProps {
@@ -158,14 +159,14 @@ export default function MediaModal({
           <div className="flex flex-1 items-center justify-center bg-black/50 rounded-2xl overflow-hidden">
             {isVideo ? (
               <video
-                src={media.mediaUrl}
+                src={resolveMediaUrl(media.mediaUrl)}
                 controls
                 className="max-h-full max-w-full"
                 autoPlay
               />
             ) : (
               <img
-                src={media.mediaUrl}
+                src={resolveMediaUrl(media.mediaUrl)}
                 alt={media.altText || media.originalFileName || ""}
                 className="max-h-full max-w-full object-contain"
               />

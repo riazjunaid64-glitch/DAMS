@@ -95,3 +95,13 @@ export const api = async (
 
   return response;
 };
+
+/** Resolves stored paths like `/uploads/...` for `<img src>` / `<video src>`. In dev, `/uploads` is proxied to the API; with `VITE_API_URL` set, paths are prefixed so static files load from the API host. */
+export function resolveMediaUrl(path: string | null | undefined): string {
+  if (path == null || path === "") return "";
+  const p = path.trim();
+  if (/^https?:\/\//i.test(p)) return p;
+  const slug = p.startsWith("/") ? p : `/${p}`;
+  const base = apiBaseUrl();
+  return base ? `${base}${slug}` : slug;
+}

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/api.ts";
 import { parseProjectsPayload } from "../utils/parseProject.ts";
@@ -59,11 +59,16 @@ export default function ProjectsPage({ user }: Props) {
 
   const isAdmin = user?.role === "Admin";
 
+  const dateFormatter = useMemo(
+    () => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    []
+  );
+
   const formatDate = (value?: string | null) => {
-    if (!value) return "—";
+    if (!value) return "N/A";
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "—";
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    if (Number.isNaN(date.getTime())) return "N/A";
+    return dateFormatter.format(date);
   };
 
   const toInputDate = (value?: string | null) => {
@@ -186,9 +191,13 @@ export default function ProjectsPage({ user }: Props) {
 
   const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
   const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
-  const paginatedProjects = projects.slice(
-    (currentPage - 1) * PROJECTS_PER_PAGE,
-    currentPage * PROJECTS_PER_PAGE
+  const paginatedProjects = useMemo(
+    () =>
+      projects.slice(
+        (currentPage - 1) * PROJECTS_PER_PAGE,
+        currentPage * PROJECTS_PER_PAGE
+      ),
+    [currentPage, projects]
   );
 
   return (
@@ -279,7 +288,7 @@ export default function ProjectsPage({ user }: Props) {
           {!projectsLoading && projects.length > 0 && (
             <>
               <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-                {paginatedProjects.map((project, i) => {
+                {paginatedProjects.map((project) => {
                   const statusNum = getStatusNum(project.status);
                   const statusValue = statusLabels[statusNum] ?? "Unknown";
                   const statusClass = statusStyles[statusNum] ?? "status-archived";
@@ -287,7 +296,6 @@ export default function ProjectsPage({ user }: Props) {
                     <div
                       key={project.id}
                       className="glass-card group relative overflow-hidden p-6 animate-fade-in-up"
-                      style={{ animationDelay: `${i * 60}ms` }}
                     >
                       {/* Hover glow */}
                       <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-indigo-500/[0.06] opacity-0 blur-2xl transition-opacity group-hover:opacity-100" />
@@ -475,3 +483,5 @@ export default function ProjectsPage({ user }: Props) {
     </>
   );
 }
+
+
