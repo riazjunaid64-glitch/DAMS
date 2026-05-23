@@ -224,30 +224,50 @@ namespace DAMS.Application.Services
 
         public async Task<List<TaskResponseDto>> GetTasksByEmployeeAsync(int employeeId)
         {
-            var ids = await _context.EmployeeTasks
+            return await _context.EmployeeTasks
                 .AsNoTracking()
                 .Where(t => t.EmployeeId == employeeId)
                 .OrderByDescending(t => t.CreatedAt)
-                .Select(t => t.Id)
+                .Select(t => new TaskResponseDto
+                {
+                    Id           = t.Id,
+                    EmployeeId   = t.EmployeeId,
+                    EmployeeName = t.Employee.FullName,
+                    ProjectId    = t.ProjectId,
+                    ProjectName  = t.Project != null ? t.Project.ProjectName : null,
+                    Title        = t.Title,
+                    Description  = t.Description,
+                    Priority     = t.Priority,
+                    Status       = t.Status,
+                    DueDate      = t.DueDate,
+                    CompletedAt  = t.CompletedAt,
+                    CreatedAt    = t.CreatedAt
+                })
                 .ToListAsync();
-
-            var result = new List<TaskResponseDto>();
-            foreach (var id in ids) result.Add(await MapTaskAsync(id));
-            return result;
         }
 
         public async Task<List<TaskResponseDto>> GetTasksByProjectAsync(int projectId)
         {
-            var ids = await _context.EmployeeTasks
+            return await _context.EmployeeTasks
                 .AsNoTracking()
                 .Where(t => t.ProjectId == projectId)
                 .OrderByDescending(t => t.CreatedAt)
-                .Select(t => t.Id)
+                .Select(t => new TaskResponseDto
+                {
+                    Id           = t.Id,
+                    EmployeeId   = t.EmployeeId,
+                    EmployeeName = t.Employee.FullName,
+                    ProjectId    = t.ProjectId,
+                    ProjectName  = t.Project != null ? t.Project.ProjectName : null,
+                    Title        = t.Title,
+                    Description  = t.Description,
+                    Priority     = t.Priority,
+                    Status       = t.Status,
+                    DueDate      = t.DueDate,
+                    CompletedAt  = t.CompletedAt,
+                    CreatedAt    = t.CreatedAt
+                })
                 .ToListAsync();
-
-            var result = new List<TaskResponseDto>();
-            foreach (var id in ids) result.Add(await MapTaskAsync(id));
-            return result;
         }
 
         // ─── Mapping helpers ─────────────────────────────────────────────────────
@@ -291,27 +311,27 @@ namespace DAMS.Application.Services
 
         private async Task<TaskResponseDto> MapTaskAsync(int taskId)
         {
-            var t = await _context.EmployeeTasks
+            var task = await _context.EmployeeTasks
                 .AsNoTracking()
-                .Include(x => x.Employee)
-                .Include(x => x.Project)
-                .FirstOrDefaultAsync(x => x.Id == taskId)!;
+                .Where(t => t.Id == taskId)
+                .Select(t => new TaskResponseDto
+                {
+                    Id           = t.Id,
+                    EmployeeId   = t.EmployeeId,
+                    EmployeeName = t.Employee.FullName,
+                    ProjectId    = t.ProjectId,
+                    ProjectName  = t.Project != null ? t.Project.ProjectName : null,
+                    Title        = t.Title,
+                    Description  = t.Description,
+                    Priority     = t.Priority,
+                    Status       = t.Status,
+                    DueDate      = t.DueDate,
+                    CompletedAt  = t.CompletedAt,
+                    CreatedAt    = t.CreatedAt
+                })
+                .FirstOrDefaultAsync();
 
-            return new TaskResponseDto
-            {
-                Id           = t!.Id,
-                EmployeeId   = t.EmployeeId,
-                EmployeeName = t.Employee.FullName,
-                ProjectId    = t.ProjectId,
-                ProjectName  = t.Project?.ProjectName,
-                Title        = t.Title,
-                Description  = t.Description,
-                Priority     = t.Priority,
-                Status       = t.Status,
-                DueDate      = t.DueDate,
-                CompletedAt  = t.CompletedAt,
-                CreatedAt    = t.CreatedAt
-            };
+            return task ?? throw new Exception("Task not found.");
         }
     }
 }

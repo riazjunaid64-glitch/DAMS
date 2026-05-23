@@ -73,6 +73,7 @@ export default function BookingRequestsPage({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<"all" | "Pending" | "Approved" | "Rejected">("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -94,7 +95,7 @@ export default function BookingRequestsPage({ user }: Props) {
     try {
       const params = new URLSearchParams();
       if (activeFilter !== "all") params.append("status", activeFilter);
-      if (search.trim()) params.append("search", search.trim());
+      if (debouncedSearch.trim()) params.append("search", debouncedSearch.trim());
       params.append("page", String(page));
       params.append("pageSize", "15");
 
@@ -109,7 +110,12 @@ export default function BookingRequestsPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [activeFilter, search, page]);
+  }, [activeFilter, debouncedSearch, page]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     if (!isAdmin) {

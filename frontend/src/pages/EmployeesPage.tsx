@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
@@ -136,21 +136,22 @@ export default function EmployeesPage({ user }: Props) {
     } catch { setError("Could not create employee."); }
   };
 
-  const departments = [...new Set(employees.map(e => e.department))].sort();
+  const departments = useMemo(() => [...new Set(employees.map(e => e.department))].sort(), [employees]);
 
-  const filtered = employees.filter(emp => {
-    const sn = statusNum(emp.status);
-    if (statusFilter !== "all" && String(sn) !== statusFilter) return false;
-    if (deptFilter !== "all" && emp.department !== deptFilter) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      if (!emp.fullName.toLowerCase().includes(q) &&
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return employees.filter(emp => {
+      const sn = statusNum(emp.status);
+      if (statusFilter !== "all" && String(sn) !== statusFilter) return false;
+      if (deptFilter !== "all" && emp.department !== deptFilter) return false;
+      if (q &&
+          !emp.fullName.toLowerCase().includes(q) &&
           !emp.jobTitle.toLowerCase().includes(q) &&
           !emp.department.toLowerCase().includes(q) &&
           !(emp.email ?? "").toLowerCase().includes(q)) return false;
-    }
-    return true;
-  });
+      return true;
+    });
+  }, [deptFilter, employees, search, statusFilter]);
 
   if (!isAdmin) {
     return (
@@ -167,7 +168,7 @@ export default function EmployeesPage({ user }: Props) {
     );
   }
 
-  const activeCount = employees.filter(e => statusNum(e.status) === 0).length;
+  const activeCount = useMemo(() => employees.filter(e => statusNum(e.status) === 0).length, [employees]);
 
   return (
     <>
