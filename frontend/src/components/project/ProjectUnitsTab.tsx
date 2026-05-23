@@ -23,6 +23,8 @@ interface Props {
   projectId: number;
   user: User | null;
   onUnitsChange: (units: Unit[]) => void;
+  statusFilter: string;
+  onStatusFilterChange: (status: string) => void;
 }
 
 const unitStatusColors: Record<string, string> = {
@@ -31,13 +33,12 @@ const unitStatusColors: Record<string, string> = {
   reserved: "text-amber-400 bg-amber-500/10 border-amber-500/20",
 };
 
-export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange }: Props) {
+export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange, statusFilter, onStatusFilterChange }: Props) {
   const navigate = useNavigate();
   const isAdmin = user?.role === "Admin";
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
   const [showUnitForm, setShowUnitForm] = useState(false);
   const [unitError, setUnitError] = useState<string | null>(null);
@@ -131,7 +132,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange 
             <option value="">All types</option>
             {availableTypes.map((t) => t ? <option key={t} value={t}>{t}</option> : null)}
           </select>
-          <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+          <select value={statusFilter} onChange={(e) => { onStatusFilterChange(e.target.value); setPage(1); }} className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
             <option value="">All statuses</option>
             <option value="available">Available</option>
             <option value="sold">Sold</option>

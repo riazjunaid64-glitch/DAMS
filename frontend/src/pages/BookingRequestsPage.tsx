@@ -196,12 +196,20 @@ export default function BookingRequestsPage({ user }: Props) {
           {stats && (
             <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
-                { label: "Pending", value: stats.pending, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", icon: <path d="M12 8v4l2.5 2.5"/>, circle: true },
-                { label: "Approved", value: stats.approved, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", icon: <path d="M20 6 9 17l-5-5"/>, circle: false },
-                { label: "Rejected", value: stats.rejected, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", icon: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>, circle: false },
-                { label: "Total", value: stats.total, color: "text-[var(--accent)]", bg: "bg-[var(--accent-glow)]", border: "border-[var(--accent-glow-strong)]", icon: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>, circle: false },
+                { filter: "Pending" as const, label: "Pending", value: stats.pending, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", activeBorder: "border-amber-400/60", icon: <path d="M12 8v4l2.5 2.5"/>, circle: true },
+                { filter: "Approved" as const, label: "Approved", value: stats.approved, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", activeBorder: "border-emerald-400/60", icon: <path d="M20 6 9 17l-5-5"/>, circle: false },
+                { filter: "Rejected" as const, label: "Rejected", value: stats.rejected, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", activeBorder: "border-rose-400/60", icon: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>, circle: false },
+                { filter: "all" as const, label: "Total", value: stats.total, color: "text-[var(--accent)]", bg: "bg-[var(--accent-glow)]", border: "border-[var(--accent-glow-strong)]", activeBorder: "border-[var(--accent)]", icon: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>, circle: false },
               ].map((stat) => (
-                <div key={stat.label} className={`flex items-center gap-4 rounded-xl border ${stat.border} bg-[var(--bg-card)] px-4 py-3 shadow-sm`}>
+                <button
+                  key={stat.label}
+                  type="button"
+                  onClick={() => { setActiveFilter(stat.filter); setPage(1); }}
+                  className={`flex items-center gap-4 rounded-xl border bg-[var(--bg-card)] px-4 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${
+                    activeFilter === stat.filter ? stat.activeBorder : stat.border
+                  }`}
+                  aria-pressed={activeFilter === stat.filter}
+                >
                   <div className={`flex h-10 w-10 items-center justify-center rounded-full ${stat.bg} ${stat.color}`}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       {stat.circle && <circle cx="12" cy="12" r="9" />}
@@ -212,7 +220,7 @@ export default function BookingRequestsPage({ user }: Props) {
                     <p className={`text-xl font-bold ${stat.color}`}>{stat.value}</p>
                     <p className="text-xs text-[var(--text-muted)]">{stat.label}</p>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}

@@ -15,6 +15,8 @@ interface Props {
   totalUnits: number;
   unitStats: { available: number; sold: number; reserved: number };
   coverImage?: string | null;
+  activeUnitStatus?: string;
+  onUnitStatusSelect?: (status: string) => void;
 }
 
 const statusLabels: Record<number, string> = { 1: "Planning", 2: "Ongoing", 3: "Completed", 4: "Cancelled", 5: "Archived" };
@@ -28,7 +30,7 @@ const formatDate = (date?: string | null) => {
 
 const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
 
-export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage }: Props) {
+export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage, activeUnitStatus = "", onUnitStatusSelect }: Props) {
   const statusNum = getStatusNum(project.status);
 
   const infoItems = [
@@ -72,14 +74,22 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
             {/* Quick Stats Row */}
             <div className="grid grid-cols-3 gap-3">
               {[
-                { label: "Available", value: unitStats.available, color: "text-emerald-400" },
-                { label: "Sold", value: unitStats.sold, color: "text-rose-400" },
-                { label: "Reserved", value: unitStats.reserved, color: "text-amber-400" },
+                { label: "Available", status: "available", value: unitStats.available, color: "text-emerald-400", activeBorder: "border-emerald-400/60" },
+                { label: "Sold", status: "sold", value: unitStats.sold, color: "text-rose-400", activeBorder: "border-rose-400/60" },
+                { label: "Reserved", status: "reserved", value: unitStats.reserved, color: "text-amber-400", activeBorder: "border-amber-400/60" },
               ].map((s) => (
-                <div key={s.label} className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4 text-center">
+                <button
+                  key={s.label}
+                  type="button"
+                  onClick={() => onUnitStatusSelect?.(s.status)}
+                  className={`rounded-xl border bg-[var(--surface-glass)] p-4 text-center transition-all hover:-translate-y-0.5 hover:bg-[var(--surface-glass-hover)] hover:shadow-md ${
+                    activeUnitStatus === s.status ? s.activeBorder : "border-[var(--border)]"
+                  }`}
+                  aria-pressed={activeUnitStatus === s.status}
+                >
                   <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
                   <p className="text-[11px] uppercase tracking-wider text-[var(--text-muted)] mt-1">{s.label}</p>
-                </div>
+                </button>
               ))}
             </div>
           </div>

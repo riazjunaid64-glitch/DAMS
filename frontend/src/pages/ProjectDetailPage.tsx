@@ -54,6 +54,7 @@ export default function ProjectDetailPage({ user }: Props) {
   const [mediaLoading, setMediaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
+  const [unitStatusFilter, setUnitStatusFilter] = useState("");
 
   useEffect(() => {
     if (!projectId || Number.isNaN(projectId)) { setError("Invalid project ID."); return; }
@@ -188,10 +189,27 @@ export default function ProjectDetailPage({ user }: Props) {
       {!loading && !error && project && (
         <TabLayout tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab}>
           {activeTab === "overview" && (
-            <ProjectOverviewTab project={project} totalUnits={units.length} unitStats={unitStats} coverImage={coverImage} />
+            <ProjectOverviewTab
+              project={project}
+              totalUnits={units.length}
+              unitStats={unitStats}
+              coverImage={coverImage}
+              activeUnitStatus={unitStatusFilter}
+              onUnitStatusSelect={(status) => {
+                setUnitStatusFilter(status);
+                setActiveTab("units");
+              }}
+            />
           )}
           {activeTab === "units" && (
-            <ProjectUnitsTab units={units} projectId={projectId} user={user} onUnitsChange={setUnits} />
+            <ProjectUnitsTab
+              units={units}
+              projectId={projectId}
+              user={user}
+              onUnitsChange={setUnits}
+              statusFilter={unitStatusFilter}
+              onStatusFilterChange={setUnitStatusFilter}
+            />
           )}
           {activeTab === "media" && (
             <ProjectMediaTab projectId={projectId} media={media} onMediaChange={setMedia} user={user} loading={mediaLoading} />
