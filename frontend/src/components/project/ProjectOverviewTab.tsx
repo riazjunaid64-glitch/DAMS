@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { resolveMediaUrl } from "../../api/api.ts";
 
 interface Project {
@@ -21,93 +22,266 @@ interface Props {
 
 const statusLabels: Record<number, string> = { 1: "Planning", 2: "Ongoing", 3: "Completed", 4: "Cancelled", 5: "Archived" };
 
+const dummyGalleryImages = [
+  "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600573472592-401b489a3cdc?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600047509807-ba8f99d2cdde?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600607688969-a5bfcd646154?auto=format&fit=crop&w=1800&q=85",
+  "https://images.unsplash.com/photo-1600566752355-35792bedcfea?auto=format&fit=crop&w=1800&q=85",
+];
+
 const formatDate = (date?: string | null) => {
-  if (!date) return "—";
+  if (!date) return "--";
   const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return "—";
+  if (Number.isNaN(parsed.getTime())) return "--";
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
 const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
 
-export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage, activeUnitStatus = "", onUnitStatusSelect }: Props) {
-  const statusNum = getStatusNum(project.status);
+const getPercent = (value: number, total: number) => {
+  if (!total) return "0% of total";
+  return `${((value / total) * 100).toFixed(1).replace(".0", "")}% of total`;
+};
 
-  const infoItems = [
-    { label: "Location", value: project.location, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg> },
-    { label: "Start Date", value: formatDate(project.startingDate), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
-    { label: "Expected End", value: formatDate(project.expectedCompletionDate), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
-    { label: "Status", value: statusLabels[statusNum] ?? "Unknown", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> },
-    { label: "Total Units", value: `${totalUnits}`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg> },
-    { label: "Available", value: `${unitStats.available}`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg> },
-    { label: "Sold", value: `${unitStats.sold}`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 100 4h4a2 2 0 110 4H8"/><path d="M12 18V6"/></svg> },
-    { label: "Reserved", value: `${unitStats.reserved}`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> },
+const iconClass = "h-5 w-5";
+
+const icons = {
+  camera: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+      <circle cx="12" cy="13" r="3" />
+    </svg>
+  ),
+  location: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0Z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  ),
+  calendar: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  ),
+  clipboard: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+      <path d="m9 14 2 2 4-4" />
+    </svg>
+  ),
+  flag: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 22V4" />
+      <path d="M4 5c4-2 8 2 12 0v10c-4 2-8-2-12 0" />
+    </svg>
+  ),
+  building: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 22V3h12v19" />
+      <path d="M16 8h4v14" />
+      <path d="M8 7h4M8 11h4M8 15h4M8 19h4" />
+    </svg>
+  ),
+  available: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16v16H4z" />
+      <path d="m8 12 2.5 2.5L16 9" />
+    </svg>
+  ),
+  reserved: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 3h12v18l-6-3-6 3V3Z" />
+      <path d="M9 9h6" />
+    </svg>
+  ),
+  sold: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15 9h-4a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4H9" />
+      <path d="M12 7v10" />
+    </svg>
+  ),
+  check: (
+    <svg className={iconClass} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  ),
+};
+
+export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage, activeUnitStatus = "", onUnitStatusSelect }: Props) {
+  const [activeImage, setActiveImage] = useState(0);
+  const statusNum = getStatusNum(project.status);
+  const statusLabel = statusLabels[statusNum] ?? "Unknown";
+
+  const galleryImages = useMemo(() => {
+    const cover = coverImage ? [resolveMediaUrl(coverImage)] : [];
+    return [...cover, ...dummyGalleryImages].slice(0, 10);
+  }, [coverImage]);
+
+  const timeline = [
+    { label: "Planning", state: statusNum === 1 ? "Current" : "Done", icon: icons.clipboard },
+    { label: "Construction", state: statusNum === 2 ? "Current" : statusNum > 2 ? "Done" : "Upcoming", icon: icons.building },
+    { label: "Handover", state: statusNum === 3 ? "Current" : statusNum > 3 ? "Done" : "Upcoming", icon: icons.flag },
+    { label: "Completed", state: statusNum === 3 ? "Done" : "Upcoming", icon: icons.check },
   ];
 
+  const details = [
+    { label: "Location", value: project.location || "--", icon: icons.location, tone: "text-[var(--accent)] bg-[var(--accent-glow)]" },
+    { label: "Start Date", value: formatDate(project.startingDate), icon: icons.calendar, tone: "text-[var(--accent-secondary)] bg-[var(--accent-glow)]" },
+    { label: "Expected End", value: formatDate(project.expectedCompletionDate), icon: icons.clipboard, tone: "text-[var(--text-secondary)] bg-[var(--surface-glass-active)]" },
+    { label: "Status", value: statusLabel, icon: icons.flag, tone: "text-[var(--accent-secondary)] bg-[var(--accent-glow)]" },
+  ];
+
+  const stats = [
+    { label: "Total Units", value: totalUnits, subtext: "", icon: icons.building, tone: "text-[var(--accent)] bg-[var(--accent-glow)]" },
+    { label: "Available", value: unitStats.available, subtext: getPercent(unitStats.available, totalUnits), status: "available", icon: icons.available, tone: "text-[var(--accent-emerald)] bg-[var(--accent-emerald-glow)]" },
+    { label: "Reserved", value: unitStats.reserved, subtext: getPercent(unitStats.reserved, totalUnits), status: "reserved", icon: icons.reserved, tone: "text-[var(--accent-warm)] bg-[var(--accent-warm-glow)]" },
+    { label: "Sold", value: unitStats.sold, subtext: getPercent(unitStats.sold, totalUnits), status: "sold", icon: icons.sold, tone: "text-[var(--accent-rose)] bg-[var(--accent-rose-glow)]" },
+  ];
+
+  const showImage = (direction: number) => {
+    setActiveImage((current) => (current + direction + galleryImages.length) % galleryImages.length);
+  };
+
   return (
-    <div className="py-8 sm:py-10">
-      <div className="mx-auto w-full max-w-7xl px-5 sm:px-8 lg:px-10">
-        {/* Cover Image + Description */}
-        <div className="grid gap-6 lg:grid-cols-5 mb-10">
-          {/* Cover */}
-          <div className="lg:col-span-2">
-            <div className="aspect-[4/3] rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] overflow-hidden">
-              {coverImage ? (
-                <img src={resolveMediaUrl(coverImage)} alt={project.projectName} className="h-full w-full object-cover" />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--text-muted)]" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+    <div className="py-6 sm:py-7">
+      <div className="w-full px-4 sm:px-5 lg:px-6">
+        <section className="relative overflow-hidden rounded-[8px] border border-[var(--border)] bg-[var(--bg-card)] shadow-[var(--shadow-md)]">
+          <div className="aspect-[16/9] min-h-[260px] sm:min-h-[420px] lg:min-h-[500px]">
+            <img src={galleryImages[activeImage]} alt={`${project.projectName} gallery ${activeImage + 1}`} className="h-full w-full object-cover" />
+          </div>
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-transparent" />
+
+          <button
+            type="button"
+            onClick={() => showImage(-1)}
+            className="focus-ring absolute left-4 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-slate-950 shadow-lg transition hover:bg-white"
+            aria-label="Previous image"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={() => showImage(1)}
+            className="focus-ring absolute right-4 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-slate-950 shadow-lg transition hover:bg-white"
+            aria-label="Next image"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
+
+          <div className="absolute bottom-5 left-5 flex items-center gap-2 rounded-[8px] bg-white/80 px-3 py-2 text-xs font-bold text-slate-950 backdrop-blur">
+            {icons.camera}
+            <span>{activeImage + 1} / {galleryImages.length}</span>
+          </div>
+
+          <div className="absolute bottom-6 left-1/2 flex max-w-[55%] -translate-x-1/2 items-center justify-center gap-2">
+            {galleryImages.map((_, index) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => setActiveImage(index)}
+                className={`h-2.5 rounded-full transition-all ${index === activeImage ? "w-7 bg-[var(--accent)]" : "w-2.5 bg-white/80 hover:bg-white"}`}
+                aria-label={`Show image ${index + 1}`}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
+          <h2 className="mb-4 text-2xl font-bold text-[var(--text-heading)]">About This Project</h2>
+          <p className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)] sm:text-base">
+            {project.description || `${project.projectName} is a premium development featuring modern units, thoughtfully planned spaces, and amenities designed for a comfortable lifestyle.`}
+          </p>
+
+          <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm font-semibold text-[var(--text-secondary)]">
+            <span className="inline-flex items-center gap-2">{icons.location}{project.location || "--"}</span>
+            <span className="h-5 w-px bg-[var(--border)]" />
+            <span className="inline-flex items-center gap-2">{icons.calendar}{formatDate(project.startingDate)}</span>
+            <span className="h-5 w-px bg-[var(--border)]" />
+            <span className="rounded-full px-3 py-1 text-xs font-semibold status-planning">{statusLabel}</span>
+          </div>
+        </section>
+
+        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
+          <h2 className="mb-7 text-xl font-bold text-[var(--text-heading)]">Project Timeline</h2>
+          <div className="relative grid gap-7 sm:grid-cols-4">
+            <div className="absolute left-10 right-10 top-6 hidden h-px bg-[var(--border)] sm:block" />
+            <div className="absolute left-10 top-6 hidden h-px bg-[var(--accent)] sm:block" style={{ width: `${Math.max(0, Math.min(statusNum - 1, 3)) * 30}%` }} />
+            <div className="absolute bottom-6 left-6 top-6 w-px bg-[var(--border)] sm:hidden" />
+            <div className="absolute left-6 top-6 w-px bg-[var(--accent)] sm:hidden" style={{ height: `${Math.max(0, Math.min(statusNum - 1, 3)) * 32}%` }} />
+            {timeline.map((item) => {
+              const isCurrent = item.state === "Current";
+              const isDone = item.state === "Done";
+              return (
+                <div key={item.label} className="relative z-10 flex items-center gap-4 sm:flex-col sm:items-center sm:gap-3">
+                  <div className={`grid h-12 w-12 place-items-center rounded-full border ${isCurrent ? "border-[var(--accent)] bg-[var(--accent)] text-white shadow-[var(--btn-primary-shadow)]" : isDone ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}>
+                    {item.icon}
+                  </div>
+                  <div className="sm:text-center">
+                    <p className="text-sm font-bold text-[var(--text-heading)]">{item.label}</p>
+                    <p className={`mt-1 text-xs font-semibold ${isCurrent ? "text-[var(--accent)]" : "text-[var(--text-secondary)]"}`}>{item.state}</p>
+                  </div>
                 </div>
-              )}
-            </div>
+              );
+            })}
           </div>
+        </section>
 
-          {/* Description */}
-          <div className="lg:col-span-3 space-y-5">
-            <div>
-              <h2 className="section-title">About This Project</h2>
-              <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
-                {project.description || "No description provided for this project yet."}
-              </p>
-            </div>
+        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
+          <h2 className="mb-6 text-xl font-bold text-[var(--text-heading)]">Project Details</h2>
 
-            {/* Quick Stats Row */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Available", status: "available", value: unitStats.available, color: "text-emerald-400", activeBorder: "border-emerald-400/60" },
-                { label: "Sold", status: "sold", value: unitStats.sold, color: "text-rose-400", activeBorder: "border-rose-400/60" },
-                { label: "Reserved", status: "reserved", value: unitStats.reserved, color: "text-amber-400", activeBorder: "border-amber-400/60" },
-              ].map((s) => (
-                <button
-                  key={s.label}
-                  type="button"
-                  onClick={() => onUnitStatusSelect?.(s.status)}
-                  className={`rounded-xl border bg-[var(--surface-glass)] p-4 text-center transition-all hover:-translate-y-0.5 hover:bg-[var(--surface-glass-hover)] hover:shadow-md ${
-                    activeUnitStatus === s.status ? s.activeBorder : "border-[var(--border)]"
-                  }`}
-                  aria-pressed={activeUnitStatus === s.status}
-                >
-                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
-                  <p className="text-[11px] uppercase tracking-wider text-[var(--text-muted)] mt-1">{s.label}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Info Grid */}
-        <h2 className="section-title">Project Details</h2>
-        <div className="info-grid">
-          {infoItems.map((item) => (
-            <div key={item.label} className="info-card">
-              <div className="info-card__label">
-                {item.icon}
-                <span>{item.label}</span>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {details.map((item) => (
+              <div key={item.label} className="rounded-[8px] border border-[var(--border)] bg-[var(--bg-card)] p-4">
+                <div className="flex items-center gap-4">
+                  <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-[8px] ${item.tone}`}>{item.icon}</div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[var(--text-secondary)]">{item.label}</p>
+                    <p className="mt-1 truncate text-sm font-bold text-[var(--text-heading)]">{item.value}</p>
+                  </div>
+                </div>
               </div>
-              <div className="info-card__value">{item.value}</div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+
+          <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {stats.map((item) => {
+              const card = (
+                <div className={`h-full rounded-[8px] border bg-[var(--bg-card)] p-5 text-left transition ${activeUnitStatus === item.status ? "border-[var(--accent)] shadow-[var(--shadow-glow)]" : "border-[var(--border)]"} ${item.status ? "hover:-translate-y-0.5 hover:border-[var(--border-hover)] hover:shadow-[var(--shadow-sm)]" : ""}`}>
+                  <div className="flex items-center gap-5">
+                    <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-[8px] ${item.tone}`}>{item.icon}</div>
+                    <div>
+                      <p className="text-3xl font-bold text-[var(--text-heading)]">{item.value}</p>
+                      <p className="mt-1 text-sm font-semibold text-[var(--text-secondary)]">{item.label}</p>
+                      {item.subtext && <p className="mt-3 text-sm font-semibold text-[var(--text-secondary)]">{item.subtext}</p>}
+                    </div>
+                  </div>
+                </div>
+              );
+
+              if (!item.status) return <div key={item.label}>{card}</div>;
+
+              return (
+                <button key={item.label} type="button" onClick={() => onUnitStatusSelect?.(item.status!)} className="focus-ring text-left" aria-pressed={activeUnitStatus === item.status}>
+                  {card}
+                </button>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );
