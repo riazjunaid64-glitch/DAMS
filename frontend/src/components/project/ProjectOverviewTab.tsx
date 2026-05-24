@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { resolveMediaUrl } from "../../api/api.ts";
 
 interface Project {
@@ -119,6 +119,8 @@ const icons = {
 
 export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage, activeUnitStatus = "", onUnitStatusSelect }: Props) {
   const [activeImage, setActiveImage] = useState(0);
+  const touchStartX = useRef<number | null>(null);
+  const heroRef = useRef<HTMLElement | null>(null);
   const statusNum = getStatusNum(project.status);
   const statusLabel = statusLabels[statusNum] ?? "Unknown";
 
@@ -153,18 +155,36 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
   };
 
   return (
-    <div className="py-6 sm:py-7">
-      <div className="w-full px-4 sm:px-5 lg:px-6">
-        <section className="relative overflow-hidden rounded-[8px] border border-[var(--border)] bg-[var(--bg-card)] shadow-[var(--shadow-md)]">
-          <div className="aspect-[16/9] min-h-[260px] sm:min-h-[420px] lg:min-h-[500px]">
-            <img src={galleryImages[activeImage]} alt={`${project.projectName} gallery ${activeImage + 1}`} className="h-full w-full object-cover" />
+    <div className="py-4 sm:py-5">
+      <div className="w-full space-y-5 px-4 sm:px-5 lg:px-6">
+        <section
+          ref={heroRef}
+          className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-[0_18px_70px_rgba(0,0,0,0.14)] animate-fade-in-up"
+          onTouchStart={(event) => {
+            touchStartX.current = event.touches[0]?.clientX ?? null;
+          }}
+          onTouchEnd={(event) => {
+            if (touchStartX.current === null) return;
+            const endX = event.changedTouches[0]?.clientX ?? touchStartX.current;
+            const delta = touchStartX.current - endX;
+            if (Math.abs(delta) > 45) showImage(delta > 0 ? 1 : -1);
+            touchStartX.current = null;
+          }}
+        >
+          <div className="aspect-[16/10] min-h-[210px] sm:aspect-[16/7] sm:min-h-[300px] lg:aspect-[16/5.4] lg:min-h-[340px] lg:max-h-[430px]">
+            <img
+              key={galleryImages[activeImage]}
+              src={galleryImages[activeImage]}
+              alt={`${project.projectName} gallery ${activeImage + 1}`}
+              className="h-full w-full object-cover animate-fade-in"
+            />
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-transparent" />
 
           <button
             type="button"
             onClick={() => showImage(-1)}
-            className="focus-ring absolute left-4 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-slate-950 shadow-lg transition hover:bg-white"
+            className="focus-ring absolute left-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:-translate-x-0.5 hover:bg-white sm:left-5 sm:h-11 sm:w-11"
             aria-label="Previous image"
           >
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -174,7 +194,7 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
           <button
             type="button"
             onClick={() => showImage(1)}
-            className="focus-ring absolute right-4 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-white/90 text-slate-950 shadow-lg transition hover:bg-white"
+            className="focus-ring absolute right-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:translate-x-0.5 hover:bg-white sm:right-5 sm:h-11 sm:w-11"
             aria-label="Next image"
           >
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -182,42 +202,62 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
             </svg>
           </button>
 
-          <div className="absolute bottom-5 left-5 flex items-center gap-2 rounded-[8px] bg-white/80 px-3 py-2 text-xs font-bold text-slate-950 backdrop-blur">
+          <button
+            type="button"
+            onClick={() => heroRef.current?.requestFullscreen?.()}
+            className="focus-ring absolute right-4 top-4 hidden h-10 w-10 place-items-center rounded-full border border-white/20 bg-black/25 text-white shadow-lg backdrop-blur-xl transition hover:-translate-y-0.5 hover:bg-black/35 sm:grid"
+            aria-label="Open fullscreen view"
+          >
+            <svg className="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+            </svg>
+          </button>
+
+          <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl border border-white/20 bg-black/35 px-3 py-2 text-xs font-bold text-white shadow-lg backdrop-blur-xl sm:bottom-5 sm:left-5">
             {icons.camera}
             <span>{activeImage + 1} / {galleryImages.length}</span>
           </div>
 
-          <div className="absolute bottom-6 left-1/2 flex max-w-[55%] -translate-x-1/2 items-center justify-center gap-2">
+          <div className="absolute bottom-5 left-1/2 flex max-w-[48%] -translate-x-1/2 items-center justify-center gap-1.5 rounded-full bg-black/20 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
             {galleryImages.map((_, index) => (
               <button
                 key={index}
                 type="button"
                 onClick={() => setActiveImage(index)}
-                className={`h-2.5 rounded-full transition-all ${index === activeImage ? "w-7 bg-[var(--accent)]" : "w-2.5 bg-white/80 hover:bg-white"}`}
+                className={`h-2 rounded-full transition-all ${index === activeImage ? "w-6 bg-[var(--accent)]" : "w-2 bg-white/75 hover:bg-white"}`}
                 aria-label={`Show image ${index + 1}`}
               />
             ))}
           </div>
         </section>
 
-        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
-          <h2 className="mb-4 text-2xl font-bold text-[var(--text-heading)]">About This Project</h2>
-          <p className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)] sm:text-base">
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--glass-bg)] p-5 shadow-[var(--shadow-sm)] animate-fade-in-up-delay-1 sm:p-7 lg:p-8">
+          <div className="max-w-5xl">
+            <p className="mb-2 text-xs font-bold uppercase text-[var(--accent)]">Overview</p>
+            <h2 className="mb-4 text-2xl font-bold text-[var(--text-heading)]">About This Project</h2>
+          </div>
+          <p className="max-w-4xl text-sm leading-7 text-[var(--text-secondary)] sm:text-base sm:leading-8">
             {project.description || `${project.projectName} is a premium development featuring modern units, thoughtfully planned spaces, and amenities designed for a comfortable lifestyle.`}
           </p>
 
-          <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm font-semibold text-[var(--text-secondary)]">
+          <div className="mt-7 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm font-semibold text-[var(--text-secondary)]">
             <span className="inline-flex items-center gap-2">{icons.location}{project.location || "--"}</span>
-            <span className="h-5 w-px bg-[var(--border)]" />
+            <span className="hidden h-5 w-px bg-[var(--border)] sm:block" />
             <span className="inline-flex items-center gap-2">{icons.calendar}{formatDate(project.startingDate)}</span>
-            <span className="h-5 w-px bg-[var(--border)]" />
-            <span className="rounded-full px-3 py-1 text-xs font-semibold status-planning">{statusLabel}</span>
+            <span className="hidden h-5 w-px bg-[var(--border)] sm:block" />
+            <span className="rounded-full border border-[var(--border-active)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-bold text-[var(--accent)]">{statusLabel}</span>
           </div>
         </section>
 
-        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
-          <h2 className="mb-7 text-xl font-bold text-[var(--text-heading)]">Project Timeline</h2>
-          <div className="relative grid gap-7 sm:grid-cols-4">
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--glass-bg)] p-5 shadow-[var(--shadow-sm)] animate-fade-in-up-delay-2 sm:p-7 lg:p-8">
+          <div className="mb-8 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="mb-2 text-xs font-bold uppercase text-[var(--accent)]">Delivery</p>
+              <h2 className="text-xl font-bold text-[var(--text-heading)]">Project Timeline</h2>
+            </div>
+            <p className="text-sm font-semibold text-[var(--text-secondary)]">Current stage: <span className="text-[var(--accent)]">{statusLabel}</span></p>
+          </div>
+          <div className="relative grid gap-7 sm:grid-cols-4 sm:px-4">
             <div className="absolute left-10 right-10 top-6 hidden h-px bg-[var(--border)] sm:block" />
             <div className="absolute left-10 top-6 hidden h-px bg-[var(--accent)] sm:block" style={{ width: `${Math.max(0, Math.min(statusNum - 1, 3)) * 30}%` }} />
             <div className="absolute bottom-6 left-6 top-6 w-px bg-[var(--border)] sm:hidden" />
@@ -227,7 +267,7 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
               const isDone = item.state === "Done";
               return (
                 <div key={item.label} className="relative z-10 flex items-center gap-4 sm:flex-col sm:items-center sm:gap-3">
-                  <div className={`grid h-12 w-12 place-items-center rounded-full border ${isCurrent ? "border-[var(--accent)] bg-[var(--accent)] text-white shadow-[var(--btn-primary-shadow)]" : isDone ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}>
+                  <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-full border transition-all duration-300 ${isCurrent ? "border-[var(--accent)] bg-[var(--accent)] text-white shadow-[var(--btn-primary-shadow)]" : isDone ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}>
                     {item.icon}
                   </div>
                   <div className="sm:text-center">
@@ -240,14 +280,17 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
           </div>
         </section>
 
-        <section className="mt-7 rounded-[8px] border border-[var(--border)] bg-[var(--glass-bg)] p-6 shadow-[var(--shadow-sm)] sm:p-8">
-          <h2 className="mb-6 text-xl font-bold text-[var(--text-heading)]">Project Details</h2>
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--glass-bg)] p-5 shadow-[var(--shadow-sm)] animate-fade-in-up-delay-3 sm:p-7 lg:p-8">
+          <div className="mb-6">
+            <p className="mb-2 text-xs font-bold uppercase text-[var(--accent)]">Operations</p>
+            <h2 className="text-xl font-bold text-[var(--text-heading)]">Project Details</h2>
+          </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {details.map((item) => (
-              <div key={item.label} className="rounded-[8px] border border-[var(--border)] bg-[var(--bg-card)] p-4">
+              <div key={item.label} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-[var(--shadow-sm)] transition hover:-translate-y-0.5 hover:border-[var(--border-hover)] hover:shadow-[var(--shadow-md)]">
                 <div className="flex items-center gap-4">
-                  <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-[8px] ${item.tone}`}>{item.icon}</div>
+                  <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${item.tone}`}>{item.icon}</div>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-[var(--text-secondary)]">{item.label}</p>
                     <p className="mt-1 truncate text-sm font-bold text-[var(--text-heading)]">{item.value}</p>
@@ -257,12 +300,12 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
             ))}
           </div>
 
-          <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {stats.map((item) => {
               const card = (
-                <div className={`h-full rounded-[8px] border bg-[var(--bg-card)] p-5 text-left transition ${activeUnitStatus === item.status ? "border-[var(--accent)] shadow-[var(--shadow-glow)]" : "border-[var(--border)]"} ${item.status ? "hover:-translate-y-0.5 hover:border-[var(--border-hover)] hover:shadow-[var(--shadow-sm)]" : ""}`}>
+                <div className={`h-full rounded-xl border bg-[var(--bg-card)] p-5 text-left shadow-[var(--shadow-sm)] transition ${activeUnitStatus === item.status ? "border-[var(--accent)] shadow-[var(--shadow-glow)]" : "border-[var(--border)]"} ${item.status ? "hover:-translate-y-0.5 hover:border-[var(--border-hover)] hover:shadow-[var(--shadow-md)]" : ""}`}>
                   <div className="flex items-center gap-5">
-                    <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-[8px] ${item.tone}`}>{item.icon}</div>
+                    <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl ${item.tone}`}>{item.icon}</div>
                     <div>
                       <p className="text-3xl font-bold text-[var(--text-heading)]">{item.value}</p>
                       <p className="mt-1 text-sm font-semibold text-[var(--text-secondary)]">{item.label}</p>

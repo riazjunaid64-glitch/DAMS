@@ -37,7 +37,6 @@ interface Unit {
 type Props = { user: User | null };
 
 const statusLabels: Record<number, string> = { 1: "Planning", 2: "Ongoing", 3: "Completed", 4: "Cancelled", 5: "Archived" };
-const statusStyles: Record<number, string> = { 1: "status-planning", 2: "status-ongoing", 3: "status-completed", 4: "status-cancelled", 5: "status-archived" };
 const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
 
 const LOADING_PLACEHOLDER_CARDS = 6;
@@ -126,34 +125,37 @@ export default function ProjectDetailPage({ user }: Props) {
 
   return (
     <>
-      {/* Workspace Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
-          {/* Breadcrumb */}
-          <div className="mb-4 flex items-center gap-2 text-sm text-[var(--text-muted)]">
-            <button onClick={() => navigate("/projects")} className="hover:text-[var(--text-primary)] transition-colors">Projects</button>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-            <span className="text-[var(--text-secondary)]">{project?.projectName ?? "Loading..."}</span>
+      <div className="relative overflow-hidden border-b border-[var(--border)] bg-[var(--bg-primary)]">
+        <div className="absolute inset-0 mesh-gradient-subtle opacity-80" />
+        <div className="relative w-full px-4 py-6 sm:px-5 sm:py-8 lg:px-6">
+          <div className="mb-4 flex items-center gap-2 text-xs font-semibold text-[var(--text-muted)] sm:text-sm">
+            <button onClick={() => navigate("/projects")} className="transition-colors hover:text-[var(--accent)]">Projects</button>
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+            <span className="min-w-0 truncate text-[var(--text-secondary)]">{project?.projectName ?? "Loading..."}</span>
           </div>
 
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
-                {project ? project.projectName : "Loading..."}
-              </h1>
-              {project && (
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[statusNum] ?? "status-archived"}`}>
-                  {statusLabels[statusNum] ?? "Unknown"}
-                </span>
-              )}
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="max-w-5xl text-3xl font-bold leading-tight text-[var(--text-heading)] sm:text-4xl lg:text-5xl">
+                  {project ? project.projectName : "Loading..."}
+                </h1>
+                {project && (
+                  <span className="rounded-full border border-[var(--border-active)] bg-[var(--accent-glow)] px-3.5 py-1.5 text-xs font-bold text-[var(--accent)] shadow-[0_8px_28px_rgba(99,102,241,0.14)]">
+                    {statusLabels[statusNum] ?? "Unknown"}
+                  </span>
+                )}
+              </div>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">
+                A focused project workspace for media, units, availability, and delivery progress.
+              </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => navigate(-1)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+            <Button variant="outline" size="sm" onClick={() => navigate(-1)} className="w-fit rounded-full px-4 shadow-[var(--shadow-sm)] hover:-translate-y-0.5">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
               Back
             </Button>
           </div>
-        </Container>
+        </div>
       </div>
 
       {/* Loading */}
