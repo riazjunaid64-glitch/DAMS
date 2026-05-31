@@ -246,6 +246,7 @@ namespace DAMS.Application.Services
                 PaymentMethod = dto.PaymentMethod,
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
+                ReceiptNumber = await GenerateReceiptNumberAsync(),
                 RecordedByUserId = adminUserId,
                 PaidAt = dto.PaidAt ?? DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow
@@ -291,6 +292,7 @@ namespace DAMS.Application.Services
                     Amount = p.Amount,
                     PaymentMethod = p.PaymentMethod,
                     PaymentReference = p.PaymentReference,
+                    ReceiptNumber = p.ReceiptNumber,
                     Notes = p.Notes,
                     PaidAt = p.PaidAt
                 })
@@ -378,11 +380,33 @@ namespace DAMS.Application.Services
                             Amount = p.Amount,
                             PaymentMethod = p.PaymentMethod,
                             PaymentReference = p.PaymentReference,
+                            ReceiptNumber = p.ReceiptNumber,
                             Notes = p.Notes,
                             PaidAt = p.PaidAt
                         })
                         .ToList()
             };
+        }
+
+        // Globally unique sequential receipt number, e.g. RCP-000001.
+        private async Task<string> GenerateReceiptNumberAsync()
+        {
+            var existing = await _context.Payments
+                .Where(p => p.ReceiptNumber != null)
+                .Select(p => p.ReceiptNumber!)
+                .ToListAsync();
+
+            var max = 0;
+            foreach (var r in existing)
+            {
+                if (r.StartsWith("RCP-", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(r.Substring(4), out var n) && n > max)
+                {
+                    max = n;
+                }
+            }
+
+            return $"RCP-{(max + 1):D6}";
         }
 
         private static string AppendNote(string? existing, string? reason, int adminUserId)

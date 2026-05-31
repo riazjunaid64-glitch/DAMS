@@ -19,6 +19,9 @@ namespace DAMS.Domain.Entities
 
         public string? PaymentReference { get; set; }
 
+        // Unique human-readable receipt number assigned at creation (e.g. RCP-000001).
+        public string? ReceiptNumber { get; set; }
+
         // Optional free-text note recorded by the admin against this payment.
         public string? Notes { get; set; }
 

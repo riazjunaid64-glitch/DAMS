@@ -34,7 +34,22 @@ interface ScheduleItem {
   status: string;
   amountPaid: number;
   remainingBalance: number;
+  isOverdue: boolean;
+  paidAt?: string | null;
   notes?: string | null;
+}
+
+interface BookingPayment {
+  id: number;
+  bookingId: number;
+  installmentId?: number | null;
+  type: string;
+  amount: number;
+  paymentMethod: string;
+  paymentReference?: string | null;
+  receiptNumber?: string | null;
+  notes?: string | null;
+  paidAt: string;
 }
 
 interface InstallmentSchedule {
@@ -55,6 +70,8 @@ interface InstallmentSchedule {
   canGenerate: boolean;
   canRegenerate: boolean;
   scheduleTotal: number;
+  schedulePaid: number;
+  scheduleRemaining: number;
   items: ScheduleItem[];
 }
 
@@ -64,6 +81,30 @@ const FREQUENCIES = [
   { value: "HalfYearly", label: "Half-Yearly" },
   { value: "Yearly", label: "Yearly" },
 ];
+
+const PAYMENT_METHODS = [
+  { value: "Cash", label: "Cash" },
+  { value: "BankTransfer", label: "Bank Transfer" },
+  { value: "Cheque", label: "Cheque" },
+  { value: "Online", label: "Online" },
+];
+
+function statusBadgeClass(status: string) {
+  switch (status) {
+    case "Paid":
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-400";
+    case "PartiallyPaid":
+      return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+    case "Overdue":
+      return "border-rose-500/30 bg-rose-500/10 text-rose-400";
+    default:
+      return "border-[var(--border)] text-[var(--text-muted)]";
+  }
+}
+
+function prettyStatus(status: string) {
+  return status.replace(/([A-Z])/g, " $1").trim();
+}
 
 function formatMoney(n: number) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -86,10 +127,22 @@ export default function BookingDetailPage({ user }: Props) {
 
   const [booking, setBooking] = useState<BookingDetail | null>(null);
   const [schedule, setSchedule] = useState<InstallmentSchedule | null>(null);
+  const [payments, setPayments] = useState<BookingPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
+
+  const [payTarget, setPayTarget] = useState<ScheduleItem | null>(null);
+  const [paySubmitting, setPaySubmitting] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [payForm, setPayForm] = useState({
+    amount: "",
+    paymentMethod: "Cash",
+    paymentReference: "",
+    notes: "",
+    paidAt: new Date().toISOString().slice(0, 10),
+  });
 
   const [form, setForm] = useState({
     agreedSalePrice: "",
@@ -109,13 +162,18 @@ export default function BookingDetailPage({ user }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [bookRes, schedRes] = await Promise.all([
+      const [bookRes, schedRes, payRes] = await Promise.all([
         api(`/api/Booking/${bookingId}`),
         api(`/api/Booking/${bookingId}/installments`),
+        api(`/api/Booking/${bookingId}/payments`),
       ]);
       if (!bookRes.ok) throw new Error("Booking not found");
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
+
+      if (payRes.ok) {
+        setPayments(await payRes.json());
+      }
 
       if (schedRes.ok) {
         const s: InstallmentSchedule = await schedRes.json();
@@ -194,6 +252,47 @@ export default function BookingDetailPage({ user }: Props) {
       setError(err instanceof Error ? err.message : "Failed to generate schedule.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const openPayModal = (item: ScheduleItem) => {
+    setPayError(null);
+    setPayForm({
+      amount: String(item.remainingBalance),
+      paymentMethod: "Cash",
+      paymentReference: "",
+      notes: "",
+      paidAt: new Date().toISOString().slice(0, 10),
+    });
+    setPayTarget(item);
+  };
+
+  const handleRecordPayment = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!payTarget) return;
+    setPaySubmitting(true);
+    setPayError(null);
+    try {
+      const body = {
+        amount: Number(payForm.amount),
+        paymentMethod: payForm.paymentMethod,
+        paymentReference: payForm.paymentReference.trim() || null,
+        notes: payForm.notes.trim() || null,
+        paidAt: payForm.paidAt || null,
+      };
+      const res = await api(`/api/Booking/${bookingId}/installments/${payTarget.id}/payment`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      setSchedule(data);
+      setPayTarget(null);
+      await load();
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : "Failed to record payment.");
+    } finally {
+      setPaySubmitting(false);
     }
   };
 
@@ -344,19 +443,23 @@ export default function BookingDetailPage({ user }: Props) {
               <h2 className="text-lg font-semibold text-[var(--text-heading)]">Installment Schedule</h2>
               <p className="text-xs text-[var(--text-muted)]">
                 Generated {schedule.generatedAt ? formatDate(schedule.generatedAt) : "—"} · Total {formatMoney(schedule.scheduleTotal)}
+                {" · "}Paid {formatMoney(schedule.schedulePaid)} · Remaining {formatMoney(schedule.scheduleRemaining)}
               </p>
             </div>
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
               <tr>
-                {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status", "Notes"].map((h) => (
-                  <th key={h} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
+                {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status", "Notes", ""].map((h, i) => (
+                  <th key={h || `col-${i}`} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {schedule.items.map((item) => (
+              {schedule.items.map((item) => {
+                const isPayable = booking.status === "PaymentPlanActive" && item.status !== "Paid" && item.remainingBalance > 0;
+                return (
                 <tr key={item.id} className="border-b border-[var(--border)] last:border-0">
                   <td className="px-4 py-3">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
                   <td className="px-4 py-3">
@@ -369,13 +472,100 @@ export default function BookingDetailPage({ user }: Props) {
                   <td className="px-4 py-3 text-[var(--text-secondary)]">{formatMoney(item.amountPaid)}</td>
                   <td className="px-4 py-3 text-[var(--text-secondary)]">{formatMoney(item.remainingBalance)}</td>
                   <td className="px-4 py-3">
-                    <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{item.status}</span>
+                    <span className={`rounded-full border px-2 py-0.5 text-xs ${statusBadgeClass(item.status)}`}>{prettyStatus(item.status)}</span>
                   </td>
                   <td className="px-4 py-3 text-[var(--text-muted)] text-xs max-w-[160px] truncate">{item.notes ?? "—"}</td>
+                  <td className="px-4 py-3 text-right">
+                    {isPayable && (
+                      <Button size="sm" variant="outline" onClick={() => openPayModal(item)}>Record Payment</Button>
+                    )}
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+          </div>
+        </div>
+      )}
+
+      {/* Payment history */}
+      {payments.length > 0 && (
+        <div className="mt-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] overflow-hidden">
+          <div className="border-b border-[var(--border)] px-6 py-4">
+            <h2 className="text-lg font-semibold text-[var(--text-heading)]">Payment History</h2>
+            <p className="text-xs text-[var(--text-muted)]">All recorded payments for this booking with receipt numbers.</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
+                <tr>
+                  {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference"].map((h) => (
+                    <th key={h} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {payments.map((p) => {
+                  const inst = p.installmentId ? schedule?.items.find((i) => i.id === p.installmentId) : null;
+                  const forLabel = p.type === "BookingAmount"
+                    ? "Booking Amount"
+                    : inst
+                      ? (inst.type === "Possession" ? "Possession" : `Installment ${inst.sequenceNumber}`)
+                      : "Installment";
+                  return (
+                    <tr key={p.id} className="border-b border-[var(--border)] last:border-0">
+                      <td className="px-4 py-3 font-mono text-xs text-[var(--text-heading)]">{p.receiptNumber ?? "—"}</td>
+                      <td className="px-4 py-3 text-[var(--text-secondary)]">{formatDate(p.paidAt)}</td>
+                      <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{prettyStatus(p.type)}</td>
+                      <td className="px-4 py-3 text-[var(--text-secondary)]">{forLabel}</td>
+                      <td className="px-4 py-3 font-medium text-[var(--text-heading)]">{formatMoney(p.amount)}</td>
+                      <td className="px-4 py-3 text-[var(--text-secondary)]">{prettyStatus(p.paymentMethod)}</td>
+                      <td className="px-4 py-3 text-[var(--text-muted)] text-xs max-w-[160px] truncate">{p.paymentReference ?? "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Record installment payment modal */}
+      {payTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !paySubmitting && setPayTarget(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-[var(--text-heading)]">Record Installment Payment</h3>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              {payTarget.type === "Possession" ? "Possession payment" : `Installment ${payTarget.sequenceNumber}`} · Due {formatDate(payTarget.dueDate)} · Remaining {formatMoney(payTarget.remainingBalance)}
+            </p>
+
+            {payError && <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{payError}</div>}
+
+            <form onSubmit={handleRecordPayment} className="mt-4 grid gap-4">
+              <Field label="Amount" type="number" min="0.01" step="0.01" required
+                value={payForm.amount}
+                onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} />
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                <span>Payment Method</span>
+                <select value={payForm.paymentMethod} onChange={(e) => setPayForm({ ...payForm, paymentMethod: e.target.value })}
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                  {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </label>
+              <Field label="Reference (optional)" value={payForm.paymentReference}
+                onChange={(e) => setPayForm({ ...payForm, paymentReference: e.target.value })} />
+              <Field label="Payment Date" type="date" value={payForm.paidAt}
+                onChange={(e) => setPayForm({ ...payForm, paidAt: e.target.value })} />
+              <Field label="Notes (optional)" value={payForm.notes}
+                onChange={(e) => setPayForm({ ...payForm, notes: e.target.value })} />
+
+              <div className="flex gap-2">
+                <Button type="submit" disabled={paySubmitting}>{paySubmitting ? "Recording..." : "Record Payment"}</Button>
+                <Button type="button" variant="ghost" onClick={() => setPayTarget(null)} disabled={paySubmitting}>Cancel</Button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </Container>

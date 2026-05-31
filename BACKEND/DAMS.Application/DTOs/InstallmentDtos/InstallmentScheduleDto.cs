@@ -39,6 +39,10 @@ namespace DAMS.Application.DTOs.InstallmentDtos
 
         public decimal ScheduleTotal { get; set; }
 
+        public decimal SchedulePaid { get; set; }
+
+        public decimal ScheduleRemaining { get; set; }
+
         public List<InstallmentScheduleItemDto> Items { get; set; } = new();
     }
 }

@@ -137,6 +137,22 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Record a (possibly partial) payment against a single installment.
+        [HttpPost("{id:int}/installments/{installmentId:int}/payment")]
+        public async Task<IActionResult> RecordInstallmentPayment(int id, int installmentId, [FromBody] RecordInstallmentPaymentDto dto)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _installmentService.RecordInstallmentPaymentAsync(id, installmentId, dto, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPost("{id:int}/installment-plan/generate")]
         public async Task<IActionResult> GenerateInstallmentPlan(int id, [FromBody] GenerateInstallmentPlanDto dto)
         {

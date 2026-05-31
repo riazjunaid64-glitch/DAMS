@@ -7,5 +7,7 @@ namespace DAMS.Application.Interfaces
         Task<InstallmentScheduleDto> GetScheduleAsync(int bookingId);
 
         Task<InstallmentScheduleDto> GenerateScheduleAsync(int bookingId, GenerateInstallmentPlanDto dto, int adminUserId);
+
+        Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(int bookingId, int installmentId, RecordInstallmentPaymentDto dto, int adminUserId);
     }
 }

@@ -18,6 +18,8 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public string? PaymentReference { get; set; }
 
+        public string? ReceiptNumber { get; set; }
+
         public string? Notes { get; set; }
 
         public DateTime PaidAt { get; set; }

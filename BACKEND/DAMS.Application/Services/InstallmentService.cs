@@ -27,7 +27,113 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Booking not found.");
 
             var canRegenerate = await CanRegenerateAsync(bookingId);
-            return MapSchedule(booking, canRegenerate);
+            var paidByInstallment = await GetPaidByInstallmentAsync(bookingId);
+            return MapSchedule(booking, canRegenerate, paidByInstallment);
+        }
+
+        public async Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
+            int bookingId, int installmentId, RecordInstallmentPaymentDto dto, int adminUserId)
+        {
+            if (dto.Amount <= 0m)
+                throw new InvalidOperationException("Payment amount must be greater than zero.");
+
+            var booking = await _context.Bookings
+                .FirstOrDefaultAsync(b => b.Id == bookingId);
+
+            if (booking == null)
+                throw new InvalidOperationException("Booking not found.");
+
+            if (booking.Status == BookingStatus.Cancelled)
+                throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
+
+            if (booking.Status != BookingStatus.PaymentPlanActive)
+                throw new InvalidOperationException("Installment payments can only be recorded while the payment plan is active.");
+
+            var installment = await _context.Installments
+                .FirstOrDefaultAsync(i => i.Id == installmentId && i.BookingId == bookingId);
+
+            if (installment == null)
+                throw new InvalidOperationException("Installment not found for this booking.");
+
+            if (installment.Status == InstallmentStatus.Paid)
+                throw new InvalidOperationException("This installment is already fully paid.");
+
+            var alreadyPaid = await _context.Payments
+                .Where(p => p.InstallmentId == installmentId && p.Type == PaymentType.Installment)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+
+            var remaining = installment.Amount - alreadyPaid;
+            if (dto.Amount > remaining)
+                throw new InvalidOperationException(
+                    $"Payment exceeds the remaining installment balance. Remaining is {remaining:0.00}.");
+
+            var payment = new Payment
+            {
+                BookingId = booking.Id,
+                InstallmentId = installment.Id,
+                Type = PaymentType.Installment,
+                Amount = dto.Amount,
+                PaymentMethod = dto.PaymentMethod,
+                PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
+                Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
+                ReceiptNumber = await GenerateReceiptNumberAsync(),
+                RecordedByUserId = adminUserId,
+                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.Payments.Add(payment);
+
+            var newPaid = alreadyPaid + dto.Amount;
+            if (newPaid >= installment.Amount)
+            {
+                installment.Status = InstallmentStatus.Paid;
+                installment.PaidAt = payment.PaidAt;
+            }
+            else
+            {
+                installment.Status = InstallmentStatus.PartiallyPaid;
+                installment.PaidAt = null;
+            }
+
+            booking.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return await GetScheduleAsync(bookingId);
+        }
+
+        private async Task<Dictionary<int, decimal>> GetPaidByInstallmentAsync(int bookingId)
+        {
+            return await _context.Payments
+                .AsNoTracking()
+                .Where(p => p.BookingId == bookingId
+                            && p.InstallmentId != null
+                            && p.Type == PaymentType.Installment)
+                .GroupBy(p => p.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Paid = g.Sum(p => p.Amount) })
+                .ToDictionaryAsync(x => x.InstallmentId, x => x.Paid);
+        }
+
+        // Globally unique sequential receipt number, e.g. RCP-000001.
+        private async Task<string> GenerateReceiptNumberAsync()
+        {
+            var existing = await _context.Payments
+                .Where(p => p.ReceiptNumber != null)
+                .Select(p => p.ReceiptNumber!)
+                .ToListAsync();
+
+            var max = 0;
+            foreach (var r in existing)
+            {
+                if (r.StartsWith("RCP-", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(r.Substring(4), out var n) && n > max)
+                {
+                    max = n;
+                }
+            }
+
+            return $"RCP-{(max + 1):D6}";
         }
 
         public async Task<InstallmentScheduleDto> GenerateScheduleAsync(int bookingId, GenerateInstallmentPlanDto dto, int adminUserId)
@@ -97,7 +203,8 @@ namespace DAMS.Application.Services
             // Reload for mapping with ids assigned.
             await _context.Entry(booking).Collection(b => b.Installments).LoadAsync();
 
-            return MapSchedule(booking, canRegenerate: true);
+            // A freshly generated schedule has no payments yet.
+            return MapSchedule(booking, canRegenerate: true, new Dictionary<int, decimal>());
         }
 
         private static void ValidatePlanInput(GenerateInstallmentPlanDto dto)
@@ -193,7 +300,7 @@ namespace DAMS.Application.Services
             return !hasInstallmentPayments;
         }
 
-        private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate)
+        private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate, Dictionary<int, decimal> paidByInstallment)
         {
             var hasSchedule = booking.Installments.Count > 0;
             var canGenerate = booking.Status == BookingStatus.PaymentPlanActive
@@ -201,21 +308,42 @@ namespace DAMS.Application.Services
                               && (!hasSchedule || canRegenerate);
 
             var installmentPool = booking.AgreedSalePrice - booking.BookingAmountReceived - booking.PossessionAmount;
+            var today = DateTime.UtcNow.Date;
 
             var items = booking.Installments
                 .OrderBy(i => i.Type == InstallmentType.Possession ? 0 : 1)
                 .ThenBy(i => i.SequenceNumber)
-                .Select(i => new InstallmentScheduleItemDto
+                .Select(i =>
                 {
-                    Id = i.Id,
-                    SequenceNumber = i.SequenceNumber,
-                    Type = i.Type,
-                    DueDate = i.DueDate,
-                    Amount = i.Amount,
-                    Status = i.Status,
-                    AmountPaid = 0m,
-                    RemainingBalance = i.Amount,
-                    Notes = i.Notes
+                    var paid = paidByInstallment.TryGetValue(i.Id, out var p) ? p : 0m;
+                    var remaining = i.Amount - paid;
+                    var isPaid = i.Status == InstallmentStatus.Paid;
+                    var isOverdue = !isPaid && i.DueDate.Date < today;
+
+                    // Effective status is derived so partial-payment info is never lost
+                    // and overdue does not need a background job.
+                    var effectiveStatus = isPaid
+                        ? InstallmentStatus.Paid
+                        : isOverdue
+                            ? InstallmentStatus.Overdue
+                            : paid > 0m
+                                ? InstallmentStatus.PartiallyPaid
+                                : InstallmentStatus.Pending;
+
+                    return new InstallmentScheduleItemDto
+                    {
+                        Id = i.Id,
+                        SequenceNumber = i.SequenceNumber,
+                        Type = i.Type,
+                        DueDate = i.DueDate,
+                        Amount = i.Amount,
+                        Status = effectiveStatus,
+                        AmountPaid = paid,
+                        RemainingBalance = remaining,
+                        IsOverdue = isOverdue,
+                        PaidAt = i.PaidAt,
+                        Notes = i.Notes
+                    };
                 })
                 .ToList();
 
@@ -238,6 +366,8 @@ namespace DAMS.Application.Services
                 CanGenerate = canGenerate,
                 CanRegenerate = canRegenerate,
                 ScheduleTotal = items.Sum(i => i.Amount),
+                SchedulePaid = items.Sum(i => i.AmountPaid),
+                ScheduleRemaining = items.Sum(i => i.RemainingBalance),
                 Items = items
             };
         }

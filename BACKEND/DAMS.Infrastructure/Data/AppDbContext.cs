@@ -235,7 +235,11 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(p => p.PaymentMethod).HasConversion<int>();
                 entity.Property(p => p.Type).HasConversion<int>();
                 entity.Property(p => p.PaymentReference).HasMaxLength(500);
+                entity.Property(p => p.ReceiptNumber).HasMaxLength(20);
                 entity.Property(p => p.Notes).HasMaxLength(1000);
+                entity.HasIndex(p => p.ReceiptNumber)
+                      .IsUnique()
+                      .HasFilter("[ReceiptNumber] IS NOT NULL");
                 entity.HasIndex(p => p.BookingId);
                 entity.HasIndex(p => p.InstallmentId);
                 entity.HasIndex(p => new { p.BookingId, p.Type });
