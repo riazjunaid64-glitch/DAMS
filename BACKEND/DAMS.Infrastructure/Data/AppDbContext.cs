@@ -191,8 +191,10 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(b => b.BookingAmountRequired).HasColumnType("decimal(18,2)");
                 entity.Property(b => b.BookingAmountReceived).HasColumnType("decimal(18,2)");
                 entity.Property(b => b.TotalInstallmentAmount).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.PossessionAmount).HasColumnType("decimal(18,2)");
                 entity.Property(b => b.Source).HasConversion<int>();
                 entity.Property(b => b.Status).HasConversion<int>();
+                entity.Property(b => b.InstallmentFrequency).HasConversion<int>();
 
                 entity.HasIndex(b => b.BookingReference).IsUnique();
                 entity.HasIndex(b => b.CustomerId);
@@ -217,6 +219,8 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(i => i.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(i => i.Status).HasConversion<int>();
+                entity.Property(i => i.Type).HasConversion<int>();
+                entity.Property(i => i.Notes).HasMaxLength(1000);
                 entity.HasIndex(i => new { i.BookingId, i.SequenceNumber }).IsUnique();
                 entity.HasOne(i => i.Booking)
                       .WithMany(b => b.Installments)

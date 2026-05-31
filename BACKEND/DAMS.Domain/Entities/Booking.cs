@@ -46,6 +46,18 @@ namespace DAMS.Domain.Entities
 
         public DateTime? InstallmentPlanStartDate { get; set; }
 
+        public InstallmentFrequency? InstallmentFrequency { get; set; }
+
+        public int? NumberOfInstallments { get; set; }
+
+        public decimal PossessionAmount { get; set; }
+
+        public DateTime? PossessionDueDate { get; set; }
+
+        public DateTime? InstallmentPlanGeneratedAt { get; set; }
+
+        public int? InstallmentPlanGeneratedByUserId { get; set; }
+
         public DateTime? PossessionDate { get; set; }
 
         public DateTime? CompletionDate { get; set; }

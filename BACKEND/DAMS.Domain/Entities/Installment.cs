@@ -12,11 +12,15 @@ namespace DAMS.Domain.Entities
 
         public DateTime DueDate { get; set; }
 
+        public InstallmentType Type { get; set; } = InstallmentType.Regular;
+
         public decimal Amount { get; set; }
 
         public InstallmentStatus Status { get; set; } = InstallmentStatus.Pending;
 
         public DateTime? PaidAt { get; set; }
+
+        public string? Notes { get; set; }
 
         public Booking Booking { get; set; } = null!;
 

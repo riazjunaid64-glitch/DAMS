@@ -1,4 +1,5 @@
 using DAMS.Application.DTOs.BookingDtos;
+using DAMS.Application.DTOs.InstallmentDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
@@ -13,10 +14,12 @@ namespace DAMS.Api.Controllers
     public class BookingController : ControllerBase
     {
         private readonly IBookingService _bookingService;
+        private readonly IInstallmentService _installmentService;
 
-        public BookingController(IBookingService bookingService)
+        public BookingController(IBookingService bookingService, IInstallmentService installmentService)
         {
             _bookingService = bookingService;
+            _installmentService = installmentService;
         }
 
         // Admin creates a booking directly for a walk-in / phone customer.
@@ -117,6 +120,35 @@ namespace DAMS.Api.Controllers
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("{id:int}/installments")]
+        public async Task<IActionResult> GetInstallmentSchedule(int id)
+        {
+            try
+            {
+                var result = await _installmentService.GetScheduleAsync(id);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{id:int}/installment-plan/generate")]
+        public async Task<IActionResult> GenerateInstallmentPlan(int id, [FromBody] GenerateInstallmentPlanDto dto)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _installmentService.GenerateScheduleAsync(id, dto, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
         }
 
