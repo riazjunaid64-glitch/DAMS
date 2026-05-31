@@ -13,6 +13,7 @@ namespace DAMS.Infrastructure.Data
 
         public DbSet<User> Users { get; set; }
         public DbSet<Role> Roles { get; set; }
+        public DbSet<Customer> Customers { get; set; }
         public DbSet<Project> Projects { get; set; }
         public DbSet<Unit> Units { get; set; }
         public DbSet<ProjectMedia> ProjectMedias { get; set; }
@@ -154,21 +155,62 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Cascade);
             });
 
+            modelBuilder.Entity<Customer>(entity =>
+            {
+                entity.Property(c => c.FullName).IsRequired().HasMaxLength(200);
+                entity.Property(c => c.Phone).IsRequired().HasMaxLength(50);
+                entity.Property(c => c.CNIC).HasMaxLength(50);
+                entity.Property(c => c.Email).HasMaxLength(200);
+                entity.Property(c => c.Address).HasMaxLength(500);
+                entity.Property(c => c.SourceNotes).HasMaxLength(500);
+                entity.Property(c => c.Notes).HasMaxLength(1000);
+                entity.Property(c => c.Source).HasConversion<int>();
+                entity.Property(c => c.Status).HasConversion<int>();
+
+                entity.HasIndex(c => c.Phone);
+                entity.HasIndex(c => c.CNIC);
+                entity.HasIndex(c => c.Email);
+                entity.HasIndex(c => c.Status);
+
+                entity.HasOne(c => c.User)
+                      .WithMany()
+                      .HasForeignKey(c => c.UserId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
             modelBuilder.Entity<Booking>(entity =>
             {
-                entity.Property(b => b.UnitPriceAtBooking).HasColumnType("decimal(18,2)");
-                entity.Property(b => b.DownPaymentAmount).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.BookingReference).IsRequired().HasMaxLength(50);
+                entity.Property(b => b.DiscountReason).HasMaxLength(500);
+                entity.Property(b => b.CustomerNotes).HasMaxLength(1000);
+                entity.Property(b => b.InternalNotes).HasMaxLength(1000);
+
+                entity.Property(b => b.ListPrice).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.AgreedSalePrice).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.DiscountAmount).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.BookingAmountRequired).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.BookingAmountReceived).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.TotalInstallmentAmount).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.Source).HasConversion<int>();
                 entity.Property(b => b.Status).HasConversion<int>();
-                entity.HasIndex(b => b.ClientId);
+
+                entity.HasIndex(b => b.BookingReference).IsUnique();
+                entity.HasIndex(b => b.CustomerId);
                 entity.HasIndex(b => b.UnitId);
-                entity.HasOne(b => b.Client)
-                      .WithMany(u => u.Bookings)
-                      .HasForeignKey(b => b.ClientId)
+                entity.HasIndex(b => b.Status);
+
+                entity.HasOne(b => b.Customer)
+                      .WithMany(c => c.Bookings)
+                      .HasForeignKey(b => b.CustomerId)
                       .OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(b => b.Unit)
                       .WithMany(u => u.Bookings)
                       .HasForeignKey(b => b.UnitId)
                       .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(b => b.BookingRequest)
+                      .WithMany()
+                      .HasForeignKey(b => b.BookingRequestId)
+                      .OnDelete(DeleteBehavior.SetNull);
             });
 
             modelBuilder.Entity<Installment>(entity =>
@@ -270,6 +312,11 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(br => br.ReviewedBy)
                       .WithMany()
                       .HasForeignKey(br => br.ReviewedByUserId)
+                      .OnDelete(DeleteBehavior.NoAction);
+
+                entity.HasOne(br => br.Customer)
+                      .WithMany()
+                      .HasForeignKey(br => br.CustomerId)
                       .OnDelete(DeleteBehavior.NoAction);
             });
         }

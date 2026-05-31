@@ -6,25 +6,66 @@ namespace DAMS.Domain.Entities
     {
         public int Id { get; set; }
 
-        public int ClientId { get; set; }
+        // Human-readable identifier for staff and customers (e.g. BK-000123).
+        public string BookingReference { get; set; } = string.Empty;
+
+        public int CustomerId { get; set; }
 
         public int UnitId { get; set; }
 
-        public BookingStatus Status { get; set; } = BookingStatus.Pending;
+        // Set when this booking originated from an approved website booking request.
+        public int? BookingRequestId { get; set; }
 
+        public CustomerSource Source { get; set; } = CustomerSource.Other;
+
+        public int? AssignedSalesUserId { get; set; }
+
+        public BookingStatus Status { get; set; } = BookingStatus.AwaitingBookingAmount;
+
+        // --- Financial snapshot ---
+        public decimal ListPrice { get; set; }
+
+        public decimal AgreedSalePrice { get; set; }
+
+        public decimal DiscountAmount { get; set; }
+
+        public string? DiscountReason { get; set; }
+
+        public decimal BookingAmountRequired { get; set; }
+
+        public decimal BookingAmountReceived { get; set; }
+
+        public decimal TotalInstallmentAmount { get; set; }
+
+        // --- Dates ---
         public DateTime BookingDate { get; set; } = DateTime.UtcNow;
 
-        public decimal UnitPriceAtBooking { get; set; }
+        public DateTime? BookingAmountDueDate { get; set; }
 
-        public decimal DownPaymentAmount { get; set; }
+        public DateTime? BookingAmountConfirmedDate { get; set; }
+
+        public DateTime? InstallmentPlanStartDate { get; set; }
+
+        public DateTime? PossessionDate { get; set; }
+
+        public DateTime? CompletionDate { get; set; }
+
+        public string? CustomerNotes { get; set; }
+
+        public string? InternalNotes { get; set; }
+
+        public int? CreatedByUserId { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         public DateTime? UpdatedAt { get; set; }
 
-        public User Client { get; set; } = null!;
+        // Navigation
+        public Customer Customer { get; set; } = null!;
 
         public Unit Unit { get; set; } = null!;
+
+        public BookingRequest? BookingRequest { get; set; }
 
         public ICollection<Installment> Installments { get; set; } = new List<Installment>();
 

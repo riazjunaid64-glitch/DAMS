@@ -10,10 +10,17 @@ namespace DAMS.Application.Services
     public class BookingRequestService : IBookingRequestService
     {
         private readonly AppDbContext _context;
+        private readonly ICustomerService _customerService;
+        private readonly IBookingService _bookingService;
 
-        public BookingRequestService(AppDbContext context)
+        public BookingRequestService(
+            AppDbContext context,
+            ICustomerService customerService,
+            IBookingService bookingService)
         {
             _context = context;
+            _customerService = customerService;
+            _bookingService = bookingService;
         }
 
         public async Task<BookingRequestResponseDto> CreateBookingRequestAsync(CreateBookingRequestDto dto, int? userId)
@@ -177,15 +184,25 @@ namespace DAMS.Application.Services
             if (bookingRequest.Status != BookingRequestStatus.Pending)
                 throw new InvalidOperationException("Only pending booking requests can be approved.");
 
+            // Find or create the business customer from the request contact details.
+            var customerId = await _customerService.FindOrCreateCustomerAsync(
+                bookingRequest.FullName,
+                bookingRequest.Phone,
+                bookingRequest.CNIC,
+                bookingRequest.Email,
+                bookingRequest.Address,
+                CustomerSource.Website,
+                "Created from website booking request.",
+                adminUserId);
+
             bookingRequest.Status = BookingRequestStatus.Approved;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.ReviewedByUserId = adminUserId;
+            bookingRequest.CustomerId = customerId;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
 
-            bookingRequest.Unit.Status = UnitStatus.Reserved;
-            bookingRequest.Unit.UpdatedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync();
+            // Creates the Booking (Awaiting Booking Amount) and moves the unit to Reserved.
+            await _bookingService.CreateBookingForApprovedRequestAsync(bookingRequest, customerId, adminUserId);
 
             return await MapToResponseAsync(bookingRequestId);
         }

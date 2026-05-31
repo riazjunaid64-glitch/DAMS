@@ -2,8 +2,10 @@ namespace DAMS.Domain.Enums
 {
     public enum BookingStatus
     {
-        Pending = 0,
-        Confirmed = 1,
-        Cancelled = 2
+        AwaitingBookingAmount = 0,
+        PaymentPlanActive = 1,
+        PossessionGiven = 2,
+        SaleCompleted = 3,
+        Cancelled = 4
     }
 }
