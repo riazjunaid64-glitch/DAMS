@@ -204,6 +204,9 @@ namespace DAMS.Application.Services
             // Creates the Booking (Awaiting Booking Amount) and moves the unit to Reserved.
             await _bookingService.CreateBookingForApprovedRequestAsync(bookingRequest, customerId, adminUserId);
 
+            // Persist approval fields in case booking creation did not flush them.
+            await _context.SaveChangesAsync();
+
             return await MapToResponseAsync(bookingRequestId);
         }
 

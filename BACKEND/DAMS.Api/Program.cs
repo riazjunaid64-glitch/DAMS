@@ -24,7 +24,8 @@ builder.Services.AddControllers()
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection"));
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        sql => sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null));
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();
