@@ -211,6 +211,92 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id);
         }
 
+        public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId)
+        {
+            if (dto.Amount <= 0m)
+                throw new InvalidOperationException("Payment amount must be greater than zero.");
+
+            var booking = await _context.Bookings
+                .Include(b => b.Unit)
+                .FirstOrDefaultAsync(b => b.Id == bookingId);
+
+            if (booking == null)
+                throw new InvalidOperationException("Booking not found.");
+
+            if (booking.Status == BookingStatus.Cancelled)
+                throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
+
+            if (booking.Status != BookingStatus.AwaitingBookingAmount)
+                throw new InvalidOperationException("Booking amount has already been fully received for this booking.");
+
+            if (booking.BookingAmountRequired <= 0m)
+                throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
+
+            var remaining = booking.BookingAmountRequired - booking.BookingAmountReceived;
+            if (dto.Amount > remaining)
+                throw new InvalidOperationException(
+                    $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
+
+            var payment = new Payment
+            {
+                BookingId = booking.Id,
+                InstallmentId = null,
+                Type = PaymentType.BookingAmount,
+                Amount = dto.Amount,
+                PaymentMethod = dto.PaymentMethod,
+                PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
+                Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
+                RecordedByUserId = adminUserId,
+                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.Payments.Add(payment);
+
+            booking.BookingAmountReceived += dto.Amount;
+            booking.UpdatedAt = DateTime.UtcNow;
+
+            // Fully received -> activate the payment plan stage and move the unit accordingly.
+            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            {
+                booking.Status = BookingStatus.PaymentPlanActive;
+                booking.BookingAmountConfirmedDate = DateTime.UtcNow;
+                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+
+                booking.Unit.Status = UnitStatus.OnPaymentPlan;
+                booking.Unit.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+
+            return await GetResponseAsync(booking.Id);
+        }
+
+        public async Task<List<BookingPaymentDto>> GetBookingPaymentsAsync(int bookingId)
+        {
+            var exists = await _context.Bookings.AnyAsync(b => b.Id == bookingId);
+            if (!exists)
+                throw new InvalidOperationException("Booking not found.");
+
+            return await _context.Payments
+                .AsNoTracking()
+                .Where(p => p.BookingId == bookingId)
+                .OrderByDescending(p => p.PaidAt)
+                .Select(p => new BookingPaymentDto
+                {
+                    Id = p.Id,
+                    BookingId = p.BookingId,
+                    InstallmentId = p.InstallmentId,
+                    Type = p.Type,
+                    Amount = p.Amount,
+                    PaymentMethod = p.PaymentMethod,
+                    PaymentReference = p.PaymentReference,
+                    Notes = p.Notes,
+                    PaidAt = p.PaidAt
+                })
+                .ToListAsync();
+        }
+
         private async Task EnsureNoActiveBookingAsync(int unitId)
         {
             var hasActive = await _context.Bookings
@@ -240,6 +326,7 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .Include(b => b.Customer)
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
+                .Include(b => b.Payments)
                 .FirstAsync(b => b.Id == id);
 
             return MapProjection(booking);
@@ -277,7 +364,24 @@ namespace DAMS.Application.Services
                 CustomerNotes = b.CustomerNotes,
                 InternalNotes = b.InternalNotes,
                 CreatedAt = b.CreatedAt,
-                UpdatedAt = b.UpdatedAt
+                UpdatedAt = b.UpdatedAt,
+                Payments = b.Payments == null
+                    ? new List<BookingPaymentDto>()
+                    : b.Payments
+                        .OrderByDescending(p => p.PaidAt)
+                        .Select(p => new BookingPaymentDto
+                        {
+                            Id = p.Id,
+                            BookingId = p.BookingId,
+                            InstallmentId = p.InstallmentId,
+                            Type = p.Type,
+                            Amount = p.Amount,
+                            PaymentMethod = p.PaymentMethod,
+                            PaymentReference = p.PaymentReference,
+                            Notes = p.Notes,
+                            PaidAt = p.PaidAt
+                        })
+                        .ToList()
             };
         }
 

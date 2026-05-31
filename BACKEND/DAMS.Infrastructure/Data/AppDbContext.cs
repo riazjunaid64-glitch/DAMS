@@ -229,9 +229,12 @@ namespace DAMS.Infrastructure.Data
                 entity.ToTable("Payments");
                 entity.Property(p => p.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(p => p.PaymentMethod).HasConversion<int>();
+                entity.Property(p => p.Type).HasConversion<int>();
                 entity.Property(p => p.PaymentReference).HasMaxLength(500);
+                entity.Property(p => p.Notes).HasMaxLength(1000);
                 entity.HasIndex(p => p.BookingId);
                 entity.HasIndex(p => p.InstallmentId);
+                entity.HasIndex(p => new { p.BookingId, p.Type });
                 entity.HasOne(p => p.Booking)
                       .WithMany(b => b.Payments)
                       .HasForeignKey(p => p.BookingId)

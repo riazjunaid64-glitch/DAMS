@@ -19,5 +19,14 @@ namespace DAMS.Application.Interfaces
         Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter);
 
         Task<BookingResponseDto> CancelBookingAsync(int id, string? reason, int adminUserId);
+
+        /// <summary>
+        /// Records a (possibly partial) booking-amount payment. When the received total
+        /// reaches the required amount, the booking moves to PaymentPlanActive and the
+        /// unit moves to OnPaymentPlan.
+        /// </summary>
+        Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId);
+
+        Task<List<BookingPaymentDto>> GetBookingPaymentsAsync(int bookingId);
     }
 }

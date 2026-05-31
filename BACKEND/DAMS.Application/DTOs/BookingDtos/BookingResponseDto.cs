@@ -42,6 +42,10 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public decimal BookingAmountReceived { get; set; }
 
+        public decimal BookingAmountRemaining => Math.Max(0m, BookingAmountRequired - BookingAmountReceived);
+
+        public bool IsBookingAmountFullyPaid => BookingAmountRequired > 0m && BookingAmountReceived >= BookingAmountRequired;
+
         public decimal TotalInstallmentAmount { get; set; }
 
         public DateTime BookingDate { get; set; }
@@ -61,5 +65,7 @@ namespace DAMS.Application.DTOs.BookingDtos
         public DateTime CreatedAt { get; set; }
 
         public DateTime? UpdatedAt { get; set; }
+
+        public List<BookingPaymentDto> Payments { get; set; } = new();
     }
 }

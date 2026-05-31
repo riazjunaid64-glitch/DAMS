@@ -90,6 +90,36 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Record a (possibly partial) booking-amount payment.
+        [HttpPost("{id:int}/booking-amount-payment")]
+        public async Task<IActionResult> RecordBookingAmountPayment(int id, [FromBody] RecordBookingAmountPaymentDto dto)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _bookingService.RecordBookingAmountPaymentAsync(id, dto, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("{id:int}/payments")]
+        public async Task<IActionResult> GetPayments(int id)
+        {
+            try
+            {
+                var result = await _bookingService.GetBookingPaymentsAsync(id);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
         private int GetUserId()
         {
             var claim = User.FindFirstValue(ClaimTypes.NameIdentifier);
