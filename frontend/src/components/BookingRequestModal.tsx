@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import Field from "../lib/Field.tsx";
+import ModalPortal from "../lib/ModalPortal.tsx";
 
 interface Unit {
   id: number;
@@ -100,6 +101,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
 
   if (success) {
     return (
+      <ModalPortal>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
@@ -150,10 +152,12 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
           </div>
         </div>
       </div>
+      </ModalPortal>
     );
   }
 
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
@@ -315,5 +319,6 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
         </div>
       </form>
     </div>
+    </ModalPortal>
   );
 }

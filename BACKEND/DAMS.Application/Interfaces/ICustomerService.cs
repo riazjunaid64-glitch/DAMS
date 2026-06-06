@@ -25,6 +25,7 @@ namespace DAMS.Application.Interfaces
             string? address,
             CustomerSource source,
             string? sourceNotes,
-            int? createdByUserId);
+            int? createdByUserId,
+            string? fatherName = null);
     }
 }

@@ -21,6 +21,7 @@ namespace DAMS.Application.Services
             var customer = new Customer
             {
                 FullName = dto.FullName.Trim(),
+                FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim(),
                 Phone = NormalizePhone(dto.Phone),
                 CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim(),
                 Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant(),
@@ -85,6 +86,7 @@ namespace DAMS.Application.Services
                 {
                     Id = c.Id,
                     FullName = c.FullName,
+                    FatherName = c.FatherName,
                     Phone = c.Phone,
                     CNIC = c.CNIC,
                     Email = c.Email,
@@ -116,6 +118,7 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Customer not found.");
 
             customer.FullName = dto.FullName.Trim();
+            customer.FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim();
             customer.Phone = NormalizePhone(dto.Phone);
             customer.CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim();
             customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant();
@@ -139,7 +142,8 @@ namespace DAMS.Application.Services
             string? address,
             CustomerSource source,
             string? sourceNotes,
-            int? createdByUserId)
+            int? createdByUserId,
+            string? fatherName = null)
         {
             var normalizedPhone = NormalizePhone(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
@@ -162,6 +166,7 @@ namespace DAMS.Application.Services
             var customer = new Customer
             {
                 FullName = fullName.Trim(),
+                FatherName = string.IsNullOrWhiteSpace(fatherName) ? null : fatherName.Trim(),
                 Phone = normalizedPhone,
                 CNIC = normalizedCnic,
                 Email = normalizedEmail,
@@ -190,6 +195,7 @@ namespace DAMS.Application.Services
             {
                 Id = c.Id,
                 FullName = c.FullName,
+                FatherName = c.FatherName,
                 Phone = c.Phone,
                 CNIC = c.CNIC,
                 Email = c.Email,

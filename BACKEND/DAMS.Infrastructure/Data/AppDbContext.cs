@@ -25,6 +25,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
         public DbSet<EmployeeTask> EmployeeTasks { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
+        public DbSet<Expense> Expenses { get; set; }
+        public DbSet<ManualRevenue> ManualRevenues { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -158,6 +160,7 @@ namespace DAMS.Infrastructure.Data
             modelBuilder.Entity<Customer>(entity =>
             {
                 entity.Property(c => c.FullName).IsRequired().HasMaxLength(200);
+                entity.Property(c => c.FatherName).HasMaxLength(200);
                 entity.Property(c => c.Phone).IsRequired().HasMaxLength(50);
                 entity.Property(c => c.CNIC).HasMaxLength(50);
                 entity.Property(c => c.Email).HasMaxLength(200);
@@ -329,6 +332,40 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(br => br.CustomerId)
                       .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<Expense>(entity =>
+            {
+                entity.Property(e => e.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.Category).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Description).HasMaxLength(1000);
+                entity.Property(e => e.Vendor).HasMaxLength(200);
+
+                entity.HasIndex(e => e.ProjectId);
+                entity.HasIndex(e => e.Date);
+                entity.HasIndex(e => e.Category);
+
+                entity.HasOne(e => e.Project)
+                      .WithMany()
+                      .HasForeignKey(e => e.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<ManualRevenue>(entity =>
+            {
+                entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.RevenueType).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.Description).HasMaxLength(1000);
+                entity.Property(r => r.Reference).HasMaxLength(200);
+
+                entity.HasIndex(r => r.ProjectId);
+                entity.HasIndex(r => r.Date);
+                entity.HasIndex(r => r.RevenueType);
+
+                entity.HasOne(r => r.Project)
+                      .WithMany()
+                      .HasForeignKey(r => r.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
             });
         }
     }

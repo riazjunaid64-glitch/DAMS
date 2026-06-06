@@ -500,8 +500,8 @@ export default function BookingDetailPage({ user }: Props) {
             <table className="w-full text-left text-sm">
               <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
                 <tr>
-                  {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference"].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
+                  {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", ""].map((h, i) => (
+                    <th key={h || `col-${i}`} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -522,6 +522,11 @@ export default function BookingDetailPage({ user }: Props) {
                       <td className="px-4 py-3 font-medium text-[var(--text-heading)]">{formatMoney(p.amount)}</td>
                       <td className="px-4 py-3 text-[var(--text-secondary)]">{prettyStatus(p.paymentMethod)}</td>
                       <td className="px-4 py-3 text-[var(--text-muted)] text-xs max-w-[160px] truncate">{p.paymentReference ?? "—"}</td>
+                      <td className="px-4 py-3 text-right">
+                        <Button size="sm" variant="outline" onClick={() => window.open(`/receipt/${bookingId}/${p.id}`, "_blank")}>
+                          Receipt
+                        </Button>
+                      </td>
                     </tr>
                   );
                 })}

@@ -460,3 +460,30 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: -0.5rem;
   margin-bottom: 1.25rem;
 }
+
+/* ─── Payment Receipt (print / PDF) ─── */
+@media print {
+  /* Hide everything except the receipt so the browser prints / saves a clean page. */
+  body * {
+    visibility: hidden;
+  }
+  .receipt-print,
+  .receipt-print * {
+    visibility: visible;
+  }
+  .receipt-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}

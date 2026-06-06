@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { resolveMediaUrl } from "../api/api.ts";
+import ModalPortal from "../lib/ModalPortal.tsx";
 import type { ProjectMedia, UnitMedia } from "../types/media.ts";
 
 interface MediaModalProps {
@@ -81,6 +82,7 @@ export default function MediaModal({
   const isVideo = media.mediaType === "video";
 
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
@@ -286,5 +288,6 @@ export default function MediaModal({
         )}
       </div>
     </div>
+    </ModalPortal>
   );
 }

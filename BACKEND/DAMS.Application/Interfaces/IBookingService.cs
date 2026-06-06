@@ -28,5 +28,10 @@ namespace DAMS.Application.Interfaces
         Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId);
 
         Task<List<BookingPaymentDto>> GetBookingPaymentsAsync(int bookingId);
+
+        /// <summary>
+        /// Builds a render-ready receipt payload for a single payment (read-only).
+        /// </summary>
+        Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId);
     }
 }

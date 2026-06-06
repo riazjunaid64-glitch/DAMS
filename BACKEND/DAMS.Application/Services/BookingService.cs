@@ -52,7 +52,8 @@ namespace DAMS.Application.Services
                     dto.NewCustomer.Address,
                     dto.Source,
                     dto.NewCustomer.SourceNotes,
-                    adminUserId);
+                    adminUserId,
+                    dto.NewCustomer.FatherName);
             }
             else
             {
@@ -297,6 +298,70 @@ namespace DAMS.Application.Services
                     PaidAt = p.PaidAt
                 })
                 .ToListAsync();
+        }
+
+        public async Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId)
+        {
+            var payment = await _context.Payments
+                .AsNoTracking()
+                .Include(p => p.Booking).ThenInclude(b => b.Customer)
+                .Include(p => p.Booking).ThenInclude(b => b.Unit).ThenInclude(u => u.Project)
+                .Include(p => p.Installment)
+                .FirstOrDefaultAsync(p => p.Id == paymentId && p.BookingId == bookingId);
+
+            if (payment == null)
+                throw new InvalidOperationException("Payment not found for this booking.");
+
+            var booking = payment.Booking;
+            var customer = booking.Customer;
+            var unit = booking.Unit;
+            var project = unit?.Project;
+
+            string? receivedByName = null;
+            if (payment.RecordedByUserId.HasValue)
+            {
+                receivedByName = await _context.Users
+                    .AsNoTracking()
+                    .Where(u => u.UserId == payment.RecordedByUserId.Value)
+                    .Select(u => u.FullName)
+                    .FirstOrDefaultAsync();
+            }
+
+            var unitNumber = unit?.UnitNumber ?? string.Empty;
+            string? block = null;
+            var dashIndex = unitNumber.IndexOf('-');
+            if (dashIndex > 0)
+                block = unitNumber.Substring(0, dashIndex).Trim();
+
+            return new PaymentReceiptDto
+            {
+                PaymentId = payment.Id,
+                ReceiptNumber = payment.ReceiptNumber,
+                PaidAt = payment.PaidAt,
+                ReceivedByName = receivedByName,
+                BookingReference = booking.BookingReference,
+
+                CustomerName = customer?.FullName ?? string.Empty,
+                FatherName = customer?.FatherName,
+                CustomerPhone = customer?.Phone,
+                CustomerCnic = customer?.CNIC,
+                CustomerAddress = customer?.Address,
+
+                ProjectName = project?.ProjectName ?? string.Empty,
+                UnitType = unit?.UnitType ?? string.Empty,
+                UnitNumber = unitNumber,
+                Block = string.IsNullOrWhiteSpace(block) ? null : block,
+                FloorNumber = unit?.FloorNumber ?? 0,
+                UnitSize = unit?.Size ?? 0m,
+
+                Type = payment.Type,
+                PaymentMethod = payment.PaymentMethod,
+                PaymentReference = payment.PaymentReference,
+                Amount = payment.Amount,
+
+                InstallmentSequence = payment.Installment?.SequenceNumber,
+                InstallmentType = payment.Installment?.Type
+            };
         }
 
         private async Task EnsureNoActiveBookingAsync(int unitId)

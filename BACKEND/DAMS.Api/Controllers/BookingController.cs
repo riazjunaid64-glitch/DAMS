@@ -123,6 +123,21 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Render-ready data for an official payment receipt (read-only).
+        [HttpGet("{id:int}/payments/{paymentId:int}/receipt")]
+        public async Task<IActionResult> GetPaymentReceipt(int id, int paymentId)
+        {
+            try
+            {
+                var result = await _bookingService.GetPaymentReceiptAsync(id, paymentId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+        }
+
         [HttpGet("{id:int}/installments")]
         public async Task<IActionResult> GetInstallmentSchedule(int id)
         {

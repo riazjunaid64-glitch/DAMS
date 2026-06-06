@@ -9,6 +9,9 @@ namespace DAMS.Application.DTOs.CustomerDtos
         [StringLength(200, MinimumLength = 2)]
         public string FullName { get; set; } = string.Empty;
 
+        [StringLength(200)]
+        public string? FatherName { get; set; }
+
         [Required]
         [StringLength(50, MinimumLength = 7)]
         public string Phone { get; set; } = string.Empty;

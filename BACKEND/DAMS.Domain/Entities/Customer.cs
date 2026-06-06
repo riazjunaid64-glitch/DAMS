@@ -8,6 +8,9 @@ namespace DAMS.Domain.Entities
 
         public string FullName { get; set; } = string.Empty;
 
+        // Father's / husband's name (S/o, W/o) shown on official payment receipts.
+        public string? FatherName { get; set; }
+
         public string Phone { get; set; } = string.Empty;
 
         public string? CNIC { get; set; }

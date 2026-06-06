@@ -8,6 +8,8 @@ namespace DAMS.Application.DTOs.CustomerDtos
 
         public string FullName { get; set; } = string.Empty;
 
+        public string? FatherName { get; set; }
+
         public string Phone { get; set; } = string.Empty;
 
         public string? CNIC { get; set; }
