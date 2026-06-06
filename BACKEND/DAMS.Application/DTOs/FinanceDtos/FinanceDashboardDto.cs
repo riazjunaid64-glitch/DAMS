@@ -29,6 +29,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public string? Reference { get; set; }
 
+        public string? Description { get; set; }
+
         /// <summary>Set for manual revenue rows so they can be edited/deleted from the UI.</summary>
         public int? ManualRevenueId { get; set; }
     }

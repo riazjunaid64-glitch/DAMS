@@ -93,6 +93,22 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Set negotiated terms (sale price, discount, booking amount required) before taking payments.
+        [HttpPut("{id:int}/financials")]
+        public async Task<IActionResult> UpdateFinancials(int id, [FromBody] UpdateBookingFinancialsDto dto)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _bookingService.UpdateBookingFinancialsAsync(id, dto, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         // Record a (possibly partial) booking-amount payment.
         [HttpPost("{id:int}/booking-amount-payment")]
         public async Task<IActionResult> RecordBookingAmountPayment(int id, [FromBody] RecordBookingAmountPaymentDto dto)

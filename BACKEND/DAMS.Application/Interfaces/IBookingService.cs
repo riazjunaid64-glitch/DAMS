@@ -21,6 +21,13 @@ namespace DAMS.Application.Interfaces
         Task<BookingResponseDto> CancelBookingAsync(int id, string? reason, int adminUserId);
 
         /// <summary>
+        /// Sets the negotiated terms (sale price, discount, booking amount required, due date)
+        /// on a booking that is still AwaitingBookingAmount. Required before booking-amount
+        /// payments can be recorded for request-derived bookings.
+        /// </summary>
+        Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId);
+
+        /// <summary>
         /// Records a (possibly partial) booking-amount payment. When the received total
         /// reaches the required amount, the booking moves to PaymentPlanActive and the
         /// unit moves to OnPaymentPlan.

@@ -15,6 +15,7 @@ import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
 import CustomersPage from "./pages/CustomersPage.tsx";
 import CustomerDetailPage from "./pages/CustomerDetailPage.tsx";
 import ConfirmedBookingsPage from "./pages/ConfirmedBookingsPage.tsx";
+import FinanceDashboardPage from "./pages/FinanceDashboardPage.tsx";
 import BookingDetailPage from "./pages/BookingDetailPage.tsx";
 import ReceiptPage from "./pages/ReceiptPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
@@ -57,6 +58,7 @@ function App() {
             { to: "/confirmed-bookings", label: "Bookings" },
             { to: "/customers", label: "Customers" },
             { to: "/employees", label: "Employees" },
+            { to: "/finance", label: "Finance" },
           ]
         : NAV_LINKS,
     [user]
@@ -291,6 +293,7 @@ function App() {
           <Route path="/customers/:id" element={<CustomerDetailPage user={user} />} />
           <Route path="/employees" element={<EmployeesPage user={user} />} />
           <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
+          <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
         </Routes>
       </main>
 

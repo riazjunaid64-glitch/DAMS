@@ -39,7 +39,7 @@ namespace DAMS.Application.Services
                 {
                     p.PaidAt,
                     ProjectId = (int?)p.Booking.Unit.ProjectId,
-                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    ProjectName = p.Booking.Unit.Project != null ? p.Booking.Unit.Project.ProjectName : "General",
                     p.Type,
                     InstallmentType = p.Installment != null ? (InstallmentType?)p.Installment.Type : null,
                     p.Amount,
@@ -81,7 +81,8 @@ namespace DAMS.Application.Services
                     RevenueType = r.RevenueType,
                     Amount = r.Amount,
                     Source = "Manual Revenue",
-                    Reference = r.Reference
+                    Reference = r.Reference,
+                    Description = r.Description
                 })
                 .ToListAsync();
 
@@ -162,21 +163,31 @@ namespace DAMS.Application.Services
         }
 
         // Overdue = unpaid installment dues whose DueDate is in the past (active bookings only).
+        // Project into memory first to avoid EF nested-collection-Sum translation errors.
         private async Task<decimal> ComputeOverdueAsync(int? projectId)
         {
             var today = DateTime.UtcNow.Date;
 
-            var installments = _context.Installments.AsNoTracking()
+            var query = _context.Installments.AsNoTracking()
                 .Where(i => i.DueDate < today
                     && i.Status != InstallmentStatus.Paid
                     && i.Booking.Status != BookingStatus.Cancelled);
+
             if (projectId.HasValue)
-                installments = installments.Where(i => i.Booking.Unit.ProjectId == projectId.Value);
+                query = query.Where(i => i.Booking.Unit.ProjectId == projectId.Value);
 
-            var overdue = await installments
-                .SumAsync(i => (decimal?)(i.Amount - (i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))) ?? 0m;
+            // Pull installment amount + sum of its payments; EF can translate a correlated
+            // subquery in a Select projection but not inside SumAsync.
+            var rows = await query
+                .Select(i => new
+                {
+                    i.Amount,
+                    PaidAmount = (decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
+                })
+                .ToListAsync();
 
-            return overdue < 0 ? 0m : overdue;
+            var overdue = rows.Sum(r => Math.Max(0m, r.Amount - r.PaidAmount));
+            return overdue;
         }
 
         public async Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId)

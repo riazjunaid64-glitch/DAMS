@@ -212,6 +212,60 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id);
         }
 
+        public async Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId)
+        {
+            var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
+
+            if (booking == null)
+                throw new InvalidOperationException("Booking not found.");
+
+            if (booking.Status != BookingStatus.AwaitingBookingAmount)
+                throw new InvalidOperationException("Financial terms can only be edited while the booking is awaiting the booking amount.");
+
+            if (dto.AgreedSalePrice <= 0m)
+                throw new InvalidOperationException("Agreed sale price must be greater than zero.");
+
+            if (dto.BookingAmountRequired <= 0m)
+                throw new InvalidOperationException("Booking amount required must be greater than zero.");
+
+            if (dto.BookingAmountRequired > dto.AgreedSalePrice)
+                throw new InvalidOperationException("Booking amount required cannot exceed the agreed sale price.");
+
+            if (dto.DiscountAmount < 0m)
+                throw new InvalidOperationException("Discount amount cannot be negative.");
+
+            // Cannot drop the required amount below what has already been received.
+            if (dto.BookingAmountRequired < booking.BookingAmountReceived)
+                throw new InvalidOperationException(
+                    $"Booking amount required cannot be less than the amount already received ({booking.BookingAmountReceived:0.00}).");
+
+            booking.AgreedSalePrice = dto.AgreedSalePrice;
+            booking.DiscountAmount = dto.DiscountAmount;
+            booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            booking.BookingAmountRequired = dto.BookingAmountRequired;
+            booking.BookingAmountDueDate = dto.BookingAmountDueDate;
+            booking.TotalInstallmentAmount = dto.AgreedSalePrice - dto.BookingAmountRequired;
+            booking.UpdatedAt = DateTime.UtcNow;
+
+            // If terms now mean the booking amount is already covered, advance the workflow.
+            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            {
+                var unit = await _context.Units.FirstOrDefaultAsync(u => u.Id == booking.UnitId);
+                booking.Status = BookingStatus.PaymentPlanActive;
+                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
+                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                if (unit != null)
+                {
+                    unit.Status = UnitStatus.OnPaymentPlan;
+                    unit.UpdatedAt = DateTime.UtcNow;
+                }
+            }
+
+            await _context.SaveChangesAsync();
+
+            return await GetResponseAsync(booking.Id);
+        }
+
         public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId)
         {
             if (dto.Amount <= 0m)

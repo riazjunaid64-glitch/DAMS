@@ -144,6 +144,33 @@ export default function BookingDetailPage({ user }: Props) {
     paidAt: new Date().toISOString().slice(0, 10),
   });
 
+  // Booking amount: set negotiated terms + record booking-amount payments.
+  const [showFinancials, setShowFinancials] = useState(false);
+  const [finSubmitting, setFinSubmitting] = useState(false);
+  const [finError, setFinError] = useState<string | null>(null);
+  const [finForm, setFinForm] = useState({
+    agreedSalePrice: "",
+    discountAmount: "0",
+    discountReason: "",
+    bookingAmountRequired: "",
+    bookingAmountDueDate: "",
+  });
+
+  const [showBookingPay, setShowBookingPay] = useState(false);
+  const [bookingPaySubmitting, setBookingPaySubmitting] = useState(false);
+  const [bookingPayError, setBookingPayError] = useState<string | null>(null);
+  const [bookingPayForm, setBookingPayForm] = useState({
+    amount: "",
+    paymentMethod: "Cash",
+    paymentReference: "",
+    notes: "",
+    paidAt: new Date().toISOString().slice(0, 10),
+  });
+
+  const [cancelling, setCancelling] = useState(false);
+  const [showCancel, setShowCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+
   const [form, setForm] = useState({
     agreedSalePrice: "",
     discountAmount: "0",
@@ -170,6 +197,14 @@ export default function BookingDetailPage({ user }: Props) {
       if (!bookRes.ok) throw new Error("Booking not found");
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
+
+      setFinForm({
+        agreedSalePrice: String(b.agreedSalePrice || ""),
+        discountAmount: String(b.discountAmount ?? 0),
+        discountReason: "",
+        bookingAmountRequired: b.bookingAmountRequired ? String(b.bookingAmountRequired) : "",
+        bookingAmountDueDate: "",
+      });
 
       if (payRes.ok) {
         setPayments(await payRes.json());
@@ -296,6 +331,92 @@ export default function BookingDetailPage({ user }: Props) {
     }
   };
 
+  const handleSaveFinancials = async (e: FormEvent) => {
+    e.preventDefault();
+    setFinSubmitting(true);
+    setFinError(null);
+    try {
+      const body = {
+        agreedSalePrice: Number(finForm.agreedSalePrice),
+        discountAmount: Number(finForm.discountAmount) || 0,
+        discountReason: finForm.discountReason.trim() || null,
+        bookingAmountRequired: Number(finForm.bookingAmountRequired),
+        bookingAmountDueDate: finForm.bookingAmountDueDate || null,
+      };
+      const res = await api(`/api/Booking/${bookingId}/financials`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to save terms");
+      setShowFinancials(false);
+      await load();
+    } catch (err) {
+      setFinError(err instanceof Error ? err.message : "Failed to save terms.");
+    } finally {
+      setFinSubmitting(false);
+    }
+  };
+
+  const openBookingPay = () => {
+    setBookingPayError(null);
+    const remaining = booking ? booking.bookingAmountRequired - booking.bookingAmountReceived : 0;
+    setBookingPayForm({
+      amount: remaining > 0 ? String(remaining) : "",
+      paymentMethod: "Cash",
+      paymentReference: "",
+      notes: "",
+      paidAt: new Date().toISOString().slice(0, 10),
+    });
+    setShowBookingPay(true);
+  };
+
+  const handleRecordBookingPay = async (e: FormEvent) => {
+    e.preventDefault();
+    setBookingPaySubmitting(true);
+    setBookingPayError(null);
+    try {
+      const body = {
+        amount: Number(bookingPayForm.amount),
+        paymentMethod: bookingPayForm.paymentMethod,
+        paymentReference: bookingPayForm.paymentReference.trim() || null,
+        notes: bookingPayForm.notes.trim() || null,
+        paidAt: bookingPayForm.paidAt || null,
+      };
+      const res = await api(`/api/Booking/${bookingId}/booking-amount-payment`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      setShowBookingPay(false);
+      await load();
+    } catch (err) {
+      setBookingPayError(err instanceof Error ? err.message : "Failed to record payment.");
+    } finally {
+      setBookingPaySubmitting(false);
+    }
+  };
+
+  const handleCancelBooking = async () => {
+    setCancelling(true);
+    try {
+      const res = await api(`/api/Booking/${bookingId}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: cancelReason.trim() || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Failed to cancel booking");
+      setShowCancel(false);
+      setCancelReason("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel booking.");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   if (!isAdmin) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;
   }
@@ -327,9 +448,16 @@ export default function BookingDetailPage({ user }: Props) {
             {booking.customerName} · {booking.projectName} · Unit {booking.unitNumber}
           </p>
         </div>
-        <span className="inline-flex w-fit rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400">
-          {booking.status.replace(/([A-Z])/g, " $1").trim()}
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="inline-flex w-fit rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400">
+            {booking.status.replace(/([A-Z])/g, " $1").trim()}
+          </span>
+          {booking.status !== "Cancelled" && booking.status !== "PossessionGiven" && booking.status !== "SaleCompleted" && (
+            <Button variant="danger" size="sm" onClick={() => { setCancelReason(""); setShowCancel(true); }}>
+              Cancel Booking
+            </Button>
+          )}
+        </div>
       </div>
 
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
@@ -349,9 +477,68 @@ export default function BookingDetailPage({ user }: Props) {
         ))}
       </div>
 
-      {booking.status !== "PaymentPlanActive" && (
-        <div className="mb-8 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          Installment schedule can be generated once the booking amount is fully received and status is Payment Plan Active.
+      {/* Booking amount workflow (step before installment plan) */}
+      {booking.status === "AwaitingBookingAmount" && (
+        <div className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-[var(--text-heading)]">Booking Amount</h2>
+              <p className="text-sm text-[var(--text-muted)]">
+                Set the negotiated terms, then record the booking amount. Once it is fully received, the
+                installment plan unlocks.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setFinError(null); setShowFinancials((v) => !v); }}>
+                {booking.bookingAmountRequired > 0 ? "Edit Terms" : "Set Terms"}
+              </Button>
+              <Button
+                size="sm"
+                disabled={booking.bookingAmountRequired <= 0 || booking.bookingAmountRemaining <= 0}
+                onClick={openBookingPay}
+              >
+                Record Payment
+              </Button>
+            </div>
+          </div>
+
+          {booking.bookingAmountRequired <= 0 && !showFinancials && (
+            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+              No booking amount has been set yet. Click <strong>Set Terms</strong> to enter the agreed sale price and
+              the required booking amount before recording payments.
+            </div>
+          )}
+
+          {showFinancials && (
+            <form onSubmit={handleSaveFinancials} className="mt-5 grid gap-4 sm:grid-cols-2">
+              {finError && (
+                <div className="sm:col-span-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+                  {finError}
+                </div>
+              )}
+              <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
+                value={finForm.agreedSalePrice}
+                onChange={(e) => setFinForm({ ...finForm, agreedSalePrice: e.target.value })} />
+              <Field label="Booking Amount Required" type="number" min="0" step="0.01" required
+                value={finForm.bookingAmountRequired}
+                onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
+              <Field label="Discount Amount" type="number" min="0" step="0.01"
+                value={finForm.discountAmount}
+                onChange={(e) => setFinForm({ ...finForm, discountAmount: e.target.value })} />
+              <Field label="Booking Amount Due Date (optional)" type="date"
+                value={finForm.bookingAmountDueDate}
+                onChange={(e) => setFinForm({ ...finForm, bookingAmountDueDate: e.target.value })} />
+              <div className="sm:col-span-2">
+                <Field label="Discount Reason (optional)"
+                  value={finForm.discountReason}
+                  onChange={(e) => setFinForm({ ...finForm, discountReason: e.target.value })} />
+              </div>
+              <div className="sm:col-span-2 flex gap-2">
+                <Button type="submit" disabled={finSubmitting}>{finSubmitting ? "Saving..." : "Save Terms"}</Button>
+                <Button type="button" variant="ghost" onClick={() => setShowFinancials(false)} disabled={finSubmitting}>Cancel</Button>
+              </div>
+            </form>
+          )}
         </div>
       )}
 
@@ -539,7 +726,7 @@ export default function BookingDetailPage({ user }: Props) {
       {/* Record installment payment modal */}
       {payTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !paySubmitting && setPayTarget(null)}>
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-[var(--text-heading)]">Record Installment Payment</h3>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
               {payTarget.type === "Possession" ? "Possession payment" : `Installment ${payTarget.sequenceNumber}`} · Due {formatDate(payTarget.dueDate)} · Remaining {formatMoney(payTarget.remainingBalance)}
@@ -570,6 +757,67 @@ export default function BookingDetailPage({ user }: Props) {
                 <Button type="button" variant="ghost" onClick={() => setPayTarget(null)} disabled={paySubmitting}>Cancel</Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Record booking-amount payment modal */}
+      {showBookingPay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !bookingPaySubmitting && setShowBookingPay(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-[var(--text-heading)]">Record Booking Amount Payment</h3>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              Required {formatMoney(booking.bookingAmountRequired)} · Received {formatMoney(booking.bookingAmountReceived)} · Remaining {formatMoney(booking.bookingAmountRemaining)}
+            </p>
+
+            {bookingPayError && <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{bookingPayError}</div>}
+
+            <form onSubmit={handleRecordBookingPay} className="mt-4 grid gap-4">
+              <Field label="Amount" type="number" min="0.01" step="0.01" required
+                value={bookingPayForm.amount}
+                onChange={(e) => setBookingPayForm({ ...bookingPayForm, amount: e.target.value })} />
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                <span>Payment Method</span>
+                <select value={bookingPayForm.paymentMethod} onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentMethod: e.target.value })}
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                  {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </label>
+              <Field label="Reference (optional)" value={bookingPayForm.paymentReference}
+                onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentReference: e.target.value })} />
+              <Field label="Payment Date" type="date" value={bookingPayForm.paidAt}
+                onChange={(e) => setBookingPayForm({ ...bookingPayForm, paidAt: e.target.value })} />
+              <Field label="Notes (optional)" value={bookingPayForm.notes}
+                onChange={(e) => setBookingPayForm({ ...bookingPayForm, notes: e.target.value })} />
+
+              <div className="flex gap-2">
+                <Button type="submit" disabled={bookingPaySubmitting}>{bookingPaySubmitting ? "Recording..." : "Record Payment"}</Button>
+                <Button type="button" variant="ghost" onClick={() => setShowBookingPay(false)} disabled={bookingPaySubmitting}>Cancel</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel booking modal */}
+      {showCancel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !cancelling && setShowCancel(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-[var(--text-heading)]">Cancel Booking</h3>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              This releases unit {booking.unitNumber} back to the market. This cannot be undone.
+            </p>
+
+            <div className="mt-4 grid gap-4">
+              <Field label="Reason (optional)" value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)} />
+              <div className="flex gap-2">
+                <Button type="button" variant="danger" onClick={handleCancelBooking} disabled={cancelling}>
+                  {cancelling ? "Cancelling..." : "Confirm Cancel"}
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setShowCancel(false)} disabled={cancelling}>Keep Booking</Button>
+              </div>
+            </div>
           </div>
         </div>
       )}
