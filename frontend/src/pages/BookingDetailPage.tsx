@@ -89,6 +89,9 @@ const PAYMENT_METHODS = [
   { value: "Online", label: "Online" },
 ];
 
+// Booking amount is set as a percentage of the agreed sale price.
+const BOOKING_PERCENTS = ["5", "10", "15", "20", "25", "30", "custom"];
+
 function statusBadgeClass(status: string) {
   switch (status) {
     case "Paid":
@@ -152,6 +155,7 @@ export default function BookingDetailPage({ user }: Props) {
     agreedSalePrice: "",
     discountAmount: "0",
     discountReason: "",
+    bookingPercent: "10",
     bookingAmountRequired: "",
     bookingAmountDueDate: "",
   });
@@ -198,10 +202,16 @@ export default function BookingDetailPage({ user }: Props) {
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
 
+      const derivedPercent =
+        b.agreedSalePrice > 0 && b.bookingAmountRequired > 0
+          ? Math.round((b.bookingAmountRequired / b.agreedSalePrice) * 100)
+          : 0;
+      const isPreset = ["5", "10", "15", "20", "25", "30"].includes(String(derivedPercent));
       setFinForm({
         agreedSalePrice: String(b.agreedSalePrice || ""),
         discountAmount: String(b.discountAmount ?? 0),
         discountReason: "",
+        bookingPercent: b.bookingAmountRequired > 0 ? (isPreset ? String(derivedPercent) : "custom") : "10",
         bookingAmountRequired: b.bookingAmountRequired ? String(b.bookingAmountRequired) : "",
         bookingAmountDueDate: "",
       });
@@ -336,11 +346,16 @@ export default function BookingDetailPage({ user }: Props) {
     setFinSubmitting(true);
     setFinError(null);
     try {
+      const agreed = Number(finForm.agreedSalePrice) || 0;
+      const requiredAmount =
+        finForm.bookingPercent === "custom"
+          ? Number(finForm.bookingAmountRequired)
+          : Math.round(agreed * (Number(finForm.bookingPercent) / 100) * 100) / 100;
       const body = {
-        agreedSalePrice: Number(finForm.agreedSalePrice),
+        agreedSalePrice: agreed,
         discountAmount: Number(finForm.discountAmount) || 0,
         discountReason: finForm.discountReason.trim() || null,
-        bookingAmountRequired: Number(finForm.bookingAmountRequired),
+        bookingAmountRequired: requiredAmount,
         bookingAmountDueDate: finForm.bookingAmountDueDate || null,
       };
       const res = await api(`/api/Booking/${bookingId}/financials`, {
@@ -519,9 +534,26 @@ export default function BookingDetailPage({ user }: Props) {
               <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
                 value={finForm.agreedSalePrice}
                 onChange={(e) => setFinForm({ ...finForm, agreedSalePrice: e.target.value })} />
-              <Field label="Booking Amount Required" type="number" min="0" step="0.01" required
-                value={finForm.bookingAmountRequired}
-                onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                <span>Booking Amount (% of sale price)</span>
+                <select value={finForm.bookingPercent}
+                  onChange={(e) => setFinForm({ ...finForm, bookingPercent: e.target.value })}
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                  {BOOKING_PERCENTS.map((p) => (
+                    <option key={p} value={p}>{p === "custom" ? "Custom amount" : `${p}%`}</option>
+                  ))}
+                </select>
+                {finForm.bookingPercent !== "custom" && (
+                  <span className="text-xs text-[var(--text-muted)]">
+                    = {formatMoney(Math.round((Number(finForm.agreedSalePrice) || 0) * (Number(finForm.bookingPercent) / 100) * 100) / 100)}
+                  </span>
+                )}
+              </label>
+              {finForm.bookingPercent === "custom" && (
+                <Field label="Booking Amount Required" type="number" min="0" step="0.01" required
+                  value={finForm.bookingAmountRequired}
+                  onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
+              )}
               <Field label="Discount Amount" type="number" min="0" step="0.01"
                 value={finForm.discountAmount}
                 onChange={(e) => setFinForm({ ...finForm, discountAmount: e.target.value })} />
