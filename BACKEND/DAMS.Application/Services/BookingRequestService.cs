@@ -155,21 +155,37 @@ namespace DAMS.Application.Services
 
         public async Task<List<BookingRequestResponseDto>> GetMyBookingRequestsAsync(int userId)
         {
-            var ids = await _context.BookingRequests
+            // Single projected query instead of one round-trip per request id (N+1).
+            return await _context.BookingRequests
                 .AsNoTracking()
                 .Where(br => br.UserId == userId)
                 .OrderByDescending(br => br.RequestedAt)
-                .Select(br => br.Id)
+                .Select(br => new BookingRequestResponseDto
+                {
+                    Id = br.Id,
+                    UnitId = br.UnitId,
+                    UnitNumber = br.Unit.UnitNumber,
+                    UnitType = br.Unit.UnitType,
+                    UnitPrice = br.Unit.Price,
+                    ProjectId = br.Unit.ProjectId,
+                    ProjectName = br.Unit.Project.ProjectName,
+                    ProjectLocation = br.Unit.Project.Location,
+                    UserId = br.UserId,
+                    FullName = br.FullName,
+                    Phone = br.Phone,
+                    Email = br.Email,
+                    CNIC = br.CNIC,
+                    Address = br.Address,
+                    Notes = br.Notes,
+                    Status = br.Status,
+                    RequestedAt = br.RequestedAt,
+                    ReviewedAt = br.ReviewedAt,
+                    ReviewedByUserId = br.ReviewedByUserId,
+                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
+                    RejectionReason = br.RejectionReason,
+                    CreatedAt = br.CreatedAt
+                })
                 .ToListAsync();
-
-            var list = new List<BookingRequestResponseDto>();
-            foreach (var id in ids)
-            {
-                var mapped = await MapToResponseAsync(id);
-                list.Add(mapped);
-            }
-
-            return list;
         }
 
         public async Task<BookingRequestResponseDto> ApproveBookingRequestAsync(int bookingRequestId, int adminUserId)

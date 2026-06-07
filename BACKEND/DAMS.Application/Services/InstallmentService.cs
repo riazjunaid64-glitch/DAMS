@@ -118,20 +118,20 @@ namespace DAMS.Application.Services
         // Globally unique sequential receipt number, e.g. RCP-000001.
         private async Task<string> GenerateReceiptNumberAsync()
         {
-            var existing = await _context.Payments
-                .Where(p => p.ReceiptNumber != null)
+            // Fetch only the highest existing receipt number from the database instead of
+            // materialising every payment row. Numbers are zero-padded ("RCP-000001"), so the
+            // longest value wins, and among equal lengths the lexicographically greatest is the
+            // numeric maximum.
+            var latest = await _context.Payments
+                .Where(p => p.ReceiptNumber != null && p.ReceiptNumber.StartsWith("RCP-"))
                 .Select(p => p.ReceiptNumber!)
-                .ToListAsync();
+                .OrderByDescending(r => r.Length)
+                .ThenByDescending(r => r)
+                .FirstOrDefaultAsync();
 
             var max = 0;
-            foreach (var r in existing)
-            {
-                if (r.StartsWith("RCP-", StringComparison.OrdinalIgnoreCase)
-                    && int.TryParse(r.Substring(4), out var n) && n > max)
-                {
-                    max = n;
-                }
-            }
+            if (latest != null && int.TryParse(latest.Substring(4), out var n))
+                max = n;
 
             return $"RCP-{(max + 1):D6}";
         }
