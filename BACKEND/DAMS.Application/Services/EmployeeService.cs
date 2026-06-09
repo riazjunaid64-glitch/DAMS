@@ -270,6 +270,267 @@ namespace DAMS.Application.Services
                 .ToListAsync();
         }
 
+        // ─── Salary ──────────────────────────────────────────────────────────────
+
+        public async Task<SalaryResponseDto> GenerateSalaryAsync(int employeeId, GenerateSalaryDto dto, int? adminUserId)
+        {
+            var employee = await _context.Employees.FindAsync(employeeId)
+                ?? throw new Exception("Employee not found.");
+
+            if (dto.Amount <= 0)
+                throw new Exception("Salary amount must be greater than zero.");
+
+            var payDate = dto.PayDate.Date;
+
+            var alreadyPaid = await _context.EmployeeSalaries
+                .AnyAsync(s => s.EmployeeId == employeeId && s.PayMonth == payDate.Month && s.PayYear == payDate.Year);
+            if (alreadyPaid)
+                throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+
+            var projectInfo = await ResolveEmployeeProjectAsync(employeeId);
+
+            var expense = new Expense
+            {
+                ProjectId = projectInfo.ProjectId,
+                Amount = dto.Amount,
+                Category = "Salary",
+                Description = $"Salary — {employee.FullName} ({payDate:MMMM yyyy})",
+                Vendor = employee.FullName,
+                Date = payDate,
+                CreatedByUserId = adminUserId,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.Expenses.Add(expense);
+            await _context.SaveChangesAsync();
+
+            var salary = new EmployeeSalary
+            {
+                EmployeeId = employeeId,
+                Amount = dto.Amount,
+                PayDate = payDate,
+                PayMonth = payDate.Month,
+                PayYear = payDate.Year,
+                ProjectId = projectInfo.ProjectId,
+                ProjectName = projectInfo.ProjectName,
+                ExpenseId = expense.Id,
+                Notes = dto.Notes?.Trim(),
+                CreatedByUserId = adminUserId,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.EmployeeSalaries.Add(salary);
+            await _context.SaveChangesAsync();
+
+            return MapSalary(salary, employee);
+        }
+
+        public async Task<SalaryResponseDto> UpdateSalaryAsync(int salaryId, UpdateSalaryDto dto)
+        {
+            var salary = await _context.EmployeeSalaries
+                .Include(s => s.Employee)
+                .FirstOrDefaultAsync(s => s.Id == salaryId)
+                ?? throw new Exception("Salary record not found.");
+
+            if (dto.Amount.HasValue)
+            {
+                if (dto.Amount.Value <= 0)
+                    throw new Exception("Salary amount must be greater than zero.");
+                salary.Amount = dto.Amount.Value;
+            }
+
+            if (dto.PayDate.HasValue)
+            {
+                var payDate = dto.PayDate.Value.Date;
+                salary.PayDate = payDate;
+                salary.PayMonth = payDate.Month;
+                salary.PayYear = payDate.Year;
+            }
+
+            if (dto.Notes != null)
+                salary.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+
+            if (salary.ExpenseId.HasValue)
+            {
+                var expense = await _context.Expenses.FindAsync(salary.ExpenseId.Value);
+                if (expense != null)
+                {
+                    expense.Amount = salary.Amount;
+                    expense.Date = salary.PayDate;
+                    expense.Description = $"Salary — {salary.Employee.FullName} ({salary.PayDate:MMMM yyyy})";
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            return MapSalary(salary, salary.Employee);
+        }
+
+        public async Task<List<SalaryResponseDto>> GetSalariesAsync(int employeeId)
+        {
+            var list = await _context.EmployeeSalaries
+                .AsNoTracking()
+                .Include(s => s.Employee)
+                .Where(s => s.EmployeeId == employeeId)
+                .OrderByDescending(s => s.PayDate)
+                .ToListAsync();
+
+            return list.Select(s => MapSalary(s, s.Employee)).ToList();
+        }
+
+        public async Task<List<SalaryMonthSummaryDto>> GetSalaryMonthSummariesAsync(int employeeId)
+        {
+            var records = await _context.EmployeeSalaries
+                .AsNoTracking()
+                .Where(s => s.EmployeeId == employeeId)
+                .ToListAsync();
+
+            return records
+                .GroupBy(s => new { s.PayYear, s.PayMonth })
+                .Select(g => new SalaryMonthSummaryDto
+                {
+                    Year = g.Key.PayYear,
+                    Month = g.Key.PayMonth,
+                    MonthLabel = new DateTime(g.Key.PayYear, g.Key.PayMonth, 1).ToString("MMMM yyyy"),
+                    Count = g.Count(),
+                    TotalAmount = g.Sum(s => s.Amount)
+                })
+                .OrderByDescending(s => s.Year)
+                .ThenByDescending(s => s.Month)
+                .ToList();
+        }
+
+        public async Task<List<SalaryResponseDto>> GetSalariesByMonthAsync(int employeeId, int month, int year)
+        {
+            var list = await _context.EmployeeSalaries
+                .AsNoTracking()
+                .Include(s => s.Employee)
+                .Where(s => s.EmployeeId == employeeId && s.PayMonth == month && s.PayYear == year)
+                .OrderByDescending(s => s.PayDate)
+                .ToListAsync();
+
+            return list.Select(s => MapSalary(s, s.Employee)).ToList();
+        }
+
+        public async Task<SalaryResponseDto?> GetSalaryByIdAsync(int salaryId)
+        {
+            var salary = await _context.EmployeeSalaries
+                .AsNoTracking()
+                .Include(s => s.Employee)
+                .FirstOrDefaultAsync(s => s.Id == salaryId);
+
+            return salary == null ? null : MapSalary(salary, salary.Employee);
+        }
+
+        public async Task<List<AttendanceBatchItemDto>> GetAttendanceBatchAsync(DateTime date)
+        {
+            var dateOnly = date.Date;
+            var employees = await _context.Employees
+                .AsNoTracking()
+                .Where(e => e.Status == EmployeeStatus.Active)
+                .OrderBy(e => e.FullName)
+                .ToListAsync();
+
+            var attendances = await _context.EmployeeAttendances
+                .AsNoTracking()
+                .Where(a => a.Date == dateOnly)
+                .ToListAsync();
+
+            var map = attendances.ToDictionary(a => a.EmployeeId);
+
+            return employees.Select(e =>
+            {
+                map.TryGetValue(e.Id, out var att);
+                return new AttendanceBatchItemDto
+                {
+                    EmployeeId = e.Id,
+                    EmployeeName = e.FullName,
+                    Department = e.Department,
+                    JobTitle = e.JobTitle,
+                    AttendanceId = att?.Id,
+                    Status = att?.Status,
+                    Notes = att?.Notes
+                };
+            }).ToList();
+        }
+
+        public async Task<List<SalaryBatchItemDto>> GetSalaryBatchAsync(int month, int year)
+        {
+            var employees = await _context.Employees
+                .AsNoTracking()
+                .Where(e => e.Status != EmployeeStatus.Terminated)
+                .OrderBy(e => e.FullName)
+                .ToListAsync();
+
+            var salaries = await _context.EmployeeSalaries
+                .AsNoTracking()
+                .Where(s => s.PayMonth == month && s.PayYear == year)
+                .ToListAsync();
+
+            var paidMap = salaries
+                .GroupBy(s => s.EmployeeId)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.PayDate).First());
+
+            var result = new List<SalaryBatchItemDto>();
+            foreach (var e in employees)
+            {
+                paidMap.TryGetValue(e.Id, out var paid);
+                string? projectName = paid?.ProjectName;
+                if (paid == null)
+                {
+                    var proj = await ResolveEmployeeProjectAsync(e.Id);
+                    projectName = proj.ProjectName;
+                }
+
+                result.Add(new SalaryBatchItemDto
+                {
+                    EmployeeId = e.Id,
+                    EmployeeName = e.FullName,
+                    Department = e.Department,
+                    JobTitle = e.JobTitle,
+                    BaseSalary = e.Salary,
+                    IsPaid = paid != null,
+                    SalaryRecordId = paid?.Id,
+                    PaidAmount = paid?.Amount,
+                    PayDate = paid?.PayDate,
+                    ProjectName = projectName
+                });
+            }
+
+            return result;
+        }
+
+        private async Task<(int? ProjectId, string? ProjectName)> ResolveEmployeeProjectAsync(int employeeId)
+        {
+            var task = await _context.EmployeeTasks
+                .AsNoTracking()
+                .Include(t => t.Project)
+                .Where(t => t.EmployeeId == employeeId && t.ProjectId != null)
+                .OrderByDescending(t => t.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (task?.Project == null)
+                return (null, null);
+
+            return (task.ProjectId, task.Project.ProjectName);
+        }
+
+        private static SalaryResponseDto MapSalary(EmployeeSalary s, Employee e) => new()
+        {
+            Id = s.Id,
+            EmployeeId = s.EmployeeId,
+            EmployeeName = e.FullName,
+            JobTitle = e.JobTitle,
+            Department = e.Department,
+            Amount = s.Amount,
+            PayDate = s.PayDate,
+            PayMonth = s.PayMonth,
+            PayYear = s.PayYear,
+            ProjectId = s.ProjectId,
+            ProjectName = s.ProjectName,
+            ExpenseId = s.ExpenseId,
+            Notes = s.Notes,
+            CreatedAt = s.CreatedAt
+        };
+
         // ─── Mapping helpers ─────────────────────────────────────────────────────
 
         private static EmployeeResponseDto MapEmployee(Employee e) => new()

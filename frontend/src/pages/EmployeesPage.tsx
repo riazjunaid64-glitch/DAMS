@@ -5,6 +5,9 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import TabLayout from "../lib/TabLayout.tsx";
+import EmployeesAttendancePanel from "../components/employee/EmployeesAttendancePanel.tsx";
+import EmployeesSalaryPanel from "../components/employee/EmployeesSalaryPanel.tsx";
 import { parseEmployeesPayload, type EmployeeFromApi } from "../utils/parseEmployee.ts";
 
 type Props = { user: User | null };
@@ -74,6 +77,7 @@ export default function EmployeesPage({ user }: Props) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [deptFilter, setDeptFilter] = useState<string>("all");
+  const [activeTab, setActiveTab] = useState("team");
   const [form, setForm] = useState({
     fullName: "", jobTitle: "", department: "", phone: "",
     email: "", address: "", salary: "", joinDate: "", status: 0,
@@ -187,24 +191,48 @@ export default function EmployeesPage({ user }: Props) {
                 {employees.length} team member{employees.length !== 1 ? "s" : ""} - {activeCount} active
               </p>
             </div>
-            <Button onClick={() => setShowForm(v => !v)}>
-              {showForm ? (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  Cancel
-                </>
-              ) : (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                  Add Employee
-                </>
-              )}
-            </Button>
+            {activeTab === "team" && (
+              <Button onClick={() => setShowForm(v => !v)}>
+                {showForm ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Cancel
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Employee
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </Container>
       </div>
 
+      <TabLayout
+        tabs={[
+          {
+            id: "team", label: "Team",
+            icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
+          },
+          {
+            id: "attendance", label: "Attendance",
+            icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg>,
+          },
+          {
+            id: "salary", label: "Salaries",
+            icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 100 4h4a2 2 0 110 4H8"/><path d="M12 18V6"/></svg>,
+          },
+        ]}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      >
       <Container className="py-8">
+        {activeTab === "attendance" && <EmployeesAttendancePanel />}
+        {activeTab === "salary" && <EmployeesSalaryPanel />}
+
+        {activeTab === "team" && (<>
         {/* Add Employee Form */}
         {showForm && (
           <form onSubmit={submitCreate} className="mb-10 animate-scale-in rounded-2xl border border-[var(--accent-glow-strong)] bg-[var(--surface-glass)] p-6 shadow-sm">
@@ -385,7 +413,9 @@ export default function EmployeesPage({ user }: Props) {
             </table>
           </div>
         )}
+        </>)}
       </Container>
+      </TabLayout>
     </>
   );
 }

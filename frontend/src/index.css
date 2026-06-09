@@ -320,7 +320,7 @@ h1, h2, h3, h4, h5, h6 {
 .tab-bar-wrapper {
   position: sticky;
   top: 64px;
-  z-index: 30;
+  z-index: 20;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
   backdrop-filter: blur(18px);

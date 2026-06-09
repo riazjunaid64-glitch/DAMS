@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
-import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Pagination from "../lib/Pagination.tsx";
 
@@ -122,7 +121,14 @@ export default function CustomersPage({ user }: Props) {
                   <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">{c.status}</span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <Button size="sm" variant="ghost" onClick={() => navigate(`/customers/${c.id}`)}>View</Button>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/customers/${c.id}`)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--accent-glow-strong)] bg-[var(--accent-glow)] px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:border-[var(--accent)] hover:bg-[var(--surface-glass-hover)]"
+                  >
+                    View
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
                 </td>
               </tr>
             ))}

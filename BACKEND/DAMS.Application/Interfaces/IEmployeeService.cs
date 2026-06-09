@@ -21,5 +21,15 @@ namespace DAMS.Application.Interfaces
         Task<TaskResponseDto> UpdateTaskStatusAsync(int taskId, UpdateTaskStatusDto dto);
         Task<List<TaskResponseDto>> GetTasksByEmployeeAsync(int employeeId);
         Task<List<TaskResponseDto>> GetTasksByProjectAsync(int projectId);
+
+        // Salary
+        Task<SalaryResponseDto> GenerateSalaryAsync(int employeeId, GenerateSalaryDto dto, int? adminUserId);
+        Task<SalaryResponseDto> UpdateSalaryAsync(int salaryId, UpdateSalaryDto dto);
+        Task<List<SalaryResponseDto>> GetSalariesAsync(int employeeId);
+        Task<List<SalaryMonthSummaryDto>> GetSalaryMonthSummariesAsync(int employeeId);
+        Task<List<SalaryResponseDto>> GetSalariesByMonthAsync(int employeeId, int month, int year);
+        Task<SalaryResponseDto?> GetSalaryByIdAsync(int salaryId);
+        Task<List<AttendanceBatchItemDto>> GetAttendanceBatchAsync(DateTime date);
+        Task<List<SalaryBatchItemDto>> GetSalaryBatchAsync(int month, int year);
     }
 }

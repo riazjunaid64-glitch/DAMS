@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
 import Field from "../../lib/Field.tsx";
+import Modal from "../../lib/Modal.tsx";
 
 interface Task {
   id: number;
@@ -354,10 +355,7 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
         )}
       </div>
 
-      {/* Assign Task Modal */}
-      {showAssignModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setShowAssignModal(false)} />
+      <Modal open={showAssignModal} onClose={() => setShowAssignModal(false)}>
           <div className="relative z-10 w-[520px] max-w-[92vw] animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             <div className="absolute right-0 top-0 h-28 w-28 rounded-full bg-indigo-500/[0.08] blur-[50px]" />
 
@@ -422,8 +420,7 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
               </Button>
             </div>
           </div>
-        </div>
-      )}
+      </Modal>
     </div>
   );
 }

@@ -24,6 +24,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Employee> Employees { get; set; }
         public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
         public DbSet<EmployeeTask> EmployeeTasks { get; set; }
+        public DbSet<EmployeeSalary> EmployeeSalaries { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
@@ -311,6 +312,27 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(t => t.Project)
                       .WithMany()
                       .HasForeignKey(t => t.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<EmployeeSalary>(entity =>
+            {
+                entity.Property(s => s.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.ProjectName).HasMaxLength(200);
+                entity.Property(s => s.Notes).HasMaxLength(500);
+                entity.HasIndex(s => s.EmployeeId);
+                entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth });
+                entity.HasOne(s => s.Employee)
+                      .WithMany(e => e.Salaries)
+                      .HasForeignKey(s => s.EmployeeId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(s => s.Project)
+                      .WithMany()
+                      .HasForeignKey(s => s.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(s => s.Expense)
+                      .WithMany()
+                      .HasForeignKey(s => s.ExpenseId)
                       .OnDelete(DeleteBehavior.SetNull);
             });
 
