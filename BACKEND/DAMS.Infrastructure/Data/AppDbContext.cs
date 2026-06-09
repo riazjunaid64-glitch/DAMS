@@ -167,6 +167,9 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Address).HasMaxLength(500);
                 entity.Property(c => c.SourceNotes).HasMaxLength(500);
                 entity.Property(c => c.Notes).HasMaxLength(1000);
+                entity.Property(c => c.Nationality).HasMaxLength(100);
+                entity.Property(c => c.Occupation).HasMaxLength(150);
+                entity.Property(c => c.Whatsapp).HasMaxLength(50);
                 entity.Property(c => c.Source).HasConversion<int>();
                 entity.Property(c => c.Status).HasConversion<int>();
 
@@ -195,6 +198,20 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(b => b.BookingAmountReceived).HasColumnType("decimal(18,2)");
                 entity.Property(b => b.TotalInstallmentAmount).HasColumnType("decimal(18,2)");
                 entity.Property(b => b.PossessionAmount).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.PricePerSft).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.DiscountPercent).HasColumnType("decimal(5,2)");
+                entity.Property(b => b.ApplicationAmountReceived).HasColumnType("decimal(18,2)");
+                entity.Property(b => b.SerialNo).HasMaxLength(50);
+                entity.Property(b => b.ApartmentCategory).HasMaxLength(100);
+                entity.Property(b => b.Tower).HasMaxLength(50);
+                entity.Property(b => b.ReferenceId).HasMaxLength(100);
+                entity.Property(b => b.PaymentThrough).HasMaxLength(200);
+                entity.Property(b => b.ApplicationPaymentType).HasMaxLength(30);
+                entity.Property(b => b.NextOfKinName).HasMaxLength(200);
+                entity.Property(b => b.NextOfKinRelation).HasMaxLength(100);
+                entity.Property(b => b.NextOfKinContact).HasMaxLength(50);
+                entity.Property(b => b.NextOfKinCnic).HasMaxLength(50);
+                entity.Property(b => b.NextOfKinAddress).HasMaxLength(500);
                 entity.Property(b => b.Source).HasConversion<int>();
                 entity.Property(b => b.Status).HasConversion<int>();
                 entity.Property(b => b.InstallmentFrequency).HasConversion<int>();

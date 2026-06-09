@@ -467,6 +467,9 @@ export default function BookingDetailPage({ user }: Props) {
           <span className="inline-flex w-fit rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400">
             {booking.status.replace(/([A-Z])/g, " $1").trim()}
           </span>
+          <Button variant="outline" size="sm" onClick={() => navigate(`/application-form?bookingId=${booking.id}`)}>
+            Print Application Form
+          </Button>
           {booking.status !== "Cancelled" && booking.status !== "PossessionGiven" && booking.status !== "SaleCompleted" && (
             <Button variant="danger" size="sm" onClick={() => { setCancelReason(""); setShowCancel(true); }}>
               Cancel Booking

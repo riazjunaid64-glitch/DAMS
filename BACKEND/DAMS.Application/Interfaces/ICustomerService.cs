@@ -26,6 +26,10 @@ namespace DAMS.Application.Interfaces
             CustomerSource source,
             string? sourceNotes,
             int? createdByUserId,
-            string? fatherName = null);
+            string? fatherName = null,
+            DateTime? dateOfBirth = null,
+            string? nationality = null,
+            string? occupation = null,
+            string? whatsapp = null);
     }
 }

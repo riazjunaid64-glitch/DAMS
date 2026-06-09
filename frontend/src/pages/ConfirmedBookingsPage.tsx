@@ -96,7 +96,19 @@ export default function ConfirmedBookingsPage({ user }: Props) {
           <h1 className="text-2xl font-bold text-[var(--text-heading)]">Confirmed Bookings</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">Sales bookings after approval or walk-in creation</p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          <Button size="sm" onClick={() => navigate("/confirmed-bookings/new")}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Add Booking
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => navigate("/application-form")}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" />
+            </svg>
+            Print Blank Form
+          </Button>
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}

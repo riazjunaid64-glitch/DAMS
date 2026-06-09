@@ -15,6 +15,8 @@ import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
 import CustomersPage from "./pages/CustomersPage.tsx";
 import CustomerDetailPage from "./pages/CustomerDetailPage.tsx";
 import ConfirmedBookingsPage from "./pages/ConfirmedBookingsPage.tsx";
+import CreateBookingPage from "./pages/CreateBookingPage.tsx";
+import ApplicationFormPage from "./pages/ApplicationFormPage.tsx";
 import FinanceDashboardPage from "./pages/FinanceDashboardPage.tsx";
 import BookingDetailPage from "./pages/BookingDetailPage.tsx";
 import ReceiptPage from "./pages/ReceiptPage.tsx";
@@ -287,7 +289,9 @@ function App() {
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
           <Route path="/confirmed-bookings" element={<ConfirmedBookingsPage user={user} />} />
+          <Route path="/confirmed-bookings/new" element={<CreateBookingPage user={user} />} />
           <Route path="/confirmed-bookings/:id" element={<BookingDetailPage user={user} />} />
+          <Route path="/application-form" element={<ApplicationFormPage user={user} />} />
           <Route path="/receipt/:bookingId/:paymentId" element={<ReceiptPage user={user} />} />
           <Route path="/customers" element={<CustomersPage user={user} />} />
           <Route path="/customers/:id" element={<CustomerDetailPage user={user} />} />

@@ -19,6 +19,15 @@ namespace DAMS.Domain.Entities
 
         public string? Address { get; set; }
 
+        // Additional personal details captured on the official Application Form.
+        public DateTime? DateOfBirth { get; set; }
+
+        public string? Nationality { get; set; }
+
+        public string? Occupation { get; set; }
+
+        public string? Whatsapp { get; set; }
+
         public CustomerSource Source { get; set; } = CustomerSource.Other;
 
         public string? SourceNotes { get; set; }

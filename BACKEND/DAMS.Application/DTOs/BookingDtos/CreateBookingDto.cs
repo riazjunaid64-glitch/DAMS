@@ -40,6 +40,53 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         [StringLength(1000)]
         public string? InternalNotes { get; set; }
+
+        // --- Application Form fields (printed official form) ---
+        [StringLength(50)]
+        public string? SerialNo { get; set; }
+
+        [StringLength(100)]
+        public string? ApartmentCategory { get; set; }
+
+        [StringLength(50)]
+        public string? Tower { get; set; }
+
+        public bool IsCorner { get; set; }
+
+        public decimal? PricePerSft { get; set; }
+
+        public decimal? DiscountPercent { get; set; }
+
+        [StringLength(100)]
+        public string? ReferenceId { get; set; }
+
+        [StringLength(200)]
+        public string? PaymentThrough { get; set; }
+
+        [StringLength(30)]
+        public string? ApplicationPaymentType { get; set; }
+
+        public decimal? ApplicationAmountReceived { get; set; }
+
+        public DateTime? ApplicationDate { get; set; }
+
+        // Next of kin / nominee.
+        [StringLength(200)]
+        public string? NextOfKinName { get; set; }
+
+        [StringLength(100)]
+        public string? NextOfKinRelation { get; set; }
+
+        [StringLength(50)]
+        public string? NextOfKinContact { get; set; }
+
+        [StringLength(50)]
+        public string? NextOfKinCnic { get; set; }
+
+        public DateTime? NextOfKinDob { get; set; }
+
+        [StringLength(500)]
+        public string? NextOfKinAddress { get; set; }
     }
 
     public class NewCustomerForBookingDto
@@ -67,5 +114,17 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         [StringLength(500)]
         public string? SourceNotes { get; set; }
+
+        // Additional Application Form personal details.
+        public DateTime? DateOfBirth { get; set; }
+
+        [StringLength(100)]
+        public string? Nationality { get; set; }
+
+        [StringLength(150)]
+        public string? Occupation { get; set; }
+
+        [StringLength(50)]
+        public string? Whatsapp { get; set; }
     }
 }

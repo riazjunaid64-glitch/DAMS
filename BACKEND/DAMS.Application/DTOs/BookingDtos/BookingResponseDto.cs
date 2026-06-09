@@ -14,11 +14,32 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public string CustomerPhone { get; set; } = string.Empty;
 
+        // Extra customer details used to fill the printed Application Form.
+        public string? CustomerFatherName { get; set; }
+
+        public string? CustomerCnic { get; set; }
+
+        public string? CustomerEmail { get; set; }
+
+        public string? CustomerAddress { get; set; }
+
+        public DateTime? CustomerDateOfBirth { get; set; }
+
+        public string? CustomerNationality { get; set; }
+
+        public string? CustomerOccupation { get; set; }
+
+        public string? CustomerWhatsapp { get; set; }
+
         public int UnitId { get; set; }
 
         public string UnitNumber { get; set; } = string.Empty;
 
         public string UnitType { get; set; } = string.Empty;
+
+        public int UnitFloorNumber { get; set; }
+
+        public decimal UnitSize { get; set; }
 
         public int ProjectId { get; set; }
 
@@ -61,6 +82,41 @@ namespace DAMS.Application.DTOs.BookingDtos
         public string? CustomerNotes { get; set; }
 
         public string? InternalNotes { get; set; }
+
+        // --- Application Form snapshot ---
+        public string? SerialNo { get; set; }
+
+        public string? ApartmentCategory { get; set; }
+
+        public string? Tower { get; set; }
+
+        public bool IsCorner { get; set; }
+
+        public decimal? PricePerSft { get; set; }
+
+        public decimal? DiscountPercent { get; set; }
+
+        public string? ReferenceId { get; set; }
+
+        public string? PaymentThrough { get; set; }
+
+        public string? ApplicationPaymentType { get; set; }
+
+        public decimal? ApplicationAmountReceived { get; set; }
+
+        public DateTime? ApplicationDate { get; set; }
+
+        public string? NextOfKinName { get; set; }
+
+        public string? NextOfKinRelation { get; set; }
+
+        public string? NextOfKinContact { get; set; }
+
+        public string? NextOfKinCnic { get; set; }
+
+        public DateTime? NextOfKinDob { get; set; }
+
+        public string? NextOfKinAddress { get; set; }
 
         public DateTime CreatedAt { get; set; }
 

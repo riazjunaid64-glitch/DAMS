@@ -66,6 +66,44 @@ namespace DAMS.Domain.Entities
 
         public string? InternalNotes { get; set; }
 
+        // --- Application Form snapshot (printed official form) ---
+        // These capture exactly what is written on the Floria Heights "Application Form".
+        public string? SerialNo { get; set; }
+
+        public string? ApartmentCategory { get; set; }
+
+        public string? Tower { get; set; }
+
+        public bool IsCorner { get; set; }
+
+        public decimal? PricePerSft { get; set; }
+
+        public decimal? DiscountPercent { get; set; }
+
+        public string? ReferenceId { get; set; }
+
+        public string? PaymentThrough { get; set; }
+
+        // Which box is ticked under "Amount Received": Booking | Confirmation | LumSum.
+        public string? ApplicationPaymentType { get; set; }
+
+        public decimal? ApplicationAmountReceived { get; set; }
+
+        public DateTime? ApplicationDate { get; set; }
+
+        // Next of kin / nominee details from the Application Form.
+        public string? NextOfKinName { get; set; }
+
+        public string? NextOfKinRelation { get; set; }
+
+        public string? NextOfKinContact { get; set; }
+
+        public string? NextOfKinCnic { get; set; }
+
+        public DateTime? NextOfKinDob { get; set; }
+
+        public string? NextOfKinAddress { get; set; }
+
         public int? CreatedByUserId { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

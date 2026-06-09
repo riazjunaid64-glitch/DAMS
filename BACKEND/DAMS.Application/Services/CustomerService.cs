@@ -143,7 +143,11 @@ namespace DAMS.Application.Services
             CustomerSource source,
             string? sourceNotes,
             int? createdByUserId,
-            string? fatherName = null)
+            string? fatherName = null,
+            DateTime? dateOfBirth = null,
+            string? nationality = null,
+            string? occupation = null,
+            string? whatsapp = null)
         {
             var normalizedPhone = NormalizePhone(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
@@ -171,6 +175,10 @@ namespace DAMS.Application.Services
                 CNIC = normalizedCnic,
                 Email = normalizedEmail,
                 Address = string.IsNullOrWhiteSpace(address) ? null : address.Trim(),
+                DateOfBirth = dateOfBirth,
+                Nationality = string.IsNullOrWhiteSpace(nationality) ? null : nationality.Trim(),
+                Occupation = string.IsNullOrWhiteSpace(occupation) ? null : occupation.Trim(),
+                Whatsapp = string.IsNullOrWhiteSpace(whatsapp) ? null : whatsapp.Trim(),
                 Source = source,
                 SourceNotes = string.IsNullOrWhiteSpace(sourceNotes) ? null : sourceNotes.Trim(),
                 Status = CustomerStatus.Active,
