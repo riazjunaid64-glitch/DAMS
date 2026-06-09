@@ -12,6 +12,14 @@ import LandingPage from "./pages/LandingPage.tsx";
 import EmployeesPage from "./pages/EmployeesPage.tsx";
 import EmployeeDetailPage from "./pages/EmployeeDetailPage.tsx";
 import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
+import CustomersPage from "./pages/CustomersPage.tsx";
+import CustomerDetailPage from "./pages/CustomerDetailPage.tsx";
+import ConfirmedBookingsPage from "./pages/ConfirmedBookingsPage.tsx";
+import CreateBookingPage from "./pages/CreateBookingPage.tsx";
+import ApplicationFormPage from "./pages/ApplicationFormPage.tsx";
+import FinanceDashboardPage from "./pages/FinanceDashboardPage.tsx";
+import BookingDetailPage from "./pages/BookingDetailPage.tsx";
+import ReceiptPage from "./pages/ReceiptPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
 import ProjectsPage from "./pages/ProjectsPage.tsx";
 import UnitDetailPage from "./pages/UnitDetailPage.tsx";
@@ -46,7 +54,14 @@ function App() {
   const mainNavLinks = useMemo(
     () =>
       user?.role === "Admin"
-        ? [...NAV_LINKS, { to: "/bookings", label: "Bookings" }, { to: "/employees", label: "Employees" }]
+        ? [
+            ...NAV_LINKS,
+            { to: "/bookings", label: "Requests" },
+            { to: "/confirmed-bookings", label: "Bookings" },
+            { to: "/customers", label: "Customers" },
+            { to: "/employees", label: "Employees" },
+            { to: "/finance", label: "Finance" },
+          ]
         : NAV_LINKS,
     [user]
   );
@@ -273,8 +288,16 @@ function App() {
           <Route path="/about" element={<AboutPage />} />
           <Route path="/contact" element={<ContactPage />} />
           <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
+          <Route path="/confirmed-bookings" element={<ConfirmedBookingsPage user={user} />} />
+          <Route path="/confirmed-bookings/new" element={<CreateBookingPage user={user} />} />
+          <Route path="/confirmed-bookings/:id" element={<BookingDetailPage user={user} />} />
+          <Route path="/application-form" element={<ApplicationFormPage user={user} />} />
+          <Route path="/receipt/:bookingId/:paymentId" element={<ReceiptPage user={user} />} />
+          <Route path="/customers" element={<CustomersPage user={user} />} />
+          <Route path="/customers/:id" element={<CustomerDetailPage user={user} />} />
           <Route path="/employees" element={<EmployeesPage user={user} />} />
           <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
+          <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
         </Routes>
       </main>
 

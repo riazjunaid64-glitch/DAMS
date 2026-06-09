@@ -31,5 +31,7 @@ namespace DAMS.Domain.Entities
         public ICollection<EmployeeAttendance> Attendances { get; set; } = new List<EmployeeAttendance>();
 
         public ICollection<EmployeeTask> Tasks { get; set; } = new List<EmployeeTask>();
+
+        public ICollection<EmployeeSalary> Salaries { get; set; } = new List<EmployeeSalary>();
     }
 }

@@ -316,10 +316,10 @@ export default function BookingRequestsPage({ user }: Props) {
         {!loading && !error && visibleRequests.length > 0 && (
           <>
             <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-              <table className="min-w-[1080px] w-full border-collapse text-left">
+              <table className="min-w-[800px] w-full border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
-                    {["Customer Name", "Project / Unit", "Initial Installment", "Total Pay", "Remaining", "Status", "Request Date", "Actions"].map((label) => (
+                    {["Customer Name", "Project / Unit", "Total Pay", "Status", "Request Date", "Actions"].map((label) => (
                       <th key={label} className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
                         {label}
                       </th>
@@ -329,8 +329,6 @@ export default function BookingRequestsPage({ user }: Props) {
                 <tbody>
                   {visibleRequests.map((req) => {
                     const status = statusConfig[req.status];
-                    const initialInstallment = req.unitPrice * 0.25;
-                    const remaining = req.unitPrice - initialInstallment;
                     return (
                       <tr key={req.id} className="group border-b border-[var(--border)] transition-colors hover:bg-[var(--surface-glass-hover)] last:border-b-0">
                         <td className="px-5 py-4">
@@ -348,9 +346,7 @@ export default function BookingRequestsPage({ user }: Props) {
                           </p>
                           <p className="text-xs text-[var(--text-muted)]">{req.unitType}</p>
                         </td>
-                        <td className="px-5 py-4 text-sm font-medium text-[var(--text-secondary)]">{formatCurrency(initialInstallment)}</td>
                         <td className="px-5 py-4 text-sm font-semibold text-[var(--text-primary)]">{formatCurrency(req.unitPrice)}</td>
-                        <td className="px-5 py-4 text-sm text-[var(--text-secondary)]">{formatCurrency(remaining)}</td>
                         <td className="px-5 py-4">
                           <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${status.color}`}>
                             {status.label}

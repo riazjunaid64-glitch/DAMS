@@ -6,6 +6,7 @@ namespace DAMS.Domain.Enums
         Booked = 2,
         Reserved = 3,
         Sold = 4,
-        PendingReview = 5
+        PendingReview = 5,
+        OnPaymentPlan = 6
     }
 }

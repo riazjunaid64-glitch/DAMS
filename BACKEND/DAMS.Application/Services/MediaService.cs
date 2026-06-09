@@ -150,6 +150,7 @@ namespace DAMS.Application.Services
             }
 
             var media = await _context.ProjectMedias
+                .AsNoTracking()
                 .Where(pm => pm.ProjectId == projectId)
                 .OrderBy(pm => pm.IsCover ? 0 : 1)
                 .ThenBy(pm => pm.DisplayOrder)
@@ -369,6 +370,7 @@ namespace DAMS.Application.Services
             }
 
             var media = await _context.UnitMedias
+                .AsNoTracking()
                 .Where(um => um.UnitId == unitId)
                 .OrderBy(um => um.IsCover ? 0 : 1)
                 .ThenBy(um => um.DisplayOrder)
@@ -387,6 +389,7 @@ namespace DAMS.Application.Services
             }
 
             var media = await _context.UnitMedias
+                .AsNoTracking()
                 .Where(um => um.Unit.ProjectId == projectId)
                 .OrderByDescending(um => um.UploadedAt)
                 .ToListAsync();

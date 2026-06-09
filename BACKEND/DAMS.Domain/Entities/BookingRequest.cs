@@ -36,10 +36,15 @@ namespace DAMS.Domain.Entities
 
         public DateTime? UpdatedAt { get; set; }
 
+        // Set once the request is approved and converted into a Customer.
+        public int? CustomerId { get; set; }
+
         public Unit Unit { get; set; } = null!;
 
         public User? User { get; set; }
 
         public User? ReviewedBy { get; set; }
+
+        public Customer? Customer { get; set; }
     }
 }

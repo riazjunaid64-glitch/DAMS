@@ -117,6 +117,13 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("attendance/batch")]
+        public async Task<IActionResult> GetAttendanceBatch([FromQuery] DateTime? date = null)
+        {
+            var result = await _employeeService.GetAttendanceBatchAsync(date ?? DateTime.UtcNow);
+            return Ok(result);
+        }
+
         // ─── Tasks ───────────────────────────────────────────────────────────────
 
         [HttpPost("tasks")]
@@ -158,6 +165,85 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetTasksByProject(int projectId)
         {
             var result = await _employeeService.GetTasksByProjectAsync(projectId);
+            return Ok(result);
+        }
+
+        // ─── Salary ──────────────────────────────────────────────────────────────
+
+        [HttpGet("salary/batch")]
+        public async Task<IActionResult> GetSalaryBatch(
+            [FromQuery] int month,
+            [FromQuery] int year)
+        {
+            if (month < 1 || month > 12)
+                return BadRequest(new { message = "Month must be between 1 and 12." });
+
+            var result = await _employeeService.GetSalaryBatchAsync(month, year);
+            return Ok(result);
+        }
+
+        [HttpGet("salary/{salaryId:int}")]
+        public async Task<IActionResult> GetSalaryById(int salaryId)
+        {
+            var result = await _employeeService.GetSalaryByIdAsync(salaryId);
+            if (result == null) return NotFound();
+            return Ok(result);
+        }
+
+        [HttpPost("{employeeId:int}/salary")]
+        public async Task<IActionResult> GenerateSalary(int employeeId, [FromBody] GenerateSalaryDto dto)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                int? adminUserId = int.TryParse(userIdClaim, out var uid) ? uid : null;
+                var result = await _employeeService.GenerateSalaryAsync(employeeId, dto, adminUserId);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("salary/{salaryId:int}")]
+        public async Task<IActionResult> UpdateSalary(int salaryId, [FromBody] UpdateSalaryDto dto)
+        {
+            try
+            {
+                var result = await _employeeService.UpdateSalaryAsync(salaryId, dto);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("{employeeId:int}/salary")]
+        public async Task<IActionResult> GetSalaries(int employeeId)
+        {
+            var result = await _employeeService.GetSalariesAsync(employeeId);
+            return Ok(result);
+        }
+
+        [HttpGet("{employeeId:int}/salary/summary")]
+        public async Task<IActionResult> GetSalaryMonthSummaries(int employeeId)
+        {
+            var result = await _employeeService.GetSalaryMonthSummariesAsync(employeeId);
+            return Ok(result);
+        }
+
+        [HttpGet("{employeeId:int}/salary/month")]
+        public async Task<IActionResult> GetSalariesByMonth(
+            int employeeId,
+            [FromQuery] int month,
+            [FromQuery] int year)
+        {
+            if (month < 1 || month > 12)
+                return BadRequest(new { message = "Month must be between 1 and 12." });
+
+            var result = await _employeeService.GetSalariesByMonthAsync(employeeId, month, year);
             return Ok(result);
         }
     }
