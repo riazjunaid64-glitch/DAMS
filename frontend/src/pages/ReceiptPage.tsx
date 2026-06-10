@@ -17,12 +17,15 @@ export default function ReceiptPage({ user }: Props) {
   const isAdmin = user?.role === "Admin";
 
   useEffect(() => {
-    if (!isAdmin || !bookingId || !paymentId) return;
+    if (!user || !bookingId || !paymentId) return;
     const load = async () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await api(`/api/Booking/${bookingId}/payments/${paymentId}/receipt`);
+        const url = isAdmin
+          ? `/api/Booking/${bookingId}/payments/${paymentId}/receipt`
+          : `/api/MyProjects/${bookingId}/payments/${paymentId}/receipt`;
+        const res = await api(url);
         if (!res.ok) throw new Error("Receipt not found");
         setReceipt(await res.json());
       } catch {
@@ -32,10 +35,10 @@ export default function ReceiptPage({ user }: Props) {
       }
     };
     load();
-  }, [isAdmin, bookingId, paymentId]);
+  }, [user, isAdmin, bookingId, paymentId]);
 
-  if (!isAdmin) {
-    return <div className="py-16 text-center text-[var(--text-muted)]">Admin access required.</div>;
+  if (!user) {
+    return <div className="py-16 text-center text-[var(--text-muted)]">Please log in to view this receipt.</div>;
   }
 
   if (loading) {
