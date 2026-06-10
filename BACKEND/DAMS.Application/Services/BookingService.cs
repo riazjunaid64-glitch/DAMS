@@ -470,6 +470,7 @@ namespace DAMS.Application.Services
                 .Include(b => b.Customer)
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
                 .Include(b => b.Payments)
+                .Include(b => b.Installments)
                 .FirstAsync(b => b.Id == id);
 
             return MapProjection(booking);
@@ -477,6 +478,8 @@ namespace DAMS.Application.Services
 
         private static BookingResponseDto MapProjection(Booking b)
         {
+            var installmentTotals = ComputeInstallmentTotals(b);
+
             return new BookingResponseDto
             {
                 Id = b.Id,
@@ -509,6 +512,9 @@ namespace DAMS.Application.Services
                 BookingAmountRequired = b.BookingAmountRequired,
                 BookingAmountReceived = b.BookingAmountReceived,
                 TotalInstallmentAmount = b.TotalInstallmentAmount,
+                InstallmentPaid = installmentTotals.Paid,
+                InstallmentRemaining = installmentTotals.Remaining,
+                HasInstallmentSchedule = installmentTotals.HasSchedule,
                 BookingDate = b.BookingDate,
                 BookingAmountDueDate = b.BookingAmountDueDate,
                 BookingAmountConfirmedDate = b.BookingAmountConfirmedDate,
@@ -554,6 +560,78 @@ namespace DAMS.Application.Services
                         })
                         .ToList()
             };
+        }
+
+        public async Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+                return new List<BookingResponseDto>();
+
+            var normalized = email.Trim().ToLowerInvariant();
+
+            var entities = await _context.Bookings
+                .AsNoTracking()
+                .Include(b => b.Customer)
+                .Include(b => b.Unit).ThenInclude(u => u.Project)
+                .Include(b => b.Payments)
+                .Include(b => b.Installments)
+                .Where(b => b.Customer != null
+                         && b.Customer.Email != null
+                         && b.Customer.Email.ToLower() == normalized
+                         && b.Status != BookingStatus.Cancelled)
+                .OrderByDescending(b => b.BookingDate)
+                .ToListAsync();
+
+            return entities.Select(b => SanitizeForClient(MapProjection(b))).ToList();
+        }
+
+        public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email)
+        {
+            if (!await CustomerOwnsBookingByEmailAsync(id, email))
+                return null;
+
+            var dto = await GetResponseAsync(id);
+            return dto == null ? null : SanitizeForClient(dto);
+        }
+
+        public async Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+                return false;
+
+            var normalized = email.Trim().ToLowerInvariant();
+
+            return await _context.Bookings
+                .AsNoTracking()
+                .AnyAsync(b => b.Id == bookingId
+                            && b.Status != BookingStatus.Cancelled
+                            && b.Customer != null
+                            && b.Customer.Email != null
+                            && b.Customer.Email.ToLower() == normalized);
+        }
+
+        private static (decimal Paid, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(Booking b)
+        {
+            var installments = b.Installments?.ToList() ?? new List<Installment>();
+            if (installments.Count == 0)
+                return (0m, 0m, false);
+
+            var paidByInstallment = (b.Payments ?? new List<Payment>())
+                .Where(p => p.InstallmentId.HasValue)
+                .GroupBy(p => p.InstallmentId!.Value)
+                .ToDictionary(g => g.Key, g => g.Sum(p => p.Amount));
+
+            var total = installments.Sum(i => i.Amount);
+            var paid = installments.Sum(i =>
+                paidByInstallment.TryGetValue(i.Id, out var amount) ? amount : 0m);
+
+            return (paid, Math.Max(0m, total - paid), true);
+        }
+
+        private static BookingResponseDto SanitizeForClient(BookingResponseDto dto)
+        {
+            dto.InternalNotes = null;
+            return dto;
         }
 
         // Globally unique sequential receipt number, e.g. RCP-000001.

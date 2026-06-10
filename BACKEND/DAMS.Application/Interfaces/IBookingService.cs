@@ -40,5 +40,11 @@ namespace DAMS.Application.Interfaces
         /// Builds a render-ready receipt payload for a single payment (read-only).
         /// </summary>
         Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId);
+
+        Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email);
+
+        Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email);
+
+        Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email);
     }
 }

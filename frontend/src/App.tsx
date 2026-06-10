@@ -23,6 +23,8 @@ import ReceiptPage from "./pages/ReceiptPage.tsx";
 import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
 import ProjectsPage from "./pages/ProjectsPage.tsx";
 import UnitDetailPage from "./pages/UnitDetailPage.tsx";
+import MyProjectsPage from "./pages/MyProjectsPage.tsx";
+import MyProjectDetailPage from "./pages/MyProjectDetailPage.tsx";
 
 export interface User {
   userId: string;
@@ -51,20 +53,24 @@ function App() {
   );
   const displayInitial = displayName[0]?.toUpperCase() ?? "U";
 
-  const mainNavLinks = useMemo(
-    () =>
-      user?.role === "Admin"
-        ? [
-            ...NAV_LINKS,
-            { to: "/bookings", label: "Requests" },
-            { to: "/confirmed-bookings", label: "Bookings" },
-            { to: "/customers", label: "Customers" },
-            { to: "/employees", label: "Employees" },
-            { to: "/finance", label: "Finance" },
-          ]
-        : NAV_LINKS,
-    [user]
-  );
+  const mainNavLinks = useMemo(() => {
+    if (user?.role === "Admin") {
+      return [
+        ...NAV_LINKS,
+        { to: "/bookings", label: "Requests" },
+        { to: "/confirmed-bookings", label: "Bookings" },
+        { to: "/customers", label: "Customers" },
+        { to: "/employees", label: "Employees" },
+        { to: "/finance", label: "Finance" },
+      ];
+    }
+
+    if (user) {
+      return [...NAV_LINKS, { to: "/my-projects", label: "My Projects" }];
+    }
+
+    return NAV_LINKS;
+  }, [user]);
 
   // close mobile nav on route change
   useEffect(() => {
@@ -287,6 +293,8 @@ function App() {
           <Route path="/units/:id" element={<UnitDetailPage user={user} />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="/contact" element={<ContactPage />} />
+          <Route path="/my-projects" element={<MyProjectsPage user={user} />} />
+          <Route path="/my-projects/:id" element={<MyProjectDetailPage user={user} />} />
           <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
           <Route path="/confirmed-bookings" element={<ConfirmedBookingsPage user={user} />} />
           <Route path="/confirmed-bookings/new" element={<CreateBookingPage user={user} />} />

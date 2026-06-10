@@ -69,6 +69,12 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public decimal TotalInstallmentAmount { get; set; }
 
+        public decimal InstallmentPaid { get; set; }
+
+        public decimal InstallmentRemaining { get; set; }
+
+        public bool HasInstallmentSchedule { get; set; }
+
         public DateTime BookingDate { get; set; }
 
         public DateTime? BookingAmountDueDate { get; set; }
