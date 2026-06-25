@@ -25,6 +25,9 @@ OUT_PATHS = [
     Path("/opt/cursor/artifacts/DAMS_External_Interface_Requirements.pdf"),
 ]
 
+DOC_DATE = "27th November 2025"
+AUTHOR = "Muhammad Junaid Riaz"
+
 
 def bullet_list(items: list[str], style: ParagraphStyle) -> ListFlowable:
     return ListFlowable(
@@ -35,6 +38,42 @@ def bullet_list(items: list[str], style: ParagraphStyle) -> ListFlowable:
     )
 
 
+def make_table_cell(text: str, bold: bool = False, size: int = 9) -> Paragraph:
+    style = ParagraphStyle(
+        "TableCell",
+        fontName="Times-Bold" if bold else "Times-Roman",
+        fontSize=size,
+        leading=size + 2,
+        alignment=TA_LEFT,
+        wordWrap="CJK",
+    )
+    return Paragraph(text.replace("&", "&amp;"), style)
+
+
+def build_wrapped_table(rows: list[list[str]], col_widths: list[float], header: bool = True) -> Table:
+    data = []
+    for r_idx, row in enumerate(rows):
+        data.append([make_table_cell(cell, bold=(header and r_idx == 0)) for cell in row])
+    table = Table(data, colWidths=col_widths, repeatRows=1 if header else 0)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Times-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.whitesmoke]),
+            ]
+        )
+    )
+    return table
+
+
 def build_pdf() -> Path:
     out = OUT_PATHS[0]
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -43,10 +82,10 @@ def build_pdf() -> Path:
     doc = SimpleDocTemplate(
         str(out),
         pagesize=letter,
-        leftMargin=1 * inch,
-        rightMargin=1 * inch,
-        topMargin=1 * inch,
-        bottomMargin=1 * inch,
+        leftMargin=0.85 * inch,
+        rightMargin=0.85 * inch,
+        topMargin=0.85 * inch,
+        bottomMargin=0.85 * inch,
     )
 
     styles = getSampleStyleSheet()
@@ -105,67 +144,51 @@ def build_pdf() -> Path:
         spaceAfter=6,
     )
 
-    license_table = Table(
-        [
-            ["Software / Tool", "Type", "License Type", "Usage", "Remarks"],
-            ["React.js", "Open Source", "MIT License", "Frontend Development", "Free to use"],
-            [".NET 8 Web API", "Open Source", "MIT License", "Backend Development", "Secure and scalable API"],
-            ["Microsoft SQL Server", "Commercial / Developer", "Microsoft Software License", "Database Storage", "Used for DAMS database"],
-            ["Tailwind CSS", "Open Source", "MIT License", "UI Styling", "For responsive design"],
-            ["Visual Studio Code", "Open Source", "MIT License", "Code Editor", "Free development environment"],
-            ["Postman", "Freeware", "Free", "API Testing", "Backend testing"],
-            ["Azure / Local Server", "Cloud / Local Hosting", "As per hosting plan", "Deployment Environment", "Production or development hosting"],
-        ],
-        colWidths=[1.15 * inch, 0.95 * inch, 1.15 * inch, 1.2 * inch, 1.15 * inch],
-        repeatRows=1,
-    )
-    license_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                ("FONTNAME", (0, 0), (-1, 0), "Times-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "Times-Roman"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.whitesmoke]),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ]
-        )
-    )
+    page_width = letter[0] - doc.leftMargin - doc.rightMargin
 
-    revision_table = Table(
+    revision_table = build_wrapped_table(
         [
             ["Version", "Description", "Author", "Date"],
             [
                 "1.0",
                 "This document contains External Interface Requirements of Deen Associate Management System",
-                "Muhammad Junaid Riaz",
-                "27th June, 2026",
+                AUTHOR,
+                DOC_DATE,
             ],
         ],
-        colWidths=[0.7 * inch, 2.8 * inch, 1.5 * inch, 1.0 * inch],
+        [0.65 * inch, page_width - 2.95 * inch, 1.35 * inch, 0.95 * inch],
     )
-    revision_table.setStyle(
-        TableStyle(
+
+    license_table = build_wrapped_table(
+        [
+            ["Software / Tool", "Type", "License Type", "Usage", "Remarks"],
+            ["React.js", "Open Source", "MIT License", "Frontend Development", "Free to use"],
+            [".NET 8 Web API", "Open Source", "MIT License", "Backend Development", "Secure and scalable API"],
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Times-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "Times-Roman"),
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ]
-        )
+                "Microsoft SQL Server",
+                "Commercial / Developer",
+                "Microsoft Software License",
+                "Database Storage",
+                "Used for DAMS database",
+            ],
+            ["Tailwind CSS", "Open Source", "MIT License", "UI Styling", "For responsive design"],
+            [
+                "Visual Studio Code",
+                "Open Source",
+                "MIT License",
+                "Code Editor",
+                "Free development environment",
+            ],
+            ["Postman", "Freeware", "Free", "API Testing", "Backend testing"],
+            [
+                "Azure / Local Server",
+                "Cloud / Local Hosting",
+                "As per hosting plan",
+                "Deployment Environment",
+                "Production or development hosting",
+            ],
+        ],
+        [1.2 * inch, 1.0 * inch, 1.15 * inch, 1.55 * inch, page_width - 4.9 * inch],
     )
 
     story = [
@@ -180,9 +203,9 @@ def build_pdf() -> Path:
         Spacer(1, 0.45 * inch),
         Paragraph("Proposed By", cover_body),
         Spacer(1, 0.1 * inch),
-        Paragraph("Muhammad Junaid Riaz", cover_sub),
+        Paragraph(AUTHOR, cover_sub),
         Spacer(1, 0.35 * inch),
-        Paragraph("27th June, 2026", cover_body),
+        Paragraph(DOC_DATE, cover_body),
         PageBreak(),
         Paragraph("Revision History", heading),
         Spacer(1, 8),
@@ -288,8 +311,6 @@ def build_pdf() -> Path:
         shutil.copy2(out, path)
 
     print(f"Created {out}")
-    for path in OUT_PATHS:
-        print(f"  -> {path}")
     return out
 
 
