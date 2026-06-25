@@ -27,11 +27,11 @@ export default function Section({
         <div className={`mb-12 space-y-4 ${alignment}`}>
           {eyebrow && (
             <div className="inline-flex items-center gap-2">
-              <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-500">
+              <span className="h-px w-8 bg-gradient-to-r from-transparent to-[var(--accent)]" />
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--accent)]">
                 {eyebrow}
               </p>
-              <span className="h-px w-8 bg-gradient-to-l from-transparent to-indigo-500" />
+              <span className="h-px w-8 bg-gradient-to-l from-transparent to-[var(--accent)]" />
             </div>
           )}
           {title && (
