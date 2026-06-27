@@ -17,13 +17,13 @@ export default function LandingPage() {
           </div>
 
           <h1 className="animate-fade-in-up-delay-1 text-4xl font-bold leading-[1.1] sm:text-5xl lg:text-6xl">
-            <span className="text-white">Manage Projects with </span>
+            <span className="text-[var(--text-heading)]">Manage Projects with </span>
             <span className="bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
               Full Visibility
             </span>
           </h1>
 
-          <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-xl text-base text-[#a1a1b5] sm:text-lg leading-relaxed">
+          <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-xl text-base text-[var(--text-secondary)] sm:text-lg leading-relaxed">
             Track projects, manage units, align teams, and keep stakeholders informed — all in one place.
           </p>
 

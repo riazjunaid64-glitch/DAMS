@@ -8,39 +8,25 @@ export default function HomePage() {
       {/* ─── Welcome Hero ─── */}
       <section className="relative overflow-hidden">
         {/* Building hero background */}
-        <div className="hero-bg-image absolute inset-0 scale-105" aria-hidden="true" />
+        <div className="hero-bg-image absolute inset-0" aria-hidden="true" />
         <div className="hero-bg-overlay absolute inset-0" aria-hidden="true" />
 
-        {/* Background Effects */}
-        <div className="absolute inset-0 mesh-gradient-hero opacity-80" />
-        <div className="dot-grid absolute inset-0 opacity-20" />
-        <div className="absolute left-1/2 top-0 h-[600px] w-[600px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/[0.07] blur-[120px]" />
-        <div className="absolute bottom-0 right-0 h-[400px] w-[400px] translate-x-1/4 translate-y-1/4 rounded-full bg-violet-500/[0.05] blur-[100px]" />
-
-        {/* Floating Orbs */}
-        <div className="absolute left-[15%] top-[20%] h-2 w-2 rounded-full bg-indigo-400/40 animate-float" />
-        <div className="absolute right-[20%] top-[30%] h-1.5 w-1.5 rounded-full bg-violet-400/30 animate-float-slow" />
-        <div className="absolute left-[70%] top-[60%] h-2.5 w-2.5 rounded-full bg-cyan-400/20 animate-float" />
-
         <Container className="relative flex min-h-[85vh] items-center justify-center py-24">
-          <div className="mx-auto max-w-4xl text-center">
+          <div className="hero-copy-panel animate-fade-in-up mx-auto max-w-4xl px-8 py-12 text-center sm:px-12 sm:py-14">
             {/* Badge */}
-            <div className="animate-fade-in-up mb-6 inline-flex items-center gap-2 rounded-full border border-indigo-500/20 bg-indigo-500/[0.08] px-4 py-1.5 shadow-sm">
-              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
-              <span className="text-xs font-semibold uppercase tracking-wider text-indigo-500">Deen Associate</span>
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[var(--accent-warm)]/35 bg-white/10 px-4 py-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-warm)] animate-pulse" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-warm)]">Deen Associate</span>
             </div>
 
             {/* Title */}
-            <h1 className="animate-fade-in-up-delay-1 text-4xl font-bold leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
-              <span className="text-[var(--text-heading)]">Welcome to</span>
-              <br />
-              <span className="bg-gradient-to-r from-indigo-400 via-violet-400 to-purple-400 bg-clip-text text-transparent animate-gradient">
-                Deen Associate
-              </span>
+            <h1 className="animate-fade-in-up-delay-1 text-4xl font-bold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl">
+              <span className="block text-white">Welcome to</span>
+              <span className="mt-1 block text-[var(--accent-warm)]">Deen Associate</span>
             </h1>
 
             {/* Subtitle */}
-            <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-2xl text-base text-[var(--text-secondary)] sm:text-lg leading-relaxed">
+            <p className="animate-fade-in-up-delay-2 mx-auto mt-6 max-w-2xl text-base text-[#f0e0e2] sm:text-lg leading-relaxed">
               Manage and track all your projects, units, and progress — everything in one place.
             </p>
 
@@ -55,7 +41,11 @@ export default function HomePage() {
                 </Button>
               </Link>
               <Link to="/contact">
-                <Button variant="outline" size="lg">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="!border-white/50 !text-white hover:!border-white hover:!bg-white/10 hover:!text-white"
+                >
                   Contact Us
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>

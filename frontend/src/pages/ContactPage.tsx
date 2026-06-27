@@ -3,6 +3,7 @@ import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import Section from "../lib/Section.tsx";
+import { SITE_CONTACT } from "../lib/siteContact.ts";
 
 const CONTACT_INFO = [
   {
@@ -12,7 +13,7 @@ const CONTACT_INFO = [
       </svg>
     ),
     label: "Visit Our Office",
-    value: "123 Business Avenue, City Center",
+    value: SITE_CONTACT.address,
   },
   {
     icon: (
@@ -21,7 +22,7 @@ const CONTACT_INFO = [
       </svg>
     ),
     label: "Call Us",
-    value: "+1 (555) 123-4567",
+    value: `${SITE_CONTACT.phone} / ${SITE_CONTACT.phoneMobile}`,
   },
   {
     icon: (
@@ -30,7 +31,7 @@ const CONTACT_INFO = [
       </svg>
     ),
     label: "Email Us",
-    value: "contact@deenassociate.com",
+    value: SITE_CONTACT.email,
   },
   {
     icon: (
@@ -39,7 +40,7 @@ const CONTACT_INFO = [
       </svg>
     ),
     label: "Support Hours",
-    value: "Sun–Thu: 9am – 6pm",
+    value: SITE_CONTACT.hours,
   },
 ];
 
@@ -93,17 +94,23 @@ export default function ContactPage() {
                 </div>
               ))}
 
-              {/* Map placeholder */}
+              {/* Map */}
               <div className="glass-card overflow-hidden animate-fade-in-up" style={{ animationDelay: "320ms" }}>
-                <div className="relative h-48 bg-gradient-to-br from-[#16161f] to-[#111118] flex items-center justify-center">
-                  <div className="dot-grid absolute inset-0 opacity-40" />
-                  <div className="relative text-center">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-[var(--text-muted)]" strokeLinecap="round">
-                      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
-                    </svg>
-                    <p className="mt-2 text-xs text-[var(--text-muted)]">123 Business Avenue</p>
-                  </div>
-                </div>
+                <iframe
+                  title="Deen Associate office location"
+                  src={SITE_CONTACT.mapsEmbedUrl}
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  className="block h-48 w-full border-0"
+                />
+                <a
+                  href={SITE_CONTACT.mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block bg-[var(--accent)] px-4 py-3 text-center text-sm font-semibold text-[var(--accent-warm)] transition hover:bg-[var(--accent-light)] hover:text-white"
+                >
+                  Open in Google Maps
+                </a>
               </div>
             </div>
 

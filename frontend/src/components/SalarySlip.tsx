@@ -85,7 +85,7 @@ function EditableField({
           style={{
             flex: 1,
             border: "none",
-            borderBottom: "2px solid #6366f1",
+            borderBottom: "2px solid #390217",
             background: "transparent",
             fontSize: "13px",
             color: "#111827",
@@ -123,7 +123,7 @@ function EditableField({
               border: "none",
               cursor: "pointer",
               padding: "0 2px",
-              color: "#6366f1",
+              color: "#390217",
               fontSize: "14px",
               lineHeight: 1,
             }}
