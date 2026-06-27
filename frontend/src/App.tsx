@@ -5,7 +5,6 @@ import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
 import SiteLogo from "./components/SiteLogo.tsx";
 import Button from "./lib/Button.tsx";
-import Container from "./lib/Container.tsx";
 import AboutPage from "./pages/AboutPage.tsx";
 import ContactPage from "./pages/ContactPage.tsx";
 import HomePage from "./pages/HomePage.tsx";
