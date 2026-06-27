@@ -115,7 +115,7 @@ def compute_layout(
     height = DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET + messages_h + MARGIN_BOTTOM + CAPTION_GAP + 40
     height = max(height, BASE_H)
 
-    inner_gap = 48 if len(participants) >= 4 else 58
+    inner_gap = 40 if len(participants) >= 5 else (48 if len(participants) >= 4 else 58)
     total_p_w = sum(p_widths)
     content_w = ACTOR_W + 64 + total_p_w + inner_gap * (len(participants) - 1)
 
@@ -139,32 +139,43 @@ def compute_layout(
 def draw_actor(
     draw: ImageDraw.ImageDraw,
     cx: int,
-    y_base: int,
+    lifeline_y0: int,
     name: str,
     font: ImageFont.FreeTypeFont,
 ) -> None:
-    """Draw stick-figure actor — kept below title zone, above lifeline."""
-    head_r = 15
-    # Keep actor compact; top of head stays below title zone
-    head_cy = y_base - 62
-    min_head_top = TITLE_Y + TITLE_ZONE_H + 4
-    if head_cy - head_r < min_head_top:
-        head_cy = min_head_top + head_r
+    """Draw UML actor: stick figure above name label, lifeline starts below name."""
+    head_r = 14
+    name_h = font.size + 4
+    name_y = lifeline_y0 - name_h - 14          # name sits just above lifeline
+    feet_y = name_y - 14                        # bottom of legs, clear gap above name
+    body_bot = feet_y - 22
+    body_top = body_bot - 30
+    head_cy = body_top - head_r - 2
 
+    # Keep entire actor below title zone
+    min_head_top = TITLE_Y + TITLE_ZONE_H + 8
+    if head_cy - head_r < min_head_top:
+        delta = min_head_top - (head_cy - head_r)
+        head_cy += delta
+        body_top += delta
+        body_bot += delta
+        feet_y += delta
+        name_y += delta
+
+    # Stick figure
     draw.ellipse(
         (cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r),
         outline="black",
         width=LINE_BOLD,
     )
-    body_top = head_cy + head_r
-    body_bot = y_base - 32
-    draw.line((cx, body_top, cx, body_bot), fill="black", width=LINE_BOLD)
-    draw.line((cx - 18, body_top + 14, cx + 18, body_top + 14), fill="black", width=LINE_BOLD)
-    draw.line((cx, body_bot, cx - 16, body_bot + 20), fill="black", width=LINE_BOLD)
-    draw.line((cx, body_bot, cx + 16, body_bot + 20), fill="black", width=LINE_BOLD)
+    draw.line((cx, head_cy + head_r, cx, body_bot), fill="black", width=LINE_BOLD)
+    draw.line((cx - 17, body_top + 12, cx + 17, body_top + 12), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx - 15, feet_y), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx + 15, feet_y), fill="black", width=LINE_BOLD)
 
+    # Name label below figure, above lifeline — no overlap with icon
     nw = draw.textlength(name, font=font)
-    draw.text((cx - nw / 2, y_base - 22), name, fill="black", font=font)
+    draw.text((cx - nw / 2, name_y), name, fill="black", font=font)
 
 
 def draw_participant_box(
@@ -310,15 +321,16 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
                 draw.line((x, y_a, min(x + dash, max(x_a, x_b)), y_a), fill=BOUNDARY_COLOR, width=LINE_MED)
                 x += dash + gap
 
-    draw_actor(draw, actor_cx, DIAGRAM_TOP + PARTICIPANT_H, diagram.actor, actor_font)
+    actor_lifeline_y0 = DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET
+    draw_actor(draw, actor_cx, actor_lifeline_y0, diagram.actor, actor_font)
 
     # Participant boxes + lifelines
     for name, cx, pw in zip(diagram.participants, p_xs, p_widths):
         draw_participant_box(draw, cx, DIAGRAM_TOP, pw, name, p_font)
-        draw_lifeline(draw, cx, DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
+        draw_lifeline(draw, cx, actor_lifeline_y0, ly1)
 
     actor_lifeline_x = actor_cx
-    draw_lifeline(draw, actor_lifeline_x, DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
+    draw_lifeline(draw, actor_lifeline_x, actor_lifeline_y0, ly1)
 
     def x_for(idx: int) -> int:
         if idx == -1:
@@ -391,12 +403,12 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Guest",
             participants=["AuthController", "AuthService", "Database"],
             messages=[
-                Message(-1, 0, "1: register(fullName, email, password)"),
+                Message(-1, 0, "1: POST /api/Auth/register"),
                 Message(0, 1, "2: RegisterAsync(dto)"),
-                Message(1, 2, "3: checkEmailUnique(email)"),
-                Message(2, 1, "4: email available", is_return=True),
-                Message(1, 2, "5: insertUser(hashedPassword, Role=Client)"),
-                Message(2, 1, "6: user saved", is_return=True),
+                Message(1, 2, "3: check email unique"),
+                Message(2, 1, "4: available", is_return=True),
+                Message(1, 2, "5: insert User (Role=Client, BCrypt hash)"),
+                Message(2, 1, "6: saved", is_return=True),
                 Message(1, 0, "7: success", is_return=True),
                 Message(0, -1, "8: HTTP 200 OK", is_return=True),
             ],
@@ -408,19 +420,19 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="User",
             participants=["AuthController", "AuthService", "TokenService", "Database"],
             messages=[
-                Message(-1, 0, "1: login(email, password)"),
+                Message(-1, 0, "1: POST /api/Auth/login"),
                 Message(0, 1, "2: Login(credentials)"),
-                Message(1, 3, "3: findUserByEmail(email)"),
+                Message(1, 3, "3: find User by email"),
                 Message(3, 1, "4: user record", is_return=True),
                 Message(1, 2, "5: GenerateAccessToken(user)"),
-                Message(2, 1, "6: JWT token", is_return=True),
+                Message(2, 1, "6: JWT (15 min)", is_return=True),
                 Message(1, 2, "7: GenerateRefreshToken()"),
                 Message(2, 1, "8: refresh token", is_return=True),
-                Message(1, 3, "9: saveRefreshToken(user)"),
+                Message(1, 3, "9: save RefreshToken on User"),
                 Message(3, 1, "10: saved", is_return=True),
-                Message(1, 0, "11: tokens", is_return=True),
+                Message(1, 0, "11: token pair", is_return=True),
                 Message(0, -1, "12: { accessToken, refreshToken }", is_return=True),
-                Message(-1, 0, "13: getProfile()"),
+                Message(-1, 0, "13: GET /api/Auth/profile"),
                 Message(0, -1, "14: { userId, email, role }", is_return=True),
             ],
         ),
@@ -429,16 +441,20 @@ def build_diagrams() -> list[SSDDiagram]:
             title="System Sequence Diagram — Browse Projects",
             caption="Guest browses projects and units",
             actor="Guest",
-            participants=["ProjectController", "UnitController", "Database"],
+            participants=["ProjectController", "ProjectService", "UnitController", "UnitService", "Database"],
             messages=[
-                Message(-1, 0, "1: viewProjects()"),
-                Message(0, 2, "2: getAllProjects()"),
-                Message(2, 0, "3: project list", is_return=True),
-                Message(0, -1, "4: projects[]", is_return=True),
-                Message(-1, 1, "5: viewUnits(projectId)"),
-                Message(1, 2, "6: getUnitsByProjectId(id)"),
-                Message(2, 1, "7: units[]", is_return=True),
-                Message(1, -1, "8: unit cards", is_return=True),
+                Message(-1, 0, "1: GET /api/Project"),
+                Message(0, 1, "2: GetAllProjectsAsync()"),
+                Message(1, 4, "3: query Projects"),
+                Message(4, 1, "4: project list", is_return=True),
+                Message(1, 0, "5: projects[]", is_return=True),
+                Message(0, -1, "6: HTTP 200 OK", is_return=True),
+                Message(-1, 2, "7: GET /api/Unit/project/{id}"),
+                Message(2, 3, "8: GetUnitsByProjectIdAsync(id)"),
+                Message(3, 4, "9: query Units"),
+                Message(4, 3, "10: units[]", is_return=True),
+                Message(3, 2, "11: units[]", is_return=True),
+                Message(2, -1, "12: HTTP 200 OK", is_return=True),
             ],
         ),
         SSDDiagram(
@@ -448,10 +464,10 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Client",
             participants=["BookingRequestController", "BookingRequestService", "Database"],
             messages=[
-                Message(-1, 0, "1: submitRequest(unitId, details)"),
+                Message(-1, 0, "1: POST /api/BookingRequest"),
                 Message(0, 1, "2: CreateBookingRequestAsync(dto)"),
-                Message(1, 2, "3: validateUnitAvailable()"),
-                Message(2, 1, "4: unit OK", is_return=True),
+                Message(1, 2, "3: validate Unit.Status = Available"),
+                Message(2, 1, "4: OK", is_return=True),
                 Message(1, 2, "5: insert BookingRequest (Pending)"),
                 Message(1, 2, "6: update Unit.Status = PendingReview"),
                 Message(2, 1, "7: saved", is_return=True),
@@ -466,17 +482,17 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingRequestController", "BookingRequestService", "CustomerService", "BookingService", "Database"],
             messages=[
-                Message(-1, 0, "1: approve(requestId)"),
+                Message(-1, 0, "1: POST /api/BookingRequest/{id}/approve"),
                 Message(0, 1, "2: ApproveBookingRequestAsync(id)"),
                 Message(1, 2, "3: FindOrCreateCustomerAsync(details)"),
-                Message(2, 4, "4: findByCNIC/Phone/Email or create"),
+                Message(2, 4, "4: find by CNIC/Phone/Email or create"),
                 Message(4, 2, "5: customerId", is_return=True),
                 Message(2, 1, "6: customerId", is_return=True),
                 Message(1, 3, "7: CreateBookingForApprovedRequestAsync()"),
                 Message(3, 4, "8: insert Booking (AwaitingBookingAmount)"),
                 Message(3, 4, "9: update Unit.Status = Reserved"),
-                Message(4, 3, "10: booking saved", is_return=True),
-                Message(3, 1, "11: bookingDto", is_return=True),
+                Message(4, 3, "10: saved", is_return=True),
+                Message(3, 1, "11: BookingResponseDto", is_return=True),
                 Message(1, 0, "12: approved", is_return=True),
                 Message(0, -1, "13: HTTP 200 OK", is_return=True),
             ],
@@ -488,9 +504,9 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingRequestController", "BookingRequestService", "Database"],
             messages=[
-                Message(-1, 0, "1: reject(requestId, reason)"),
+                Message(-1, 0, "1: POST /api/BookingRequest/{id}/reject"),
                 Message(0, 1, "2: RejectBookingRequestAsync(id, reason)"),
-                Message(1, 2, "3: update Status = Rejected"),
+                Message(1, 2, "3: update BookingRequest.Status = Rejected"),
                 Message(1, 2, "4: update Unit.Status = Available"),
                 Message(2, 1, "5: saved", is_return=True),
                 Message(1, 0, "6: rejected", is_return=True),
@@ -504,16 +520,17 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingController", "BookingService", "CustomerService", "Database"],
             messages=[
-                Message(-1, 0, "1: createBooking(dto)"),
-                Message(0, 1, "2: CreateBookingAsync(dto)"),
+                Message(-1, 0, "1: POST /api/Booking"),
+                Message(0, 1, "2: CreateBookingAsync(dto, adminUserId)"),
                 Message(1, 2, "3: FindOrCreateCustomerAsync()"),
-                Message(2, 3, "4: resolve customer"),
+                Message(2, 3, "4: find by CNIC/Phone/Email or create"),
                 Message(3, 2, "5: customerId", is_return=True),
                 Message(2, 1, "6: customerId", is_return=True),
-                Message(1, 3, "7: insert Booking + Unit=Reserved"),
-                Message(3, 1, "8: bookingDto", is_return=True),
-                Message(1, 0, "9: result", is_return=True),
-                Message(0, -1, "10: HTTP 201 Created", is_return=True),
+                Message(1, 3, "7: insert Booking (AwaitingBookingAmount)"),
+                Message(1, 3, "8: update Unit.Status = Reserved"),
+                Message(3, 1, "9: BookingResponseDto", is_return=True),
+                Message(1, 0, "10: result", is_return=True),
+                Message(0, -1, "11: HTTP 201 Created", is_return=True),
             ],
         ),
         SSDDiagram(
@@ -523,7 +540,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingController", "BookingService", "Database"],
             messages=[
-                Message(-1, 0, "1: recordBookingPayment(id, amount)"),
+                Message(-1, 0, "1: POST /api/Booking/{id}/booking-amount-payment"),
                 Message(0, 1, "2: RecordBookingAmountPaymentAsync()"),
                 Message(1, 2, "3: validate amount <= remaining"),
                 Message(2, 1, "4: OK", is_return=True),
@@ -531,7 +548,7 @@ def build_diagrams() -> list[SSDDiagram]:
                 Message(1, 2, "6: increment BookingAmountReceived"),
                 Message(1, 2, "7: if fully paid: Status=PaymentPlanActive\nUnit=OnPaymentPlan"),
                 Message(2, 1, "8: saved", is_return=True),
-                Message(1, 0, "9: bookingDto", is_return=True),
+                Message(1, 0, "9: BookingResponseDto", is_return=True),
                 Message(0, -1, "10: HTTP 200 OK", is_return=True),
             ],
         ),
@@ -542,14 +559,14 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingController", "InstallmentService", "Database"],
             messages=[
-                Message(-1, 0, "1: generatePlan(id, terms)"),
+                Message(-1, 0, "1: POST /api/Booking/{id}/installment-plan/generate"),
                 Message(0, 1, "2: GenerateScheduleAsync(dto)"),
                 Message(1, 2, "3: calculate pool = salePrice - received - possession"),
                 Message(1, 2, "4: delete old installments (if regenerate)"),
                 Message(1, 2, "5: insert Installment rows (Regular + Possession)"),
                 Message(1, 2, "6: update Booking plan metadata"),
                 Message(2, 1, "7: saved", is_return=True),
-                Message(1, 0, "8: scheduleDto", is_return=True),
+                Message(1, 0, "8: InstallmentScheduleDto", is_return=True),
                 Message(0, -1, "9: HTTP 200 OK", is_return=True),
             ],
         ),
@@ -560,14 +577,14 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingController", "InstallmentService", "Database"],
             messages=[
-                Message(-1, 0, "1: recordPayment(bookingId, installmentId)"),
+                Message(-1, 0, "1: POST /api/Booking/{id}/installments/{instId}/payment"),
                 Message(0, 1, "2: RecordInstallmentPaymentAsync()"),
                 Message(1, 2, "3: validate installment not fully paid"),
                 Message(2, 1, "4: OK", is_return=True),
                 Message(1, 2, "5: insert Payment (Installment, RCP-xxx)"),
                 Message(1, 2, "6: update Installment Status (Paid/Partial)"),
                 Message(2, 1, "7: saved", is_return=True),
-                Message(1, 0, "8: scheduleDto", is_return=True),
+                Message(1, 0, "8: InstallmentScheduleDto", is_return=True),
                 Message(0, -1, "9: HTTP 200 OK", is_return=True),
             ],
         ),
@@ -578,8 +595,8 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="User",
             participants=["ReceiptPage", "BookingController", "BookingService", "Database"],
             messages=[
-                Message(-1, 0, "1: openReceipt(bookingId, paymentId)"),
-                Message(0, 1, "2: GET /payments/{id}/receipt"),
+                Message(-1, 0, "1: GET /receipt/{bookingId}/{paymentId}"),
+                Message(0, 1, "2: GET /api/Booking/.../payments/{id}/receipt\n(or MyProjects for Client)"),
                 Message(1, 2, "3: GetPaymentReceiptAsync()"),
                 Message(2, 3, "4: join Payment, Booking, Customer, Unit"),
                 Message(3, 2, "5: receipt data", is_return=True),
@@ -595,7 +612,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Client",
             participants=["MyProjectsController", "BookingService", "Database"],
             messages=[
-                Message(-1, 0, "1: viewMyProjects()"),
+                Message(-1, 0, "1: GET /api/MyProjects"),
                 Message(0, 1, "2: GetBookingsByCustomerEmailAsync(email)"),
                 Message(1, 2, "3: query Bookings where Customer.Email = JWT email"),
                 Message(2, 1, "4: booking list", is_return=True),
@@ -610,8 +627,8 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["BookingController", "BookingService", "Database"],
             messages=[
-                Message(-1, 0, "1: cancelBooking(id, reason)"),
-                Message(0, 1, "2: CancelBookingAsync(id, reason)"),
+                Message(-1, 0, "1: POST /api/Booking/{id}/cancel"),
+                Message(0, 1, "2: CancelBookingAsync(id, reason, adminUserId)"),
                 Message(1, 2, "3: update Booking.Status = Cancelled"),
                 Message(1, 2, "4: update Unit.Status = Available"),
                 Message(2, 1, "5: saved", is_return=True),
@@ -626,7 +643,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["EmployeeController", "EmployeeService", "Database"],
             messages=[
-                Message(-1, 0, "1: saveAttendance(employeeId, date, status)"),
+                Message(-1, 0, "1: POST /api/Employee/{id}/attendance"),
                 Message(0, 1, "2: RecordAttendanceAsync(dto)"),
                 Message(1, 2, "3: upsert EmployeeAttendance by employee+date"),
                 Message(2, 1, "4: saved", is_return=True),
@@ -641,7 +658,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["EmployeeController", "EmployeeService", "Database"],
             messages=[
-                Message(-1, 0, "1: paySalary(employeeId, amount)"),
+                Message(-1, 0, "1: POST /api/Employee/{id}/salary"),
                 Message(0, 1, "2: GenerateSalaryAsync(dto)"),
                 Message(1, 2, "3: validate no duplicate for month/year"),
                 Message(2, 1, "4: OK", is_return=True),
@@ -659,7 +676,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["FinanceController", "FinanceService", "Database"],
             messages=[
-                Message(-1, 0, "1: loadDashboard(filters)"),
+                Message(-1, 0, "1: GET /api/Finance/dashboard"),
                 Message(0, 1, "2: GetDashboardAsync(projectId, from, to)"),
                 Message(1, 2, "3: aggregate Payments (automatic revenue)"),
                 Message(1, 2, "4: query ManualRevenue + Expenses"),
@@ -676,7 +693,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["FinanceController", "FinanceService", "Database"],
             messages=[
-                Message(-1, 0, "1: addRevenue(dto)"),
+                Message(-1, 0, "1: POST /api/Finance/revenue"),
                 Message(0, 1, "2: CreateManualRevenueAsync(dto)"),
                 Message(1, 2, "3: insert ManualRevenue"),
                 Message(2, 1, "4: saved", is_return=True),
@@ -691,7 +708,7 @@ def build_diagrams() -> list[SSDDiagram]:
             actor="Admin",
             participants=["FinanceController", "FinanceService", "Database"],
             messages=[
-                Message(-1, 0, "1: addExpense(dto)"),
+                Message(-1, 0, "1: POST /api/Finance/expenses"),
                 Message(0, 1, "2: CreateExpenseAsync(dto)"),
                 Message(1, 2, "3: insert Expense"),
                 Message(2, 1, "4: saved", is_return=True),
