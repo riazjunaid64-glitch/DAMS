@@ -19,25 +19,30 @@ FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_ITALIC = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"
 
-# Layout constants — tuned for consistent padding and alignment
-IMG_W = 2200
-BASE_H = 520
-MESSAGE_GAP = 58
-MARGIN_TOP = 92
-MARGIN_BOTTOM = 108
-MARGIN_LEFT = 72
-MARGIN_RIGHT = 72
-ACTOR_W = 110
-PARTICIPANT_H = 40
-PARTICIPANT_PAD_X = 14
-PARTICIPANT_PAD_Y = 8
-LIFELINE_TOP_OFFSET = 14
-ACTIVATION_W = 12
-ARROW_HEAD = 9
-LABEL_FONT_SIZE = 14
-TITLE_FONT_SIZE = 22
-CAPTION_FONT_SIZE = 15
-MIN_PARTICIPANT_W = 128
+# Layout constants — bold, high-contrast styling
+IMG_W = 2400
+BASE_H = 560
+MESSAGE_GAP = 60
+MARGIN_TOP = 100
+MARGIN_BOTTOM = 112
+ACTOR_W = 120
+PARTICIPANT_H = 46
+PARTICIPANT_PAD_X = 16
+PARTICIPANT_PAD_Y = 10
+LIFELINE_TOP_OFFSET = 16
+ACTIVATION_W = 18
+ARROW_HEAD = 12
+ARROW_HALF_H = 7
+LINE_BOLD = 3
+LINE_MED = 2
+LABEL_FONT_SIZE = 17
+TITLE_FONT_SIZE = 28
+CAPTION_FONT_SIZE = 18
+PARTICIPANT_FONT_SIZE = 17
+ACTOR_FONT_SIZE = 17
+MIN_PARTICIPANT_W = 148
+LIFELINE_COLOR = "#111111"
+BOUNDARY_COLOR = "#444444"
 
 
 @dataclass
@@ -87,32 +92,32 @@ def compute_layout(
     participants: list[str],
     message_count: int,
     p_widths: list[int],
-) -> tuple[int, list[int], int, int]:
-    """Return image height, participant center x coords, lifeline y start/end."""
-    height = MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET + message_count * MESSAGE_GAP + MARGIN_BOTTOM + 56
+) -> tuple[int, int, list[int], int, int]:
+    """Return height, actor cx, participant center x coords, lifeline y start/end."""
+    height = MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET + message_count * MESSAGE_GAP + MARGIN_BOTTOM + 64
     height = max(height, BASE_H)
 
-    # Actor center x
-    actor_cx = MARGIN_LEFT + ACTOR_W // 2
-
-    # Participants area
+    gap_count = max(len(participants) - 1, 1)
+    inner_gap = 44 if len(participants) >= 4 else 52
     total_p_w = sum(p_widths)
-    gap_count = len(participants) - 1
-    avail = IMG_W - MARGIN_RIGHT - (MARGIN_LEFT + ACTOR_W + 48)
-    gap = max(36, (avail - total_p_w) // max(gap_count, 1))
+    content_w = ACTOR_W + 56 + total_p_w + inner_gap * (len(participants) - 1)
+
+    # Place content block centered horizontally on canvas
+    block_left = (IMG_W - content_w) // 2
+    actor_cx = block_left + ACTOR_W // 2
 
     xs: list[int] = []
-    x = MARGIN_LEFT + ACTOR_W + 48 + p_widths[0] // 2
+    x = block_left + ACTOR_W + 56 + p_widths[0] // 2
     for i, pw in enumerate(p_widths):
         if i == 0:
             xs.append(x)
         else:
             prev = xs[-1]
-            xs.append(prev + p_widths[i - 1] // 2 + gap + pw // 2)
+            xs.append(prev + p_widths[i - 1] // 2 + inner_gap + pw // 2)
 
     lifeline_y0 = MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET
     lifeline_y1 = height - MARGIN_BOTTOM
-    return height, xs, lifeline_y0, lifeline_y1
+    return height, actor_cx, xs, lifeline_y0, lifeline_y1
 
 
 def draw_actor(
@@ -123,22 +128,22 @@ def draw_actor(
     font: ImageFont.FreeTypeFont,
 ) -> None:
     """Draw stick-figure actor above lifeline."""
-    head_r = 14
-    head_cy = y_base - 78
+    head_r = 16
+    head_cy = y_base - 82
     draw.ellipse(
         (cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r),
         outline="black",
-        width=2,
+        width=LINE_BOLD,
     )
     body_top = head_cy + head_r
-    body_bot = y_base - 38
-    draw.line((cx, body_top, cx, body_bot), fill="black", width=2)
-    draw.line((cx - 18, body_top + 16, cx + 18, body_top + 16), fill="black", width=2)
-    draw.line((cx, body_bot, cx - 16, body_bot + 22), fill="black", width=2)
-    draw.line((cx, body_bot, cx + 16, body_bot + 22), fill="black", width=2)
+    body_bot = y_base - 40
+    draw.line((cx, body_top, cx, body_bot), fill="black", width=LINE_BOLD)
+    draw.line((cx - 20, body_top + 18, cx + 20, body_top + 18), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx - 18, body_bot + 24), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx + 18, body_bot + 24), fill="black", width=LINE_BOLD)
 
     nw = draw.textlength(name, font=font)
-    draw.text((cx - nw / 2, y_base - 28), name, fill="black", font=font)
+    draw.text((cx - nw / 2, y_base - 30), name, fill="black", font=font)
 
 
 def draw_participant_box(
@@ -153,7 +158,7 @@ def draw_participant_box(
     x1 = cx + width // 2
     y0 = y
     y1 = y + PARTICIPANT_H
-    draw.rectangle((x0, y0, x1, y1), outline="black", width=2, fill="white")
+    draw.rectangle((x0, y0, x1, y1), outline="black", width=LINE_BOLD, fill="white")
     label = f":{name}"
     lw = draw.textlength(label, font=font)
     draw.text((cx - lw / 2, y0 + PARTICIPANT_PAD_Y), label, fill="black", font=font)
@@ -164,21 +169,21 @@ def draw_lifeline(
     draw: ImageDraw.ImageDraw, x: int, y0: int, y1: int, dashed: bool = True
 ) -> None:
     if dashed:
-        step = 10
+        step, seg = 12, 8
         y = y0
         while y < y1:
-            seg_end = min(y + step, y1)
-            draw.line((x, y, x, seg_end), fill="#444444", width=1)
-            y += step * 2
+            seg_end = min(y + seg, y1)
+            draw.line((x, y, x, seg_end), fill=LIFELINE_COLOR, width=LINE_MED)
+            y += step + seg
     else:
-        draw.line((x, y0, x, y1), fill="#444444", width=1)
+        draw.line((x, y0, x, y1), fill=LIFELINE_COLOR, width=LINE_MED)
 
 
 def draw_activation(
     draw: ImageDraw.ImageDraw, x: int, y0: int, y1: int
 ) -> None:
     x0 = x - ACTIVATION_W // 2
-    draw.rectangle((x0, y0, x0 + ACTIVATION_W, y1), fill="#E8E8E8", outline="black", width=1)
+    draw.rectangle((x0, y0, x0 + ACTIVATION_W, y1), fill="#DDDDDD", outline="black", width=LINE_MED)
 
 
 def draw_horizontal_arrow(
@@ -195,38 +200,37 @@ def draw_horizontal_arrow(
     tip_x = right if direction == 1 else left
 
     if dashed:
-        step = 7
-        x = left + 4
-        while x < tip_x - direction * (ARROW_HEAD + 2):
-            seg = min(x + step, tip_x - direction * (ARROW_HEAD + 2))
-            draw.line((x, y, seg, y), fill="black", width=1)
+        step = 9
+        x = left + 6
+        while x < tip_x - direction * (ARROW_HEAD + 3):
+            seg = min(x + step, tip_x - direction * (ARROW_HEAD + 3))
+            draw.line((x, y, seg, y), fill="black", width=LINE_MED)
             x += step * 2
-        # Open arrowhead for returns
         if direction == 1:
-            draw.line((tip_x - ARROW_HEAD, y - 5, tip_x, y), fill="black", width=1)
-            draw.line((tip_x - ARROW_HEAD, y + 5, tip_x, y), fill="black", width=1)
+            draw.line((tip_x - ARROW_HEAD, y - ARROW_HALF_H, tip_x, y), fill="black", width=LINE_MED)
+            draw.line((tip_x - ARROW_HEAD, y + ARROW_HALF_H, tip_x, y), fill="black", width=LINE_MED)
         else:
-            draw.line((tip_x + ARROW_HEAD, y - 5, tip_x, y), fill="black", width=1)
-            draw.line((tip_x + ARROW_HEAD, y + 5, tip_x, y), fill="black", width=1)
+            draw.line((tip_x + ARROW_HEAD, y - ARROW_HALF_H, tip_x, y), fill="black", width=LINE_MED)
+            draw.line((tip_x + ARROW_HEAD, y + ARROW_HALF_H, tip_x, y), fill="black", width=LINE_MED)
     else:
-        draw.line((left, y, tip_x - direction * ARROW_HEAD, y), fill="black", width=2)
+        draw.line((left, y, tip_x - direction * ARROW_HEAD, y), fill="black", width=LINE_BOLD)
         if direction == 1:
             draw.polygon(
-                [(tip_x, y), (tip_x - ARROW_HEAD, y - 5), (tip_x - ARROW_HEAD, y + 5)],
+                [(tip_x, y), (tip_x - ARROW_HEAD, y - ARROW_HALF_H), (tip_x - ARROW_HEAD, y + ARROW_HALF_H)],
                 fill="black",
             )
         else:
             draw.polygon(
-                [(tip_x, y), (tip_x + ARROW_HEAD, y - 5), (tip_x + ARROW_HEAD, y + 5)],
+                [(tip_x, y), (tip_x + ARROW_HEAD, y - ARROW_HALF_H), (tip_x + ARROW_HEAD, y + ARROW_HALF_H)],
                 fill="black",
             )
 
     if label and label_font:
-        max_chars = 34 if abs(x2 - x1) < 280 else 40
+        max_chars = 32 if abs(x2 - x1) < 300 else 38
         lines = wrap_label(label, max_chars)
-        line_h = label_font.size + 4
+        line_h = label_font.size + 5
         total_h = len(lines) * line_h
-        ly = y - total_h - 8
+        ly = y - total_h - 10
         mid = (x1 + x2) / 2
         for line in lines:
             lw = draw.textlength(line, font=label_font)
@@ -237,10 +241,10 @@ def draw_horizontal_arrow(
 def render_ssd(diagram: SSDDiagram) -> Image.Image:
     tmp = Image.new("RGB", (IMG_W, 100), "white")
     tdraw = ImageDraw.Draw(tmp)
-    p_font = load_font(15, bold=True)
+    p_font = load_font(PARTICIPANT_FONT_SIZE, bold=True)
     p_widths = measure_participant_widths(tdraw, diagram.participants, p_font)
 
-    height, p_xs, ly0, ly1 = compute_layout(
+    height, actor_cx, p_xs, ly0, ly1 = compute_layout(
         diagram.actor, diagram.participants, len(diagram.messages), p_widths
     )
 
@@ -248,25 +252,25 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
     draw = ImageDraw.Draw(img)
 
     title_font = load_font(TITLE_FONT_SIZE, bold=True)
-    caption_font = load_font(CAPTION_FONT_SIZE)
-    actor_font = load_font(14, bold=True)
-    label_size = 13 if len(diagram.participants) >= 4 else LABEL_FONT_SIZE
-    label_font = load_font(label_size)
-    p_font = load_font(15, bold=True)
+    caption_font = load_font(CAPTION_FONT_SIZE, bold=True)
+    actor_font = load_font(ACTOR_FONT_SIZE, bold=True)
+    label_size = 15 if len(diagram.participants) >= 5 else (16 if len(diagram.participants) >= 4 else LABEL_FONT_SIZE)
+    label_font = load_font(label_size, bold=True)
+    p_font = load_font(PARTICIPANT_FONT_SIZE, bold=True)
 
-    # Title
+    # Title — centered
     title = diagram.title
     tw = draw.textlength(title, font=title_font)
-    draw.text(((IMG_W - tw) / 2, 24), title, fill="black", font=title_font)
+    draw.text(((IMG_W - tw) / 2, 28), title, fill="black", font=title_font)
 
-    actor_cx = MARGIN_LEFT + ACTOR_W // 2
     actor_y = MARGIN_TOP
 
-    # System boundary (dashed) around participants
-    boundary_x0 = p_xs[0] - p_widths[0] // 2 - 24
-    boundary_x1 = p_xs[-1] + p_widths[-1] // 2 + 24
-    boundary_y0 = MARGIN_TOP - 12
-    boundary_y1 = ly1 + 12
+    # System boundary — bold dashed box around participants
+    boundary_x0 = p_xs[0] - p_widths[0] // 2 - 28
+    boundary_x1 = p_xs[-1] + p_widths[-1] // 2 + 28
+    boundary_y0 = MARGIN_TOP - 14
+    boundary_y1 = ly1 + 14
+    dash, gap = 10, 8
     for side in [
         (boundary_x0, boundary_y0, boundary_x1, boundary_y0),
         (boundary_x0, boundary_y1, boundary_x1, boundary_y1),
@@ -277,13 +281,13 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
         if x_a == x_b:
             y = min(y_a, y_b)
             while y < max(y_a, y_b):
-                draw.line((x_a, y, x_a, min(y + 8, max(y_a, y_b))), fill="#888888", width=1)
-                y += 16
+                draw.line((x_a, y, x_a, min(y + dash, max(y_a, y_b))), fill=BOUNDARY_COLOR, width=LINE_MED)
+                y += dash + gap
         else:
             x = min(x_a, x_b)
             while x < max(x_a, x_b):
-                draw.line((x, y_a, min(x + 8, max(x_a, x_b)), y_a), fill="#888888", width=1)
-                x += 16
+                draw.line((x, y_a, min(x + dash, max(x_a, x_b)), y_a), fill=BOUNDARY_COLOR, width=LINE_MED)
+                x += dash + gap
 
     draw_actor(draw, actor_cx, actor_y + PARTICIPANT_H, diagram.actor, actor_font)
 
@@ -682,28 +686,26 @@ def create_pdf(images: list[tuple[SSDDiagram, Image.Image]]) -> None:
 
     # Cover section title page
     c.setFont("Times-Bold", 16)
-    c.drawString(72, page_h - 72, "System Sequence Diagrams")
+    c.drawCentredString(page_w / 2, page_h - 72, "System Sequence Diagrams")
     c.setFont("Times-Roman", 12)
-    c.drawString(72, page_h - 96, "Deen Associate Management System (DAMS)")
+    c.drawCentredString(page_w / 2, page_h - 96, "Deen Associate Management System (DAMS)")
     c.showPage()
 
-    for diagram, img in images:
-        c.setFont("Times-Bold", 13)
-        c.drawString(72, page_h - 60, diagram.title)
+    page_margin = 40
+    max_w = page_w - 2 * page_margin
+    max_h = page_h - 2 * page_margin
 
-        img_w = 470
+    for _diagram, img in images:
+        # Scale to fit page while keeping diagram centered
+        img_w = max_w
         img_h = img_w * img.height / img.width
-        max_h = page_h - 120
         if img_h > max_h:
             img_h = max_h
             img_w = img_h * img.width / img.height
 
-        y_pos = page_h - 78 - img_h
-        c.drawImage(ImageReader(img), (page_w - img_w) / 2, y_pos, width=img_w, height=img_h)
-
-        c.setFont("Times-Roman", 10)
-        cap = f"{diagram.figure}: {diagram.caption}"
-        c.drawCentredString(page_w / 2, 42, cap)
+        x_pos = (page_w - img_w) / 2
+        y_pos = (page_h - img_h) / 2
+        c.drawImage(ImageReader(img), x_pos, y_pos, width=img_w, height=img_h)
         c.showPage()
 
     c.save()
