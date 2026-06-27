@@ -1,7 +1,8 @@
-"""Generate detailed DAMS UML class diagram matching the sample format."""
+"""Generate detailed DAMS UML class diagram — no overlapping labels or boxes."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,12 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT_PDF = ROOT / "docs" / "DAMS_Class_Diagram.pdf"
 OUT_PNG = ROOT / "docs" / "DAMS_Class_Diagram.png"
 
-IMG_W, IMG_H = 2400, 1950
-LINE_H = 22
-HEADER_H = 32
-PAD = 10
-ROW_GAP = 95
-COL_X = (430, 1200, 1970)
+IMG_W = 3000
+LINE_H = 21
+HEADER_H = 36
+PAD = 12
+ROW_GAP = 170
+COL_X = (500, 1500, 2500)
+ADMIN_ROW_GAP = 100
 
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -42,29 +44,38 @@ def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def measure_classes(classes: list[UmlClass], draw: ImageDraw.ImageDraw) -> None:
-    name_font = load_font(17, bold=True)
-    body_font = load_font(13)
-    min_w = 290
+    name_font = load_font(16, bold=True)
+    body_font = load_font(12)
+    min_w = 300
 
     for uml in classes:
         lines = [uml.name, *uml.attributes, *uml.methods]
         max_w = max(
-            draw.textlength(line, font=name_font if line == uml.name else body_font)
+            int(draw.textlength(line, font=name_font if line == uml.name else body_font))
             for line in lines
         )
-        uml.width = max(int(max_w) + PAD * 2 + 16, min_w)
-        attr_rows = max(len(uml.attributes), 1)
-        meth_rows = max(len(uml.methods), 1)
-        uml.height = HEADER_H + attr_rows * LINE_H + meth_rows * LINE_H + 18
+        uml.width = max(max_w + PAD * 2 + 20, min_w)
+        attr_rows = len(uml.attributes) if uml.attributes else 1
+        meth_rows = len(uml.methods) if uml.methods else 1
+        uml.height = HEADER_H + attr_rows * LINE_H + meth_rows * LINE_H + 22
 
 
 def place_row(by_name: dict[str, UmlClass], names: list[str], y: int) -> int:
-    row = [by_name[name] for name in names]
+    row = [by_name[n] for n in names]
     max_h = max(c.height for c in row)
     for uml in row:
         uml.x = COL_X[uml.col] - uml.width // 2
         uml.y = y
     return y + max_h + ROW_GAP
+
+
+def box_rect(uml: UmlClass) -> tuple[int, int, int, int]:
+    return uml.x, uml.y, uml.x + uml.width, uml.y + uml.height
+
+
+def point_in_box(px: float, py: float, box: tuple[int, int, int, int], margin: int = 8) -> bool:
+    x0, y0, x1, y1 = box
+    return x0 - margin <= px <= x1 + margin and y0 - margin <= py <= y1 + margin
 
 
 def draw_class(draw: ImageDraw.ImageDraw, uml: UmlClass) -> tuple[int, int, int, int]:
@@ -73,16 +84,16 @@ def draw_class(draw: ImageDraw.ImageDraw, uml: UmlClass) -> tuple[int, int, int,
 
     draw.rectangle((x0, y0, x1, y1), outline="black", width=2, fill="white")
 
-    name_font = load_font(17, bold=True)
-    body_font = load_font(13)
+    name_font = load_font(16, bold=True)
+    body_font = load_font(12)
     cx = x0 + uml.width / 2
     nw = draw.textlength(uml.name, font=name_font)
-    draw.text((cx - nw / 2, y0 + 7), uml.name, fill="black", font=name_font)
+    draw.text((cx - nw / 2, y0 + 8), uml.name, fill="black", font=name_font)
 
     attr_top = y0 + HEADER_H
     draw.line((x0, attr_top, x1, attr_top), fill="black", width=2)
 
-    y = attr_top + 6
+    y = attr_top + 7
     if uml.attributes:
         for attr in uml.attributes:
             draw.text((x0 + PAD, y), attr, fill="black", font=body_font)
@@ -90,10 +101,10 @@ def draw_class(draw: ImageDraw.ImageDraw, uml: UmlClass) -> tuple[int, int, int,
     else:
         y += LINE_H
 
-    meth_divider = attr_top + max(len(uml.attributes), 1) * LINE_H + 6
+    meth_divider = attr_top + max(len(uml.attributes), 1) * LINE_H + 8
     draw.line((x0, meth_divider, x1, meth_divider), fill="black", width=2)
 
-    y = meth_divider + 6
+    y = meth_divider + 7
     if uml.methods:
         for method in uml.methods:
             draw.text((x0 + PAD, y), method, fill="black", font=body_font)
@@ -115,145 +126,340 @@ def box_anchor(box: tuple[int, int, int, int], target: tuple[int, int, int, int]
     return (int(cx), int(y1 if dy > 0 else y0))
 
 
+def draw_label_with_bg(
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    y: float,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    boxes: dict[str, tuple[int, int, int, int]],
+) -> None:
+    if not text:
+        return
+    tw = draw.textlength(text, font=font)
+    th = font.size + 6
+    lx, ly = x - tw / 2, y - th / 2
+
+    # Nudge label away from any class box (try all four directions)
+    nudges = [(0, -18), (0, 18), (-24, 0), (24, 0), (-18, -18), (18, 18)]
+    for ox, oy in nudges:
+        cx, cy = lx + tw / 2 + ox, ly + th / 2 + oy
+        if not any(point_in_box(cx, cy, b, margin=6) for b in boxes.values()):
+            lx += ox
+            ly += oy
+            break
+
+    draw.rectangle((lx - 5, ly - 3, lx + tw + 5, ly + th + 3), fill="white", outline="white")
+    draw.text((lx, ly), text, fill="black", font=font)
+
+
 def draw_link(
     draw: ImageDraw.ImageDraw,
     a: tuple[int, int, int, int],
     b: tuple[int, int, int, int],
-    label_a: str = "",
-    label_b: str = "",
+    label_a: str,
+    label_b: str,
+    boxes: dict[str, tuple[int, int, int, int]],
     dotted: bool = False,
+    *,
+    draw_line: bool = True,
+    draw_labels: bool = True,
 ) -> None:
     p1 = box_anchor(a, b)
     p2 = box_anchor(b, a)
-    if dotted:
-        x0, y0 = p1
-        x1, y1 = p2
-        dist = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
-        dash = 10
-        steps = max(int(dist / dash), 1)
-        for i in range(0, steps, 2):
-            t1 = i / steps
-            t2 = min((i + 1) / steps, 1)
-            draw.line(
-                (x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1, x0 + (x1 - x0) * t2, y0 + (y1 - y0) * t2),
-                fill="black",
-                width=2,
-            )
-    else:
-        draw.line((*p1, *p2), fill="black", width=2)
+    label_font = load_font(12, bold=True)
 
-    label_font = load_font(13)
-    if label_a:
-        draw.text((p1[0] + 6, p1[1] - 18), label_a, fill="black", font=label_font)
-    if label_b:
-        draw.text((p2[0] - 34, p2[1] - 18), label_b, fill="black", font=label_font)
+    if draw_line:
+        if dotted:
+            x0, y0 = p1
+            x1, y1 = p2
+            dist = math.hypot(x1 - x0, y1 - y0)
+            dash, gap = 10, 7
+            steps = max(int(dist / (dash + gap)), 1)
+            for i in range(0, steps, 2):
+                t1 = i / steps
+                t2 = min((i + 1) / steps, 1)
+                draw.line(
+                    (
+                        x0 + (x1 - x0) * t1,
+                        y0 + (y1 - y0) * t1,
+                        x0 + (x1 - x0) * t2,
+                        y0 + (y1 - y0) * t2,
+                    ),
+                    fill="black",
+                    width=2,
+                )
+        else:
+            draw.line((*p1, *p2), fill="black", width=2)
+
+    if not draw_labels:
+        return
+
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / length, dx / length
+
+    if length < 280:
+        positions = ((0.10, label_a), (0.90, label_b))
+        offset_base = 34
+    else:
+        positions = ((0.14, label_a), (0.86, label_b))
+        offset_base = 28
+
+    for i, (t, label) in enumerate(positions):
+        if not label:
+            continue
+        side = 1 if i == 0 else -1
+        mx = p1[0] + dx * t + nx * offset_base * side
+        my = p1[1] + dy * t + ny * offset_base * side
+        draw_label_with_bg(draw, mx, my, label, label_font, boxes)
 
 
 def build_classes() -> list[UmlClass]:
     return [
         UmlClass(
             "Customer",
-            ["+int CustomerId", "+string FullName", "+string Phone", "+string CNIC"],
+            [
+                "+int Id",
+                "+string FullName",
+                "+string Phone",
+                "+string CNIC",
+                "+string Email",
+            ],
             ["+viewProfile()", "+editProfile()"],
             col=0,
         ),
         UmlClass(
             "User",
-            ["+int UserId", "+string Username", "+string Password", "+string Email", "+string Role"],
-            ["+login()", "+logout()", "+changePassword()"],
+            [
+                "+int UserId",
+                "+int RoleId",
+                "+string FullName",
+                "+string Email",
+                "+string Password",
+            ],
+            ["+login()", "+logout()", "+refreshToken()"],
             col=1,
         ),
         UmlClass(
             "Project",
-            ["+int ProjectId", "+string ProjectName", "+string Location", "+string Status"],
+            [
+                "+int Id",
+                "+string ProjectName",
+                "+string Location",
+                "+ProjectStatus Status",
+            ],
             ["+addProject()", "+updateProject()", "+viewProject()"],
             col=2,
         ),
         UmlClass(
             "Booking",
-            ["+int BookingId", "+Date BookingDate", "+Date DueDate", "+string Status"],
-            ["+searchAvail()", "+makeBooking()", "+confirmBooking()", "+cancelBooking()"],
+            [
+                "+int Id",
+                "+string BookingReference",
+                "+int CustomerId",
+                "+int UnitId",
+                "+BookingStatus Status",
+                "+decimal AgreedSalePrice",
+            ],
+            ["+createBooking()", "+cancelBooking()", "+recordPayment()"],
             col=0,
         ),
         UmlClass(
             "BookingRequest",
-            ["+int RequestId", "+string Description", "+string Status"],
-            ["+submitRequest()", "+updateStatus()", "+collectFeedback()"],
+            [
+                "+int Id",
+                "+int UnitId",
+                "+string FullName",
+                "+BookingRequestStatus Status",
+            ],
+            ["+submitRequest()", "+approve()", "+reject()"],
             col=1,
         ),
         UmlClass(
-            "Employee",
-            ["+int EmployeeId", "+string TaskDetails", "+string Status"],
-            ["+viewTasks()", "+assignWorkOrder()", "+updateTask()"],
+            "Unit",
+            [
+                "+int Id",
+                "+int ProjectId",
+                "+string UnitNumber",
+                "+decimal Price",
+                "+UnitStatus Status",
+            ],
+            ["+addUnit()", "+updateUnit()", "+checkStatus()"],
             col=2,
         ),
         UmlClass(
             "Payment",
-            ["+int PaymentId", "+float Amount", "+Date PaymentDate", "+string Method"],
-            ["+processPayment()", "+generateReceipt()", "+viewHistory()"],
+            [
+                "+int Id",
+                "+int BookingId",
+                "+PaymentType Type",
+                "+decimal Amount",
+                "+string ReceiptNumber",
+            ],
+            ["+processPayment()", "+generateReceipt()"],
             col=0,
         ),
-        UmlClass("Admin", [], [], col=1),
         UmlClass(
-            "Unit",
-            ["+int UnitId", "+string UnitType", "+float Price", "+string Status"],
-            ["+addUnit()", "+updateUnit()", "+checkStatus()"],
-            col=0,
-        ),
-        UmlClass(
-            "EmployeeSalary",
-            ["+int SalaryId", "+float Amount", "+string Status"],
-            ["+defineStructure()", "+generatePayroll()"],
+            "Installment",
+            [
+                "+int Id",
+                "+int BookingId",
+                "+int SequenceNumber",
+                "+decimal Amount",
+                "+InstallmentStatus Status",
+            ],
+            ["+recordPayment()", "+getSchedule()"],
             col=1,
         ),
         UmlClass(
-            "Expense",
-            ["+int ExpenseId", "+string Category", "+float Amount"],
-            ["+addExpense()", "+updateExpense()", "+viewExpense()"],
+            "Employee",
+            [
+                "+int Id",
+                "+string FullName",
+                "+string Department",
+                "+decimal Salary",
+                "+EmployeeStatus Status",
+            ],
+            ["+assignTask()", "+recordAttendance()"],
             col=2,
         ),
+        UmlClass(
+            "EmployeeSalary",
+            [
+                "+int Id",
+                "+int EmployeeId",
+                "+decimal Amount",
+                "+int PayMonth",
+                "+int ExpenseId",
+            ],
+            ["+generateSalary()", "+viewReceipt()"],
+            col=0,
+        ),
+        UmlClass(
+            "Expense",
+            [
+                "+int Id",
+                "+string Category",
+                "+decimal Amount",
+                "+int ProjectId",
+            ],
+            ["+addExpense()", "+updateExpense()"],
+            col=1,
+        ),
+        UmlClass(
+            "ManualRevenue",
+            [
+                "+int Id",
+                "+string RevenueType",
+                "+decimal Amount",
+                "+int ProjectId",
+            ],
+            ["+addRevenue()", "+updateRevenue()"],
+            col=2,
+        ),
+        UmlClass("Admin", ["«extends User»"], [], col=1),
     ]
 
 
+def build_links() -> list[tuple[str, str, str, str, bool]]:
+    return [
+        ("User", "Customer", "1", "0..1", False),
+        ("Customer", "Booking", "1", "0..*", False),
+        ("Unit", "Booking", "1", "0..*", False),
+        ("Project", "Unit", "1", "0..*", False),
+        ("BookingRequest", "Booking", "0..1", "1", False),
+        ("Booking", "Installment", "1", "0..*", False),
+        ("Booking", "Payment", "1", "0..*", False),
+        ("Installment", "Payment", "1", "0..*", False),
+        ("Employee", "EmployeeSalary", "1", "0..*", False),
+        ("EmployeeSalary", "Expense", "1", "1", False),
+        ("Project", "Expense", "1", "0..*", False),
+        ("Project", "ManualRevenue", "1", "0..*", False),
+        ("Admin", "User", "", "", True),
+        ("Admin", "Booking", "", "", True),
+        ("Admin", "Employee", "", "", True),
+        ("Admin", "Expense", "", "", True),
+        ("Admin", "ManualRevenue", "", "", True),
+    ]
+
+
+def compute_canvas_height(classes: list[UmlClass]) -> int:
+    max_bottom = max(c.y + c.height for c in classes)
+    return max_bottom + 80
+
+
+def validate_no_overlap(classes: list[UmlClass]) -> list[str]:
+    issues: list[str] = []
+    rects = [box_rect(c) for c in classes]
+    for i, a in enumerate(rects):
+        for j, b in enumerate(rects):
+            if i >= j:
+                continue
+            x_overlap = a[0] < b[2] and b[0] < a[2]
+            y_overlap = a[1] < b[3] and b[1] < a[3]
+            if x_overlap and y_overlap:
+                issues.append(f"Box overlap: {classes[i].name} and {classes[j].name}")
+    return issues
+
+
 def create_diagram_image() -> Image.Image:
-    img = Image.new("RGB", (IMG_W, IMG_H), "white")
+    img = Image.new("RGB", (IMG_W, 2200), "white")
     draw = ImageDraw.Draw(img)
 
     classes = build_classes()
     measure_classes(classes, draw)
     by_name = {c.name: c for c in classes}
 
-    y = place_row(by_name, ["Customer", "User", "Project"], 50)
-    y = place_row(by_name, ["Booking", "BookingRequest", "Employee"], y)
-    y = place_row(by_name, ["Payment", "Admin"], y)
-    place_row(by_name, ["Unit", "EmployeeSalary", "Expense"], y)
+    y = 70
+    y = place_row(by_name, ["Customer", "User", "Project"], y)
+    y = place_row(by_name, ["Booking", "BookingRequest", "Unit"], y)
+    y = place_row(by_name, ["Payment", "Installment", "Employee"], y)
+    y = place_row(by_name, ["EmployeeSalary", "Expense", "ManualRevenue"], y)
 
-    boxes = {c.name: (c.x, c.y, c.x + c.width, c.y + c.height) for c in classes}
+    # Admin on its own row below the grid — avoids overlap with BookingRequest
+    admin = by_name["Admin"]
+    admin.width = max(admin.width, 240)
+    admin.height = HEADER_H + LINE_H + 22
+    admin.x = COL_X[1] - admin.width // 2
+    admin.y = y + ADMIN_ROW_GAP
 
-    links = [
-        ("User", "Customer", "1", "1", False),
-        ("User", "Booking", "1", "0..*", False),
-        ("User", "BookingRequest", "1", "0..*", False),
-        ("User", "Project", "1", "0..1", False),
-        ("User", "Employee", "1", "0..1", False),
-        ("Booking", "Payment", "1", "1", False),
-        ("Admin", "Unit", "", "", False),
-        ("Admin", "EmployeeSalary", "", "", False),
-        ("Admin", "Expense", "", "", False),
-        ("Admin", "Project", "", "", True),
-        ("Admin", "Payment", "", "", True),
-    ]
+    canvas_h = compute_canvas_height(classes)
+    if canvas_h > img.height:
+        img = Image.new("RGB", (IMG_W, canvas_h), "white")
+        draw = ImageDraw.Draw(img)
+
+    boxes = {c.name: box_rect(c) for c in classes}
+
+    # Draw all class boxes first
+    for c in classes:
+        boxes[c.name] = draw_class(draw, c)
+
+    # Draw association lines first (solid, then dashed)
+    links = build_links()
+    for a, b, la, lb, dotted in links:
+        if a in boxes and b in boxes and not dotted:
+            draw_link(draw, boxes[a], boxes[b], la, lb, boxes, dotted=False, draw_line=True, draw_labels=False)
 
     for a, b, la, lb, dotted in links:
-        draw_link(draw, boxes[a], boxes[b], la, lb, dotted)
+        if a in boxes and b in boxes and dotted:
+            draw_link(draw, boxes[a], boxes[b], la, lb, boxes, dotted=True, draw_line=True, draw_labels=False)
 
-    for c in classes:
-        draw_class(draw, c)
+    # Draw multiplicity labels on top of all lines
+    for a, b, la, lb, dotted in links:
+        if a in boxes and b in boxes and (la or lb):
+            draw_link(draw, boxes[a], boxes[b], la, lb, boxes, dotted=False, draw_line=False, draw_labels=True)
 
-    return crop_to_content(img, classes)
+    issues = validate_no_overlap(classes)
+    if issues:
+        print("Layout warnings:")
+        for issue in issues:
+            print(f"  - {issue}")
+
+    return crop_to_content(img, classes, margin=60)
 
 
-def crop_to_content(img: Image.Image, classes: list[UmlClass], margin: int = 50) -> Image.Image:
+def crop_to_content(img: Image.Image, classes: list[UmlClass], margin: int = 60) -> Image.Image:
     min_x = max(min(c.x for c in classes) - margin, 0)
     min_y = max(min(c.y for c in classes) - margin, 0)
     max_x = min(max(c.x + c.width for c in classes) + margin, img.width)
@@ -275,7 +481,7 @@ def create_cover_page(c: canvas.Canvas) -> None:
     c.setFont("Times-Bold", 14)
     c.drawCentredString(w / 2, h - 420, "Muhammad Junaid Riaz")
     c.setFont("Times-Roman", 13)
-    c.drawCentredString(w / 2, h - 480, "27th June, 2026")
+    c.drawCentredString(w / 2, h - 480, "27th November, 2025")
 
 
 def create_pdf(img: Image.Image) -> None:
@@ -287,11 +493,18 @@ def create_pdf(img: Image.Image) -> None:
     c.showPage()
 
     c.setFont("Times-Bold", 14)
-    c.drawString(72, h - 48, "Class Diagram")
+    c.drawCentredString(w / 2, h - 48, "Class Diagram")
 
-    img_w = 540
+    page_margin = 36
+    max_w = w - 2 * page_margin
+    max_h = h - 100
+    img_w = max_w
     img_h = img_w * img.height / img.width
-    top = h - 70 - img_h
+    if img_h > max_h:
+        img_h = max_h
+        img_w = img_h * img.width / img.height
+
+    top = (h - 60 - img_h) / 2 + 20
     c.drawImage(ImageReader(img), (w - img_w) / 2, top, width=img_w, height=img_h)
     c.showPage()
     c.save()
