@@ -10,7 +10,30 @@ from pathlib import Path
 import fitz
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+
+# Professional thesis fonts (Tinos ≈ Times New Roman, Arimo ≈ Calibri)
+_FONT_DIR = "/usr/share/fonts/truetype/croscore"
+pdfmetrics.registerFont(TTFont("TNR", f"{_FONT_DIR}/Tinos-Regular.ttf"))
+pdfmetrics.registerFont(TTFont("TNR-B", f"{_FONT_DIR}/Tinos-Bold.ttf"))
+pdfmetrics.registerFont(TTFont("TNR-I", f"{_FONT_DIR}/Tinos-Italic.ttf"))
+pdfmetrics.registerFont(TTFont("Sans", f"{_FONT_DIR}/Arimo-Regular.ttf"))
+pdfmetrics.registerFont(TTFont("Sans-B", f"{_FONT_DIR}/Arimo-Bold.ttf"))
+
+# Layout: Oxford/Cambridge (12pt, 1.5 spacing, ≥1" margins) + Zostel front-matter positions
+ML = 72  # left margin (1 inch)
+MR = 72
+MT = 72
+MB = 72
+BODY = 12
+BODY_LEAD = 18  # 1.5 line spacing
+SMALL = 11
+HEADING = 16
+TITLE = 18
+CHAPTER = 48
+FOR_SIZE = 22
 
 ROOT = Path(__file__).resolve().parents[1]
 UPLOAD = Path("/home/ubuntu/.cursor/projects/workspace/uploads")
@@ -233,43 +256,82 @@ def pdf_page_bytes(fn) -> bytes:
     return buf.read()
 
 
-def _centered_lines(
-    c: canvas.Canvas, w: float, h: float, items: list[tuple[str, str, int]], *, gap: float = 24
-) -> None:
-    if not items:
-        return
-    heights = [size + gap for _, _, size in items]
-    block_h = sum(heights) - gap
-    y = (h + block_h) / 2
-    for text, font, size in items:
-        y -= size
+def _wrap(c: canvas.Canvas, text: str, font: str, size: float, width: float) -> list[str]:
+    c.setFont(font, size)
+    words = text.split()
+    lines: list[str] = []
+    line = ""
+    for word in words:
+        test = (line + " " + word).strip()
+        if c.stringWidth(test, font, size) <= width:
+            line = test
+        else:
+            if line:
+                lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
+def _draw_wrapped(
+    c: canvas.Canvas,
+    x: float,
+    y: float,
+    text: str,
+    font: str,
+    size: float,
+    width: float,
+    leading: float,
+) -> float:
+    for ln in _wrap(c, text, font, size, width):
         c.setFont(font, size)
-        c.drawCentredString(w / 2, y, text)
-        y -= gap
+        c.drawString(x, y, ln)
+        y -= leading
+    return y
+
+
+def rl_blank_page(buf: io.BytesIO) -> None:
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.showPage()
+    c.save()
 
 
 def rl_cover_main(buf: io.BytesIO) -> None:
+    """Zostel-style title page — top-aligned, not vertically centred."""
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    _centered_lines(
-        c,
-        w,
-        h,
-        [
-            (SYSTEM, "Times-Bold", 20),
-            ("Developed By", "Times-Bold", 14),
-            (AUTHOR, "Times-Bold", 16),
-            ("BS (CS) in Software Systems", "Times-Roman", 13),
-            ("Supervised By", "Times-Roman", 13),
-            (SUPERVISOR, "Times-Bold", 14),
-            ("Project Coordinator", "Times-Roman", 13),
-            (COORDINATOR, "Times-Bold", 14),
-            ("Department of Computer Science", "Times-Roman", 12),
-            (UNIVERSITY, "Times-Roman", 12),
-            (SESSION, "Times-Roman", 12),
-        ],
-        gap=20,
-    )
+    y = h - 100
+    c.setFont("TNR-B", 20)
+    c.drawCentredString(w / 2, y, SYSTEM)
+    y -= 48
+    c.setFont("TNR-I", 14)
+    c.drawCentredString(w / 2, y, "Developed By")
+    y -= 28
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, y, AUTHOR)
+    y -= 52
+    c.setFont("TNR", 17)
+    c.drawCentredString(w / 2, y, "BS (CS) in Software Systems")
+    y -= 58
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, y, "Supervised By")
+    y -= 32
+    c.setFont("TNR-B", 16)
+    c.drawCentredString(w / 2, y, SUPERVISOR)
+    y -= 38
+    c.setFont("TNR", 16)
+    c.drawCentredString(w / 2, y, "Project Coordinator")
+    y -= 32
+    c.setFont("TNR-B", 16)
+    c.drawCentredString(w / 2, y, COORDINATOR)
+    y -= 38
+    c.setFont("TNR", 16)
+    c.drawCentredString(w / 2, y, "Department of Computer Science")
+    y -= 22
+    c.drawCentredString(w / 2, y, UNIVERSITY)
+    y -= 22
+    c.drawCentredString(w / 2, y, SESSION)
     c.showPage()
     c.save()
 
@@ -277,110 +339,222 @@ def rl_cover_main(buf: io.BytesIO) -> None:
 def rl_cover_presentation(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    _centered_lines(
-        c,
-        w,
-        h,
-        [
-            ("A Project Presented to", "Times-Bold", 14),
-            ("Federal Urdu University of Arts, Science & Technology", "Times-Bold", 13),
-            ("In Partial Fulfillment of the Requirement for the Degree", "Times-Roman", 12),
-            ("Bachelor of Computer Science", "Times-Bold", 13),
-            ("(Software Systems)", "Times-Roman", 12),
-            ("By", "Times-Roman", 12),
-            (AUTHOR, "Times-Bold", 14),
-            (DATES["proposal"], "Times-Roman", 13),
-            (f"({UNIVERSITY})", "Times-Roman", 11),
-        ],
-        gap=22,
-    )
+    y = h - 118
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, y, "A Project Presented to")
+    y -= 44
+    c.setFont("TNR", 14)
+    c.drawCentredString(w / 2, y, "Federal Urdu University of Arts, Science & Technology")
+    y -= 44
+    c.drawCentredString(w / 2, y, "In Partial Fulfillment of the Requirement for the Degree")
+    y -= 58
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, y, "Bachelor of Computer Science")
+    y -= 32
+    c.setFont("TNR", 16)
+    c.drawCentredString(w / 2, y, "(Software Systems)")
+    y -= 48
+    c.drawCentredString(w / 2, y, "By")
+    y -= 48
+    c.setFont("TNR-B", 16)
+    c.drawCentredString(w / 2, y, AUTHOR)
+    y -= 44
+    c.setFont("TNR", 16)
+    c.drawCentredString(w / 2, y, DATES["proposal"])
+    y -= 52
+    c.setFont("TNR-B", 16)
+    c.drawCentredString(w / 2, y, f"({UNIVERSITY})")
     c.showPage()
     c.save()
 
 
-def rl_text_page(buf: io.BytesIO, heading: str, paragraphs: list[str], *, centered: bool = False) -> None:
+def rl_declaration(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-
-    if centered:
-        body_lines: list[str] = []
-        width = w - 2.2 * inch
-        c.setFont("Times-Roman", 11)
-        for para in paragraphs:
-            words = para.split()
-            line = ""
-            for word in words:
-                test = (line + " " + word).strip()
-                if c.stringWidth(test, "Times-Roman", 11) <= width:
-                    line = test
-                else:
-                    if line:
-                        body_lines.append(line)
-                    line = word
-            if line:
-                body_lines.append(line)
-            body_lines.append("")
-
-        while body_lines and body_lines[-1] == "":
-            body_lines.pop()
-
-        items: list[tuple[str, str, int]] = [(heading, "Times-Bold", 16)]
-        for bl in body_lines:
-            if bl == "":
-                continue
-            items.append((bl, "Times-Roman", 11))
-
-        _centered_lines(c, w, h, items, gap=16)
-        c.showPage()
-        c.save()
-        return
-
-    c.setFont("Times-Bold", 16)
-    c.drawString(1 * inch, h - 1 * inch, heading)
-    c.setFont("Times-Roman", 11)
-    y = h - 1.45 * inch
-    width = w - 2 * inch
-    for para in paragraphs:
-        words = para.split()
-        line = ""
-        for word in words:
-            test = (line + " " + word).strip()
-            if c.stringWidth(test, "Times-Roman", 11) <= width:
-                line = test
-            else:
-                if line:
-                    c.drawString(1 * inch, y, line)
-                    y -= 14
-                line = word
-        if line:
-            c.drawString(1 * inch, y, line)
-            y -= 20
-        if y < 1.2 * inch:
-            c.showPage()
-            c.setFont("Times-Roman", 11)
-            y = h - 1 * inch
+    c.setFont("Sans-B", HEADING)
+    c.drawCentredString(w / 2, h - MT - 8, "Declaration")
+    text = (
+        "I hereby declare that this software, neither as a whole nor as a part, has been "
+        "copied from any source. I have developed this software and the accompanied report "
+        "entirely on the basis of my personal efforts. If any part of this project is proved "
+        "to be copied from any source, I will stand by the consequences. No portion of the work "
+        "presented has been submitted in support of any application for any other degree or "
+        "qualification of this or any other university or institute of learning."
+    )
+    y = _draw_wrapped(c, ML, h - MT - 48, text, "Sans", 14, w - ML - MR, 25)
+    y -= 36
+    c.setFont("Sans-B", 14)
+    c.drawCentredString(w / 2, y, AUTHOR)
     c.showPage()
     c.save()
 
 
-def rl_title_page(buf: io.BytesIO, title: str, date: str, *, proposed: bool = False) -> None:
+def rl_dedication(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    _centered_lines(
-        c,
-        w,
-        h,
-        [
-            (title, "Times-Bold", 18),
-            ("FOR", "Times-Bold", 14),
-            (SYSTEM, "Times-Bold", 18),
-            ("VERSION 1.0", "Times-Roman", 13),
-            ("Prepared By" if not proposed else "Proposed By", "Times-Roman", 13),
-            (AUTHOR, "Times-Bold", 14),
-            (date, "Times-Roman", 13),
-        ],
-        gap=26,
-    )
+    c.setFont("Sans", 28)
+    lines = ["Dedicated to my beloved parents,", "Teachers", "And", "The fellows"]
+    y = h - 200
+    for ln in lines:
+        c.drawCentredString(w / 2, y, ln)
+        y -= 58
+    c.showPage()
+    c.save()
+
+
+def rl_acknowledgement(buf: io.BytesIO) -> None:
+    w, h = letter
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Sans-B", HEADING)
+    c.drawCentredString(w / 2, h - MT - 8, "Acknowledgement")
+    paras = [
+        "Thanks to Almighty Allah for giving me knowledge, power and strength to accomplish this task. "
+        "I learned a lot while doing this project and this will certainly help me in my forthcoming life.",
+        f"I am thankful to my supervisor {SUPERVISOR} for his help and support in all phases of my project. "
+        "His encouragement helped me during times of difficulty.",
+        "I would also like to thank the project coordinator and all of my teachers and friends for their support.",
+    ]
+    y = h - MT - 48
+    for para in paras:
+        y = _draw_wrapped(c, ML, y, para, "Sans", 14, w - ML - MR, 25)
+        y -= 8
+    y -= 24
+    c.setFont("Sans-B", 14)
+    c.drawCentredString(w / 2, y, AUTHOR)
+    c.showPage()
+    c.save()
+
+
+def rl_project_brief(buf: io.BytesIO) -> None:
+    """Zostel-style two-column project brief."""
+    w, h = letter
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("Sans-B", 14)
+    c.drawCentredString(w / 2, h - MT - 8, "Project in Brief")
+    label_x = 54
+    value_x = 187
+    y = h - MT - 40
+
+    def row(label: str, value: str, *, dy: float = 30) -> None:
+        nonlocal y
+        c.setFont("Sans", BODY)
+        c.drawString(label_x, y, label)
+        c.drawString(value_x, y, value)
+        y -= dy
+
+    row("Project Title", SYSTEM)
+    row("Organization", UNIVERSITY, dy=30)
+    row("Client", CLIENT, dy=30)
+    y -= 20
+    c.setFont("Sans", BODY)
+    c.drawString(label_x, y, "Objectives")
+    y -= 22
+    objectives = [
+        "Develop a digital platform to manage real-estate projects, units, bookings, and payments.",
+        "Provide separate admin and client interfaces for transparent project and sales management.",
+        "Automate installment schedules, employee management, and finance reporting.",
+        "Replace manual record keeping with a centralized web application.",
+    ]
+    for obj in objectives:
+        c.drawString(205, y, "\u2022")
+        y = _draw_wrapped(c, 223, y, obj, "Sans", BODY, w - 223 - MR, BODY_LEAD)
+        y -= 4
+    y -= 10
+    row("Undertaken By", AUTHOR, dy=30)
+    row("Supervised By", SUPERVISOR, dy=30)
+    row("Date Started", "15th October, 2025", dy=30)
+    row("Date Completed", "27 Nov, 2025", dy=30)
+    y -= 16
+    c.drawString(label_x, y, "Technologies Used")
+    y -= 22
+    for tech in ["React.js", "TypeScript", ".NET 8 Web API", "Microsoft SQL Server", "JWT Authentication"]:
+        c.drawString(205, y, "\u2022")
+        c.drawString(223, y, tech)
+        y -= BODY_LEAD
+    row("System used", SYSTEM, dy=30)
+    c.showPage()
+    c.save()
+
+
+def rl_abstract(buf: io.BytesIO) -> None:
+    w, h = letter
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("TNR-B", TITLE)
+    c.drawCentredString(w / 2, h - MT - 6, "ABSTRACT")
+    c.setFont("TNR-B", TITLE)
+    c.drawCentredString(w / 2, h - MT - 36, "DAMS")
+    paras = [
+        f"The {SYSTEM} (DAMS) is a web-based real estate management platform designed for "
+        f"{CLIENT}. It supports project publishing, unit inventory, customer booking requests, "
+        "confirmed sales, installment tracking, payment receipts, employee attendance and salary "
+        "management, and finance dashboards.",
+        "The system uses React for the frontend, .NET 8 Web API for the backend, and Microsoft "
+        "SQL Server for data storage. JWT authentication and role-based access control protect admin "
+        "and client operations.",
+        "By replacing manual spreadsheets and paper forms with a centralized application, DAMS "
+        "improves transparency for customers and efficiency for administrators.",
+    ]
+    y = h - MT - 78
+    for para in paras:
+        y = _draw_wrapped(c, ML, y, para, "TNR", SMALL, w - ML - MR, 19)
+        y -= 6
+    c.showPage()
+    c.save()
+
+
+def rl_revision_history(buf: io.BytesIO) -> None:
+    """Zostel-style revision history table."""
+    w, h = letter
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("TNR-B", TITLE)
+    c.drawCentredString(w / 2, h / 2 + 60, "Revision History")
+    cols = [96, 181, 320, 456]
+    y = h / 2 + 10
+    headers = ["Version", "Description", "Author", "Date"]
+    c.setFont("TNR-B", 14)
+    for i, hdr in enumerate(headers):
+        c.drawString(cols[i], y, hdr)
+    y -= 36
+    c.setFont("TNR", BODY)
+    c.drawString(cols[0], y, "1.0")
+    desc_lines = [
+        "This document contains Project",
+        "documentation of",
+        "Deen Associate Management System",
+    ]
+    author_lines = [AUTHOR]
+    date_lines = ["15th October, 2025"]
+    dy = 15
+    for i, ln in enumerate(desc_lines):
+        c.drawString(cols[1], y - i * dy, ln)
+    for i, ln in enumerate(author_lines):
+        c.drawString(cols[2], y - i * dy, ln)
+    for i, ln in enumerate(date_lines):
+        c.drawString(cols[3], y - i * dy, ln)
+    c.showPage()
+    c.save()
+
+
+def rl_for_page(buf: io.BytesIO, doc_title: str, date: str, *, proposed: bool = False) -> None:
+    """Zostel/Oxford-style FOR page — document title upper-left, formal centred block below."""
+    w, h = letter
+    c = canvas.Canvas(buf, pagesize=letter)
+    c.setFont("TNR-B", FOR_SIZE)
+    c.drawString(ML, h - 90, doc_title)
+
+    block: list[tuple[str, str, float]] = [
+        ("FOR", "TNR-B", FOR_SIZE),
+        (SYSTEM, "TNR-B", 18),
+        ("Version 1.0", "TNR-B", FOR_SIZE),
+        ("Prepared By" if not proposed else "Proposed By", "TNR-B", FOR_SIZE),
+        (AUTHOR, "TNR-B", FOR_SIZE),
+        (date, "TNR-B", FOR_SIZE),
+    ]
+    y = h - 210
+    for text, font, size in block:
+        c.setFont(font, size)
+        c.drawCentredString(w / 2, y, text)
+        y -= size + 16
     c.showPage()
     c.save()
 
@@ -389,7 +563,12 @@ def rl_chapter_page(buf: io.BytesIO, text: str) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    _centered_lines(c, w, h, [(ln, "Times-Bold", 18) for ln in lines], gap=30)
+    c.setFont("TNR-B", CHAPTER)
+    if len(lines) >= 2:
+        c.drawCentredString(w / 2, h - 297, lines[0])
+        c.drawCentredString(w / 2, h - 364, lines[1])
+    elif lines:
+        c.drawCentredString(w / 2, h - 330, lines[0])
     c.showPage()
     c.save()
 
@@ -397,67 +576,88 @@ def rl_chapter_page(buf: io.BytesIO, text: str) -> None:
 def rl_section_header(buf: io.BytesIO, text: str) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    _centered_lines(c, w, h, [(text, "Times-Bold", 14)], gap=0)
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, h - MT, text)
     c.showPage()
     c.save()
 
 
 def rl_ssd_index_page(buf: io.BytesIO, header: str, ssd_items: list[str]) -> None:
-    """Section header plus SSD list (Zostel 3.5 style)."""
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 72, header)
-    c.setFont("Times-Roman", 10)
-    y = h - 100
-    left = 0.85 * inch
+    c.setFont("TNR-B", 14)
+    c.drawCentredString(w / 2, h - MT, header)
+    c.setFont("TNR", BODY)
+    y = h - MT - 28
     for i, name in enumerate(ssd_items, start=1):
-        c.drawString(left, y, f"SSD {i}: {name}")
-        y -= 14
-        if y < 0.9 * inch:
+        c.drawString(ML, y, f"SSD {i}: {name}")
+        y -= BODY_LEAD
+        if y < MB + 20:
             c.showPage()
-            c.setFont("Times-Roman", 10)
-            y = h - 72
+            c.setFont("TNR", BODY)
+            y = h - MT
     c.showPage()
     c.save()
 
 
 def rl_toc_pages(entries: list[tuple[str, int, int]]) -> bytes:
-    """entries: (title, level, display_page)"""
+    """Zostel-style TOC: Sans for chapter lines, TNR for numbered subsections."""
     w, h = letter
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 16)
-    c.drawCentredString(w / 2, h - 72, "Table of Contents")
-    y = h - 110
-    left = 0.85 * inch
-    right = w - 0.85 * inch
-    title_drawn = False
+    c.setFont("TNR-B", TITLE)
+    c.drawCentredString(w / 2, h - MT - 6, "Table of Contents")
+    y = h - MT - 48
+    right = w - MR
 
     for title, level, page in entries:
-        if not title_drawn:
-            title_drawn = True
-        indent = left + (level - 1) * 14
-        font = "Times-Bold" if level == 1 else "Times-Roman"
-        size = 10 if level <= 2 else 9
-        c.setFont(font, size)
+        indent = ML + (level - 1) * 16
+        size = BODY if level <= 2 else 11
         page_str = str(page)
-        page_w = c.stringWidth(page_str, font, size)
-        avail = right - indent - page_w - 10
+
+        numbered = bool(re.match(r"^(\d+\.|SSD |UC-|Table )", title))
+        chapter_line = level == 1 or title in {
+            "Introduction",
+            "USE CASE DIAGRAM",
+            "Fully Dressed Use Cases",
+            "Design Phase",
+            "Class Diagram",
+            "Test Case",
+            "User Manual",
+        }
+
+        if level == 1 or (level == 2 and chapter_line and not numbered):
+            title_font = "Sans"
+        elif numbered:
+            title_font = "TNR"
+        else:
+            title_font = "Sans"
+
+        c.setFont(title_font, size)
+        page_w = c.stringWidth(page_str, "Sans", size)
+        avail = right - indent - page_w - 8
         display_title = title
-        while display_title and c.stringWidth(display_title + "...", font, size) > avail:
+        while display_title and c.stringWidth(display_title + "...", title_font, size) > avail:
             display_title = display_title[:-1]
         if display_title != title:
             display_title += "..."
-        title_w = c.stringWidth(display_title, font, size)
-        dot_w = max(right - indent - title_w - page_w - 6, 8)
-        dot_count = max(int(dot_w / c.stringWidth(".", font, size)), 2)
-        line = display_title + " " + ("." * dot_count) + " " + page_str
-        c.drawString(indent, y, line)
-        y -= 12 if level >= 3 else 13
-        if y < 0.85 * inch:
+
+        title_w = c.stringWidth(display_title, title_font, size)
+        c.setFont(title_font, size)
+        c.drawString(indent, y, display_title)
+
+        dot_start = indent + title_w + 4
+        dot_end = right - page_w - 4
+        c.setFont("Sans", size)
+        dot_w = max(c.stringWidth(".", "Sans", size), 1)
+        dots = "." * max(int((dot_end - dot_start) / dot_w), 2)
+        c.drawString(dot_start, y, dots)
+        c.drawRightString(right, y, page_str)
+
+        y -= 22 if level == 1 else (20 if level == 2 else 18)
+        if y < MB + 16:
             c.showPage()
-            y = h - 72
+            y = h - MT
 
     c.showPage()
     c.save()
@@ -498,103 +698,13 @@ def build_front_matter() -> fitz.Document:
 
     b.add_bytes(pdf_page_bytes(rl_cover_main))
     b.add_bytes(pdf_page_bytes(rl_cover_presentation))
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "Declaration",
-                [
-                    "I hereby declare that this software, neither as a whole nor as a part, has been "
-                    "copied from any source. I have developed this software and the accompanied report "
-                    "entirely on the basis of my personal efforts. If any part of this project is proved "
-                    "to be copied from any source, I will stand by the consequences. No portion of the work "
-                    "presented has been submitted in support of any application for any other degree or "
-                    "qualification of this or any other university or institute of learning.",
-                    AUTHOR,
-                ],
-                centered=True,
-            )
-        )
-    )
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "Dedication",
-                ["Dedicated to my beloved parents,", "Teachers", "And", "The fellows"],
-                centered=True,
-            )
-        )
-    )
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "Acknowledgement",
-                [
-                    "Thanks to Almighty Allah for giving me knowledge, power and strength to accomplish this task. "
-                    "I learned a lot while doing this project and this will certainly help me in my forthcoming life.",
-                    f"I am thankful to my supervisor {SUPERVISOR} for his help and support in all phases of my project. "
-                    "His encouragement helped me during times of difficulty.",
-                    "I would also like to thank the project coordinator and all of my teachers and friends for their support.",
-                ],
-                centered=True,
-            )
-        )
-    )
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "Project in Brief",
-                [
-                    f"Project Title: {SYSTEM}",
-                    f"Organization: {UNIVERSITY}",
-                    f"Client: {CLIENT}",
-                    "Objectives:",
-                    "• Develop a digital platform to manage real-estate projects, units, bookings, and payments.",
-                    "• Provide separate admin and client interfaces for transparent project and sales management.",
-                    "• Automate installment schedules, employee management, and finance reporting.",
-                    "• Replace manual record keeping with a centralized web application.",
-                ],
-                centered=True,
-            )
-        )
-    )
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "ABSTRACT",
-                [
-                    f"The {SYSTEM} (DAMS) is a web-based real estate management platform designed for "
-                    f"{CLIENT}. It supports project publishing, unit inventory, customer booking requests, "
-                    "confirmed sales, installment tracking, payment receipts, employee attendance and salary "
-                    "management, and finance dashboards.",
-                    "The system uses React for the frontend, .NET 8 Web API for the backend, and Microsoft "
-                    "SQL Server for data storage. JWT authentication and role-based access control protect admin "
-                    "and client operations.",
-                    "By replacing manual spreadsheets and paper forms with a centralized application, DAMS "
-                    "improves transparency for customers and efficiency for administrators.",
-                ],
-                centered=True,
-            )
-        )
-    )
-    b.add_bytes(
-        pdf_page_bytes(
-            lambda buf: rl_text_page(
-                buf,
-                "Revision History",
-                [
-                    "Version 1.0 — Complete project documentation for Deen Associate Management System.",
-                    f"Author: {AUTHOR}",
-                    f"Date: {DATES['revision']}",
-                ],
-                centered=True,
-            )
-        )
-    )
+    b.add_bytes(pdf_page_bytes(rl_blank_page))  # Zostel page 3 is blank
+    b.add_bytes(pdf_page_bytes(rl_declaration))
+    b.add_bytes(pdf_page_bytes(rl_dedication))
+    b.add_bytes(pdf_page_bytes(rl_acknowledgement))
+    b.add_bytes(pdf_page_bytes(rl_project_brief))
+    b.add_bytes(pdf_page_bytes(rl_abstract))
+    b.add_bytes(pdf_page_bytes(rl_revision_history))
     return front
 
 
@@ -612,7 +722,7 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
     # Chapter 2 — Analysis / SRS
     b.mark("Chapter # 2 Analysis", 1)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_chapter_page(buf, "CHAPTER #02\nAnalysis")))
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Software Requirement Specification", DATES["srs"], proposed=True)))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Software Requirement Specification", DATES["srs"], proposed=True)))
     srs_start = b.current_page()
     insert_file(b.doc, src("functional_requiement_of_deen_association_5ad6.pdf"), skip=1, stop_before=17)
     b.mark_offsets(srs_start, SRS_SUBSECTIONS)
@@ -631,13 +741,13 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
     b.add_bytes(pdf_page_bytes(lambda buf: rl_chapter_page(buf, "CHAPTER #03\nDesign Phase")))
 
     b.mark("USE CASE DIAGRAM", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "USE CASE DIAGRAM", DATES["use_case"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "USE CASE DIAGRAM", DATES["use_case"])))
     b.mark("3.1 Use Case Diagram", 2)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_section_header(buf, "3.1 Use Case Diagram")))
     insert_file(b.doc, src("DMS_Duagran_3.drawio__2__1fae.pdf"))
 
     b.mark("Fully Dressed Use Cases", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Fully Dressed Use Cases", DATES["fully_dressed"], proposed=True)))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Fully Dressed Use Cases", DATES["fully_dressed"], proposed=True)))
     b.mark("3.2 Fully Dressed Use Cases", 2)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_section_header(buf, "3.2 Fully Dressed Use Cases")))
     fd_start = b.current_page()
@@ -646,7 +756,7 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
         b.mark_at(uc, 3, fd_start + i)
 
     b.mark("Design Phase", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Design Phase", DATES["design_phase"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Design Phase", DATES["design_phase"])))
 
     b.mark("3.3 Domain Model", 2)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_section_header(buf, "3.3 Domain Model")))
@@ -668,7 +778,7 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
     insert_file(b.doc, src("new_erd.drawio_ae49.pdf"))
 
     b.mark("3.7 Normalization", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Normalization", DATES["normalization"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Normalization", DATES["normalization"])))
     b.add_bytes(pdf_page_bytes(lambda buf: rl_section_header(buf, "3.7 Normalization")))
     norm_start = b.current_page()
     insert_file(b.doc, src("Normaizastion_for_DAMS_a929.pdf"), skip=1)
@@ -682,7 +792,7 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
     b.mark("Chapter # 4 Construction", 1)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_chapter_page(buf, "Chapter # 4\nConstruction")))
     b.mark("Class Diagram", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Class Diagram", DATES["class_diagram"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Class Diagram", DATES["class_diagram"])))
     b.mark("4.1 Class Diagram", 2)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_section_header(buf, "4.1 Class Diagram")))
     insert_file(b.doc, src("DAMS_Class_Diagram__3__e0d9.pdf"), skip=1)
@@ -692,21 +802,21 @@ def build_body() -> tuple[fitz.Document, list[TocEntry]]:
     insert_file(b.doc, src("DAMS_Project_Code_6dcf.pdf"))
 
     b.mark("4.3 Sample Queries", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Sample Queries", DATES["sample_queries"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Sample Queries", DATES["sample_queries"])))
     insert_file(b.doc, src("DAMS_Sample_Queries_911e.pdf"), skip=1)
 
     # Chapter 5 — Testing
     b.mark("Chapter # 5 Testing", 1)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_chapter_page(buf, "Chapter # 5\nTesting")))
     b.mark("Test Case", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "Test Case", DATES["test_cases"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "Test Case", DATES["test_cases"])))
     insert_file(b.doc, src("DAMS_Test_Cases_2130.pdf"))
 
     # Chapter 6 — User Manual
     b.mark("Chapter # 6 User Manual", 1)
     b.add_bytes(pdf_page_bytes(lambda buf: rl_chapter_page(buf, "Chapter # 6\nUser Manual")))
     b.mark("User Manual", 2)
-    b.add_bytes(pdf_page_bytes(lambda buf: rl_title_page(buf, "User Manual", DATES["user_manual"])))
+    b.add_bytes(pdf_page_bytes(lambda buf: rl_for_page(buf, "User Manual", DATES["user_manual"])))
     um_start = b.current_page()
     insert_file(b.doc, src("DAMS_User_Manual_0336.pdf"))
     b.mark_offsets(um_start, USER_MANUAL_SUBSECTIONS)
@@ -743,11 +853,11 @@ def add_page_numbers(doc: fitz.Document, toc_end_index: int) -> None:
         page.add_redact_annot(strip, fill=(1, 1, 1))
         page.apply_redactions()
         num = str(i)
-        fontsize = 11
-        text_width = fitz.get_text_length(num, fontname="tiro", fontsize=fontsize)
+        fontsize = 12
+        text_width = fitz.get_text_length(num, fontname="helv", fontsize=fontsize)
         x = (page.rect.width - text_width) / 2
         y = page.rect.height - 67
-        page.insert_text((x, y), num, fontsize=fontsize, fontname="tiro", color=(0, 0, 0))
+        page.insert_text((x, y), num, fontsize=fontsize, fontname="helv", color=(0, 0, 0))
 
 
 def assemble_book() -> fitz.Document:
