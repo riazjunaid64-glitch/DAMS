@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
+import FeaturedProjectCard from "../components/FeaturedProjectCard.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
+import { FEATURED_PROJECTS } from "../lib/featuredProjects.ts";
 
 export default function HomePage() {
   return (
@@ -8,7 +10,15 @@ export default function HomePage() {
       {/* ─── Welcome Hero ─── */}
       <section className="relative overflow-hidden">
         {/* Building hero background */}
-        <div className="hero-bg-image absolute inset-0" aria-hidden="true" />
+        <div className="hero-bg-image absolute inset-0" aria-hidden="true">
+          <img
+            src="/images/home-hero-bg-sm.jpg"
+            alt=""
+            className="hero-bg-image__img"
+            fetchPriority="high"
+            decoding="async"
+          />
+        </div>
         <div className="hero-bg-overlay absolute inset-0" aria-hidden="true" />
 
         <Container className="relative flex min-h-[85vh] items-center justify-center py-24">
@@ -57,64 +67,22 @@ export default function HomePage() {
         </Container>
       </section>
 
-      {/* ─── Quick Links Section ─── */}
-      <section className="relative py-20 sm:py-24">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative">
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              {
-                to: "/projects",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>
-                  </svg>
-                ),
-                title: "Projects",
-                description: "View all active and upcoming projects with timelines, status, and details.",
-              },
-              {
-                to: "/about",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
-                  </svg>
-                ),
-                title: "About Deen Associate",
-                description: "Learn about our experience, values, and the team behind every project.",
-              },
-              {
-                to: "/contact",
-                icon: (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
-                  </svg>
-                ),
-                title: "Contact Us",
-                description: "Get in touch with our team for inquiries, support, or project discussions.",
-              },
-            ].map((card, i) => (
-              <Link
-                key={card.to}
-                to={card.to}
-                className="glass-card group block p-6 animate-fade-in-up"
-                style={{ animationDelay: `${i * 80}ms` }}
-              >
-                <div className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--accent-glow)] text-[var(--accent)] transition-colors group-hover:bg-[var(--accent-glow-strong)]">
-                  {card.icon}
-                </div>
-                <h3 className="text-base font-semibold text-[var(--text-heading)]">{card.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">{card.description}</p>
-                <div className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] opacity-70 transition-all group-hover:translate-x-1 group-hover:opacity-100">
-                  <span>Go to {card.title.toLowerCase()}</span>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                    <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                  </svg>
-                </div>
-              </Link>
+      {/* ─── Featured Projects (Floria-style grid) ─── */}
+      <section className="featured-projects section-pad">
+        <div className="featured-projects__inner">
+          <div className="featured-projects__header">
+            <h2 className="featured-projects__title">Featured Projects</h2>
+            <p className="featured-projects__subtitle">
+              Explore premium residential and commercial developments by Deen Associate across Islamabad and beyond.
+            </p>
+          </div>
+
+          <div className="op-grid">
+            {FEATURED_PROJECTS.map((project, index) => (
+              <FeaturedProjectCard key={project.id} project={project} priority={index < 3} />
             ))}
           </div>
-        </Container>
+        </div>
       </section>
     </>
   );

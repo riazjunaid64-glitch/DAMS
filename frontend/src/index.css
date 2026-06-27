@@ -202,10 +202,15 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ─── Hero Background Image ─── */
 .hero-bg-image {
-  background-image: url("/images/home-hero-bg.jpg");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+  overflow: hidden;
+  background-color: #ece7e8;
+}
+
+.hero-bg-image__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
 }
 
 .hero-bg-overlay {
@@ -437,6 +442,173 @@ h1, h2, h3, h4, h5, h6 {
 }
 .nav-btn-accent:hover {
   background: #e8c88a !important;
+}
+
+/* ─── Featured Projects (Floria other-projects layout) ─── */
+.featured-projects.section-pad {
+  padding: 0;
+  background: #fff;
+}
+
+.featured-projects__inner {
+  width: 100%;
+  max-width: 100%;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+@media (min-width: 640px) {
+  .featured-projects__inner {
+    padding: 3rem 2rem 4.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .featured-projects__inner {
+    padding: 3.5rem 2.5rem 5rem;
+  }
+}
+
+.featured-projects__header {
+  margin-bottom: 1.75rem;
+}
+
+.featured-projects__title {
+  margin: 0 0 0.5rem;
+  color: #222;
+  font-family: "Bebas Neue", "Raleway", sans-serif;
+  font-size: 2rem;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.featured-projects__subtitle {
+  margin: 0;
+  max-width: 720px;
+  color: #777;
+  font-family: "Raleway", sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.op-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  width: 100%;
+}
+
+@media (max-width: 991px) {
+  .op-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .op-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.op-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+  cursor: default;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.op-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(57, 2, 23, 0.35);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.1);
+}
+
+.op-thumb {
+  position: relative;
+  padding-top: 60%;
+  overflow: hidden;
+  background-color: #eee;
+}
+
+.op-thumb__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transition: transform 0.35s ease;
+}
+
+.op-card:hover .op-thumb__img {
+  transform: scale(1.04);
+}
+
+.op-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 6px 10px;
+  border-radius: 9999px;
+  background: rgba(57, 2, 23, 0.95);
+  color: #fff;
+  font-family: "Raleway", sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.op-body {
+  flex: 1;
+  padding: 14px 14px 10px;
+}
+
+.op-title {
+  margin: 0 0 6px;
+  color: #222;
+  font-family: "Raleway", sans-serif;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.op-meta {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: #666;
+  font-family: "Raleway", sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.op-meta svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #390217;
+}
+
+.op-foot {
+  padding: 12px 14px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+  color: #666;
+  font-family: "Raleway", sans-serif;
+  font-size: 12px;
+}
+
+.op-foot strong {
+  color: #333;
 }
 
 /* ─── Site Footer (Floria-style) ─── */
