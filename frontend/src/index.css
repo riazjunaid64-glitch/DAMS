@@ -72,6 +72,7 @@
   --nav-text: #ffffff;
   --nav-text-muted: #f0e0e2;
   --nav-text-active: #f5d79e;
+  --site-nav-height: 4.25rem;
 
   --btn-primary-start: #390217;
   --btn-primary-end: #6b1520;
@@ -200,32 +201,87 @@ h1, h2, h3, h4, h5, h6 {
   transform: translateY(-2px);
 }
 
-/* ─── Hero Background Image ─── */
-.hero-bg-image {
+/* ─── Home Hero ─── */
+.home-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
   overflow: hidden;
-  background-color: #ece7e8;
+  min-height: calc(100vh - var(--site-nav-height));
+  min-height: calc(100dvh - var(--site-nav-height));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.hero-bg-image__img {
+.home-hero__bg {
+  position: absolute;
+  inset: 0;
+}
+
+.home-hero__bg-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   object-position: center;
 }
 
-.hero-bg-overlay {
-  background:
-    linear-gradient(to bottom, rgba(26, 4, 7, 0.2) 0%, transparent 30%),
-    linear-gradient(to bottom, transparent 55%, rgba(255, 255, 255, 0.92) 100%);
+.home-hero__inner {
+  position: relative;
+  width: 100%;
+  max-width: 760px;
+  padding: 2rem 0;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.35);
 }
 
-.hero-copy-panel {
-  border: 1px solid rgba(245, 215, 158, 0.2);
-  border-radius: var(--radius-xl);
-  background: rgba(26, 4, 7, 0.78);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 24px 60px rgba(26, 4, 7, 0.35);
+.home-hero__eyebrow {
+  margin: 0 0 0.85rem;
+  color: var(--accent-warm);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.home-hero__title {
+  margin: 0 0 1.15rem;
+  color: #fff;
+  font-family: "Bebas Neue", "Raleway", sans-serif;
+  font-size: clamp(3rem, 8vw, 5.5rem);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+.home-hero__lead {
+  margin: 0;
+  max-width: 640px;
+  color: #f0e0e2;
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+@media (min-width: 640px) {
+  .home-hero__lead {
+    font-size: 1.0625rem;
+  }
+}
+
+.home-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-top: 2rem;
+}
+
+.home-hero__outline-btn {
+  border-color: rgba(255, 255, 255, 0.55) !important;
+  color: #fff !important;
+}
+
+.home-hero__outline-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: #fff !important;
+  color: #fff !important;
 }
 
 /* ─── Gradient Mesh Backgrounds ─── */
@@ -444,6 +500,58 @@ h1, h2, h3, h4, h5, h6 {
   background: #e8c88a !important;
 }
 
+/* ─── Site Header / Nav ─── */
+.site-nav {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  min-height: 4.25rem;
+  padding: 0 1.25rem;
+}
+
+@media (min-width: 640px) {
+  .site-nav {
+    grid-template-columns: auto 1fr auto;
+    min-height: 4.5rem;
+    padding: 0 2rem;
+  }
+
+  :root {
+    --site-nav-height: 4.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .site-nav {
+    padding: 0 2.5rem;
+  }
+}
+
+.site-nav__brand {
+  justify-self: start;
+}
+
+.site-nav__links {
+  justify-self: center;
+}
+
+.site-nav__actions,
+.site-nav__menu-btn {
+  justify-self: end;
+}
+
+.site-nav__mobile-wrap {
+  padding: 0 1.25rem 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .site-nav__mobile-wrap {
+    padding: 0 2rem 0.75rem;
+  }
+}
+
 /* ─── Site Logo ─── */
 .site-logo {
   display: inline-flex;
@@ -454,62 +562,29 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .site-logo:hover {
-  opacity: 0.95;
+  opacity: 0.92;
 }
 
-.site-logo__frame {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #6b1520 0%, #390217 100%);
-  border: 1px solid rgba(245, 215, 158, 0.22);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+.site-logo--nav:hover {
+  transform: scale(1.01);
 }
 
 .site-logo__img {
   display: block;
   width: auto;
-  height: 100%;
+  height: 2.85rem;
   object-fit: contain;
 }
 
-.site-logo--nav .site-logo__frame {
-  height: auto;
-  min-width: 0;
-  padding: 0;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
-
-.site-logo--nav .site-logo__img {
-  width: auto;
-  height: 3rem;
-  max-width: 11.5rem;
-}
-
 @media (min-width: 640px) {
-  .site-logo--nav .site-logo__img {
-    height: 3.35rem;
-    max-width: 12.5rem;
+  .site-logo__img {
+    height: 3.1rem;
   }
 }
 
-.site-logo--footer .site-logo__frame {
-  height: 4.25rem;
-  min-width: 13rem;
-  margin-bottom: 1.25rem;
-  padding: 0.6rem 1.15rem;
-}
-
 .site-logo--footer .site-logo__img {
-  max-width: 12rem;
-  height: 3.15rem;
-}
-
-.site-logo--nav:hover {
-  transform: scale(1.015);
+  height: 3.35rem;
+  margin-bottom: 1.25rem;
 }
 
 /* ─── Featured Projects (Floria other-projects layout) ─── */
@@ -738,46 +813,6 @@ h1, h2, h3, h4, h5, h6 {
 
 .site-footer__brand {
   max-width: 420px;
-}
-
-.site-footer__logo {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.875rem;
-  margin-bottom: 1.25rem;
-  text-decoration: none;
-}
-
-.site-footer__logo-mark {
-  display: flex;
-  height: 3rem;
-  width: 3rem;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(245, 215, 158, 0.35);
-  border-radius: 0.5rem;
-  background: linear-gradient(135deg, #6b1520, #390217);
-  color: #f5d79e;
-  font-size: 0.875rem;
-  font-weight: 700;
-}
-
-.site-footer__logo-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
-  color: #fff;
-  font-family: "Bebas Neue", "Raleway", sans-serif;
-  letter-spacing: 0.08em;
-}
-
-.site-footer__logo-text span:first-child {
-  font-size: 1.75rem;
-}
-
-.site-footer__logo-text span:last-child {
-  font-size: 1.125rem;
-  color: #f5d79e;
 }
 
 .site-footer__about {
@@ -1102,6 +1137,8 @@ h1, h2, h3, h4, h5, h6 {
   color: #f0e0e2;
   font-size: 0.8125rem;
   line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .about-story {

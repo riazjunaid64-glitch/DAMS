@@ -6,7 +6,7 @@ const OFFICE = {
 
 export const SITE_CONTACT = {
   brandName: "Deen Associate",
-  logoSrc: "/images/deen-associate-logo.png",
+  logoNavSrc: "/images/logo-nav-white.png",
   description:
     "Deen Associate helps clients buy, sell, and manage property with transparency and trust. Track projects, units, bookings, and progress — all in one place.",
   email: "info@thedeenassociates.com",

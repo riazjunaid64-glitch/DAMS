@@ -1,14 +1,8 @@
 import { Link } from "react-router-dom";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
+import { COMPANY_STATS } from "../lib/companyStats.ts";
 import { SITE_CONTACT } from "../lib/siteContact.ts";
-
-const STATS = [
-  { value: "2009", label: "Established in Islamabad" },
-  { value: "9+", label: "Commercial Projects" },
-  { value: "10K+", label: "Apartments & Units" },
-  { value: "17+", label: "Years of Experience" },
-];
 
 const PROPERTY_TYPES = [
   "Residential Villas",
@@ -65,7 +59,7 @@ export default function AboutPage() {
       <section className="about-stats">
         <Container>
           <div className="about-stats__grid">
-            {STATS.map((stat) => (
+            {COMPANY_STATS.map((stat) => (
               <div key={stat.label} className="about-stats__item">
                 <p className="about-stats__value">{stat.value}</p>
                 <p className="about-stats__label">{stat.label}</p>

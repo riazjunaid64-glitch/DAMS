@@ -101,13 +101,14 @@ function App() {
   return (
     <div className="flex min-h-screen flex-col">
       {/* ─── Navbar ─── */}
-      <header className="sticky top-0 z-50 border-b border-[var(--nav-border)] bg-[var(--nav-bg)] shadow-md transition-all duration-300">
-        <Container className="flex h-[4.25rem] items-center justify-between sm:h-[4.5rem]">
-          {/* Logo */}
-          <SiteLogo variant="nav" />
+      <header className="site-header sticky top-0 z-50 border-b border-[var(--nav-border)] bg-[var(--nav-bg)] shadow-md transition-all duration-300">
+        <div className="site-nav">
+          <div className="site-nav__brand">
+            <SiteLogo variant="nav" />
+          </div>
 
           {/* Desktop Nav */}
-          <nav className="hidden items-center gap-1 sm:flex">
+          <nav className="site-nav__links hidden items-center gap-1 sm:flex">
             {mainNavLinks.map((link) => {
               const active = location.pathname === link.to;
               return (
@@ -130,7 +131,7 @@ function App() {
           </nav>
 
           {/* Desktop Actions */}
-          <div className="hidden items-center gap-3 sm:flex">
+          <div className="site-nav__actions hidden items-center gap-3 sm:flex">
             {!user ? (
               <>
                 <Button variant="ghost" size="sm" className="nav-btn-ghost" onClick={() => setModal("login")}>
@@ -160,7 +161,7 @@ function App() {
           {/* Mobile Toggle */}
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-[var(--nav-text)] transition hover:bg-white/15 sm:hidden"
+            className="site-nav__menu-btn inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-[var(--nav-text)] transition hover:bg-white/15 sm:hidden"
             aria-label="Toggle navigation"
             onClick={() => setMobileOpen((prev) => !prev)}
           >
@@ -174,12 +175,12 @@ function App() {
               </svg>
             )}
           </button>
-        </Container>
+        </div>
 
         {/* Mobile Menu */}
         {mobileOpen && (
           <div className="pointer-events-none absolute inset-x-0 top-full z-50 sm:hidden">
-            <Container className="relative">
+            <div className="site-nav__mobile-wrap relative">
               <div className="pointer-events-auto ml-auto mt-0 w-[min(20rem,calc(100vw-1.5rem))] animate-scale-in rounded-b-2xl border border-[var(--nav-border)] bg-[var(--nav-bg)] p-3 shadow-2xl">
                 <div className="flex flex-col gap-1">
                 {mainNavLinks.map((link) => {
@@ -224,7 +225,7 @@ function App() {
                 </div>
               </div>
               </div>
-            </Container>
+            </div>
           </div>
         )}
       </header>

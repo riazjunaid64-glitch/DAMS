@@ -13,15 +13,13 @@ export default function SiteLogo({ variant = "nav", className = "" }: SiteLogoPr
       className={`site-logo site-logo--${variant}${className ? ` ${className}` : ""}`}
       aria-label={SITE_CONTACT.brandName}
     >
-      <span className="site-logo__frame">
-        <img
-          src={SITE_CONTACT.logoSrc}
-          alt={SITE_CONTACT.brandName}
-          className="site-logo__img"
-          decoding="async"
-          fetchPriority="high"
-        />
-      </span>
+      <img
+        src={SITE_CONTACT.logoNavSrc}
+        alt={SITE_CONTACT.brandName}
+        className="site-logo__img"
+        decoding="async"
+        fetchPriority="high"
+      />
     </Link>
   );
 }
