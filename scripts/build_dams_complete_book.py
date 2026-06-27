@@ -69,28 +69,42 @@ def pdf_page_bytes(fn) -> bytes:
     return buf.read()
 
 
+def _centered_lines(c: canvas.Canvas, w: float, h: float, items: list[tuple[str, str, int]], *, gap: float = 24) -> None:
+    """Draw text lines vertically centered on page. items = (text, font_name, font_size)."""
+    if not items:
+        return
+    heights = [size + gap for _, _, size in items]
+    block_h = sum(heights) - gap
+    y = (h + block_h) / 2
+    for text, font, size in items:
+        y -= size
+        c.setFont(font, size)
+        c.drawCentredString(w / 2, y, text)
+        y -= gap
+
+
 def rl_cover_main(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 20)
-    c.drawCentredString(w / 2, h - 160, SYSTEM)
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 220, "Developed By")
-    c.setFont("Times-Bold", 16)
-    c.drawCentredString(w / 2, h - 255, AUTHOR)
-    c.setFont("Times-Roman", 13)
-    c.drawCentredString(w / 2, h - 295, "BS (CS) in Software Systems")
-    c.drawCentredString(w / 2, h - 335, "Supervised By")
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 365, SUPERVISOR)
-    c.setFont("Times-Roman", 13)
-    c.drawCentredString(w / 2, h - 405, "Project Coordinator")
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 435, COORDINATOR)
-    c.setFont("Times-Roman", 12)
-    c.drawCentredString(w / 2, h - 480, "Department of Computer Science")
-    c.drawCentredString(w / 2, h - 500, UNIVERSITY)
-    c.drawCentredString(w / 2, h - 540, SESSION)
+    _centered_lines(
+        c,
+        w,
+        h,
+        [
+            (SYSTEM, "Times-Bold", 20),
+            ("Developed By", "Times-Bold", 14),
+            (AUTHOR, "Times-Bold", 16),
+            ("BS (CS) in Software Systems", "Times-Roman", 13),
+            ("Supervised By", "Times-Roman", 13),
+            (SUPERVISOR, "Times-Bold", 14),
+            ("Project Coordinator", "Times-Roman", 13),
+            (COORDINATOR, "Times-Bold", 14),
+            ("Department of Computer Science", "Times-Roman", 12),
+            (UNIVERSITY, "Times-Roman", 12),
+            (SESSION, "Times-Roman", 12),
+        ],
+        gap=20,
+    )
     c.showPage()
     c.save()
 
@@ -98,34 +112,64 @@ def rl_cover_main(buf: io.BytesIO) -> None:
 def rl_cover_presentation(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 14)
-    y = h - 180
-    for line in [
-        "A Project Presented to",
-        "",
-        "Federal Urdu University of Arts, Science & Technology",
-        "",
-        "In Partial Fulfillment of the Requirement for the Degree",
-        "",
-        "Bachelor of Computer Science",
-        "(Software Systems)",
-        "",
-        "By",
-        AUTHOR,
-        "",
-        DATES["proposal"],
-        "",
-        f"({UNIVERSITY})",
-    ]:
-        c.drawCentredString(w / 2, y, line)
-        y -= 22
+    _centered_lines(
+        c,
+        w,
+        h,
+        [
+            ("A Project Presented to", "Times-Bold", 14),
+            ("Federal Urdu University of Arts, Science & Technology", "Times-Bold", 13),
+            ("In Partial Fulfillment of the Requirement for the Degree", "Times-Roman", 12),
+            ("Bachelor of Computer Science", "Times-Bold", 13),
+            ("(Software Systems)", "Times-Roman", 12),
+            ("By", "Times-Roman", 12),
+            (AUTHOR, "Times-Bold", 14),
+            (DATES["proposal"], "Times-Roman", 13),
+            (f"({UNIVERSITY})", "Times-Roman", 11),
+        ],
+        gap=22,
+    )
     c.showPage()
     c.save()
 
 
-def rl_text_page(buf: io.BytesIO, heading: str, paragraphs: list[str]) -> None:
+def rl_text_page(buf: io.BytesIO, heading: str, paragraphs: list[str], *, centered: bool = False) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
+
+    if centered:
+        body_lines: list[str] = []
+        width = w - 2.2 * inch
+        c.setFont("Times-Roman", 11)
+        for para in paragraphs:
+            words = para.split()
+            line = ""
+            for word in words:
+                test = (line + " " + word).strip()
+                if c.stringWidth(test, "Times-Roman", 11) <= width:
+                    line = test
+                else:
+                    if line:
+                        body_lines.append(line)
+                    line = word
+            if line:
+                body_lines.append(line)
+            body_lines.append("")  # paragraph gap marker
+
+        while body_lines and body_lines[-1] == "":
+            body_lines.pop()
+
+        items: list[tuple[str, str, int]] = [(heading, "Times-Bold", 16)]
+        for bl in body_lines:
+            if bl == "":
+                continue
+            items.append((bl, "Times-Roman", 11))
+
+        _centered_lines(c, w, h, items, gap=16)
+        c.showPage()
+        c.save()
+        return
+
     c.setFont("Times-Bold", 16)
     c.drawString(1 * inch, h - 1 * inch, heading)
     c.setFont("Times-Roman", 11)
@@ -157,19 +201,21 @@ def rl_text_page(buf: io.BytesIO, heading: str, paragraphs: list[str]) -> None:
 def rl_title_page(buf: io.BytesIO, title: str, date: str, *, proposed: bool = False) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 18)
-    c.drawCentredString(w / 2, h - 200, title)
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 240, "FOR")
-    c.setFont("Times-Bold", 18)
-    c.drawCentredString(w / 2, h - 280, SYSTEM)
-    c.setFont("Times-Roman", 13)
-    c.drawCentredString(w / 2, h - 330, "VERSION 1.0")
-    c.drawCentredString(w / 2, h - 380, "Prepared By" if not proposed else "Proposed By")
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 415, AUTHOR)
-    c.setFont("Times-Roman", 13)
-    c.drawCentredString(w / 2, h - 470, date)
+    _centered_lines(
+        c,
+        w,
+        h,
+        [
+            (title, "Times-Bold", 18),
+            ("FOR", "Times-Bold", 14),
+            (SYSTEM, "Times-Bold", 18),
+            ("VERSION 1.0", "Times-Roman", 13),
+            ("Prepared By" if not proposed else "Proposed By", "Times-Roman", 13),
+            (AUTHOR, "Times-Bold", 14),
+            (date, "Times-Roman", 13),
+        ],
+        gap=26,
+    )
     c.showPage()
     c.save()
 
@@ -177,12 +223,8 @@ def rl_title_page(buf: io.BytesIO, title: str, date: str, *, proposed: bool = Fa
 def rl_chapter_page(buf: io.BytesIO, text: str) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 18)
     lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    y = h / 2 + (len(lines) - 1) * 12
-    for line in lines:
-        c.drawCentredString(w / 2, y, line)
-        y -= 28
+    _centered_lines(c, w, h, [(ln, "Times-Bold", 18) for ln in lines], gap=30)
     c.showPage()
     c.save()
 
@@ -190,8 +232,7 @@ def rl_chapter_page(buf: io.BytesIO, text: str) -> None:
 def rl_section_header(buf: io.BytesIO, text: str) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("Times-Bold", 14)
-    c.drawCentredString(w / 2, h - 72, text)
+    _centered_lines(c, w, h, [(text, "Times-Bold", 14)], gap=0)
     c.showPage()
     c.save()
 
@@ -237,12 +278,16 @@ def insert_bytes(doc: fitz.Document, pdf_bytes: bytes) -> None:
     doc.insert_pdf(fitz.open(stream=pdf_bytes, filetype="pdf"))
 
 
-def insert_file(doc: fitz.Document, path: Path, skip: int = 0) -> int:
+def insert_file(doc: fitz.Document, path: Path, skip: int = 0, stop_before: int | None = None) -> int:
     """Append PDF pages; return number of pages inserted."""
     s = fitz.open(str(path))
-    n = max(len(s) - skip, 0)
-    if n:
-        doc.insert_pdf(s, from_page=skip, to_page=len(s) - 1)
+    end = (stop_before - 1) if stop_before is not None else len(s) - 1
+    end = min(end, len(s) - 1)
+    if end >= skip:
+        doc.insert_pdf(s, from_page=skip, to_page=end)
+        n = end - skip + 1
+    else:
+        n = 0
     s.close()
     return n
 
@@ -268,8 +313,8 @@ class BookBuilder:
     def add_pages(self, builder_fn) -> None:
         self.add_bytes(pdf_page_bytes(builder_fn))
 
-    def add_pdf(self, path: Path, skip: int = 0) -> None:
-        insert_file(self.doc, path, skip=skip)
+    def add_pdf(self, path: Path, skip: int = 0, stop_before: int | None = None) -> None:
+        insert_file(self.doc, path, skip=skip, stop_before=stop_before)
 
     def build_front_matter(self) -> None:
         self.add_pages(rl_cover_main)
@@ -288,6 +333,7 @@ class BookBuilder:
                     "qualification of this or any other university or institute of learning.",
                     AUTHOR,
                 ],
+                centered=True,
             )
         )
 
@@ -296,6 +342,7 @@ class BookBuilder:
                 b,
                 "Dedication",
                 ["Dedicated to my beloved parents,", "Teachers", "And", "The fellows"],
+                centered=True,
             )
         )
 
@@ -310,6 +357,7 @@ class BookBuilder:
                     "His encouragement helped me during times of difficulty.",
                     "I would also like to thank the project coordinator and all of my teachers and friends for their support.",
                 ],
+                centered=True,
             )
         )
 
@@ -327,6 +375,7 @@ class BookBuilder:
                     "• Automate installment schedules, employee management, and finance reporting.",
                     "• Replace manual record keeping with a centralized web application.",
                 ],
+                centered=True,
             )
         )
 
@@ -345,6 +394,7 @@ class BookBuilder:
                     "By replacing manual spreadsheets and paper forms with a centralized application, DAMS "
                     "improves transparency for customers and efficiency for administrators.",
                 ],
+                centered=True,
             )
         )
 
@@ -357,6 +407,7 @@ class BookBuilder:
                     f"Author: {AUTHOR}",
                     f"Date: {DATES['revision']}",
                 ],
+                centered=True,
             )
         )
 
@@ -366,18 +417,18 @@ class BookBuilder:
         self.add_pages(lambda b: rl_chapter_page(b, "Chapter # 1\nIntroduction"))
         self.add_pdf(src("DMS_Proposal__2___3__8dc4.pdf"), skip=5)  # pages 6-10 content
 
-        # Chapter 2 — Analysis / SRS
+        # Chapter 2 — Analysis / SRS (functional + non-functional, then merged external interface)
         self.mark("Chapter # 2 Analysis", 1)
         self.add_pages(lambda b: rl_chapter_page(b, "CHAPTER #02\nAnalysis"))
         self.add_pages(lambda b: rl_title_page(b, "Software Requirement Specification", DATES["srs"], proposed=True))
-        self.add_pdf(src("functional_requiement_of_deen_association_5ad6.pdf"), skip=1)  # skip SRS cover
+        # Pages 2–17: revision, intro, functional reqs, non-functional (exclude brief external on p18)
+        self.add_pdf(src("functional_requiement_of_deen_association_5ad6.pdf"), skip=1, stop_before=17)
 
-        # External interface (separate artifact, same chapter date as SRS)
+        # 2.8 External Interface — full detail doc merged into SRS chapter (Zostel style)
         self.mark("2.8 External Interface Requirements", 2)
-        self.add_pages(
-            lambda b: rl_title_page(b, "EXTERNAL INTERFACE REQUIREMENTS", DATES["srs"], proposed=True)
-        )
-        self.add_pdf(src("DAMS_External_Interface_Requirements__1__2b51.pdf"), skip=1)
+        self.add_pages(lambda b: rl_section_header(b, "2.8 External Interface Requirements"))
+        # Skip standalone cover + revision; include detailed interface content only
+        self.add_pdf(src("DAMS_External_Interface_Requirements__1__2b51.pdf"), skip=2)
 
         # Chapter 3 — Design Phase
         self.mark("Chapter # 3 Design Phase", 1)
