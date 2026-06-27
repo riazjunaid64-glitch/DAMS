@@ -14,6 +14,7 @@ export const SITE_CONTACT = {
   phoneTel: "+92512340061",
   phoneMobileTel: "+923335165466",
   whatsappUrl: "https://wa.me/923335165466",
+  website: "https://www.thedeenassociates.com",
   address: "Office 17, 1st Floor, Allahdaad Plaza, G-8 Markaz, Islamabad, Pakistan.",
   mapsUrl: `https://www.google.com/maps/search/?api=1&query=${OFFICE.lat},${OFFICE.lng}`,
   mapsEmbedUrl: `https://maps.google.com/maps?q=${OFFICE.lat},${OFFICE.lng}&z=17&hl=en&output=embed`,

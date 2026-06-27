@@ -1,125 +1,198 @@
+import { Link } from "react-router-dom";
+import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
-import Section from "../lib/Section.tsx";
+import { SITE_CONTACT } from "../lib/siteContact.ts";
+
+const STATS = [
+  { value: "2009", label: "Established in Islamabad" },
+  { value: "9+", label: "Commercial Projects" },
+  { value: "10K+", label: "Apartments & Units" },
+  { value: "17+", label: "Years of Experience" },
+];
+
+const PROPERTY_TYPES = [
+  "Residential Villas",
+  "Apartments",
+  "Commercial Projects",
+  "Mixed-Use Developments",
+  "Farm Houses",
+  "Investment Properties",
+];
 
 const VALUES = [
   {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-      </svg>
-    ),
-    title: "Transparency",
-    description: "Every decision, every report, every milestone — shared openly with all stakeholders.",
+    title: "Trust & Transparency",
+    description:
+      "We build lasting relationships through honest advice, clear communication, and full transparency at every stage of your property journey.",
   },
   {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-      </svg>
-    ),
-    title: "Efficiency",
-    description: "Streamlined workflows and processes to reduce delays and maximize output.",
+    title: "Customer-First Approach",
+    description:
+      "Our success is rooted in protecting your interests — from site selection and booking to handover and long-term investment planning.",
   },
   {
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      </svg>
-    ),
-    title: "Reliability",
-    description: "Consistent delivery, trusted partnerships, and unwavering commitment to quality.",
+    title: "Quality Delivery",
+    description:
+      "From architects and designers to contractors and final handover, every detail is managed to the highest professional standards.",
   },
+];
+
+const WHY_CHOOSE = [
+  { title: "Prime Locations", detail: "Projects in B-17, Faisal Hills, and high-growth Islamabad corridors." },
+  { title: "End-to-End Service", detail: "Consultancy, development, marketing, and after-sales support under one roof." },
+  { title: "Flexible Plans", detail: "Investment-friendly payment structures designed for families and investors." },
+  { title: "Expert Guidance", detail: "Experienced team helping you buy, sell, or invest at the right value." },
+  { title: "Gated Communities", detail: "Secure, well-planned developments with modern amenities and infrastructure." },
+  { title: "24/7 Support", detail: "Dedicated reception, info desk, and client support when you need answers." },
 ];
 
 export default function AboutPage() {
   return (
     <>
-      {/* Hero Section */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-16 sm:py-24">
-          <Section
-            eyebrow="About Us"
-            title="Building more than structures"
-            description="At Deen Associate, we focus on transparency, efficiency, and modern management practices to deliver exceptional results."
-          >
-            <div />
-          </Section>
+      {/* Hero */}
+      <section className="about-hero">
+        <Container className="about-hero__inner">
+          <p className="about-eyebrow">Who We Are</p>
+          <h1 className="about-hero__title">Deen Associate</h1>
+          <p className="about-hero__lead">
+            A trusted real estate consultancy and development firm in Islamabad — helping clients buy, sell, and invest
+            in residential, commercial, and mixed-use properties with confidence.
+          </p>
         </Container>
-      </div>
+      </section>
 
-      {/* Stats Section */}
-      <div className="py-16 sm:py-20">
+      {/* Stats */}
+      <section className="about-stats">
         <Container>
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              { value: "15+", label: "Years Experience", color: "from-indigo-500 to-violet-600" },
-              { value: "500+", label: "Units Delivered", color: "from-emerald-500 to-teal-600" },
-              { value: "98%", label: "Client Satisfaction", color: "from-amber-500 to-orange-600" },
-              { value: "3+", label: "Major Projects", color: "from-rose-500 to-pink-600" },
-            ].map((stat, i) => (
-              <div
-                key={stat.label}
-                className="glass-card group relative overflow-hidden p-6 text-center animate-fade-in-up"
-                style={{ animationDelay: `${i * 80}ms` }}
-              >
-                <div className={`pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-gradient-to-br ${stat.color} opacity-[0.06] blur-xl transition-opacity group-hover:opacity-[0.12]`} />
-                <p className="relative text-3xl font-bold text-[var(--text-heading)]">{stat.value}</p>
-                <p className="relative mt-1.5 text-sm text-[var(--text-muted)]">{stat.label}</p>
+          <div className="about-stats__grid">
+            {STATS.map((stat) => (
+              <div key={stat.label} className="about-stats__item">
+                <p className="about-stats__value">{stat.value}</p>
+                <p className="about-stats__label">{stat.label}</p>
               </div>
             ))}
           </div>
         </Container>
-      </div>
+      </section>
 
-      {/* Story + Values */}
-      <div className="relative border-y border-white/[0.04] py-16 sm:py-20">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative">
-          <div className="grid gap-12 lg:grid-cols-2 lg:items-center">
-            <div className="space-y-6">
-              <div className="inline-flex items-center gap-2">
-                <span className="h-px w-8 bg-gradient-to-r from-transparent to-indigo-500" />
-                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-500">Our Story</span>
-              </div>
-              <h2 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
-                Driven by a vision for quality and accountability
-              </h2>
-              <div className="space-y-4 text-sm leading-relaxed text-[var(--text-secondary)]">
+      {/* Story */}
+      <section className="about-story">
+        <Container>
+          <div className="about-story__grid">
+            <div className="about-story__content">
+              <p className="about-eyebrow">Our Story</p>
+              <h2 className="about-section-title">Fulfilling promises with trust and confidence</h2>
+              <div className="about-prose">
                 <p>
-                  At Deen Associate, we focus on transparency, efficiency, and modern management
-                  practices. Our team brings over 15 years of experience in project development
-                  and management, ensuring every project meets the highest standards.
+                  Deen Associate is built on a simple promise: deliver what we commit to, and earn your trust through
+                  every interaction. Since <strong>2009</strong>, we have served buyers, sellers, and investors across
+                  Islamabad and surrounding growth corridors with a customer-oriented approach and a focus on long-term
+                  relationships — not one-time transactions.
                 </p>
                 <p>
-                  We believe in building lasting relationships through trust,
-                  consistent delivery, and a commitment to excellence. Our approach
-                  to project management emphasizes clear communication and operational transparency.
+                  We guide clients through the full real estate lifecycle — from selecting the right project and
+                  understanding market value, to booking, documentation, and handover. Whether you are looking for a
+                  family home, a commercial investment, or a mixed-use opportunity, our team works to protect your
+                  interests at every step.
+                </p>
+                <p>
+                  Our portfolio includes landmark developments such as <strong>CPEC Greens</strong>,{" "}
+                  <strong>Deen Square</strong>, <strong>Mall of Faisal Hills</strong>, <strong>Urban Complex</strong>,{" "}
+                  <strong>Legacy Court</strong>, and <strong>Seventeen Square</strong> — each designed with modern
+                  planning, strong locations, and investor-friendly payment options.
                 </p>
               </div>
             </div>
 
-            {/* Values */}
-            <div className="space-y-4">
-              {VALUES.map((value, i) => (
-                <div
-                  key={value.title}
-                  className="glass-card flex items-start gap-4 p-5 animate-fade-in-up"
-                  style={{ animationDelay: `${i * 100}ms` }}
-                >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/[0.1] text-indigo-500">
-                    {value.icon}
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-[var(--text-heading)]">{value.title}</h3>
-                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{value.description}</p>
-                  </div>
-                </div>
-              ))}
+            <div className="about-story__panel">
+              <div className="about-story__card">
+                <p className="about-story__card-label">Head Office</p>
+                <p className="about-story__card-text">{SITE_CONTACT.address}</p>
+              </div>
+              <div className="about-story__card">
+                <p className="about-story__card-label">Property Expertise</p>
+                <ul className="about-tags">
+                  {PROPERTY_TYPES.map((type) => (
+                    <li key={type}>{type}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="about-story__highlight">
+                <p className="about-story__highlight-title">Deen Villas</p>
+                <p className="about-story__highlight-text">
+                  Luxury residential villas in a serene, gated community — spacious layouts, modern kitchens,
+                  attached washrooms, parking, and landscaped surroundings for comfortable family living.
+                </p>
+              </div>
             </div>
           </div>
         </Container>
-      </div>
+      </section>
+
+      {/* Values */}
+      <section className="about-values">
+        <Container>
+          <div className="about-values__header">
+            <p className="about-eyebrow">Our Principles</p>
+            <h2 className="about-section-title">What drives everything we do</h2>
+          </div>
+          <div className="about-values__grid">
+            {VALUES.map((value) => (
+              <article key={value.title} className="about-value-card">
+                <h3>{value.title}</h3>
+                <p>{value.description}</p>
+              </article>
+            ))}
+          </div>
+        </Container>
+      </section>
+
+      {/* Why Choose Us */}
+      <section className="about-why">
+        <Container>
+          <div className="about-why__header">
+            <p className="about-eyebrow">Why Choose Us</p>
+            <h2 className="about-section-title">Your partner in smart real estate decisions</h2>
+            <p className="about-why__intro">
+              From first inquiry to final handover, Deen Associate combines market knowledge, project quality, and
+              responsive client service — so you can invest with clarity and peace of mind.
+            </p>
+          </div>
+          <div className="about-why__grid">
+            {WHY_CHOOSE.map((item) => (
+              <div key={item.title} className="about-why__item">
+                <span className="about-why__dot" aria-hidden="true" />
+                <div>
+                  <h3>{item.title}</h3>
+                  <p>{item.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Container>
+      </section>
+
+      {/* CTA */}
+      <section className="about-cta">
+        <Container>
+          <div className="about-cta__box">
+            <div>
+              <h2>Looking for the right property?</h2>
+              <p>Speak with our team for bookings, site visits, investment advice, or project details.</p>
+            </div>
+            <div className="about-cta__actions">
+              <Link to="/contact">
+                <Button size="lg">Contact Us</Button>
+              </Link>
+              <a href={SITE_CONTACT.whatsappUrl} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="lg" className="about-cta__outline-btn">
+                  WhatsApp Us
+                </Button>
+              </a>
+            </div>
+          </div>
+        </Container>
+      </section>
     </>
   );
 }
