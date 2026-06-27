@@ -7,9 +7,13 @@ export default function HomePage() {
     <>
       {/* ─── Welcome Hero ─── */}
       <section className="relative overflow-hidden">
+        {/* Building hero background */}
+        <div className="hero-bg-image absolute inset-0 scale-105" aria-hidden="true" />
+        <div className="hero-bg-overlay absolute inset-0" aria-hidden="true" />
+
         {/* Background Effects */}
-        <div className="absolute inset-0 mesh-gradient-hero" />
-        <div className="dot-grid absolute inset-0 opacity-30" />
+        <div className="absolute inset-0 mesh-gradient-hero opacity-80" />
+        <div className="dot-grid absolute inset-0 opacity-20" />
         <div className="absolute left-1/2 top-0 h-[600px] w-[600px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500/[0.07] blur-[120px]" />
         <div className="absolute bottom-0 right-0 h-[400px] w-[400px] translate-x-1/4 translate-y-1/4 rounded-full bg-violet-500/[0.05] blur-[100px]" />
 

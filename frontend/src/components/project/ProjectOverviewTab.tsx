@@ -171,12 +171,12 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
             touchStartX.current = null;
           }}
         >
-          <div className="aspect-[16/10] min-h-[210px] sm:aspect-[16/7] sm:min-h-[300px] lg:aspect-[16/5.4] lg:min-h-[340px] lg:max-h-[430px]">
+          <div className="relative w-full aspect-[16/10] min-h-[210px] sm:aspect-[16/7] sm:min-h-[300px] lg:aspect-[16/5.4] lg:min-h-[340px]">
             <img
               key={galleryImages[activeImage]}
               src={galleryImages[activeImage]}
               alt={`${project.projectName} gallery ${activeImage + 1}`}
-              className="h-full w-full object-cover animate-fade-in"
+              className="absolute inset-0 block h-full w-full object-cover object-center animate-fade-in"
             />
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-transparent" />
