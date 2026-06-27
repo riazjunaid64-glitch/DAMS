@@ -5,11 +5,23 @@ type FeaturedProjectCardProps = {
   project: FeaturedProject;
   style?: CSSProperties;
   priority?: boolean;
+  variant?: "default" | "featured";
 };
 
-export default function FeaturedProjectCard({ project, style, priority = false }: FeaturedProjectCardProps) {
+export default function FeaturedProjectCard({
+  project,
+  style,
+  priority = false,
+  variant = "default",
+}: FeaturedProjectCardProps) {
+  const isFeatured = variant === "featured" || project.featured;
+
   return (
-    <div className="op-card" style={style} aria-label={project.title}>
+    <div
+      className={isFeatured ? "op-card op-card--featured" : "op-card"}
+      style={style}
+      aria-label={project.title}
+    >
       <div className="op-thumb">
         <img
           src={project.image}

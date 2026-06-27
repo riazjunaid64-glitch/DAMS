@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import Container from "../lib/Container.tsx";
+import SiteLogo from "./SiteLogo.tsx";
 import { SITE_CONTACT } from "../lib/siteContact.ts";
 
 type NavLink = { to: string; label: string };
@@ -33,13 +34,7 @@ export default function SiteFooter({ navLinks }: SiteFooterProps) {
         <div className="site-footer__grid">
           {/* Brand column */}
           <div className="site-footer__brand">
-            <Link to="/" className="site-footer__logo">
-              <span className="site-footer__logo-mark">DA</span>
-              <span className="site-footer__logo-text">
-                <span>DEEN</span>
-                <span>ASSOCIATE</span>
-              </span>
-            </Link>
+            <SiteLogo variant="footer" />
             <p className="site-footer__about">{SITE_CONTACT.description}</p>
             <ul className="site-footer__social">
               <li>

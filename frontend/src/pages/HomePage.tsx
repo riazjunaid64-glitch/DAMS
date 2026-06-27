@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import FeaturedProjectCard from "../components/FeaturedProjectCard.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
-import { FEATURED_PROJECTS } from "../lib/featuredProjects.ts";
+import { FEATURED_HERO_PROJECT, FEATURED_PROJECTS } from "../lib/featuredProjects.ts";
 
 export default function HomePage() {
   return (
@@ -77,10 +77,18 @@ export default function HomePage() {
             </p>
           </div>
 
-          <div className="op-grid">
-            {FEATURED_PROJECTS.map((project, index) => (
-              <FeaturedProjectCard key={project.id} project={project} priority={index < 3} />
-            ))}
+          <div className="op-layout">
+            <FeaturedProjectCard
+              project={FEATURED_HERO_PROJECT}
+              variant="featured"
+              priority
+            />
+
+            <div className="op-grid">
+              {FEATURED_PROJECTS.map((project, index) => (
+                <FeaturedProjectCard key={project.id} project={project} priority={index < 3} />
+              ))}
+            </div>
           </div>
         </div>
       </section>

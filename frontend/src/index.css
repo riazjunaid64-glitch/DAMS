@@ -444,6 +444,74 @@ h1, h2, h3, h4, h5, h6 {
   background: #e8c88a !important;
 }
 
+/* ─── Site Logo ─── */
+.site-logo {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  text-decoration: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.site-logo:hover {
+  opacity: 0.95;
+}
+
+.site-logo__frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6b1520 0%, #390217 100%);
+  border: 1px solid rgba(245, 215, 158, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.site-logo__img {
+  display: block;
+  width: auto;
+  height: 100%;
+  object-fit: contain;
+}
+
+.site-logo--nav .site-logo__frame {
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.site-logo--nav .site-logo__img {
+  width: auto;
+  height: 3rem;
+  max-width: 11.5rem;
+}
+
+@media (min-width: 640px) {
+  .site-logo--nav .site-logo__img {
+    height: 3.35rem;
+    max-width: 12.5rem;
+  }
+}
+
+.site-logo--footer .site-logo__frame {
+  height: 4.25rem;
+  min-width: 13rem;
+  margin-bottom: 1.25rem;
+  padding: 0.6rem 1.15rem;
+}
+
+.site-logo--footer .site-logo__img {
+  max-width: 12rem;
+  height: 3.15rem;
+}
+
+.site-logo--nav:hover {
+  transform: scale(1.015);
+}
+
 /* ─── Featured Projects (Floria other-projects layout) ─── */
 .featured-projects.section-pad {
   padding: 0;
@@ -497,6 +565,37 @@ h1, h2, h3, h4, h5, h6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
   width: 100%;
+}
+
+.op-layout {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  container-type: inline-size;
+  container-name: projects;
+}
+
+.op-card--featured {
+  width: 100%;
+}
+
+/* 1.5× image height of one grid card; full width with crop */
+.op-card--featured .op-thumb {
+  padding-top: 0;
+  height: calc((100cqw - 36px) / 3 * 0.6 * 1.5);
+}
+
+@media (max-width: 991px) {
+  .op-card--featured .op-thumb {
+    height: calc((100cqw - 18px) / 2 * 0.6 * 1.5);
+  }
+}
+
+@media (max-width: 767px) {
+  .op-card--featured .op-thumb {
+    padding-top: 90%;
+    height: auto;
+  }
 }
 
 @media (max-width: 991px) {

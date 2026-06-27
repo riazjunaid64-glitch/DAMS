@@ -7,6 +7,21 @@ export type FeaturedProject = {
   status: string;
   description: string;
   image: string;
+  featured?: boolean;
+};
+
+/** Full-width hero project — spans the top row above the 3×2 grid */
+export const FEATURED_HERO_PROJECT: FeaturedProject = {
+  id: 0,
+  title: "Floria Heights",
+  category: "residential",
+  badge: "residential",
+  location: "14 Main Boulevard, A Block, Faisal Hills, Islamabad",
+  status: "Booking Open",
+  description:
+    "Faisal Hills' first 18-story high-rise tower — luxury apartments and penthouses with 90+ amenities, smart living, and flexible payment plans.",
+  image: "/images/projects/floria-heights-sm.webp",
+  featured: true,
 };
 
 export const FEATURED_PROJECTS: FeaturedProject[] = [

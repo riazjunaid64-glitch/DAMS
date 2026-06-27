@@ -3,6 +3,7 @@ import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
+import SiteLogo from "./components/SiteLogo.tsx";
 import Button from "./lib/Button.tsx";
 import Container from "./lib/Container.tsx";
 import AboutPage from "./pages/AboutPage.tsx";
@@ -101,16 +102,9 @@ function App() {
     <div className="flex min-h-screen flex-col">
       {/* ─── Navbar ─── */}
       <header className="sticky top-0 z-50 border-b border-[var(--nav-border)] bg-[var(--nav-bg)] shadow-md transition-all duration-300">
-        <Container className="flex h-16 items-center justify-between">
+        <Container className="flex h-[4.25rem] items-center justify-between sm:h-[4.5rem]">
           {/* Logo */}
-          <Link to="/" className="group flex items-center gap-3">
-            <div className="relative flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--accent-warm)]/30 bg-gradient-to-br from-[#6b1520] to-[#390217] shadow-md transition-transform group-hover:scale-105">
-              <span className="text-sm font-bold text-[var(--accent-warm)]">DA</span>
-            </div>
-            <span className="text-base font-semibold tracking-tight text-[var(--nav-text)]">
-              Deen<span className="text-[var(--nav-text-active)]">Associate</span>
-            </span>
-          </Link>
+          <SiteLogo variant="nav" />
 
           {/* Desktop Nav */}
           <nav className="hidden items-center gap-1 sm:flex">
