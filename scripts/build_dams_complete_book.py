@@ -291,6 +291,23 @@ def _draw_wrapped(
     return y
 
 
+def _draw_wrapped_centred(
+    c: canvas.Canvas,
+    centre_x: float,
+    y: float,
+    text: str,
+    font: str,
+    size: float,
+    max_width: float,
+    leading: float,
+) -> float:
+    for ln in _wrap(c, text, font, size, max_width):
+        c.setFont(font, size)
+        c.drawCentredString(centre_x, y, ln)
+        y -= leading
+    return y
+
+
 def rl_blank_page(buf: io.BytesIO) -> None:
     c = canvas.Canvas(buf, pagesize=letter)
     c.showPage()
@@ -310,10 +327,10 @@ def rl_cover_main(buf: io.BytesIO) -> None:
     y -= 28
     c.setFont("TNR-B", 14)
     c.drawCentredString(w / 2, y, AUTHOR)
-    y -= 52
+    y -= 40
     c.setFont("TNR", 17)
-    c.drawCentredString(w / 2, y, "BS (CS) in Software Systems")
-    y -= 58
+    c.drawCentredString(w / 2, y, "BSCS")
+    y -= 48
     c.setFont("TNR-B", 14)
     c.drawCentredString(w / 2, y, "Supervised By")
     y -= 32
@@ -328,9 +345,9 @@ def rl_cover_main(buf: io.BytesIO) -> None:
     y -= 38
     c.setFont("TNR", 16)
     c.drawCentredString(w / 2, y, "Department of Computer Science")
-    y -= 22
-    c.drawCentredString(w / 2, y, UNIVERSITY)
-    y -= 22
+    y -= 26
+    y = _draw_wrapped_centred(c, w / 2, y, UNIVERSITY, "TNR", 16, w - 144, 22)
+    y -= 18
     c.drawCentredString(w / 2, y, SESSION)
     c.showPage()
     c.save()
@@ -339,21 +356,28 @@ def rl_cover_main(buf: io.BytesIO) -> None:
 def rl_cover_presentation(buf: io.BytesIO) -> None:
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
+    text_w = w - 144  # keep long lines inside margins
     y = h - 118
     c.setFont("TNR-B", 14)
     c.drawCentredString(w / 2, y, "A Project Presented to")
-    y -= 44
+    y -= 50
     c.setFont("TNR", 14)
-    c.drawCentredString(w / 2, y, "Federal Urdu University of Arts, Science & Technology")
-    y -= 44
-    c.drawCentredString(w / 2, y, "In Partial Fulfillment of the Requirement for the Degree")
-    y -= 58
+    y = _draw_wrapped_centred(
+        c, w / 2, y,
+        "Federal Urdu University of Arts, Science & Technology",
+        "TNR", 14, text_w, 22,
+    )
+    y -= 24
+    y = _draw_wrapped_centred(
+        c, w / 2, y,
+        "In Partial Fulfillment of the Requirement for the Degree",
+        "TNR", 14, text_w, 22,
+    )
+    y -= 32
     c.setFont("TNR-B", 14)
     c.drawCentredString(w / 2, y, "Bachelor of Computer Science")
-    y -= 32
-    c.setFont("TNR", 16)
-    c.drawCentredString(w / 2, y, "(Software Systems)")
     y -= 48
+    c.setFont("TNR", 16)
     c.drawCentredString(w / 2, y, "By")
     y -= 48
     c.setFont("TNR-B", 16)
@@ -363,7 +387,7 @@ def rl_cover_presentation(buf: io.BytesIO) -> None:
     c.drawCentredString(w / 2, y, DATES["proposal"])
     y -= 52
     c.setFont("TNR-B", 16)
-    c.drawCentredString(w / 2, y, f"({UNIVERSITY})")
+    y = _draw_wrapped_centred(c, w / 2, y, f"({UNIVERSITY})", "TNR-B", 14, text_w, 22)
     c.showPage()
     c.save()
 
@@ -503,34 +527,38 @@ def rl_abstract(buf: io.BytesIO) -> None:
 
 
 def rl_revision_history(buf: io.BytesIO) -> None:
-    """Zostel-style revision history table."""
+    """Zostel-style revision history table with column width constraints."""
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
     c.setFont("TNR-B", TITLE)
     c.drawCentredString(w / 2, h / 2 + 60, "Revision History")
-    cols = [96, 181, 320, 456]
-    y = h / 2 + 10
+
+    col_x = [72, 130, 310, 460]
+    col_w = [col_x[1] - col_x[0] - 8, col_x[2] - col_x[1] - 8, col_x[3] - col_x[2] - 8, w - MR - col_x[3]]
     headers = ["Version", "Description", "Author", "Date"]
+    y = h / 2 + 10
     c.setFont("TNR-B", 14)
     for i, hdr in enumerate(headers):
-        c.drawString(cols[i], y, hdr)
-    y -= 36
+        c.drawString(col_x[i], y, hdr)
+
+    y -= 40
     c.setFont("TNR", BODY)
-    c.drawString(cols[0], y, "1.0")
-    desc_lines = [
-        "This document contains Project",
-        "documentation of",
-        "Deen Associate Management System",
-    ]
-    author_lines = [AUTHOR]
+    c.drawString(col_x[0], y, "1.0")
+
+    desc = "This document contains Project documentation of Deen Associate Management System"
+    desc_lines = _wrap(c, desc, "TNR", BODY, col_w[1])
+    author_lines = _wrap(c, AUTHOR, "TNR", BODY, col_w[2])
     date_lines = ["15th October, 2025"]
-    dy = 15
+    row_lines = max(len(desc_lines), len(author_lines), len(date_lines))
+    line_lead = 16
+
     for i, ln in enumerate(desc_lines):
-        c.drawString(cols[1], y - i * dy, ln)
+        c.drawString(col_x[1], y - i * line_lead, ln)
     for i, ln in enumerate(author_lines):
-        c.drawString(cols[2], y - i * dy, ln)
+        c.drawString(col_x[2], y - i * line_lead, ln)
     for i, ln in enumerate(date_lines):
-        c.drawString(cols[3], y - i * dy, ln)
+        c.drawString(col_x[3], y - i * line_lead, ln)
+
     c.showPage()
     c.save()
 
