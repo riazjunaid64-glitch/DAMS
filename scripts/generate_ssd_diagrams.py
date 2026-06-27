@@ -19,30 +19,35 @@ FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_ITALIC = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"
 
-# Layout constants — bold, high-contrast styling
-IMG_W = 2400
-BASE_H = 560
-MESSAGE_GAP = 60
-MARGIN_TOP = 100
-MARGIN_BOTTOM = 112
-ACTOR_W = 120
-PARTICIPANT_H = 46
-PARTICIPANT_PAD_X = 16
-PARTICIPANT_PAD_Y = 10
-LIFELINE_TOP_OFFSET = 16
+# Layout constants — bold, high-contrast styling with generous spacing
+IMG_W = 2600
+TITLE_Y = 28
+TITLE_ZONE_H = 88          # reserved space below title before diagram
+DIAGRAM_TOP = TITLE_Y + TITLE_ZONE_H + 24   # participant row starts here (~140)
+BASE_H = 640
+MESSAGE_GAP_MIN = 94       # minimum vertical space between message arrows
+MESSAGE_LABEL_PAD = 52     # clearance above arrow for label text
+FIRST_MSG_OFFSET = 48
+MARGIN_BOTTOM = 130
+ACTOR_W = 130
+PARTICIPANT_H = 50
+PARTICIPANT_PAD_X = 18
+PARTICIPANT_PAD_Y = 11
+LIFELINE_TOP_OFFSET = 20
 ACTIVATION_W = 18
 ARROW_HEAD = 12
 ARROW_HALF_H = 7
 LINE_BOLD = 3
 LINE_MED = 2
 LABEL_FONT_SIZE = 17
-TITLE_FONT_SIZE = 28
+TITLE_FONT_SIZE = 26
 CAPTION_FONT_SIZE = 18
 PARTICIPANT_FONT_SIZE = 17
 ACTOR_FONT_SIZE = 17
-MIN_PARTICIPANT_W = 148
+MIN_PARTICIPANT_W = 152
 LIFELINE_COLOR = "#111111"
 BOUNDARY_COLOR = "#444444"
+CAPTION_GAP = 36
 
 
 @dataclass
@@ -87,27 +92,38 @@ def measure_participant_widths(
     return widths
 
 
+def measure_message_gaps(
+    messages: list[Message], label_font: ImageFont.FreeTypeFont, participant_count: int
+) -> list[int]:
+    """Per-message vertical gap sized to label height so lines never crowd."""
+    max_chars = 36 if participant_count >= 4 else 40
+    gaps: list[int] = []
+    for msg in messages:
+        lines = wrap_label(msg.label, max_chars)
+        label_h = len(lines) * (label_font.size + 6)
+        gaps.append(max(MESSAGE_GAP_MIN, label_h + MESSAGE_LABEL_PAD))
+    return gaps
+
+
 def compute_layout(
-    actor: str,
     participants: list[str],
-    message_count: int,
+    message_gaps: list[int],
     p_widths: list[int],
 ) -> tuple[int, int, list[int], int, int]:
     """Return height, actor cx, participant center x coords, lifeline y start/end."""
-    height = MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET + message_count * MESSAGE_GAP + MARGIN_BOTTOM + 64
+    messages_h = sum(message_gaps) + FIRST_MSG_OFFSET
+    height = DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET + messages_h + MARGIN_BOTTOM + CAPTION_GAP + 40
     height = max(height, BASE_H)
 
-    gap_count = max(len(participants) - 1, 1)
-    inner_gap = 44 if len(participants) >= 4 else 52
+    inner_gap = 48 if len(participants) >= 4 else 58
     total_p_w = sum(p_widths)
-    content_w = ACTOR_W + 56 + total_p_w + inner_gap * (len(participants) - 1)
+    content_w = ACTOR_W + 64 + total_p_w + inner_gap * (len(participants) - 1)
 
-    # Place content block centered horizontally on canvas
     block_left = (IMG_W - content_w) // 2
     actor_cx = block_left + ACTOR_W // 2
 
     xs: list[int] = []
-    x = block_left + ACTOR_W + 56 + p_widths[0] // 2
+    x = block_left + ACTOR_W + 64 + p_widths[0] // 2
     for i, pw in enumerate(p_widths):
         if i == 0:
             xs.append(x)
@@ -115,8 +131,8 @@ def compute_layout(
             prev = xs[-1]
             xs.append(prev + p_widths[i - 1] // 2 + inner_gap + pw // 2)
 
-    lifeline_y0 = MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET
-    lifeline_y1 = height - MARGIN_BOTTOM
+    lifeline_y0 = DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET
+    lifeline_y1 = height - MARGIN_BOTTOM - CAPTION_GAP
     return height, actor_cx, xs, lifeline_y0, lifeline_y1
 
 
@@ -127,23 +143,28 @@ def draw_actor(
     name: str,
     font: ImageFont.FreeTypeFont,
 ) -> None:
-    """Draw stick-figure actor above lifeline."""
-    head_r = 16
-    head_cy = y_base - 82
+    """Draw stick-figure actor — kept below title zone, above lifeline."""
+    head_r = 15
+    # Keep actor compact; top of head stays below title zone
+    head_cy = y_base - 62
+    min_head_top = TITLE_Y + TITLE_ZONE_H + 4
+    if head_cy - head_r < min_head_top:
+        head_cy = min_head_top + head_r
+
     draw.ellipse(
         (cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r),
         outline="black",
         width=LINE_BOLD,
     )
     body_top = head_cy + head_r
-    body_bot = y_base - 40
+    body_bot = y_base - 32
     draw.line((cx, body_top, cx, body_bot), fill="black", width=LINE_BOLD)
-    draw.line((cx - 20, body_top + 18, cx + 20, body_top + 18), fill="black", width=LINE_BOLD)
-    draw.line((cx, body_bot, cx - 18, body_bot + 24), fill="black", width=LINE_BOLD)
-    draw.line((cx, body_bot, cx + 18, body_bot + 24), fill="black", width=LINE_BOLD)
+    draw.line((cx - 18, body_top + 14, cx + 18, body_top + 14), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx - 16, body_bot + 20), fill="black", width=LINE_BOLD)
+    draw.line((cx, body_bot, cx + 16, body_bot + 20), fill="black", width=LINE_BOLD)
 
     nw = draw.textlength(name, font=font)
-    draw.text((cx - nw / 2, y_base - 30), name, fill="black", font=font)
+    draw.text((cx - nw / 2, y_base - 22), name, fill="black", font=font)
 
 
 def draw_participant_box(
@@ -230,7 +251,7 @@ def draw_horizontal_arrow(
         lines = wrap_label(label, max_chars)
         line_h = label_font.size + 5
         total_h = len(lines) * line_h
-        ly = y - total_h - 10
+        ly = y - total_h - 14
         mid = (x1 + x2) / 2
         for line in lines:
             lw = draw.textlength(line, font=label_font)
@@ -244,8 +265,12 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
     p_font = load_font(PARTICIPANT_FONT_SIZE, bold=True)
     p_widths = measure_participant_widths(tdraw, diagram.participants, p_font)
 
+    label_size = 15 if len(diagram.participants) >= 5 else (16 if len(diagram.participants) >= 4 else LABEL_FONT_SIZE)
+    label_font = load_font(label_size, bold=True)
+    message_gaps = measure_message_gaps(diagram.messages, label_font, len(diagram.participants))
+
     height, actor_cx, p_xs, ly0, ly1 = compute_layout(
-        diagram.actor, diagram.participants, len(diagram.messages), p_widths
+        diagram.participants, message_gaps, p_widths
     )
 
     img = Image.new("RGB", (IMG_W, height), "white")
@@ -254,22 +279,18 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
     title_font = load_font(TITLE_FONT_SIZE, bold=True)
     caption_font = load_font(CAPTION_FONT_SIZE, bold=True)
     actor_font = load_font(ACTOR_FONT_SIZE, bold=True)
-    label_size = 15 if len(diagram.participants) >= 5 else (16 if len(diagram.participants) >= 4 else LABEL_FONT_SIZE)
-    label_font = load_font(label_size, bold=True)
     p_font = load_font(PARTICIPANT_FONT_SIZE, bold=True)
 
-    # Title — centered
+    # Title — centered in dedicated top zone (never overlaps diagram)
     title = diagram.title
     tw = draw.textlength(title, font=title_font)
-    draw.text(((IMG_W - tw) / 2, 28), title, fill="black", font=title_font)
+    draw.text(((IMG_W - tw) / 2, TITLE_Y), title, fill="black", font=title_font)
 
-    actor_y = MARGIN_TOP
-
-    # System boundary — bold dashed box around participants
-    boundary_x0 = p_xs[0] - p_widths[0] // 2 - 28
-    boundary_x1 = p_xs[-1] + p_widths[-1] // 2 + 28
-    boundary_y0 = MARGIN_TOP - 14
-    boundary_y1 = ly1 + 14
+    # System boundary — below title zone
+    boundary_x0 = p_xs[0] - p_widths[0] // 2 - 32
+    boundary_x1 = p_xs[-1] + p_widths[-1] // 2 + 32
+    boundary_y0 = DIAGRAM_TOP - 18
+    boundary_y1 = ly1 + 18
     dash, gap = 10, 8
     for side in [
         (boundary_x0, boundary_y0, boundary_x1, boundary_y0),
@@ -289,15 +310,15 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
                 draw.line((x, y_a, min(x + dash, max(x_a, x_b)), y_a), fill=BOUNDARY_COLOR, width=LINE_MED)
                 x += dash + gap
 
-    draw_actor(draw, actor_cx, actor_y + PARTICIPANT_H, diagram.actor, actor_font)
+    draw_actor(draw, actor_cx, DIAGRAM_TOP + PARTICIPANT_H, diagram.actor, actor_font)
 
     # Participant boxes + lifelines
-    for i, (name, cx, pw) in enumerate(zip(diagram.participants, p_xs, p_widths)):
-        draw_participant_box(draw, cx, MARGIN_TOP, pw, name, p_font)
-        draw_lifeline(draw, cx, MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
+    for name, cx, pw in zip(diagram.participants, p_xs, p_widths):
+        draw_participant_box(draw, cx, DIAGRAM_TOP, pw, name, p_font)
+        draw_lifeline(draw, cx, DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
 
     actor_lifeline_x = actor_cx
-    draw_lifeline(draw, actor_lifeline_x, MARGIN_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
+    draw_lifeline(draw, actor_lifeline_x, DIAGRAM_TOP + PARTICIPANT_H + LIFELINE_TOP_OFFSET, ly1)
 
     def x_for(idx: int) -> int:
         if idx == -1:
@@ -306,9 +327,9 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
 
     # Track activation spans per participant
     activations: dict[int, list[tuple[int, int]]] = {i: [] for i in range(len(diagram.participants))}
-    y = ly0 + 28
+    y = ly0 + FIRST_MSG_OFFSET
 
-    for msg in diagram.messages:
+    for msg, gap in zip(diagram.messages, message_gaps):
         x1 = x_for(msg.source)
         x2 = x_for(msg.target)
         draw_horizontal_arrow(draw, x1, x2, y, dashed=msg.is_return, label=msg.label, label_font=label_font)
@@ -316,8 +337,8 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
         if not msg.is_return:
             for idx in (msg.source, msg.target):
                 if idx >= 0:
-                    activations[idx].append((y - 4, y + 4))
-        y += MESSAGE_GAP
+                    activations[idx].append((y - 6, y + 6))
+        y += gap
 
     # Draw merged activation boxes
     for idx, spans in activations.items():
@@ -330,7 +351,7 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
     # Caption below system boundary
     cap = f"{diagram.figure}: {diagram.caption}"
     lines = wrap_label(cap, 105)
-    cy = boundary_y1 + 22
+    cy = boundary_y1 + CAPTION_GAP
     for line in lines:
         lw = draw.textlength(line, font=caption_font)
         draw.text(((IMG_W - lw) / 2, cy), line, fill="black", font=caption_font)
@@ -346,13 +367,15 @@ def render_ssd(diagram: SSDDiagram) -> Image.Image:
     return img
 
 
-def validate_image(img: Image.Image, name: str) -> list[str]:
+def validate_image(img: Image.Image, name: str, boundary_y0: int = DIAGRAM_TOP - 18) -> list[str]:
     """Basic layout sanity checks."""
     issues: list[str] = []
     w, h = img.size
     if w < 800 or h < 400:
         issues.append(f"{name}: image too small ({w}x{h})")
-    # Ensure caption text exists in bottom 120px band
+    title_bottom = TITLE_Y + TITLE_FONT_SIZE + 8
+    if boundary_y0 < title_bottom + 10:
+        issues.append(f"{name}: diagram too close to title (overlap risk)")
     bottom_band = img.crop((0, h - 120, w, h)).convert("L")
     if bottom_band.getextrema()[0] == 255 and bottom_band.getextrema()[1] == 255:
         issues.append(f"{name}: no caption detected in bottom area")
@@ -691,12 +714,12 @@ def create_pdf(images: list[tuple[SSDDiagram, Image.Image]]) -> None:
     c.drawCentredString(page_w / 2, page_h - 96, "Deen Associate Management System (DAMS)")
     c.showPage()
 
-    page_margin = 40
+    page_margin = 28
     max_w = page_w - 2 * page_margin
     max_h = page_h - 2 * page_margin
 
     for _diagram, img in images:
-        # Scale to fit page while keeping diagram centered
+        # Prefer width-first scaling so diagrams appear larger on page
         img_w = max_w
         img_h = img_w * img.height / img.width
         if img_h > max_h:
@@ -705,7 +728,7 @@ def create_pdf(images: list[tuple[SSDDiagram, Image.Image]]) -> None:
 
         x_pos = (page_w - img_w) / 2
         y_pos = (page_h - img_h) / 2
-        c.drawImage(ImageReader(img), x_pos, y_pos, width=img_w, height=img_h)
+        c.drawImage(ImageReader(img), x_pos, y_pos, width=img_w, height=img_h, preserveAspectRatio=True)
         c.showPage()
 
     c.save()
