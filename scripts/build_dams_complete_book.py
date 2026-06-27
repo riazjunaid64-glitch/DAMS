@@ -48,27 +48,43 @@ SESSION = "SESSION [2022-2026]"
 SYSTEM = "Deen Associate Management System"
 CLIENT = "Deen Associate"
 
-# Section dates from Zostel sample (Doc_fixed) — per section, not one global date
+DATE_COMPLETED = "25 Jun, 2026"
+
+# Section dates — per document / phase (user-specified)
 DATES = {
     "proposal": "15th October, 2025",
     "revision": "15th October, 2025",
-    "srs": "27 Nov, 2025",
-    "use_case": "27 Nov, 2025",
-    "fully_dressed": "27 Nov, 2025",
-    "design_phase": "27 Nov, 2025",
-    "domain": "27 Nov, 2025",
-    "package": "27 Nov, 2025",
-    "ssd": "27 Nov, 2025",
-    "er": "27 Nov, 2025",
-    "normalization": "27 Nov, 2025",
-    "relational": "27 Nov, 2025",
-    "class_diagram": "27 Nov, 2025",
-    "construction": "27 Nov, 2025",
-    "project_code": "27 Nov, 2025",
-    "sample_queries": "27 Nov, 2025",
-    "test_cases": "25 Nov, 2025",
-    "user_manual": "27 Nov, 2025",
+    "srs": "30 Nov, 2025",
+    "use_case": "30 Nov, 2025",
+    "fully_dressed": "30 Nov, 2025",
+    "design_phase": "30 Nov, 2025",
+    "domain": "2 Dec, 2025",
+    "package": "20 Jun, 2026",
+    "ssd": "22 Jun, 2026",
+    "er": "3 Dec, 2025",
+    "normalization": "3 Dec, 2025",
+    "relational": "3 Dec, 2025",
+    "class_diagram": "20 Jun, 2026",
+    "construction": "20 Jun, 2026",
+    "project_code": "20 Jun, 2026",
+    "sample_queries": "20 Jun, 2026",
+    "test_cases": "25 Jun, 2026",
+    "user_manual": "25 Jun, 2026",
 }
+
+# Revision history rows: (version, description, date)
+REVISION_ROWS: list[tuple[str, str, str]] = [
+    ("1.0", "Project Proposal of Deen Associate Management System", DATES["proposal"]),
+    ("1.1", "Project Analysis — Software Requirement Specification", DATES["srs"]),
+    ("1.2", "Design Phase", DATES["design_phase"]),
+    ("1.3", "Domain Model", DATES["domain"]),
+    ("1.4", "Normalization, ER Diagram and Relational Model", DATES["normalization"]),
+    ("1.5", "Package Diagram", DATES["package"]),
+    ("1.6", "Class Diagram", DATES["class_diagram"]),
+    ("1.7", "System Sequence Diagrams", DATES["ssd"]),
+    ("1.8", "Test Cases", DATES["test_cases"]),
+    ("1.9", "User Manual", DATES["user_manual"]),
+]
 
 SSD_TOC = [
     "User Registration",
@@ -486,8 +502,8 @@ def rl_project_brief(buf: io.BytesIO) -> None:
     y -= 10
     row("Undertaken By", AUTHOR, dy=30)
     row("Supervised By", SUPERVISOR, dy=30)
-    row("Date Started", "15th October, 2025", dy=30)
-    row("Date Completed", "27 Nov, 2025", dy=30)
+    row("Date Started", DATES["proposal"], dy=30)
+    row("Date Completed", DATE_COMPLETED, dy=30)
     y -= 16
     c.drawString(label_x, y, "Technologies Used")
     y -= 22
@@ -527,37 +543,69 @@ def rl_abstract(buf: io.BytesIO) -> None:
 
 
 def rl_revision_history(buf: io.BytesIO) -> None:
-    """Zostel-style revision history table with column width constraints."""
+    """Zostel-style bordered revision history table with one row per project phase."""
     w, h = letter
     c = canvas.Canvas(buf, pagesize=letter)
-    c.setFont("TNR-B", TITLE)
-    c.drawCentredString(w / 2, h / 2 + 60, "Revision History")
 
-    col_x = [72, 130, 310, 460]
-    col_w = [col_x[1] - col_x[0] - 8, col_x[2] - col_x[1] - 8, col_x[3] - col_x[2] - 8, w - MR - col_x[3]]
+    table_left = 90
+    table_right = w - 81
+    col_x = [table_left, 150, 276, 450, table_right]
+    col_w = [col_x[1] - col_x[0] - 6, col_x[2] - col_x[1] - 6, col_x[3] - col_x[2] - 6, col_x[4] - col_x[3] - 6]
     headers = ["Version", "Description", "Author", "Date"]
-    y = h / 2 + 10
-    c.setFont("TNR-B", 14)
-    for i, hdr in enumerate(headers):
-        c.drawString(col_x[i], y, hdr)
+    row_pad = 8
+    line_lead = 14
 
-    y -= 40
+    c.setFont("TNR-B", TITLE)
+    title_y = h - MT - 10
+    c.drawCentredString(w / 2, title_y, "Revision History")
+
+    # Pre-compute wrapped cell content and row heights
+    row_cells: list[list[list[str]]] = []
+    row_heights: list[float] = []
     c.setFont("TNR", BODY)
-    c.drawString(col_x[0], y, "1.0")
+    for version, desc, date in REVISION_ROWS:
+        cells = [
+            [version],
+            _wrap(c, desc, "TNR", BODY, col_w[1]),
+            _wrap(c, AUTHOR, "TNR", BODY, col_w[2]),
+            _wrap(c, date, "TNR", BODY, col_w[3]),
+        ]
+        max_lines = max(len(cell) for cell in cells)
+        row_heights.append(max_lines * line_lead + row_pad * 2)
+        row_cells.append(cells)
 
-    desc = "This document contains Project documentation of Deen Associate Management System"
-    desc_lines = _wrap(c, desc, "TNR", BODY, col_w[1])
-    author_lines = _wrap(c, AUTHOR, "TNR", BODY, col_w[2])
-    date_lines = ["15th October, 2025"]
-    row_lines = max(len(desc_lines), len(author_lines), len(date_lines))
-    line_lead = 16
+    header_h = 28
+    table_top = title_y - 36
+    y = table_top
 
-    for i, ln in enumerate(desc_lines):
-        c.drawString(col_x[1], y - i * line_lead, ln)
-    for i, ln in enumerate(author_lines):
-        c.drawString(col_x[2], y - i * line_lead, ln)
-    for i, ln in enumerate(date_lines):
-        c.drawString(col_x[3], y - i * line_lead, ln)
+    def hline(y_pos: float) -> None:
+        c.setLineWidth(0.75)
+        c.line(table_left, y_pos, table_right, y_pos)
+
+    def vlines(y_bottom: float, y_top: float) -> None:
+        for x in col_x:
+            c.line(x, y_bottom, x, y_top)
+
+    # Header row
+    hline(y)
+    y -= header_h
+    hline(y)
+    c.setFont("TNR-B", 14)
+    text_y = y + row_pad + 2
+    for i, hdr in enumerate(headers):
+        c.drawString(col_x[i] + 4, text_y, hdr)
+    vlines(y, table_top)
+
+    # Data rows
+    for cells, rh in zip(row_cells, row_heights):
+        y -= rh
+        hline(y)
+        c.setFont("TNR", BODY)
+        text_y = y + row_pad + 2
+        for i, lines in enumerate(cells):
+            for j, ln in enumerate(lines):
+                c.drawString(col_x[i] + 4, text_y + j * line_lead, ln)
+        vlines(y, y + rh)
 
     c.showPage()
     c.save()
