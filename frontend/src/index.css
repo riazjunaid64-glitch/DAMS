@@ -263,6 +263,28 @@ h1, h2, h3, h4, h5, h6 {
   transform: translateY(-2px);
 }
 
+/* ─── Hero Background Image ─── */
+.hero-bg-image {
+  background-image: url("/images/home-hero-bg.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.hero-bg-overlay {
+  background:
+    linear-gradient(to bottom, var(--bg-primary) 0%, transparent 35%, transparent 65%, var(--bg-primary) 100%),
+    linear-gradient(to right, var(--bg-primary) 0%, transparent 20%, transparent 80%, var(--bg-primary) 100%),
+    rgba(10, 10, 15, 0.55);
+}
+
+[data-theme="light"] .hero-bg-overlay {
+  background:
+    linear-gradient(to bottom, var(--bg-primary) 0%, transparent 35%, transparent 65%, var(--bg-primary) 100%),
+    linear-gradient(to right, var(--bg-primary) 0%, transparent 20%, transparent 80%, var(--bg-primary) 100%),
+    rgba(248, 250, 252, 0.72);
+}
+
 /* ─── Gradient Mesh Backgrounds ─── */
 .mesh-gradient-hero {
   background:
