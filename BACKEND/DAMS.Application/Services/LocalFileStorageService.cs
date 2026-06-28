@@ -82,45 +82,5 @@ public class LocalFileStorageService : IFileStorageService
 
         return Task.CompletedTask;
     }
-
-    public Task<bool> FileExistsAsync(string filePath, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return Task.FromResult(false);
-        }
-
-        var fullPath = ResolveAndValidatePath(filePath);
-        return Task.FromResult(File.Exists(fullPath));
-    }
-
-    public async Task<Stream> GetFileAsync(string filePath, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
-        }
-
-        var fullPath = ResolveAndValidatePath(filePath);
-
-        if (!File.Exists(fullPath))
-        {
-            throw new FileNotFoundException($"File not found: {filePath}");
-        }
-
-        return new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
-    }
-
-    public Task<string> GetPresignedUrlAsync(string filePath, TimeSpan expiration, CancellationToken cancellationToken = default)
-    {
-        // For local storage, presigned URLs are not applicable
-        // Return the regular URL since files are served directly
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
-        }
-
-        return Task.FromResult(filePath);
-    }
 }
 }

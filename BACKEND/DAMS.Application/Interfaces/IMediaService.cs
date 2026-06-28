@@ -17,7 +17,6 @@ namespace DAMS.Application.Interfaces
         Task<UnitMediaResponseDto> UploadUnitMediaAsync(int unitId, Stream fileStream, string fileName, string contentType, UploadMediaDto? uploadDto = null);
         Task<List<UnitMediaResponseDto>> UploadUnitMediaBulkAsync(int unitId, List<(Stream fileStream, string fileName, string contentType, UploadMediaDto? uploadDto)> files);
         Task<List<UnitMediaResponseDto>> GetUnitMediaAsync(int unitId);
-        Task<List<UnitMediaResponseDto>> GetUnitMediaByProjectAsync(int projectId);
         Task<UnitMediaResponseDto?> UpdateUnitMediaAsync(int unitId, int mediaId, UpdateMediaDto updateDto);
         Task<bool> DeleteUnitMediaAsync(int unitId, int mediaId);
         Task<bool> ReorderUnitMediaAsync(int unitId, List<int> mediaIds);

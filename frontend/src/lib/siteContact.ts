@@ -21,5 +21,3 @@ export const SITE_CONTACT = {
   mapsEmbedUrl: `https://maps.google.com/maps?q=${OFFICE.lat},${OFFICE.lng}&z=17&hl=en&output=embed`,
   hours: "Sun–Thu: 9am – 6pm",
 } as const;
-
-export const SITE_MAP = OFFICE;

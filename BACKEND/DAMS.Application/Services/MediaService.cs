@@ -384,23 +384,6 @@ namespace DAMS.Application.Services
             return media.Select(MapToUnitMediaResponse).ToList();
         }
 
-        public async Task<List<UnitMediaResponseDto>> GetUnitMediaByProjectAsync(int projectId)
-        {
-            var projectExists = await _context.Projects.AnyAsync(p => p.Id == projectId);
-            if (!projectExists)
-            {
-                throw new Exception("Project not found.");
-            }
-
-            var media = await _context.UnitMedias
-                .AsNoTracking()
-                .Where(um => um.Unit.ProjectId == projectId)
-                .OrderByDescending(um => um.UploadedAt)
-                .ToListAsync();
-
-            return media.Select(MapToUnitMediaResponse).ToList();
-        }
-
         public async Task<UnitMediaResponseDto?> UpdateUnitMediaAsync(int unitId, int mediaId, UpdateMediaDto updateDto)
         {
             var media = await _context.UnitMedias
