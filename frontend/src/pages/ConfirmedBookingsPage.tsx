@@ -62,28 +62,40 @@ export default function ConfirmedBookingsPage({ user }: Props) {
 
   const isAdmin = user?.role === "Admin";
 
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   useEffect(() => {
     if (!isAdmin) return;
+    const controller = new AbortController();
     const load = async () => {
       setLoading(true);
       setError(null);
       try {
         const params = new URLSearchParams({ page: String(page), pageSize: "20" });
-        if (search.trim()) params.set("search", search.trim());
+        if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
         if (statusFilter) params.set("status", statusFilter);
-        const res = await api(`/api/Booking?${params}`);
+        const res = await api(`/api/Booking?${params}`, { signal: controller.signal });
         if (!res.ok) throw new Error("Failed to load bookings");
         const data: BookingList = await res.json();
         setBookings(data.items ?? []);
         setTotalPages(data.totalPages ?? 1);
-      } catch {
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
         setError("Unable to load confirmed bookings.");
       } finally {
         setLoading(false);
       }
     };
     load();
-  }, [isAdmin, page, search, statusFilter]);
+    return () => controller.abort();
+  }, [isAdmin, page, debouncedSearch, statusFilter]);
 
   if (!isAdmin) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;

@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using DAMS.Application.DTOs.Auth;
-using DAMS.Application.Services;
 using DAMS.Application.Interfaces;
 using System.Security.Claims;
 
@@ -11,8 +11,8 @@ namespace DAMS.Api.Controllers
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
     {
+        private const int RefreshTokenDays = 15;
         private readonly IAuthService _authService;
-
 
         public AuthController(IAuthService authService)
         {
@@ -20,6 +20,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("register")]
+        [EnableRateLimiting("auth")]
         public async Task<IActionResult> Register(RegisterRequestDto request)
         {
             try
@@ -32,55 +33,84 @@ namespace DAMS.Api.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
-[HttpPost("login")]
-public IActionResult Login(LoginRequestDto request)
-{
-    try
-    {
-        var tokens = _authService.Login(request);
 
-        if (tokens == null)
-            return Unauthorized("Invalid credentials");
+        [HttpPost("login")]
+        [EnableRateLimiting("auth")]
+        public IActionResult Login(LoginRequestDto request)
+        {
+            try
+            {
+                var tokens = _authService.Login(request);
 
-        return Ok(tokens);
-    }
-    catch (Exception ex)
-    {
-        return BadRequest(new { message = ex.Message });
-    }
-}
+                if (tokens == null)
+                    return Unauthorized(new { message = "Invalid credentials" });
 
-[HttpPost("refresh")]
-public IActionResult Refresh(RefreshTokenRequestDto request)
-{
-    var tokens = _authService.RefreshToken(request);
-    if (tokens == null)
-        return Unauthorized("Invalid refresh token");
+                SetRefreshCookie(tokens.RefreshToken);
 
-    return Ok(tokens);
-}
-[Authorize(Roles = "Admin")]
-[HttpGet("admin-only")]
-public IActionResult AdminOnly()
-{
-    return Ok("Only Admin can access this");
-}
+                return Ok(new { accessToken = tokens.AccessToken, expiresInMinutes = tokens.ExpiresInMinutes });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
 
-[Authorize]
-[HttpGet("profile")]
-public IActionResult Profile()
-{
-    return Ok(new
-    {
-        userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value,
-        email = User.FindFirst(ClaimTypes.Email)?.Value,
-        firstName = User.FindFirst(ClaimTypes.Name)?.Value,
-        role = User.FindFirst(ClaimTypes.Role)?.Value
-    });
-}
+        [HttpPost("refresh")]
+        public IActionResult Refresh()
+        {
+            var refreshToken = Request.Cookies["refreshToken"];
+            if (string.IsNullOrEmpty(refreshToken))
+                return Unauthorized(new { message = "No refresh token" });
 
+            var tokens = _authService.RefreshToken(new RefreshTokenRequestDto { RefreshToken = refreshToken });
+            if (tokens == null)
+            {
+                Response.Cookies.Delete("refreshToken");
+                return Unauthorized(new { message = "Invalid or expired refresh token" });
+            }
 
+            SetRefreshCookie(tokens.RefreshToken);
 
+            return Ok(new { accessToken = tokens.AccessToken, expiresInMinutes = tokens.ExpiresInMinutes });
+        }
 
+        [HttpPost("logout")]
+        public IActionResult Logout()
+        {
+            Response.Cookies.Delete("refreshToken", new CookieOptions { Path = "/api/Auth" });
+            return Ok();
+        }
+
+        [Authorize(Roles = "Admin")]
+        [HttpGet("admin-only")]
+        public IActionResult AdminOnly()
+        {
+            return Ok("Only Admin can access this");
+        }
+
+        [Authorize]
+        [HttpGet("profile")]
+        public IActionResult Profile()
+        {
+            return Ok(new
+            {
+                userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value,
+                email = User.FindFirst(ClaimTypes.Email)?.Value,
+                firstName = User.FindFirst(ClaimTypes.Name)?.Value,
+                role = User.FindFirst(ClaimTypes.Role)?.Value
+            });
+        }
+
+        private void SetRefreshCookie(string refreshToken)
+        {
+            Response.Cookies.Append("refreshToken", refreshToken, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = Request.IsHttps,
+                SameSite = Request.IsHttps ? SameSiteMode.None : SameSiteMode.Lax,
+                Expires = DateTimeOffset.UtcNow.AddDays(RefreshTokenDays),
+                Path = "/api/Auth"
+            });
+        }
     }
 }

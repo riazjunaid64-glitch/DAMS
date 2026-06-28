@@ -9,9 +9,10 @@ namespace DAMS.Application.Services
         private const long MaxVideoSize = 100 * 1024 * 1024; // 100 MB for videos
         private const long MaxDocumentSize = 10 * 1024 * 1024; // 10 MB for documents
 
-        private static readonly string[] AllowedImageTypes = 
-        { 
-            "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml" 
+        private static readonly string[] AllowedImageTypes =
+        {
+            "image/jpeg", "image/png", "image/gif", "image/webp"
+            // image/svg+xml excluded: SVG can embed <script> tags and bypass content scanning
         };
         
         private static readonly string[] AllowedVideoTypes = 
@@ -76,7 +77,7 @@ namespace DAMS.Application.Services
             }
 
             // Additional validation for images to prevent malicious files
-            if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && contentType != "image/svg+xml")
+            if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
             {
                 ValidateImageContent(fileStream);
             }

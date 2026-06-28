@@ -8,11 +8,29 @@ using System.Text;
 using DAMS.Api.Middleware;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
-builder.Services.AddResponseCompression();
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+});
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddSlidingWindowLimiter("auth", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(15);
+        opt.PermitLimit = 20;
+        opt.SegmentsPerWindow = 3;
+        opt.QueueLimit = 0;
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
@@ -71,15 +89,17 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// 🔹 CORS (MUST BE HERE, BEFORE Build)
+// CORS — restrict to known frontend origins; AllowCredentials() enables httpOnly cookie auth
+var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend",
         policy =>
         {
-            policy.AllowAnyOrigin()
+            policy.WithOrigins(allowedOrigins)
                   .AllowAnyHeader()
-                  .AllowAnyMethod();
+                  .AllowAnyMethod()
+                  .AllowCredentials();
         });
 });
 
@@ -88,6 +108,7 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseRateLimiter();
 
 // JSON API: discourage caching so clients never get empty bodies on 304 with fetch().
 app.Use(async (context, next) =>

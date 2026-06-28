@@ -19,6 +19,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost]
+        [Authorize]
         public async Task<IActionResult> CreateBookingRequest([FromBody] CreateBookingRequestDto dto)
         {
             int? userId = null;
@@ -141,6 +142,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpGet("unit/{unitId:int}/has-pending")]
+        [Authorize]
         public async Task<IActionResult> HasPendingRequest([FromRoute] int unitId)
         {
             var hasPending = await _bookingRequestService.HasPendingRequestForUnitAsync(unitId);

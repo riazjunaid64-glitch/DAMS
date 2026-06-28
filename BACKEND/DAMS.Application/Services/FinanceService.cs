@@ -34,6 +34,11 @@ namespace DAMS.Application.Services
             if (toExclusive.HasValue)
                 paymentsQuery = paymentsQuery.Where(p => p.PaidAt < toExclusive.Value);
 
+            // Aggregate totals in SQL to avoid materialising all rows just for the summary cards
+            var automaticRevenue = await paymentsQuery.SumAsync(p => (decimal?)p.Amount) ?? 0m;
+
+            // Cap display rows to guard against OOM when there are thousands of payments
+            const int RowCap = 3000;
             var paymentRows = await paymentsQuery
                 .Select(p => new
                 {
@@ -47,6 +52,8 @@ namespace DAMS.Application.Services
                     BookingReference = p.Booking.BookingReference,
                     CustomerName = p.Booking.Customer.FullName
                 })
+                .OrderByDescending(p => p.PaidAt)
+                .Take(RowCap)
                 .ToListAsync();
 
             var automaticRevenueRows = paymentRows
@@ -71,6 +78,8 @@ namespace DAMS.Application.Services
             if (toExclusive.HasValue)
                 manualQuery = manualQuery.Where(r => r.Date < toExclusive.Value);
 
+            var manualRevenue = await manualQuery.SumAsync(r => (decimal?)r.Amount) ?? 0m;
+
             var manualRevenueRows = await manualQuery
                 .Select(r => new RevenueLineDto
                 {
@@ -84,6 +93,8 @@ namespace DAMS.Application.Services
                     Reference = r.Reference,
                     Description = r.Description
                 })
+                .OrderByDescending(r => r.Date)
+                .Take(RowCap)
                 .ToListAsync();
 
             var revenue = automaticRevenueRows
@@ -100,6 +111,8 @@ namespace DAMS.Application.Services
             if (toExclusive.HasValue)
                 expenseQuery = expenseQuery.Where(e => e.Date < toExclusive.Value);
 
+            var totalExpenses = await expenseQuery.SumAsync(e => (decimal?)e.Amount) ?? 0m;
+
             var expenses = await expenseQuery
                 .OrderByDescending(e => e.Date)
                 .Select(e => new ExpenseLineDto
@@ -113,13 +126,11 @@ namespace DAMS.Application.Services
                     Description = e.Description,
                     Reference = e.Vendor
                 })
+                .Take(RowCap)
                 .ToListAsync();
 
-            // ── Summary cards ──
-            var automaticRevenue = automaticRevenueRows.Sum(r => r.Amount);
-            var manualRevenue = manualRevenueRows.Sum(r => r.Amount);
+            // ── Summary cards — totals come from SQL aggregations above ──
             var totalRevenue = automaticRevenue + manualRevenue;
-            var totalExpenses = expenses.Sum(e => e.Amount);
 
             var summary = new FinancialSummaryDto
             {

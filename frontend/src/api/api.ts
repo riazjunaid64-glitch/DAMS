@@ -13,30 +13,35 @@ function apiBaseUrl(): string {
   return "";
 }
 
+// Access token lives in memory only — never in localStorage/sessionStorage.
+// The refresh token lives in an httpOnly cookie set by the backend.
+let _accessToken: string | null = null;
+
+export function setAccessToken(token: string | null): void {
+  _accessToken = token;
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
-async function refreshAccessToken(): Promise<boolean> {
-  const storedRefresh = localStorage.getItem("refreshToken");
-  if (!storedRefresh) return false;
-
+export async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight === null) {
     refreshInFlight = (async (): Promise<boolean> => {
       try {
         const res = await fetch(`${apiBaseUrl()}/api/Auth/refresh`, {
           method: "POST",
+          credentials: "include",
           cache: "no-store",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refreshToken: storedRefresh }),
         });
-        if (!res.ok) return false;
-        const data = (await res.json()) as {
-          accessToken: string;
-          refreshToken: string;
-        };
-        localStorage.setItem("token", data.accessToken);
-        localStorage.setItem("refreshToken", data.refreshToken);
+        if (!res.ok) {
+          _accessToken = null;
+          return false;
+        }
+        const data = (await res.json()) as { accessToken: string };
+        _accessToken = data.accessToken;
         return true;
       } catch {
+        _accessToken = null;
         return false;
       } finally {
         refreshInFlight = null;
@@ -53,11 +58,10 @@ export const api = async (
   includeAuth: boolean = true,
   isRetry: boolean = false
 ): Promise<Response> => {
-  const token = localStorage.getItem("token");
   const headers = new Headers(options?.headers as HeadersInit | undefined);
 
-  if (includeAuth && token) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (includeAuth && _accessToken) {
+    headers.set("Authorization", `Bearer ${_accessToken}`);
   }
 
   const isFormData = options?.body instanceof FormData;
@@ -75,7 +79,7 @@ export const api = async (
   const response = await fetch(`${apiBaseUrl()}${endpoint}`, {
     ...options,
     headers,
-    // Avoid cached 304s: fetch treats 304 as !ok and the body is empty, which breaks res.json().
+    credentials: "include",
     cache: options?.cache ?? "no-store",
   });
 
@@ -89,8 +93,7 @@ export const api = async (
     if (refreshed) {
       return api(endpoint, options, includeAuth, true);
     }
-    localStorage.removeItem("token");
-    localStorage.removeItem("refreshToken");
+    _accessToken = null;
   }
 
   return response;

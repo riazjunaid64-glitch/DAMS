@@ -469,16 +469,36 @@ namespace DAMS.Application.Services
                 .GroupBy(s => s.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(s => s.PayDate).First());
 
+            // Batch-load the most recent project task for every unpaid employee in one query
+            var unpaidIds = employees
+                .Where(e => !paidMap.ContainsKey(e.Id))
+                .Select(e => e.Id)
+                .ToList();
+
+            var projectByEmployee = new Dictionary<int, string?>();
+            if (unpaidIds.Count > 0)
+            {
+                var tasks = await _context.EmployeeTasks
+                    .AsNoTracking()
+                    .Include(t => t.Project)
+                    .Where(t => unpaidIds.Contains(t.EmployeeId) && t.ProjectId != null)
+                    .OrderByDescending(t => t.CreatedAt)
+                    .ToListAsync();
+
+                foreach (var t in tasks)
+                {
+                    if (!projectByEmployee.ContainsKey(t.EmployeeId))
+                        projectByEmployee[t.EmployeeId] = t.Project?.ProjectName;
+                }
+            }
+
             var result = new List<SalaryBatchItemDto>();
             foreach (var e in employees)
             {
                 paidMap.TryGetValue(e.Id, out var paid);
                 string? projectName = paid?.ProjectName;
                 if (paid == null)
-                {
-                    var proj = await ResolveEmployeeProjectAsync(e.Id);
-                    projectName = proj.ProjectName;
-                }
+                    projectByEmployee.TryGetValue(e.Id, out projectName);
 
                 result.Add(new SalaryBatchItemDto
                 {

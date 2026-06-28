@@ -47,6 +47,19 @@ public class LocalFileStorageService : IFileStorageService
         return $"/uploads/{folder}/{fileNameWithExt}";
     }
 
+    private string ResolveAndValidatePath(string filePath)
+    {
+        var combined = Path.Combine(_webRootPath, filePath.TrimStart('/').TrimStart('\\'));
+        var canonical = Path.GetFullPath(combined);
+        var root = Path.GetFullPath(_webRootPath);
+        if (!canonical.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            && !canonical.Equals(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException("Access to the requested path is denied.");
+        }
+        return canonical;
+    }
+
     public Task DeleteFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(filePath))
@@ -54,7 +67,7 @@ public class LocalFileStorageService : IFileStorageService
             return Task.CompletedTask;
         }
 
-        var fullPath = Path.Combine(_webRootPath, filePath.TrimStart('/'));
+        var fullPath = ResolveAndValidatePath(filePath);
 
         if (File.Exists(fullPath))
         {
@@ -77,7 +90,7 @@ public class LocalFileStorageService : IFileStorageService
             return Task.FromResult(false);
         }
 
-        var fullPath = Path.Combine(_webRootPath, filePath.TrimStart('/'));
+        var fullPath = ResolveAndValidatePath(filePath);
         return Task.FromResult(File.Exists(fullPath));
     }
 
@@ -88,14 +101,14 @@ public class LocalFileStorageService : IFileStorageService
             throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
         }
 
-        var fullPath = Path.Combine(_webRootPath, filePath.TrimStart('/'));
+        var fullPath = ResolveAndValidatePath(filePath);
 
         if (!File.Exists(fullPath))
         {
             throw new FileNotFoundException($"File not found: {filePath}");
         }
 
-        return await Task.FromResult<FileStream>(new FileStream(fullPath, FileMode.Open, FileAccess.Read));
+        return new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
     }
 
     public Task<string> GetPresignedUrlAsync(string filePath, TimeSpan expiration, CancellationToken cancellationToken = default)

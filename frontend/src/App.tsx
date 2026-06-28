@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
-import { api } from "./api/api";
+import { api, refreshAccessToken, setAccessToken } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
 import SiteLogo from "./components/SiteLogo.tsx";
@@ -74,7 +74,7 @@ function App() {
   const fetchProfile = async () => {
     const res = await api("/api/Auth/profile");
     if (!res.ok) {
-      localStorage.removeItem("token");
+      setAccessToken(null);
       setUser(null);
       return;
     }
@@ -83,22 +83,19 @@ function App() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-
-    void api("/api/Auth/profile").then(async (res) => {
-      if (!res.ok) {
-        localStorage.removeItem("token");
-        setUser(null);
-        return;
-      }
-      setUser(await res.json());
+    // On page load, try to silently restore the session using the httpOnly refresh cookie.
+    // If the cookie is absent or expired, the user stays logged out.
+    void refreshAccessToken().then((ok) => {
+      if (!ok) return;
+      void api("/api/Auth/profile").then(async (res) => {
+        if (res.ok) setUser(await res.json());
+      });
     });
   }, []);
 
   const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("refreshToken");
+    void api("/api/Auth/logout", { method: "POST" }, false);
+    setAccessToken(null);
     setUser(null);
   };
 

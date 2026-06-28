@@ -37,7 +37,7 @@ public class ExceptionMiddleware
                     "Database connection timed out. Ensure SQL Server (SQLEXPRESS) is running and responsive, then retry.",
                 Microsoft.Data.SqlClient.SqlException =>
                     "Database error. Check that migrations are applied and SQL Server is available.",
-                InvalidOperationException opEx => opEx.Message,
+                InvalidOperationException opEx => _env.IsDevelopment() ? opEx.Message : "The operation could not be completed.",
                 _ => _env.IsDevelopment() ? ex.Message : "An unexpected error occurred."
             };
 

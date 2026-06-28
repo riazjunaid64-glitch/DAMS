@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api/api.ts";
+import { api, setAccessToken } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import Field from "../lib/Field.tsx";
 
@@ -38,8 +38,7 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
         }
 
         const data = await res.json();
-        localStorage.setItem("token", data.accessToken);
-        localStorage.setItem("refreshToken", data.refreshToken);
+        setAccessToken(data.accessToken);
         onSuccess?.();
         onClose();
       }
