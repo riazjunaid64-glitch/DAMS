@@ -114,12 +114,6 @@ export const getUnitMedia = async (unitId: number): Promise<UnitMedia[]> => {
   return res.json();
 };
 
-export const getUnitMediaByProject = async (projectId: number): Promise<UnitMedia[]> => {
-  const res = await api(`/api/Unit/project/${projectId}/media`, undefined, false);
-  if (!res.ok) throw new Error("Failed to fetch unit media by project");
-  return res.json();
-};
-
 export const uploadUnitMedia = async (
   unitId: number,
   file: File,

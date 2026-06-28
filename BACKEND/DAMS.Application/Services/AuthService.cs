@@ -59,9 +59,9 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync();
         }
 
-        public AuthResponseDto? Login(LoginRequestDto request)
+        public async Task<AuthResponseDto?> LoginAsync(LoginRequestDto request)
         {
-            var user = _context.Users.FirstOrDefault(u => u.Email == request.Email);
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
             if (user == null)
                 return null;
 
@@ -69,14 +69,14 @@ namespace DAMS.Application.Services
             if (!isValid)
                 return null;
 
-            var role = _context.Roles.First(r => r.RoleId == user.RoleId);
+            var role = await _context.Roles.FirstAsync(r => r.RoleId == user.RoleId);
 
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var refreshToken = _tokenService.GenerateRefreshToken();
 
             user.RefreshToken = refreshToken;
             user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(RefreshTokenDays);
-            _context.SaveChanges();
+            await _context.SaveChangesAsync();
 
             return new AuthResponseDto
             {
@@ -86,23 +86,23 @@ namespace DAMS.Application.Services
             };
         }
 
-        public AuthResponseDto? RefreshToken(RefreshTokenRequestDto request)
+        public async Task<AuthResponseDto?> RefreshTokenAsync(RefreshTokenRequestDto request)
         {
-            var user = _context.Users.FirstOrDefault(u => u.RefreshToken == request.RefreshToken);
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == request.RefreshToken);
             if (user == null)
                 return null;
 
             if (!user.RefreshTokenExpiresAt.HasValue || user.RefreshTokenExpiresAt <= DateTime.UtcNow)
                 return null;
 
-            var role = _context.Roles.First(r => r.RoleId == user.RoleId);
+            var role = await _context.Roles.FirstAsync(r => r.RoleId == user.RoleId);
 
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var newRefreshToken = _tokenService.GenerateRefreshToken();
 
             user.RefreshToken = newRefreshToken;
             user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(RefreshTokenDays);
-            _context.SaveChanges();
+            await _context.SaveChangesAsync();
 
             return new AuthResponseDto
             {

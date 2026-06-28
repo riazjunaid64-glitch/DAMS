@@ -5,7 +5,7 @@ namespace DAMS.Application.Interfaces
     public interface IAuthService
     {
         Task RegisterAsync(RegisterRequestDto request);
-        AuthResponseDto? Login(LoginRequestDto request);
-        AuthResponseDto? RefreshToken(RefreshTokenRequestDto request);
+        Task<AuthResponseDto?> LoginAsync(LoginRequestDto request);
+        Task<AuthResponseDto?> RefreshTokenAsync(RefreshTokenRequestDto request);
     }
 }

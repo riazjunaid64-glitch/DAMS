@@ -36,11 +36,11 @@ namespace DAMS.Api.Controllers
 
         [HttpPost("login")]
         [EnableRateLimiting("auth")]
-        public IActionResult Login(LoginRequestDto request)
+        public async Task<IActionResult> Login(LoginRequestDto request)
         {
             try
             {
-                var tokens = _authService.Login(request);
+                var tokens = await _authService.LoginAsync(request);
 
                 if (tokens == null)
                     return Unauthorized(new { message = "Invalid credentials" });
@@ -56,13 +56,13 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("refresh")]
-        public IActionResult Refresh()
+        public async Task<IActionResult> Refresh()
         {
             var refreshToken = Request.Cookies["refreshToken"];
             if (string.IsNullOrEmpty(refreshToken))
                 return Unauthorized(new { message = "No refresh token" });
 
-            var tokens = _authService.RefreshToken(new RefreshTokenRequestDto { RefreshToken = refreshToken });
+            var tokens = await _authService.RefreshTokenAsync(new RefreshTokenRequestDto { RefreshToken = refreshToken });
             if (tokens == null)
             {
                 Response.Cookies.Delete("refreshToken");

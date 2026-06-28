@@ -41,6 +41,7 @@ namespace DAMS.Application.Services
             ValidateFile(fileStream, contentType, fileName);
 
             var sanitizedFileName = FileValidationService.SanitizeFileName(fileName);
+            var fileSize = fileStream.Length; // capture before SaveFileAsync consumes/seeks the stream
             var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, sanitizedFileName, $"projects/{projectId}");
 
             // Get image dimensions if applicable
@@ -56,7 +57,7 @@ namespace DAMS.Application.Services
                 IsCover = uploadDto?.IsCover ?? false,
                 AltText = uploadDto?.AltText,
                 Description = uploadDto?.Description,
-                FileSize = fileStream.Length,
+                FileSize = fileSize,
                 Width = width,
                 Height = height,
                 OriginalFileName = sanitizedFileName,
@@ -99,6 +100,7 @@ namespace DAMS.Application.Services
                     ValidateFile(fileStream, contentType, fileName);
 
                     var sanitizedFileName = FileValidationService.SanitizeFileName(fileName);
+                    var fileSize = fileStream.Length; // capture before SaveFileAsync consumes/seeks the stream
                     var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, sanitizedFileName, $"projects/{projectId}");
 
                     var (width, height) = FileValidationService.GetImageDimensions(fileStream, contentType);
@@ -120,7 +122,7 @@ namespace DAMS.Application.Services
                         IsCover = isCover,
                         AltText = uploadDto?.AltText,
                         Description = uploadDto?.Description,
-                        FileSize = fileStream.Length,
+                        FileSize = fileSize,
                         Width = width,
                         Height = height,
                         OriginalFileName = sanitizedFileName,
@@ -263,6 +265,7 @@ namespace DAMS.Application.Services
             ValidateFile(fileStream, contentType, fileName);
 
             var sanitizedFileName = FileValidationService.SanitizeFileName(fileName);
+            var fileSize = fileStream.Length; // capture before SaveFileAsync consumes/seeks the stream
             var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, sanitizedFileName, $"units/{unitId}");
 
             var (width, height) = FileValidationService.GetImageDimensions(fileStream, contentType);
@@ -277,7 +280,7 @@ namespace DAMS.Application.Services
                 IsCover = uploadDto?.IsCover ?? false,
                 AltText = uploadDto?.AltText,
                 Description = uploadDto?.Description,
-                FileSize = fileStream.Length,
+                FileSize = fileSize,
                 Width = width,
                 Height = height,
                 OriginalFileName = sanitizedFileName,
@@ -320,6 +323,7 @@ namespace DAMS.Application.Services
                     ValidateFile(fileStream, contentType, fileName);
 
                     var sanitizedFileName = FileValidationService.SanitizeFileName(fileName);
+                    var fileSize = fileStream.Length; // capture before SaveFileAsync consumes/seeks the stream
                     var mediaUrl = await _fileStorageService.SaveFileAsync(fileStream, sanitizedFileName, $"units/{unitId}");
 
                     var (width, height) = FileValidationService.GetImageDimensions(fileStream, contentType);
@@ -341,7 +345,7 @@ namespace DAMS.Application.Services
                         IsCover = isCover,
                         AltText = uploadDto?.AltText,
                         Description = uploadDto?.Description,
-                        FileSize = fileStream.Length,
+                        FileSize = fileSize,
                         Width = width,
                         Height = height,
                         OriginalFileName = sanitizedFileName,
