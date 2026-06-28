@@ -26,6 +26,8 @@ interface Props<T> {
   minWidth?: number;
   /** Scroll viewport height in px. */
   height?: number;
+  /** Changing this resets the scroll back to the top (e.g. when the view/filters change). */
+  resetKey?: string;
 }
 
 const ROW_HEIGHT = 52;
@@ -41,6 +43,7 @@ export default function VirtualInfiniteTable<T>({
   emptyText,
   minWidth = 720,
   height = 560,
+  resetKey,
 }: Props<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const template = columns.map((c) => c.width).join(" ");
@@ -51,6 +54,13 @@ export default function VirtualInfiniteTable<T>({
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  // Jump back to the top when the dataset changes (new view / filters) so the user
+  // doesn't land partway down a freshly-loaded table.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    virtualizer.scrollToOffset(0);
+  }, [resetKey, virtualizer]);
 
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.length ? virtualItems[virtualItems.length - 1].index : -1;

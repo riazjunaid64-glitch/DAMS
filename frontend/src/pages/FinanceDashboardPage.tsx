@@ -764,6 +764,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           onLoadMore={loadMore}
           emptyText={emptyText}
           minWidth={minWidth}
+          resetKey={`${view}|${projectId}|${fromDate}|${toDate}`}
         />
       </Container>
 
