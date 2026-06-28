@@ -52,12 +52,26 @@ interface DashboardData {
   expenses: ExpenseLine[];
 }
 
+// Ancillary developer revenue (charges NOT auto-captured by booking/installment/possession
+// payments). Grounded in standard Pakistani housing-society / developer charge heads.
 const REVENUE_TYPES = [
   "Transfer Charges",
+  "Development Charges",
+  "Possession Charges",
+  "Membership Charges",
   "Documentation Charges",
+  "NOC / NDC Charges",
+  "Utility Connection Charges",
   "Parking Charges",
+  "Late Payment Surcharge",
+  "Cancellation / Forfeiture",
+  "Rental Income",
+  "Commission Income",
   "Other Income",
 ];
+
+// Sentinel used by the Revenue Type <select> to switch into free-text entry.
+const CUSTOM_TYPE = "__custom__";
 
 const EXPENSE_CATEGORIES = [
   "Material",
@@ -652,9 +666,21 @@ export default function FinanceDashboardPage({ user }: Props) {
                 <option value="">General (no specific project)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
               </FormSelect>
-              <FormSelect label="Revenue Type" value={revenueForm.revenueType} onChange={(v) => setRevenueForm({ ...revenueForm, revenueType: v })}>
+              <FormSelect
+                label="Revenue Type"
+                value={REVENUE_TYPES.includes(revenueForm.revenueType) ? revenueForm.revenueType : CUSTOM_TYPE}
+                onChange={(v) => setRevenueForm({ ...revenueForm, revenueType: v === CUSTOM_TYPE ? "" : v })}
+              >
                 {REVENUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                <option value={CUSTOM_TYPE}>Custom (enter manually)…</option>
               </FormSelect>
+              {!REVENUE_TYPES.includes(revenueForm.revenueType) && (
+                <FormInput
+                  label="Custom Revenue Type"
+                  value={revenueForm.revenueType}
+                  onChange={(v) => setRevenueForm({ ...revenueForm, revenueType: v })}
+                />
+              )}
               <FormInput label="Amount (Rs)" type="number" value={revenueForm.amount} onChange={(v) => setRevenueForm({ ...revenueForm, amount: v })} />
               <FormInput label="Date" type="date" value={revenueForm.date} onChange={(v) => setRevenueForm({ ...revenueForm, date: v })} />
               <FormInput label="Reference (optional)" value={revenueForm.reference} onChange={(v) => setRevenueForm({ ...revenueForm, reference: v })} />
