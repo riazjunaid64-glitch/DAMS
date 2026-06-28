@@ -12,6 +12,8 @@ export interface ProjectFromApi {
   id: number;
   projectName: string;
   location: string;
+  category?: string | null;
+  coverImageUrl?: string | null;
   description?: string | null;
   startingDate: string;
   expectedCompletionDate?: string | null;
@@ -36,6 +38,11 @@ function str(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   return "";
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  return String(v);
 }
 
 function dateStr(v: unknown): string {
@@ -69,6 +76,8 @@ export function parseProjectRow(raw: unknown): ProjectFromApi | null {
     id,
     projectName: str(o.projectName ?? o.ProjectName),
     location: str(o.location ?? o.Location),
+    category: strOrNull(o.category ?? o.Category),
+    coverImageUrl: strOrNull(o.coverImageUrl ?? o.CoverImageUrl),
     description: desc == null || desc === "" ? null : String(desc),
     startingDate: dateStr(o.startingDate ?? o.StartingDate),
     expectedCompletionDate:

@@ -53,6 +53,9 @@ namespace DAMS.Infrastructure.Data
 
                 entity.Property(p => p.Description)
                       .HasMaxLength(1000);
+
+                entity.Property(p => p.Category)
+                      .HasMaxLength(50);
             });
 
             modelBuilder.Entity<Unit>(entity =>

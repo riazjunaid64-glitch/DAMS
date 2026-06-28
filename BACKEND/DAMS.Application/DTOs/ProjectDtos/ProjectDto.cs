@@ -8,6 +8,8 @@ namespace DAMS.Application.DTOs.ProjectDtos
 
         public string Location { get; set; } = string.Empty;
 
+        public string? Category { get; set; }
+
         public string? Description { get; set; }
 
         public DateTime StartingDate { get; set; }

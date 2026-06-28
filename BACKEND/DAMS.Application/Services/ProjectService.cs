@@ -22,7 +22,6 @@ namespace DAMS.Application.Services
 
         public async Task<ProjectResponseDto> CreateProjectAsync(CreateProjectDto dto, int adminId)
         {
-            // Check uniqueness
             if (await _context.Projects.AnyAsync(p => p.ProjectName == dto.ProjectName))
                 throw new Exception("Project name already exists.");
 
@@ -30,6 +29,7 @@ namespace DAMS.Application.Services
             {
                 ProjectName = dto.ProjectName,
                 Location = dto.Location,
+                Category = dto.Category,
                 Description = dto.Description,
                 StartingDate = dto.StartingDate,
                 ExpectedCompletionDate = dto.ExpectedCompletionDate,
@@ -52,6 +52,7 @@ namespace DAMS.Application.Services
 
             project.ProjectName = dto.ProjectName;
             project.Location = dto.Location;
+            project.Category = dto.Category;
             project.Description = dto.Description;
             project.StartingDate = dto.StartingDate;
             project.ExpectedCompletionDate = dto.ExpectedCompletionDate;
@@ -61,7 +62,7 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync();
             _cache.Remove(AllProjectsCacheKey);
 
-            return MapToResponse(project);
+            return await GetProjectByIdAsync(id) ?? MapToResponse(project);
         }
 
         public async Task<List<ProjectResponseDto>> GetAllProjectsAsync()
@@ -74,17 +75,7 @@ namespace DAMS.Application.Services
             var projects = await _context.Projects
                 .AsNoTracking()
                 .OrderByDescending(p => p.CreatedAt)
-                .Select(p => new ProjectResponseDto
-                {
-                    Id = p.Id,
-                    ProjectName = p.ProjectName,
-                    Location = p.Location,
-                    Description = p.Description,
-                    StartingDate = p.StartingDate,
-                    ExpectedCompletionDate = p.ExpectedCompletionDate,
-                    Status = p.Status,
-                    CreatedAt = p.CreatedAt
-                })
+                .Select(MapToDtoExpression)
                 .ToListAsync();
 
             _cache.Set(AllProjectsCacheKey, projects, ProjectsCacheDuration);
@@ -96,19 +87,32 @@ namespace DAMS.Application.Services
             return await _context.Projects
                 .AsNoTracking()
                 .Where(p => p.Id == id)
-                .Select(p => new ProjectResponseDto
-                {
-                    Id = p.Id,
-                    ProjectName = p.ProjectName,
-                    Location = p.Location,
-                    Description = p.Description,
-                    StartingDate = p.StartingDate,
-                    ExpectedCompletionDate = p.ExpectedCompletionDate,
-                    Status = p.Status,
-                    CreatedAt = p.CreatedAt
-                })
+                .Select(MapToDtoExpression)
                 .FirstOrDefaultAsync();
         }
+
+        private static readonly System.Linq.Expressions.Expression<Func<Project, ProjectResponseDto>> MapToDtoExpression =
+            p => new ProjectResponseDto
+            {
+                Id = p.Id,
+                ProjectName = p.ProjectName,
+                Location = p.Location,
+                Category = p.Category,
+                CoverImageUrl = p.MediaFiles
+                    .Where(m => m.IsCover)
+                    .OrderBy(m => m.DisplayOrder)
+                    .Select(m => m.MediaUrl)
+                    .FirstOrDefault()
+                    ?? p.MediaFiles
+                        .OrderBy(m => m.DisplayOrder)
+                        .Select(m => m.MediaUrl)
+                        .FirstOrDefault(),
+                Description = p.Description,
+                StartingDate = p.StartingDate,
+                ExpectedCompletionDate = p.ExpectedCompletionDate,
+                Status = p.Status,
+                CreatedAt = p.CreatedAt
+            };
 
         private static ProjectResponseDto MapToResponse(Project project)
         {
@@ -117,6 +121,7 @@ namespace DAMS.Application.Services
                 Id = project.Id,
                 ProjectName = project.ProjectName,
                 Location = project.Location,
+                Category = project.Category,
                 Description = project.Description,
                 StartingDate = project.StartingDate,
                 ExpectedCompletionDate = project.ExpectedCompletionDate,
