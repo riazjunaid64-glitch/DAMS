@@ -31,15 +31,19 @@ namespace DAMS.Application.Services
                 .SumAsync(e => (decimal?)e.Amount) ?? 0m;
 
             // Outstanding/overdue are balance snapshots (not date-filtered); totals are the
-            // sum of the same positive per-row balances shown in the paged tables.
-            var outstandingTotal = await OutstandingBookings(projectId)
+            // sum of the same positive per-row balances shown in the paged tables. Materialise
+            // the per-row balances (a small, bounded set — same projection the tables use) and
+            // sum the positive ones in memory; filtering a projected scalar in SQL does not
+            // translate.
+            var outstandingBalances = await OutstandingBookings(projectId)
                 .Select(b => b.AgreedSalePrice - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
-                .Where(v => v > 0)
-                .SumAsync();
-            var overdueTotal = await OverdueInstallments(projectId)
+                .ToListAsync();
+            var outstandingTotal = outstandingBalances.Where(v => v > 0).Sum();
+
+            var overdueBalances = await OverdueInstallments(projectId)
                 .Select(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
-                .Where(v => v > 0)
-                .SumAsync();
+                .ToListAsync();
+            var overdueTotal = overdueBalances.Where(v => v > 0).Sum();
 
             var totalRevenue = automaticRevenue + manualRevenue;
             return new FinancialSummaryDto
