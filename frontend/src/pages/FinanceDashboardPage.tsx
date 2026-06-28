@@ -86,6 +86,44 @@ function todayInput() {
   return new Date().toISOString().slice(0, 10);
 }
 
+type Period = "today" | "month" | "year" | "all" | "custom";
+
+const PERIODS: { value: Exclude<Period, "custom">; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "month", label: "This Month" },
+  { value: "year", label: "This Year" },
+  { value: "all", label: "All" },
+];
+
+// Format a Date to a local YYYY-MM-DD (avoids the UTC day-shift of toISOString).
+function fmtLocal(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Resolve a preset to a {from, to} range the existing endpoint already understands.
+function periodRange(period: Period): { from: string; to: string } {
+  const now = new Date();
+  switch (period) {
+    case "today": {
+      const t = fmtLocal(now);
+      return { from: t, to: t };
+    }
+    case "month":
+      return {
+        from: fmtLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
+        to: fmtLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+      };
+    case "year":
+      return {
+        from: fmtLocal(new Date(now.getFullYear(), 0, 1)),
+        to: fmtLocal(new Date(now.getFullYear(), 11, 31)),
+      };
+    default:
+      return { from: "", to: "" };
+  }
+}
+
 interface RevenueFormState {
   id: number | null;
   projectId: string;
@@ -196,6 +234,23 @@ export default function FinanceDashboardPage({ user }: Props) {
   useEffect(() => {
     if (isAdmin) loadDashboard();
   }, [isAdmin, loadDashboard]);
+
+  // Which quick-period chip (if any) matches the current from/to selection.
+  const activePeriod = useMemo<Period>(() => {
+    if (!fromDate && !toDate) return "all";
+    for (const p of PERIODS) {
+      if (p.value === "all") continue;
+      const r = periodRange(p.value);
+      if (r.from === fromDate && r.to === toDate) return p.value;
+    }
+    return "custom";
+  }, [fromDate, toDate]);
+
+  const applyPeriod = useCallback((period: Period) => {
+    const r = periodRange(period);
+    setFromDate(r.from);
+    setToDate(r.to);
+  }, []);
 
   const summaryCards = useMemo(() => {
     const s = data?.summary;
@@ -365,6 +420,25 @@ export default function FinanceDashboardPage({ user }: Props) {
 
             {/* Filters */}
             <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Period</label>
+                <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-1">
+                  {PERIODS.map((p) => (
+                    <button
+                      key={p.value}
+                      type="button"
+                      onClick={() => applyPeriod(p.value)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                        activePeriod === p.value
+                          ? "bg-[var(--bg-card)] text-[var(--accent)] shadow-sm"
+                          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Project</label>
                 <select
