@@ -97,7 +97,7 @@ export default function CustomersPage({ user }: Props) {
       )}
 
       <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
-        <table className="w-full text-left text-sm">
+        <table className="data-table w-full text-left text-sm">
           <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
             <tr>
               {["Name", "Phone", "Email", "Source", "Bookings", "Status", ""].map((h) => (

@@ -357,6 +357,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .tab-item {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -364,16 +365,16 @@ h1, h2, h3, h4, h5, h6 {
   min-height: 2.625rem;
   flex: 1 0 max-content;
   scroll-snap-align: start;
-  padding: 0.625rem 1rem;
+  padding: 0.625rem 1.1rem;
   font-size: 0.8125rem;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--text-secondary);
   background: transparent;
   border: none;
   border-radius: 10px;
   cursor: pointer;
   white-space: nowrap;
-  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, font-weight 0.2s ease;
 }
 .tab-item:hover:not(.tab-item--disabled) {
   color: var(--text-primary);
@@ -381,9 +382,22 @@ h1, h2, h3, h4, h5, h6 {
 }
 .tab-item--active {
   color: var(--accent) !important;
-  background: var(--accent-glow);
-  box-shadow: 0 8px 26px rgba(57, 2, 23, 0.12);
+  font-weight: 700;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, transparent) 0%, color-mix(in srgb, var(--accent) 7%, transparent) 100%);
+  box-shadow: 0 6px 20px rgba(57, 2, 23, 0.14);
   transform: translateY(-1px);
+}
+/* Gold accent indicator — second selection signal alongside the fill + color */
+.tab-item--active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 26px;
+  height: 2.5px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-warm), color-mix(in srgb, var(--accent-warm) 55%, var(--accent)));
 }
 .tab-item--disabled {
   opacity: 0.35;
@@ -411,6 +425,62 @@ h1, h2, h3, h4, h5, h6 {
 
 .tab-content {
   min-height: 50vh;
+}
+
+/* ─── Data Tables ─── */
+/* A shared polish layer applied to every app table via the `data-table` class.
+   It only sets visual treatment (header, dividers, zebra, hover) and leaves the
+   per-cell padding/alignment utilities in the markup untouched. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+.data-table thead th {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg-card)) 0%, var(--bg-card) 100%);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+.data-table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  vertical-align: middle;
+}
+.data-table tbody tr {
+  transition: background-color 0.16s ease;
+}
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+/* Subtle zebra striping aids horizontal scanning on wide tables */
+.data-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
+}
+/* Calm hover with a brand accent cue on the leading cell */
+.data-table tbody tr:hover td {
+  background: var(--surface-glass-hover);
+}
+.data-table tbody tr:hover td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+
+/* Virtualized grid table (div-based) — shares the data-table look */
+.vtable-head {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg-card)) 0%, var(--bg-card) 100%);
+}
+.vtable-row {
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.vtable-row--alt {
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
+}
+.vtable-row:hover {
+  background: var(--surface-glass-hover);
+  box-shadow: inset 3px 0 0 0 var(--accent);
 }
 
 /* ─── Workspace Info Cards ─── */

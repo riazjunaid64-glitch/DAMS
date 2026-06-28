@@ -189,7 +189,7 @@ export default function EmployeesSalaryPanel() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-              <table className="min-w-[900px] w-full border-collapse text-left">
+              <table className="data-table min-w-[900px] w-full border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                     {["Employee", "Department", "Salary", "Paid", "Receipt"].map(h => (

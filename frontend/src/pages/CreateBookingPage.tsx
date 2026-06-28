@@ -6,6 +6,14 @@ import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import { bookingToApplicationForm } from "../utils/bookingToApplicationForm.ts";
+import {
+  PLACEHOLDERS,
+  formatCnic,
+  formatPkMobile,
+  isValidCnic,
+  isValidEmail,
+  isValidPkMobile,
+} from "../utils/validation.ts";
 
 type Props = { user: User | null };
 
@@ -154,10 +162,36 @@ export default function CreateBookingPage({ user }: Props) {
 
   const set = (field: keyof FormState) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-      const value = e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value;
+      let value: string | boolean =
+        e.target.type === "checkbox" ? (e.target as HTMLInputElement).checked : e.target.value;
+      if (typeof value === "string") {
+        if (field === "kinCnic") value = formatCnic(value);
+        if (field === "contact" || field === "kinContact") value = formatPkMobile(value);
+      }
       setForm((prev) => ({ ...prev, [field]: value }));
       setError(null);
     };
+
+  // Inline, per-field validation messages (shown only once the field has a value).
+  const fieldError = (field: "cnic" | "email" | "contact" | "kinContact" | "kinCnic"): string | undefined => {
+    const v = form[field].trim();
+    if (!v) return undefined;
+    switch (field) {
+      case "email":
+        return isValidEmail(v) ? undefined : "Enter a valid email address (e.g. name@example.com).";
+      case "contact":
+      case "kinContact":
+        return isValidPkMobile(v) ? undefined : "Enter a valid Pakistani mobile number (e.g. 0300-1234567).";
+      case "kinCnic":
+        return isValidCnic(v) ? undefined : "CNIC must be 13 digits in the format 00000-0000000-0.";
+      case "cnic":
+        // This field also accepts NICOP / Passport, so only enforce the CNIC
+        // mask when the value looks like a CNIC attempt (digits / hyphens only).
+        return /^[\d-]+$/.test(v) && !isValidCnic(v)
+          ? "For a CNIC use the format 00000-0000000-0 (or enter a passport number)."
+          : undefined;
+    }
+  };
 
   const validate = (): string | null => {
     if (unitId === "") return "Please select a unit.";
@@ -165,7 +199,11 @@ export default function CreateBookingPage({ user }: Props) {
       if (customerId === "") return "Please select an existing customer.";
     } else {
       if (form.fullName.trim().length < 2) return "Please enter the applicant's full name.";
-      if (form.contact.trim().length < 7) return "Please enter a valid contact number.";
+      if (!isValidPkMobile(form.contact)) return "Please enter a valid Pakistani contact number (e.g. 0300-1234567).";
+      if (form.email.trim() && !isValidEmail(form.email)) return "Please enter a valid email address.";
+      if (fieldError("cnic")) return "Please enter the CNIC in the format 00000-0000000-0, or a valid passport number.";
+      if (form.kinContact.trim() && !isValidPkMobile(form.kinContact)) return "Please enter a valid next-of-kin contact number.";
+      if (form.kinCnic.trim() && !isValidCnic(form.kinCnic)) return "Please enter the next-of-kin CNIC in the format 00000-0000000-0.";
     }
     return null;
   };
@@ -317,12 +355,12 @@ export default function CreateBookingPage({ user }: Props) {
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Full Name" value={form.fullName} onChange={set("fullName")} required />
                 <Field label="S/o, W/o, D/o" value={form.guardianName} onChange={set("guardianName")} />
-                <Field label="CNIC / NICOP / Passport #" value={form.cnic} onChange={set("cnic")} />
+                <Field label="CNIC / NICOP / Passport #" value={form.cnic} onChange={set("cnic")} placeholder={PLACEHOLDERS.cnic} error={fieldError("cnic")} />
                 <Field label="Date of Birth" type="date" value={form.dob} onChange={set("dob")} />
                 <Field label="Nationality" value={form.nationality} onChange={set("nationality")} />
                 <Field label="Occupation" value={form.occupation} onChange={set("occupation")} />
-                <Field label="Contact #" value={form.contact} onChange={set("contact")} required />
-                <Field label="Email" type="email" value={form.email} onChange={set("email")} />
+                <Field label="Contact #" value={form.contact} onChange={set("contact")} placeholder={PLACEHOLDERS.mobile} inputMode="tel" error={fieldError("contact")} required />
+                <Field label="Email" type="email" value={form.email} onChange={set("email")} placeholder={PLACEHOLDERS.email} error={fieldError("email")} />
                 <Field label="Whatsapp" value={form.whatsapp} onChange={set("whatsapp")} />
               </div>
               <Field label="Mailing Address" value={form.address} onChange={set("address")} />
@@ -335,8 +373,8 @@ export default function CreateBookingPage({ user }: Props) {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Full Name" value={form.kinName} onChange={set("kinName")} />
             <Field label="Relation" value={form.kinRelation} onChange={set("kinRelation")} />
-            <Field label="Nominee Contact #" value={form.kinContact} onChange={set("kinContact")} />
-            <Field label="CNIC #" value={form.kinCnic} onChange={set("kinCnic")} />
+            <Field label="Nominee Contact #" value={form.kinContact} onChange={set("kinContact")} placeholder={PLACEHOLDERS.mobile} inputMode="tel" error={fieldError("kinContact")} />
+            <Field label="CNIC #" value={form.kinCnic} onChange={set("kinCnic")} placeholder={PLACEHOLDERS.cnic} inputMode="numeric" error={fieldError("kinCnic")} />
             <Field label="Date of Birth" type="date" value={form.kinDob} onChange={set("kinDob")} />
           </div>
           <Field label="Mailing Address" value={form.kinAddress} onChange={set("kinAddress")} />

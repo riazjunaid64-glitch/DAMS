@@ -143,7 +143,7 @@ export default function EmployeesAttendancePanel() {
         <div className="py-12 text-center text-sm text-[var(--text-muted)]">No active employees found.</div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-          <table className="min-w-[900px] w-full border-collapse text-left">
+          <table className="data-table min-w-[900px] w-full border-collapse text-left">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                 {["Employee", "Department", "Present", "Absent", "Reason", ""].map(h => (

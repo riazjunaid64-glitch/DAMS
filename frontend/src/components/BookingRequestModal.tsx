@@ -3,6 +3,14 @@ import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import Field from "../lib/Field.tsx";
 import ModalPortal from "../lib/ModalPortal.tsx";
+import {
+  PLACEHOLDERS,
+  formatCnic,
+  formatPkMobile,
+  isValidCnic,
+  isValidEmail,
+  isValidPkMobile,
+} from "../utils/validation.ts";
 
 interface Unit {
   id: number;
@@ -40,19 +48,35 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
   const handleChange = (field: keyof typeof form) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
-    setForm((prev) => ({ ...prev, [field]: e.target.value }));
+    let value = e.target.value;
+    if (field === "cnic") value = formatCnic(value);
+    if (field === "phone") value = formatPkMobile(value);
+    setForm((prev) => ({ ...prev, [field]: value }));
     setError(null);
+  };
+
+  // Inline, per-field validation messages (shown only once the user has typed).
+  const fieldError = (field: "phone" | "email" | "cnic"): string | undefined => {
+    const v = form[field].trim();
+    if (!v) return undefined;
+    if (field === "email" && !isValidEmail(v))
+      return "Enter a valid email address (e.g. name@example.com).";
+    if (field === "phone" && !isValidPkMobile(v))
+      return "Enter a valid Pakistani mobile number (e.g. 0300-1234567).";
+    if (field === "cnic" && !isValidCnic(v))
+      return "CNIC must be 13 digits in the format 00000-0000000-0.";
+    return undefined;
   };
 
   const validateForm = (): string | null => {
     if (!form.fullName.trim() || form.fullName.trim().length < 2)
       return "Please enter your full name (at least 2 characters).";
-    if (!form.phone.trim() || form.phone.trim().length < 10)
-      return "Please enter a valid phone number (at least 10 digits).";
-    if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()))
+    if (!isValidPkMobile(form.phone))
+      return "Please enter a valid Pakistani mobile number (e.g. 0300-1234567).";
+    if (!isValidEmail(form.email))
       return "Please enter a valid email address.";
-    if (!form.cnic.trim() || form.cnic.trim().length < 13)
-      return "Please enter a valid CNIC/Passport number (at least 13 characters).";
+    if (!isValidCnic(form.cnic))
+      return "Please enter a valid CNIC in the format 00000-0000000-0.";
     if (!form.address.trim() || form.address.trim().length < 10)
       return "Please enter your complete address (at least 10 characters).";
     return null;
@@ -243,8 +267,11 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
               label="Phone Number"
               value={form.phone}
               onChange={handleChange("phone")}
-              placeholder="+92 300 1234567"
+              placeholder={PLACEHOLDERS.mobile}
+              hint="Pakistani mobile"
+              inputMode="tel"
               type="tel"
+              error={fieldError("phone")}
               required
             />
           </div>
@@ -253,16 +280,20 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
             label="Email Address"
             value={form.email}
             onChange={handleChange("email")}
-            placeholder="you@example.com"
+            placeholder={PLACEHOLDERS.email}
             type="email"
+            error={fieldError("email")}
             required
           />
 
           <Field
-            label="CNIC / Passport Number"
+            label="CNIC Number"
             value={form.cnic}
             onChange={handleChange("cnic")}
-            placeholder="12345-1234567-1"
+            placeholder={PLACEHOLDERS.cnic}
+            hint="00000-0000000-0"
+            inputMode="numeric"
+            error={fieldError("cnic")}
             required
           />
 

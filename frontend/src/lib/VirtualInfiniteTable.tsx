@@ -77,7 +77,7 @@ export default function VirtualInfiniteTable<T>({
         <div style={{ minWidth }}>
           {/* Sticky header */}
           <div
-            className="sticky top-0 z-10 grid border-b border-[var(--border)] bg-[var(--surface-glass)] backdrop-blur"
+            className="vtable-head sticky top-0 z-10 grid border-b border-[var(--border)] backdrop-blur"
             style={{ gridTemplateColumns: template }}
           >
             {columns.map((c) => (
@@ -104,7 +104,7 @@ export default function VirtualInfiniteTable<T>({
                 return (
                   <div
                     key={rowKey(row, vi.index)}
-                    className="absolute left-0 top-0 grid w-full items-center border-b border-[var(--border)] transition-colors hover:bg-[var(--surface-glass-hover)]"
+                    className={`vtable-row ${vi.index % 2 ? "vtable-row--alt" : ""} absolute left-0 top-0 grid w-full items-center border-b border-[var(--border)]`}
                     style={{
                       height: ROW_HEIGHT,
                       transform: `translateY(${vi.start}px)`,

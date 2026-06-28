@@ -74,7 +74,7 @@ export default function EmployeeAttendanceHistoryTab({ employeeId }: Props) {
           <div className="py-12 text-center text-sm text-[var(--text-muted)]">No attendance records yet.</div>
         ) : (
           <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-            <table className="min-w-[600px] w-full border-collapse text-left">
+            <table className="data-table min-w-[600px] w-full border-collapse text-left">
               <thead>
                 <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                   {["Date", "Status", "Reason / Notes"].map(h => (

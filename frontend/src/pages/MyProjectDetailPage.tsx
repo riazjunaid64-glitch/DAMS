@@ -301,7 +301,7 @@ export default function MyProjectDetailPage({ user }: Props) {
                 </div>
               </div>
             <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-              <table className="min-w-[700px] w-full border-collapse text-left">
+              <table className="data-table min-w-[700px] w-full border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                     {["Receipt #", "Date", "Type", "Amount", "Method", "Reference", "Print"].map(h => (
@@ -356,7 +356,7 @@ export default function MyProjectDetailPage({ user }: Props) {
                   ))}
                 </div>
                 <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-                  <table className="min-w-[700px] w-full border-collapse text-left">
+                  <table className="data-table min-w-[700px] w-full border-collapse text-left">
                     <thead>
                       <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                         {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status"].map(h => (

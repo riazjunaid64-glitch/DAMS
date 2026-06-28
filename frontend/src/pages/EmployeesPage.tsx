@@ -9,6 +9,12 @@ import TabLayout from "../lib/TabLayout.tsx";
 import EmployeesAttendancePanel from "../components/employee/EmployeesAttendancePanel.tsx";
 import EmployeesSalaryPanel from "../components/employee/EmployeesSalaryPanel.tsx";
 import { parseEmployeesPayload, type EmployeeFromApi } from "../utils/parseEmployee.ts";
+import {
+  PLACEHOLDERS,
+  formatPkMobile,
+  isValidEmail,
+  isValidPkMobile,
+} from "../utils/validation.ts";
 
 type Props = { user: User | null };
 
@@ -115,11 +121,12 @@ export default function EmployeesPage({ user }: Props) {
       setError("Full name, job title, department, phone, and join date are required.");
       return;
     }
+    if (!isValidPkMobile(form.phone)) { setError("Please enter a valid Pakistani mobile number (e.g. 0300-1234567)."); return; }
+    if (form.email.trim() && !isValidEmail(form.email)) { setError("Please enter a valid email address."); return; }
     const salary = form.salary.trim() === "" ? 0 : Number(form.salary.trim());
     if (!Number.isFinite(salary) || salary < 0) { setError("Salary must be a valid non-negative number."); return; }
     const join = new Date(`${form.joinDate}T12:00:00`);
     if (Number.isNaN(join.getTime())) { setError("Please choose a valid join date."); return; }
-    if (form.phone.trim().length > 50) { setError("Phone cannot exceed 50 characters."); return; }
     try {
       const emailTrim = form.email.trim();
       const res = await api("/api/Employee", {
@@ -246,8 +253,8 @@ export default function EmployeesPage({ user }: Props) {
               <Field label="Full Name" value={form.fullName} onChange={e => setForm(f => ({ ...f, fullName: e.target.value }))} required />
               <Field label="Job Title" value={form.jobTitle} onChange={e => setForm(f => ({ ...f, jobTitle: e.target.value }))} required />
               <Field label="Department" value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} required />
-              <Field label="Phone" value={form.phone} maxLength={50} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} required />
-              <Field label="Email" type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} hint="Optional" />
+              <Field label="Phone" value={form.phone} maxLength={20} placeholder={PLACEHOLDERS.mobile} inputMode="tel" onChange={e => setForm(f => ({ ...f, phone: formatPkMobile(e.target.value) }))} error={form.phone.trim() && !isValidPkMobile(form.phone) ? "Enter a valid Pakistani mobile number (e.g. 0300-1234567)." : undefined} required />
+              <Field label="Email" type="email" value={form.email} placeholder={PLACEHOLDERS.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} error={form.email.trim() && !isValidEmail(form.email) ? "Enter a valid email address (e.g. name@example.com)." : undefined} hint="Optional" />
               <Field label="Address" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} hint="Optional" />
               <Field label="Salary" value={form.salary} onChange={e => setForm(f => ({ ...f, salary: e.target.value }))} placeholder="0" hint="Optional" />
               <Field label="Join Date" type="date" value={form.joinDate} onChange={e => setForm(f => ({ ...f, joinDate: e.target.value }))} required />
@@ -347,7 +354,7 @@ export default function EmployeesPage({ user }: Props) {
         {/* Employees Table */}
         {!loading && filtered.length > 0 && (
           <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-            <table className="min-w-[1080px] w-full border-collapse text-left">
+            <table className="data-table min-w-[1080px] w-full border-collapse text-left">
               <thead>
                 <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                   {["Employee", "Position", "Department", "Status", "Assigned Project", "Assigned Task", "Phone", "Joined", "Actions"].map(label => (

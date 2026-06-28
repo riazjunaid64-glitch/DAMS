@@ -670,7 +670,7 @@ export default function BookingDetailPage({ user }: Props) {
             </div>
           </div>
           <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+          <table className="data-table w-full text-left text-sm">
             <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
               <tr>
                 {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status", "Notes", ""].map((h, i) => (
@@ -719,7 +719,7 @@ export default function BookingDetailPage({ user }: Props) {
             <p className="text-xs text-[var(--text-muted)]">All recorded payments for this booking with receipt numbers.</p>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="data-table w-full text-left text-sm">
               <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
                 <tr>
                   {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", ""].map((h, i) => (

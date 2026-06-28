@@ -144,7 +144,7 @@ export default function ConfirmedBookingsPage({ user }: Props) {
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
 
       <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
-        <table className="w-full text-left text-sm">
+        <table className="data-table w-full text-left text-sm">
           <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
             <tr>
               {["Reference", "Customer", "Project / Unit", "Agreed Price", "Booking Amt", "Status", ""].map((h) => (

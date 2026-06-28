@@ -129,7 +129,7 @@ export default function EmployeeSalaryHistoryTab({ employee }: Props) {
         ) : (
           <div className="space-y-6">
             <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-              <table className="min-w-[600px] w-full border-collapse text-left">
+              <table className="data-table min-w-[600px] w-full border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                     {["Month", "Records", "Total Amount", ""].map(h => (
@@ -169,7 +169,7 @@ export default function EmployeeSalaryHistoryTab({ employee }: Props) {
                   </div>
                 ) : (
                   <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-                    <table className="min-w-[700px] w-full border-collapse text-left">
+                    <table className="data-table min-w-[700px] w-full border-collapse text-left">
                       <thead>
                         <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                           {["Pay Date", "Amount", "Project", "Notes", "Receipt"].map(h => (

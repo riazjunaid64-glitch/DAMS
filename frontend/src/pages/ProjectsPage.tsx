@@ -48,8 +48,30 @@ export default function ProjectsPage({ user }: Props) {
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [existingCoverUrl, setExistingCoverUrl] = useState<string | null>(null);
   const [projectForm, setProjectForm] = useState(emptyForm);
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   const isAdmin = user?.role === "Admin";
+
+  // Per-field validation. A field is "invalid" only if the rule returns a message.
+  const fieldErrors = useMemo(() => {
+    const errors: Record<string, string> = {};
+    if (!projectForm.projectName.trim()) errors.projectName = "Project name is required.";
+    if (!projectForm.location.trim()) errors.location = "Location is required.";
+    if (!projectForm.startingDate) errors.startingDate = "Starting date is required.";
+    if (
+      projectForm.expectedCompletionDate &&
+      projectForm.startingDate &&
+      projectForm.expectedCompletionDate < projectForm.startingDate
+    ) {
+      errors.expectedCompletionDate = "Completion date can't be before the starting date.";
+    }
+    return errors;
+  }, [projectForm]);
+
+  const isFormValid = Object.keys(fieldErrors).length === 0;
+  // Show a field's error once the user has touched it (so it doesn't scream on a fresh form).
+  const showError = (name: string) => (touched[name] ? fieldErrors[name] : undefined);
+  const markTouched = (name: string) => setTouched((prev) => ({ ...prev, [name]: true }));
 
   const toInputDate = (value?: string | null) => {
     if (!value) return "";
@@ -110,6 +132,7 @@ export default function ProjectsPage({ user }: Props) {
     setExistingCoverUrl(null);
     setModalError(null);
     setEditingId(null);
+    setTouched({});
     setShowProjectModal(false);
   };
 
@@ -119,6 +142,7 @@ export default function ProjectsPage({ user }: Props) {
     setCoverFile(null);
     setExistingCoverUrl(null);
     setModalError(null);
+    setTouched({});
     setShowProjectModal(true);
   };
 
@@ -143,8 +167,14 @@ export default function ProjectsPage({ user }: Props) {
     setModalError(null);
     setProjectsError(null);
 
-    if (!projectForm.projectName || !projectForm.location || !projectForm.startingDate) {
-      setModalError("Project name, location, and starting date are required.");
+    if (!isFormValid) {
+      // Reveal every field's error and keep focus in the form.
+      setTouched({
+        projectName: true,
+        location: true,
+        startingDate: true,
+        expectedCompletionDate: true,
+      });
       return;
     }
 
@@ -326,17 +356,23 @@ export default function ProjectsPage({ user }: Props) {
               <div className="project-modal__fields">
                 <Field
                   label="Project Name"
+                  required
                   value={projectForm.projectName}
                   onChange={(e) =>
                     setProjectForm((prev) => ({ ...prev, projectName: e.target.value }))
                   }
+                  onBlur={() => markTouched("projectName")}
+                  error={showError("projectName")}
                   placeholder="e.g. Phase 2 Commercial Tower"
                 />
 
                 <Field
                   label="Location"
+                  required
                   value={projectForm.location}
                   onChange={(e) => setProjectForm((prev) => ({ ...prev, location: e.target.value }))}
+                  onBlur={() => markTouched("location")}
+                  error={showError("location")}
                   placeholder="City, Country"
                 />
 
@@ -377,6 +413,7 @@ export default function ProjectsPage({ user }: Props) {
                 <div className="project-modal__dates">
                   <Field
                     label="Starting Date"
+                    required
                     type="date"
                     value={projectForm.startingDate}
                     onChange={(e) =>
@@ -385,6 +422,8 @@ export default function ProjectsPage({ user }: Props) {
                         startingDate: e.target.value,
                       }))
                     }
+                    onBlur={() => markTouched("startingDate")}
+                    error={showError("startingDate")}
                   />
                   <Field
                     label="Expected Completion"
@@ -396,6 +435,8 @@ export default function ProjectsPage({ user }: Props) {
                         expectedCompletionDate: e.target.value,
                       }))
                     }
+                    onBlur={() => markTouched("expectedCompletionDate")}
+                    error={showError("expectedCompletionDate")}
                     hint="Optional"
                   />
                 </div>
@@ -427,7 +468,11 @@ export default function ProjectsPage({ user }: Props) {
                 <button type="button" className="project-modal__cancel" onClick={resetProjectForm}>
                   Cancel
                 </button>
-                <button type="submit" className="project-modal__submit" disabled={saving}>
+                <button
+                  type="submit"
+                  className="project-modal__submit"
+                  disabled={saving || !isFormValid}
+                >
                   {saving ? "Saving…" : editingId ? "Update Project" : "Create Project"}
                 </button>
               </div>

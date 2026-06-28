@@ -314,7 +314,7 @@ export default function BookingRequestsPage({ user }: Props) {
         {!loading && !error && visibleRequests.length > 0 && (
           <>
             <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-              <table className="min-w-[800px] w-full border-collapse text-left">
+              <table className="data-table min-w-[800px] w-full border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
                     {["Customer Name", "Project / Unit", "Total Pay", "Status", "Request Date", "Actions"].map((label) => (
