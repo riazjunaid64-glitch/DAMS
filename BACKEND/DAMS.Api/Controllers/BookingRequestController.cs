@@ -72,8 +72,8 @@ namespace DAMS.Api.Controllers
                 Status = status,
                 ProjectId = projectId,
                 SearchTerm = search,
-                Page = page,
-                PageSize = Math.Min(pageSize, 100),
+                Page = Math.Max(page, 1),
+                PageSize = Math.Clamp(pageSize, 1, 100),
                 SortBy = sortBy,
                 SortDescending = sortDesc
             };

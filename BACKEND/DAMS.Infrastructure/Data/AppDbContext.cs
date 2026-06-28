@@ -356,6 +356,9 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(br => br.UserId);
                 entity.HasIndex(br => br.Status);
                 entity.HasIndex(br => br.RequestedAt);
+                entity.HasIndex(br => new { br.Status, br.RequestedAt });
+                entity.HasIndex(br => new { br.UserId, br.RequestedAt });
+                entity.HasIndex(br => new { br.UnitId, br.Status });
 
                 entity.HasOne(br => br.Unit)
                       .WithMany()

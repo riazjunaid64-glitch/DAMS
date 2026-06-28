@@ -62,22 +62,18 @@ namespace DAMS.Application.Services
 
             await _context.SaveChangesAsync();
 
-            return await MapToResponseAsync(bookingRequest.Id);
+            return await MapToResponseAsync(bookingRequest.Id)
+                ?? throw new InvalidOperationException("Created booking request could not be loaded.");
         }
 
         public async Task<BookingRequestResponseDto?> GetBookingRequestByIdAsync(int id)
         {
-            var exists = await _context.BookingRequests.AnyAsync(br => br.Id == id);
-            if (!exists) return null;
-
             return await MapToResponseAsync(id);
         }
 
         public async Task<BookingRequestListDto> GetBookingRequestsAsync(BookingRequestFilterDto filter)
         {
             var query = _context.BookingRequests
-                .Include(br => br.Unit)
-                    .ThenInclude(u => u.Project)
                 .AsNoTracking()
                 .AsQueryable();
 
@@ -100,6 +96,8 @@ namespace DAMS.Application.Services
             }
 
             var totalCount = await query.CountAsync();
+            var page = Math.Max(1, filter.Page);
+            var pageSize = Math.Clamp(filter.PageSize, 1, 100);
 
             query = filter.SortBy.ToLower() switch
             {
@@ -116,8 +114,8 @@ namespace DAMS.Application.Services
             };
 
             var items = await query
-                .Skip((filter.Page - 1) * filter.PageSize)
-                .Take(filter.PageSize)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .Select(br => new BookingRequestResponseDto
                 {
                     Id = br.Id,
@@ -139,6 +137,7 @@ namespace DAMS.Application.Services
                     RequestedAt = br.RequestedAt,
                     ReviewedAt = br.ReviewedAt,
                     ReviewedByUserId = br.ReviewedByUserId,
+                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
                     RejectionReason = br.RejectionReason,
                     CreatedAt = br.CreatedAt
                 })
@@ -148,8 +147,8 @@ namespace DAMS.Application.Services
             {
                 Items = items,
                 TotalCount = totalCount,
-                Page = filter.Page,
-                PageSize = filter.PageSize
+                Page = page,
+                PageSize = pageSize
             };
         }
 
@@ -223,7 +222,8 @@ namespace DAMS.Application.Services
             // Persist approval fields in case booking creation did not flush them.
             await _context.SaveChangesAsync();
 
-            return await MapToResponseAsync(bookingRequestId);
+            return await MapToResponseAsync(bookingRequestId)
+                ?? throw new InvalidOperationException("Approved booking request could not be loaded.");
         }
 
         public async Task<BookingRequestResponseDto> RejectBookingRequestAsync(int bookingRequestId, int adminUserId, string? rejectionReason)
@@ -249,7 +249,8 @@ namespace DAMS.Application.Services
 
             await _context.SaveChangesAsync();
 
-            return await MapToResponseAsync(bookingRequestId);
+            return await MapToResponseAsync(bookingRequestId)
+                ?? throw new InvalidOperationException("Rejected booking request could not be loaded.");
         }
 
         public async Task<bool> HasPendingRequestForUnitAsync(int unitId)
@@ -276,40 +277,37 @@ namespace DAMS.Application.Services
             return result;
         }
 
-        private async Task<BookingRequestResponseDto> MapToResponseAsync(int id)
+        private async Task<BookingRequestResponseDto?> MapToResponseAsync(int id)
         {
-            var br = await _context.BookingRequests
+            return await _context.BookingRequests
                 .AsNoTracking()
-                .Include(b => b.Unit)
-                    .ThenInclude(u => u.Project)
-                .Include(b => b.ReviewedBy)
-                .FirstAsync(b => b.Id == id);
-
-            return new BookingRequestResponseDto
-            {
-                Id = br.Id,
-                UnitId = br.UnitId,
-                UnitNumber = br.Unit.UnitNumber,
-                UnitType = br.Unit.UnitType,
-                UnitPrice = br.Unit.Price,
-                ProjectId = br.Unit.ProjectId,
-                ProjectName = br.Unit.Project.ProjectName,
-                ProjectLocation = br.Unit.Project.Location,
-                UserId = br.UserId,
-                FullName = br.FullName,
-                Phone = br.Phone,
-                Email = br.Email,
-                CNIC = br.CNIC,
-                Address = br.Address,
-                Notes = br.Notes,
-                Status = br.Status,
-                RequestedAt = br.RequestedAt,
-                ReviewedAt = br.ReviewedAt,
-                ReviewedByUserId = br.ReviewedByUserId,
-                ReviewedByName = br.ReviewedBy?.FullName,
-                RejectionReason = br.RejectionReason,
-                CreatedAt = br.CreatedAt
-            };
+                .Where(br => br.Id == id)
+                .Select(br => new BookingRequestResponseDto
+                {
+                    Id = br.Id,
+                    UnitId = br.UnitId,
+                    UnitNumber = br.Unit.UnitNumber,
+                    UnitType = br.Unit.UnitType,
+                    UnitPrice = br.Unit.Price,
+                    ProjectId = br.Unit.ProjectId,
+                    ProjectName = br.Unit.Project.ProjectName,
+                    ProjectLocation = br.Unit.Project.Location,
+                    UserId = br.UserId,
+                    FullName = br.FullName,
+                    Phone = br.Phone,
+                    Email = br.Email,
+                    CNIC = br.CNIC,
+                    Address = br.Address,
+                    Notes = br.Notes,
+                    Status = br.Status,
+                    RequestedAt = br.RequestedAt,
+                    ReviewedAt = br.ReviewedAt,
+                    ReviewedByUserId = br.ReviewedByUserId,
+                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
+                    RejectionReason = br.RejectionReason,
+                    CreatedAt = br.CreatedAt
+                })
+                .FirstOrDefaultAsync();
         }
     }
 }

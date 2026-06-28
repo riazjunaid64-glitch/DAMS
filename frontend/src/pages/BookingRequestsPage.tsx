@@ -135,8 +135,7 @@ export default function BookingRequestsPage({ user }: Props) {
         alert(data.message || "Failed to approve request");
         return;
       }
-      await fetchStats();
-      await fetchRequests();
+      await Promise.all([fetchStats(), fetchRequests()]);
       setSelectedRequest(null);
     } catch {
       alert("Something went wrong");
@@ -157,8 +156,7 @@ export default function BookingRequestsPage({ user }: Props) {
         alert(data.message || "Failed to reject request");
         return;
       }
-      await fetchStats();
-      await fetchRequests();
+      await Promise.all([fetchStats(), fetchRequests()]);
       setSelectedRequest(null);
       setShowRejectModal(false);
       setRejectReason("");
