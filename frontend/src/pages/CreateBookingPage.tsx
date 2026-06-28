@@ -116,7 +116,7 @@ export default function CreateBookingPage({ user }: Props) {
 
   // Load units when project changes.
   useEffect(() => {
-    if (projectId === "") { setUnits([]); setUnitId(""); return; }
+    if (projectId === "") return;
     (async () => {
       try {
         const res = await api(`/api/Unit/project/${projectId}`);
@@ -131,18 +131,26 @@ export default function CreateBookingPage({ user }: Props) {
     })();
   }, [projectId]);
 
-  // Auto-fill price/category defaults from the chosen unit.
-  useEffect(() => {
-    if (!selectedUnit) return;
+  const handleProjectChange = (value: string) => {
+    setProjectId(value ? Number(value) : "");
+    setUnits([]);
+    setUnitId("");
+  };
+
+  const handleUnitChange = (value: string) => {
+    const nextUnitId = value ? Number(value) : "";
+    setUnitId(nextUnitId);
+    const nextUnit = units.find((unit) => unit.id === nextUnitId);
+    if (!nextUnit) return;
     setForm((prev) => ({
       ...prev,
-      apartmentCategory: prev.apartmentCategory || selectedUnit.unitType,
-      agreedSalePrice: prev.agreedSalePrice || String(selectedUnit.price),
+      apartmentCategory: prev.apartmentCategory || nextUnit.unitType,
+      agreedSalePrice: prev.agreedSalePrice || String(nextUnit.price),
       pricePerSft:
         prev.pricePerSft ||
-        (selectedUnit.size > 0 ? String(Math.round((selectedUnit.price / selectedUnit.size) * 100) / 100) : ""),
+        (nextUnit.size > 0 ? String(Math.round((nextUnit.price / nextUnit.size) * 100) / 100) : ""),
     }));
-  }, [selectedUnit]);
+  };
 
   const set = (field: keyof FormState) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -249,7 +257,7 @@ export default function CreateBookingPage({ user }: Props) {
             <label className={labelClass}>
               <span>Project</span>
               <select className={inputClass} value={projectId}
-                onChange={(e) => setProjectId(e.target.value ? Number(e.target.value) : "")}>
+                onChange={(e) => handleProjectChange(e.target.value)}>
                 <option value="">Select project...</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
               </select>
@@ -257,7 +265,7 @@ export default function CreateBookingPage({ user }: Props) {
             <label className={labelClass}>
               <span>Available Unit</span>
               <select className={inputClass} value={unitId} disabled={projectId === ""}
-                onChange={(e) => setUnitId(e.target.value ? Number(e.target.value) : "")}>
+                onChange={(e) => handleUnitChange(e.target.value)}>
                 <option value="">{projectId === "" ? "Select a project first" : "Select unit..."}</option>
                 {units.map((u) => <option key={u.id} value={u.id}>{u.unitNumber} · {u.unitType}</option>)}
               </select>

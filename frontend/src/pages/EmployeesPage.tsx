@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
@@ -85,7 +85,7 @@ export default function EmployeesPage({ user }: Props) {
 
   const isAdmin = user?.role === "Admin";
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!isAdmin) return;
     setLoading(true);
     setError(null);
@@ -104,9 +104,9 @@ export default function EmployeesPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isAdmin]);
 
-  useEffect(() => { load(); }, [user, isAdmin]);
+  useEffect(() => { void load(); }, [load]);
 
   const submitCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -172,7 +172,7 @@ export default function EmployeesPage({ user }: Props) {
     );
   }
 
-  const activeCount = useMemo(() => employees.filter(e => statusNum(e.status) === 0).length, [employees]);
+  const activeCount = employees.filter(e => statusNum(e.status) === 0).length;
 
   return (
     <>

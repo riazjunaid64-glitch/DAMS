@@ -28,6 +28,20 @@ export default function MediaUpload({
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const handleFiles = useCallback((files: File[]) => {
+    const validFiles = files.filter((file) => {
+      if (file.size > maxSize) {
+        alert(`File "${file.name}" exceeds maximum size of ${maxSize / 1024 / 1024}MB`);
+        return false;
+      }
+      return true;
+    });
+
+    if (validFiles.length > 0) {
+      setSelectedFiles((prev) => (multiple ? [...prev, ...validFiles] : validFiles));
+    }
+  }, [maxSize, multiple]);
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -51,26 +65,12 @@ export default function MediaUpload({
 
     const files = Array.from(e.dataTransfer.files);
     handleFiles(files);
-  }, [disabled, uploading]);
+  }, [disabled, handleFiles, uploading]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     handleFiles(files);
-  }, []);
-
-  const handleFiles = (files: File[]) => {
-    const validFiles = files.filter((file) => {
-      if (file.size > maxSize) {
-        alert(`File "${file.name}" exceeds maximum size of ${maxSize / 1024 / 1024}MB`);
-        return false;
-      }
-      return true;
-    });
-
-    if (validFiles.length > 0) {
-      setSelectedFiles((prev) => (multiple ? [...prev, ...validFiles] : validFiles));
-    }
-  };
+  }, [handleFiles]);
 
   const removeFile = (index: number) => {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));

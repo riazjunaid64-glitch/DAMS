@@ -78,7 +78,7 @@ export default function UnitDetailPage({ user }: Props) {
       finally { setMediaLoading(false); }
     };
     loadMedia();
-  }, [activeTab, unitId]);
+  }, [activeTab, media.length, unitId]);
 
   const coverImage = useMemo(() => {
     const cover = media.find((m) => m.isCover);

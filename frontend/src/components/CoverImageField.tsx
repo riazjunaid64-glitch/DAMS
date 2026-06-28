@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, type ChangeEvent } from "react";
 
 type CoverImageFieldProps = {
   label?: string;
@@ -18,17 +18,14 @@ export default function CoverImageField({
   hint = "Optional — shown on project cards",
 }: CoverImageFieldProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(existingPreviewUrl ?? null);
+  const objectUrl = useMemo(() => file ? URL.createObjectURL(file) : null, [file]);
+  const previewUrl = objectUrl ?? existingPreviewUrl ?? null;
 
   useEffect(() => {
-    if (file) {
-      const objectUrl = URL.createObjectURL(file);
-      setPreviewUrl(objectUrl);
-      return () => URL.revokeObjectURL(objectUrl);
-    }
-    setPreviewUrl(existingPreviewUrl ?? null);
-    return undefined;
-  }, [file, existingPreviewUrl]);
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [objectUrl]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] ?? null;

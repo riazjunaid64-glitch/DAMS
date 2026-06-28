@@ -471,6 +471,7 @@ namespace DAMS.Application.Services
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
                 .Include(b => b.Payments)
                 .Include(b => b.Installments)
+                .AsSplitQuery()
                 .FirstAsync(b => b.Id == id);
 
             return MapProjection(booking);
@@ -575,6 +576,7 @@ namespace DAMS.Application.Services
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
                 .Include(b => b.Payments)
                 .Include(b => b.Installments)
+                .AsSplitQuery()
                 .Where(b => b.Customer != null
                          && b.Customer.Email != null
                          && b.Customer.Email.ToLower() == normalized

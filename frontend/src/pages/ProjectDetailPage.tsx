@@ -97,7 +97,7 @@ export default function ProjectDetailPage({ user }: Props) {
       finally { setMediaLoading(false); }
     };
     loadMedia();
-  }, [activeTab, projectId]);
+  }, [activeTab, media.length, projectId]);
 
   const unitStats = useMemo(() => {
     const s = { available: 0, sold: 0, reserved: 0 };

@@ -1,30 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useLocation } from "react-router-dom";
 import { api } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
 import SiteLogo from "./components/SiteLogo.tsx";
 import Button from "./lib/Button.tsx";
-import AboutPage from "./pages/AboutPage.tsx";
-import ContactPage from "./pages/ContactPage.tsx";
-import HomePage from "./pages/HomePage.tsx";
-import LandingPage from "./pages/LandingPage.tsx";
-import EmployeesPage from "./pages/EmployeesPage.tsx";
-import EmployeeDetailPage from "./pages/EmployeeDetailPage.tsx";
-import BookingRequestsPage from "./pages/BookingRequestsPage.tsx";
-import CustomersPage from "./pages/CustomersPage.tsx";
-import CustomerDetailPage from "./pages/CustomerDetailPage.tsx";
-import ConfirmedBookingsPage from "./pages/ConfirmedBookingsPage.tsx";
-import CreateBookingPage from "./pages/CreateBookingPage.tsx";
-import ApplicationFormPage from "./pages/ApplicationFormPage.tsx";
-import FinanceDashboardPage from "./pages/FinanceDashboardPage.tsx";
-import BookingDetailPage from "./pages/BookingDetailPage.tsx";
-import ReceiptPage from "./pages/ReceiptPage.tsx";
-import ProjectDetailPage from "./pages/ProjectDetailPage.tsx";
-import ProjectsPage from "./pages/ProjectsPage.tsx";
-import UnitDetailPage from "./pages/UnitDetailPage.tsx";
-import MyProjectsPage from "./pages/MyProjectsPage.tsx";
-import MyProjectDetailPage from "./pages/MyProjectDetailPage.tsx";
+
+const AboutPage = lazy(() => import("./pages/AboutPage.tsx"));
+const ContactPage = lazy(() => import("./pages/ContactPage.tsx"));
+const HomePage = lazy(() => import("./pages/HomePage.tsx"));
+const LandingPage = lazy(() => import("./pages/LandingPage.tsx"));
+const EmployeesPage = lazy(() => import("./pages/EmployeesPage.tsx"));
+const EmployeeDetailPage = lazy(() => import("./pages/EmployeeDetailPage.tsx"));
+const BookingRequestsPage = lazy(() => import("./pages/BookingRequestsPage.tsx"));
+const CustomersPage = lazy(() => import("./pages/CustomersPage.tsx"));
+const CustomerDetailPage = lazy(() => import("./pages/CustomerDetailPage.tsx"));
+const ConfirmedBookingsPage = lazy(() => import("./pages/ConfirmedBookingsPage.tsx"));
+const CreateBookingPage = lazy(() => import("./pages/CreateBookingPage.tsx"));
+const ApplicationFormPage = lazy(() => import("./pages/ApplicationFormPage.tsx"));
+const FinanceDashboardPage = lazy(() => import("./pages/FinanceDashboardPage.tsx"));
+const BookingDetailPage = lazy(() => import("./pages/BookingDetailPage.tsx"));
+const ReceiptPage = lazy(() => import("./pages/ReceiptPage.tsx"));
+const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage.tsx"));
+const ProjectsPage = lazy(() => import("./pages/ProjectsPage.tsx"));
+const UnitDetailPage = lazy(() => import("./pages/UnitDetailPage.tsx"));
+const MyProjectsPage = lazy(() => import("./pages/MyProjectsPage.tsx"));
+const MyProjectDetailPage = lazy(() => import("./pages/MyProjectDetailPage.tsx"));
 
 export interface User {
   userId: string;
@@ -70,11 +71,6 @@ function App() {
     return NAV_LINKS;
   }, [user]);
 
-  // close mobile nav on route change
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [location.pathname]);
-
   const fetchProfile = async () => {
     const res = await api("/api/Auth/profile");
     if (!res.ok) {
@@ -88,7 +84,16 @@ function App() {
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    if (token) fetchProfile();
+    if (!token) return;
+
+    void api("/api/Auth/profile").then(async (res) => {
+      if (!res.ok) {
+        localStorage.removeItem("token");
+        setUser(null);
+        return;
+      }
+      setUser(await res.json());
+    });
   }, []);
 
   const logout = () => {
@@ -188,6 +193,7 @@ function App() {
                     <Link
                       key={link.to}
                       to={link.to}
+                      onClick={() => setMobileOpen(false)}
                       className={`rounded-xl px-4 py-3 text-sm font-medium transition-all ${
                         active
                           ? "text-[var(--nav-text-active)] bg-white/10"
@@ -231,7 +237,8 @@ function App() {
 
       {/* ─── Pages ─── */}
       <main className="flex-1">
-        <Routes>
+        <Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center text-sm text-[var(--text-muted)]">Loading…</div>}>
+          <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/projects" element={<ProjectsPage user={user} />} />
@@ -252,7 +259,8 @@ function App() {
           <Route path="/employees" element={<EmployeesPage user={user} />} />
           <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
           <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
-        </Routes>
+          </Routes>
+        </Suspense>
       </main>
 
       <SiteFooter navLinks={mainNavLinks} />

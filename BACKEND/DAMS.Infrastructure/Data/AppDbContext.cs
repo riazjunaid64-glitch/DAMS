@@ -246,6 +246,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(i => i.Type).HasConversion<int>();
                 entity.Property(i => i.Notes).HasMaxLength(1000);
                 entity.HasIndex(i => new { i.BookingId, i.SequenceNumber }).IsUnique();
+                entity.HasIndex(i => new { i.Status, i.DueDate });
                 entity.HasOne(i => i.Booking)
                       .WithMany(b => b.Installments)
                       .HasForeignKey(i => i.BookingId)
@@ -267,6 +268,7 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(p => p.BookingId);
                 entity.HasIndex(p => p.InstallmentId);
                 entity.HasIndex(p => new { p.BookingId, p.Type });
+                entity.HasIndex(p => p.PaidAt);
                 entity.HasOne(p => p.Booking)
                       .WithMany(b => b.Payments)
                       .HasForeignKey(p => p.BookingId)

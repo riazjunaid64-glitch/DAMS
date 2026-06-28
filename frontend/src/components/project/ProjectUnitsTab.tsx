@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "../../App.tsx";
 import Button from "../../lib/Button.tsx";
@@ -172,11 +172,10 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange,
   }, [deferredSearch, floorFilter, sortBy, statusFilter, typeFilter, units]);
 
   const totalPages = Math.max(1, Math.ceil(filteredUnits.length / itemsPerPage));
-  const paginatedUnits = filteredUnits.slice((page - 1) * itemsPerPage, page * itemsPerPage);
-  const rangeStart = filteredUnits.length ? (page - 1) * itemsPerPage + 1 : 0;
-  const rangeEnd = Math.min(page * itemsPerPage, filteredUnits.length);
-
-  useEffect(() => { if (page > totalPages) setPage(1); }, [page, totalPages]);
+  const currentPage = Math.min(page, totalPages);
+  const paginatedUnits = filteredUnits.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const rangeStart = filteredUnits.length ? (currentPage - 1) * itemsPerPage + 1 : 0;
+  const rangeEnd = Math.min(currentPage * itemsPerPage, filteredUnits.length);
 
   const selectStatus = (status: string) => {
     onStatusFilterChange(status);
@@ -391,7 +390,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange,
 
           <div className="mt-8 flex flex-col gap-4 border-t border-[var(--border)] pt-5 text-sm font-semibold text-[var(--text-secondary)] lg:flex-row lg:items-center lg:justify-between">
             <p>Showing {rangeStart} to {rangeEnd} of {filteredUnits.length} units</p>
-            <Pagination currentPage={page} totalPages={totalPages} onPageChange={setPage} />
+            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setPage} />
             <p className="text-[var(--text-muted)]">Items per page <span className="text-[var(--text-heading)]">{itemsPerPage}</span></p>
           </div>
         </section>

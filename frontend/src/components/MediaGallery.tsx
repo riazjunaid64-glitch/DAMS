@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { resolveMediaUrl } from "../api/api.ts";
-import type { ProjectMedia, UnitMedia, MediaCategory } from "../types/media";
+import type { ProjectMedia, UnitMedia, MediaCategory, UpdateMediaDto } from "../types/media";
 import MediaModal from "./MediaModal.tsx";
 
 interface MediaGalleryProps {
   media: (ProjectMedia | UnitMedia)[];
   onDelete?: (mediaId: number) => Promise<void>;
   onSetCover?: (mediaId: number) => Promise<void>;
-  onUpdate?: (mediaId: number, updateDto: any) => Promise<void>;
+  onUpdate?: (mediaId: number, updateDto: UpdateMediaDto) => Promise<void>;
   isAdmin?: boolean;
   loading?: boolean;
 }

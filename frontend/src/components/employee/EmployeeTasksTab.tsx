@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
@@ -91,7 +91,7 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
     projectId: "", dueDate: "",
   });
 
-  const loadTasks = async () => {
+  const loadTasks = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api(`/api/Employee/${employeeId}/tasks`);
@@ -101,22 +101,20 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
       }
     } catch { /* ignore */ }
     finally { setLoading(false); }
-  };
-
-  const loadProjects = async () => {
-    try {
-      const res = await api("/api/Project", undefined, false);
-      if (res.ok) {
-        const raw = await res.json() as Array<{ id: number; projectName: string }>;
-        setProjects(raw.map(p => ({ id: p.id, projectName: p.projectName })));
-      }
-    } catch { /* ignore */ }
-  };
+  }, [employeeId]);
 
   useEffect(() => {
-    loadTasks();
-    loadProjects();
-  }, [employeeId]);
+    void loadTasks();
+    void (async () => {
+      try {
+        const res = await api("/api/Project", undefined, false);
+        if (res.ok) {
+          const raw = await res.json() as Array<{ id: number; projectName: string }>;
+          setProjects(raw.map(p => ({ id: p.id, projectName: p.projectName })));
+        }
+      } catch { /* ignore */ }
+    })();
+  }, [loadTasks]);
 
   const handleAssign = async () => {
     setAssignError(null);
