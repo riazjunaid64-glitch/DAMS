@@ -10,14 +10,26 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.Http.Features;
+using System.IO.Compression;
+using Microsoft.Net.Http.Headers;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
+
+// Brotli + Gzip with explicit providers so JSON API payloads ship far smaller over the wire,
+// which is the single biggest lever on perceived response time for list/detail endpoints.
 builder.Services.AddResponseCompression(options =>
 {
     options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[] { "application/json" });
 });
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -134,7 +146,20 @@ if (app.Environment.IsDevelopment())
 
 app.UseResponseCompression();
 app.UseHttpsRedirection();
-app.UseStaticFiles();
+
+// Uploaded media never changes once written (filenames are unique). Tell browsers to cache it
+// aggressively so repeat page views don't re-download images — makes navigation feel instant.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        var path = ctx.Context.Request.Path;
+        if (path.StartsWithSegments("/uploads"))
+        {
+            ctx.Context.Response.Headers[HeaderNames.CacheControl] = "public, max-age=2592000, immutable";
+        }
+    }
+});
 
 app.UseCors("AllowFrontend");
 

@@ -181,6 +181,8 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(c => c.CNIC);
                 entity.HasIndex(c => c.Email);
                 entity.HasIndex(c => c.Status);
+                // Customers list always orders by CreatedAt (newest first) — index the sort key.
+                entity.HasIndex(c => c.CreatedAt);
 
                 entity.HasOne(c => c.User)
                       .WithMany()
@@ -224,6 +226,10 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(b => b.CustomerId);
                 entity.HasIndex(b => b.UnitId);
                 entity.HasIndex(b => b.Status);
+                // Bookings list pages order by BookingDate (often within a Status filter); these
+                // indexes let SQL Server serve the sorted page from the index instead of sorting.
+                entity.HasIndex(b => b.BookingDate);
+                entity.HasIndex(b => new { b.Status, b.BookingDate });
 
                 entity.HasOne(b => b.Customer)
                       .WithMany(c => c.Bookings)

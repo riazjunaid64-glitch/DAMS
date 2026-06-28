@@ -333,7 +333,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange,
                     className="group cursor-pointer overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-[var(--shadow-sm)] transition-all duration-300 hover:-translate-y-1 hover:border-[var(--border-hover)] hover:shadow-[0_18px_55px_rgba(0,0,0,0.14)]"
                   >
                     <div className="relative aspect-[16/10] overflow-hidden bg-[var(--bg-elevated)]">
-                      <img src={image} alt={`Unit ${unit.unitNumber}`} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+                      <img src={image} alt={`Unit ${unit.unitNumber}`} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" loading="lazy" decoding="async" />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/35 via-transparent to-black/10" />
                       <button
                         type="button"
