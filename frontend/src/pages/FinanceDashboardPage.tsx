@@ -73,15 +73,22 @@ const REVENUE_TYPES = [
 // Sentinel used by the Revenue Type <select> to switch into free-text entry.
 const CUSTOM_TYPE = "__custom__";
 
+// Developer / construction expense heads. Original values kept for backward compatibility.
 const EXPENSE_CATEGORIES = [
   "Material",
   "Labor",
+  "Construction",
+  "Land Acquisition",
   "Salary",
   "Marketing",
+  "Commission",
+  "Permits & Approvals",
   "Utility",
   "Transport",
+  "Maintenance",
   "Legal",
   "Office",
+  "Taxes & Fees",
   "Other",
 ];
 
@@ -710,9 +717,21 @@ export default function FinanceDashboardPage({ user }: Props) {
                 <option value="">General (no specific project)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
               </FormSelect>
-              <FormSelect label="Category" value={expenseForm.category} onChange={(v) => setExpenseForm({ ...expenseForm, category: v })}>
+              <FormSelect
+                label="Category"
+                value={EXPENSE_CATEGORIES.includes(expenseForm.category) ? expenseForm.category : CUSTOM_TYPE}
+                onChange={(v) => setExpenseForm({ ...expenseForm, category: v === CUSTOM_TYPE ? "" : v })}
+              >
                 {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                <option value={CUSTOM_TYPE}>Custom (enter manually)…</option>
               </FormSelect>
+              {!EXPENSE_CATEGORIES.includes(expenseForm.category) && (
+                <FormInput
+                  label="Custom Category"
+                  value={expenseForm.category}
+                  onChange={(v) => setExpenseForm({ ...expenseForm, category: v })}
+                />
+              )}
               <FormInput label="Amount (Rs)" type="number" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
               <FormInput label="Date" type="date" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
               <FormInput label="Vendor / Reference (optional)" value={expenseForm.vendor} onChange={(v) => setExpenseForm({ ...expenseForm, vendor: v })} />
