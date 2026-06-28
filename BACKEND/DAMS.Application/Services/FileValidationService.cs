@@ -1,5 +1,4 @@
-using System.Drawing;
-using System.Drawing.Imaging;
+using SkiaSharp;
 
 namespace DAMS.Application.Services
 {
@@ -79,30 +78,33 @@ namespace DAMS.Application.Services
             // Additional validation for images to prevent malicious files
             if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && contentType != "image/svg+xml")
             {
-                ValidateImageContent(fileStream, contentType);
+                ValidateImageContent(fileStream);
             }
         }
 
-        private static void ValidateImageContent(Stream fileStream, string contentType)
+        private static void ValidateImageContent(Stream fileStream)
         {
+            var originalPosition = fileStream.Position;
             try
             {
-                var originalPosition = fileStream.Position;
                 fileStream.Position = 0;
-
-                using var image = Image.FromStream(fileStream);
+                using var managedStream = new SKManagedStream(fileStream, false);
+                using var codec = SKCodec.Create(managedStream)
+                    ?? throw new InvalidOperationException("The file does not contain a recognized image.");
                 
                 // Validate image dimensions (prevent extremely large images)
-                if (image.Width > 10000 || image.Height > 10000)
+                if (codec.Info.Width > 10000 || codec.Info.Height > 10000)
                 {
                     throw new Exception("Image dimensions exceed maximum allowed size (10000x10000 pixels).");
                 }
-
-                fileStream.Position = originalPosition;
             }
             catch (Exception ex)
             {
                 throw new Exception($"Invalid image file: {ex.Message}");
+            }
+            finally
+            {
+                fileStream.Position = originalPosition;
             }
         }
 
@@ -113,20 +115,23 @@ namespace DAMS.Application.Services
                 return (null, null);
             }
 
+            var originalPosition = fileStream.Position;
             try
             {
-                var originalPosition = fileStream.Position;
                 fileStream.Position = 0;
-
-                using var image = Image.FromStream(fileStream);
-                var dimensions = (image.Width, image.Height);
-
-                fileStream.Position = originalPosition;
-                return dimensions;
+                using var managedStream = new SKManagedStream(fileStream, false);
+                using var codec = SKCodec.Create(managedStream);
+                return codec == null
+                    ? (null, null)
+                    : (codec.Info.Width, codec.Info.Height);
             }
             catch
             {
                 return (null, null);
+            }
+            finally
+            {
+                fileStream.Position = originalPosition;
             }
         }
 
