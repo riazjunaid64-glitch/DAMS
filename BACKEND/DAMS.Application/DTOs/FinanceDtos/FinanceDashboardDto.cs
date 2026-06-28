@@ -48,10 +48,55 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? Reference { get; set; }
     }
 
-    public class FinanceDashboardDto
+    /// <summary>A booking with an unpaid balance (Agreed Sale Price − Received).</summary>
+    public class OutstandingLineDto
     {
-        public FinancialSummaryDto Summary { get; set; } = new();
-        public List<RevenueLineDto> Revenue { get; set; } = new();
-        public List<ExpenseLineDto> Expenses { get; set; } = new();
+        public string BookingReference { get; set; } = string.Empty;
+        public string CustomerName { get; set; } = string.Empty;
+        public int? ProjectId { get; set; }
+        public string ProjectName { get; set; } = "—";
+        public string UnitNumber { get; set; } = string.Empty;
+        public decimal AgreedSalePrice { get; set; }
+        public decimal ReceivedAmount { get; set; }
+        public decimal OutstandingAmount { get; set; }
+    }
+
+    /// <summary>An installment that is past due and not fully paid.</summary>
+    public class OverdueLineDto
+    {
+        public string BookingReference { get; set; } = string.Empty;
+        public string CustomerName { get; set; } = string.Empty;
+        public int? ProjectId { get; set; }
+        public string ProjectName { get; set; } = "—";
+        public string UnitNumber { get; set; } = string.Empty;
+        public int SequenceNumber { get; set; }
+        public string InstallmentType { get; set; } = string.Empty;
+        public DateTime DueDate { get; set; }
+        public decimal Amount { get; set; }
+        public decimal PaidAmount { get; set; }
+        public decimal OverdueAmount { get; set; }
+    }
+
+    /// <summary>A single line in the Net Profit breakdown: a revenue (+) or expense (−) entry.</summary>
+    public class NetProfitLineDto
+    {
+        public DateTime Date { get; set; }
+        public string ProjectName { get; set; } = "—";
+        public string Label { get; set; } = string.Empty;
+
+        /// <summary>"revenue" or "expense".</summary>
+        public string Kind { get; set; } = string.Empty;
+
+        /// <summary>Signed amount: positive for revenue, negative for expense.</summary>
+        public decimal Amount { get; set; }
+    }
+
+    /// <summary>One page of rows for an infinite-scroll table.</summary>
+    public class PagedResult<T>
+    {
+        public List<T> Items { get; set; } = new();
+
+        /// <summary>True when more rows exist beyond this page.</summary>
+        public bool HasMore { get; set; }
     }
 }

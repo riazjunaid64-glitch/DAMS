@@ -19,14 +19,39 @@ namespace DAMS.Api.Controllers
             _financeService = financeService;
         }
 
-        [HttpGet("dashboard")]
-        public async Task<IActionResult> GetDashboard(
+        // Summary cards (totals only). Table rows are fetched separately and paged.
+        [HttpGet("summary")]
+        public async Task<IActionResult> GetSummary(
             [FromQuery] int? projectId,
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to)
         {
-            var result = await _financeService.GetDashboardAsync(projectId, from, to);
+            var result = await _financeService.GetSummaryAsync(projectId, from, to);
             return Ok(result);
+        }
+
+        // One page of table rows for the given view (infinite scroll).
+        [HttpGet("rows")]
+        public async Task<IActionResult> GetRows(
+            [FromQuery] string view,
+            [FromQuery] int? projectId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to,
+            [FromQuery] int skip = 0,
+            [FromQuery] int take = 100)
+        {
+            if (skip < 0) skip = 0;
+            take = Math.Clamp(take, 1, 200);
+
+            return (view?.ToLowerInvariant()) switch
+            {
+                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take)),
+                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take)),
+                "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
+                "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
+                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take)),
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, outstanding, overdue or netProfit." })
+            };
         }
 
         // ── Manual revenue ──

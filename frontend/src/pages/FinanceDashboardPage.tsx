@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
+import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
+import type { Column } from "../lib/VirtualInfiniteTable.tsx";
+import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 
 type Props = { user: User | null };
 
@@ -46,11 +49,59 @@ interface ExpenseLine {
   reference: string | null;
 }
 
-interface DashboardData {
-  summary: FinancialSummary;
-  revenue: RevenueLine[];
-  expenses: ExpenseLine[];
+interface OutstandingLine {
+  bookingReference: string;
+  customerName: string;
+  projectId: number | null;
+  projectName: string;
+  unitNumber: string;
+  agreedSalePrice: number;
+  receivedAmount: number;
+  outstandingAmount: number;
 }
+
+interface OverdueLine {
+  bookingReference: string;
+  customerName: string;
+  projectId: number | null;
+  projectName: string;
+  unitNumber: string;
+  sequenceNumber: number;
+  installmentType: string;
+  dueDate: string;
+  amount: number;
+  paidAmount: number;
+  overdueAmount: number;
+}
+
+interface NetProfitLine {
+  date: string;
+  projectName: string;
+  label: string;
+  kind: "revenue" | "expense";
+  amount: number;
+}
+
+type AnyRow = RevenueLine | ExpenseLine | OutstandingLine | OverdueLine | NetProfitLine;
+
+type View = "revenue" | "expense" | "netProfit" | "outstanding" | "overdue";
+
+// API view query value for each card view.
+const VIEW_PARAM: Record<View, string> = {
+  revenue: "revenue",
+  expense: "expense",
+  netProfit: "netProfit",
+  outstanding: "outstanding",
+  overdue: "overdue",
+};
+
+const VIEW_TITLES: Record<View, string> = {
+  revenue: "Revenue",
+  expense: "Expenses",
+  netProfit: "Net Profit Breakdown",
+  outstanding: "Outstanding Balances",
+  overdue: "Overdue Installments",
+};
 
 // Ancillary developer revenue (charges NOT auto-captured by booking/installment/possession
 // payments). Grounded in standard Pakistani housing-society / developer charge heads.
@@ -194,10 +245,13 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
 
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"revenue" | "expense">("revenue");
+  const [summary, setSummary] = useState<FinancialSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [view, setView] = useState<View>("revenue");
+
+  // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
+  const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
+    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate);
 
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
@@ -224,25 +278,29 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
-  const loadDashboard = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const loadSummary = useCallback(async () => {
+    setSummaryLoading(true);
     try {
       const params = new URLSearchParams();
       if (projectId) params.set("projectId", projectId);
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
       const qs = params.toString();
-      const res = await api(`/api/Finance/dashboard${qs ? `?${qs}` : ""}`);
-      if (!res.ok) throw new Error("Failed to load dashboard");
-      const json: DashboardData = await res.json();
-      setData(json);
+      const res = await api(`/api/Finance/summary${qs ? `?${qs}` : ""}`);
+      if (!res.ok) throw new Error("Failed to load summary");
+      setSummary(await res.json());
     } catch {
-      setError("Unable to load the financial dashboard.");
+      /* summary cards fall back to 0 */
     } finally {
-      setLoading(false);
+      setSummaryLoading(false);
     }
   }, [projectId, fromDate, toDate]);
+
+  // After a create/edit/delete, refresh both the totals and the visible rows.
+  const refreshAll = useCallback(async () => {
+    await loadSummary();
+    reload();
+  }, [loadSummary, reload]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -253,8 +311,8 @@ export default function FinanceDashboardPage({ user }: Props) {
   }, [isAdmin, navigate, loadProjects]);
 
   useEffect(() => {
-    if (isAdmin) loadDashboard();
-  }, [isAdmin, loadDashboard]);
+    if (isAdmin) loadSummary();
+  }, [isAdmin, loadSummary]);
 
   // Which quick-period chip (if any) matches the current from/to selection.
   const activePeriod = useMemo<Period>(() => {
@@ -274,15 +332,23 @@ export default function FinanceDashboardPage({ user }: Props) {
   }, []);
 
   const summaryCards = useMemo(() => {
-    const s = data?.summary;
+    const s = summary;
     return [
-      { label: "Total Revenue", value: s?.totalRevenue ?? 0, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20" },
-      { label: "Total Expenses", value: s?.totalExpenses ?? 0, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20" },
-      { label: "Net Profit", value: s?.netProfit ?? 0, color: (s?.netProfit ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20" },
-      { label: "Outstanding", value: s?.outstandingAmount ?? 0, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20" },
-      { label: "Overdue", value: s?.overdueAmount ?? 0, color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20" },
+      { label: "Total Revenue", value: s?.totalRevenue ?? 0, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", view: "revenue" as View },
+      { label: "Total Expenses", value: s?.totalExpenses ?? 0, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", view: "expense" as View },
+      { label: "Net Profit", value: s?.netProfit ?? 0, color: (s?.netProfit ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20", view: "netProfit" as View },
+      { label: "Outstanding", value: s?.outstandingAmount ?? 0, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", view: "outstanding" as View },
+      { label: "Overdue", value: s?.overdueAmount ?? 0, color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20", view: "overdue" as View },
     ];
-  }, [data]);
+  }, [summary]);
+
+  // Clicking any card selects its view below and scrolls to it, keeping whatever
+  // project/period filters are already applied.
+  const tableRef = useRef<HTMLDivElement>(null);
+  const focusView = useCallback((target: View) => {
+    setView(target);
+    requestAnimationFrame(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, []);
 
   const resetForms = () => {
     setRevenueForm(null);
@@ -322,7 +388,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         return;
       }
       resetForms();
-      await loadDashboard();
+      await refreshAll();
     } catch {
       setFormError("Something went wrong while saving.");
     } finally {
@@ -361,7 +427,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         return;
       }
       resetForms();
-      await loadDashboard();
+      await refreshAll();
     } catch {
       setFormError("Something went wrong while saving.");
     } finally {
@@ -372,14 +438,14 @@ export default function FinanceDashboardPage({ user }: Props) {
   const deleteRevenue = async (id: number) => {
     if (!window.confirm("Delete this manual revenue entry?")) return;
     const res = await api(`/api/Finance/revenue/${id}`, { method: "DELETE" });
-    if (res.ok) await loadDashboard();
+    if (res.ok) await refreshAll();
     else alert("Failed to delete revenue entry.");
   };
 
   const deleteExpense = async (id: number) => {
     if (!window.confirm("Delete this expense?")) return;
     const res = await api(`/api/Finance/expenses/${id}`, { method: "DELETE" });
-    if (res.ok) await loadDashboard();
+    if (res.ok) await refreshAll();
     else alert("Failed to delete expense.");
   };
 
@@ -414,8 +480,137 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   if (!isAdmin) return null;
 
-  const revenue = data?.revenue ?? [];
-  const expenses = data?.expenses ?? [];
+  const money = (n: number, cls = "text-[var(--text-secondary)]") => (
+    <span className={`font-semibold whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
+  );
+
+  // Column config + horizontal min-width for the active view's virtualized table.
+  const { columns, minWidth, emptyText } = ((): {
+    columns: Column<AnyRow>[];
+    minWidth: number;
+    emptyText: string;
+  } => {
+    switch (view) {
+      case "revenue":
+        return {
+          minWidth: 940,
+          emptyText: "No revenue for the selected filters.",
+          columns: [
+            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).projectName}</span> },
+            { key: "type", header: "Revenue Type", width: "minmax(150px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).revenueType}</span> },
+            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
+            { key: "source", header: "Source", width: "150px", render: (r) => {
+              const row = r as RevenueLine;
+              return (
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.source === "Manual Revenue" ? "text-violet-400 bg-violet-500/10 border-violet-500/20" : "text-sky-400 bg-sky-500/10 border-sky-500/20"}`}>{row.source}</span>
+              );
+            } },
+            { key: "reference", header: "Reference", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as RevenueLine).reference || "—"}</span> },
+            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+              const row = r as RevenueLine;
+              return row.manualRevenueId != null ? (
+                <span className="inline-flex gap-2">
+                  <button onClick={() => editRevenue(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
+                  <button onClick={() => deleteRevenue(row.manualRevenueId!)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
+                </span>
+              ) : null;
+            } },
+          ],
+        };
+      case "expense":
+        return {
+          minWidth: 940,
+          emptyText: "No expenses for the selected filters.",
+          columns: [
+            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as ExpenseLine).date)}</span> },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).projectName}</span> },
+            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).category}</span> },
+            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
+            { key: "description", header: "Description", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).description || "—"}</span> },
+            { key: "reference", header: "Reference", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).reference || "—"}</span> },
+            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+              const row = r as ExpenseLine;
+              return (
+                <span className="inline-flex gap-2">
+                  <button onClick={() => editExpense(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
+                  <button onClick={() => deleteExpense(row.id)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
+                </span>
+              );
+            } },
+          ],
+        };
+      case "netProfit":
+        return {
+          minWidth: 760,
+          emptyText: "No activity for the selected filters.",
+          columns: [
+            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as NetProfitLine).date)}</span> },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).projectName}</span> },
+            { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).label}</span> },
+            { key: "kind", header: "Type", width: "130px", render: (r) => {
+              const row = r as NetProfitLine;
+              return (
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.kind === "revenue" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20"}`}>{row.kind === "revenue" ? "Revenue" : "Expense"}</span>
+              );
+            } },
+            { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
+              const row = r as NetProfitLine;
+              return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+            } },
+          ],
+        };
+      case "outstanding":
+        return {
+          minWidth: 920,
+          emptyText: "No outstanding balances for the selected filters.",
+          columns: [
+            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as OutstandingLine).bookingReference}</span> },
+            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as OutstandingLine).customerName}</span> },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).projectName}</span> },
+            { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).unitNumber}</span> },
+            { key: "agreed", header: "Agreed Price", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).agreedSalePrice) },
+            { key: "received", header: "Received", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).receivedAmount, "text-emerald-400") },
+            { key: "outstanding", header: "Outstanding", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).outstandingAmount, "text-amber-400") },
+          ],
+        };
+      default: // overdue
+        return {
+          minWidth: 1040,
+          emptyText: "No overdue installments for the selected filters.",
+          columns: [
+            { key: "due", header: "Due Date", width: "130px", render: (r) => <span className="text-rose-400 whitespace-nowrap">{formatDate((r as OverdueLine).dueDate)}</span> },
+            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as OverdueLine).bookingReference}</span> },
+            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as OverdueLine).customerName}</span> },
+            { key: "project", header: "Project", width: "minmax(110px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OverdueLine).projectName}</span> },
+            { key: "unit", header: "Unit", width: "100px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OverdueLine).unitNumber}</span> },
+            { key: "inst", header: "Installment", width: "150px", render: (r) => { const row = r as OverdueLine; return <span className="text-[var(--text-secondary)] whitespace-nowrap">#{row.sequenceNumber} · {row.installmentType}</span>; } },
+            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as OverdueLine).amount) },
+            { key: "paid", header: "Paid", width: "120px", align: "right", render: (r) => money((r as OverdueLine).paidAmount, "text-emerald-400") },
+            { key: "overdue", header: "Overdue", width: "120px", align: "right", render: (r) => money((r as OverdueLine).overdueAmount, "text-orange-400") },
+          ],
+        };
+    }
+  })();
+
+  const rowKey = (row: AnyRow, index: number): string => {
+    switch (view) {
+      case "revenue": {
+        const r = row as RevenueLine;
+        return `rev-${r.manualRevenueId ?? "p"}-${r.date}-${index}`;
+      }
+      case "expense":
+        return `exp-${(row as ExpenseLine).id}`;
+      case "outstanding":
+        return `out-${(row as OutstandingLine).bookingReference}`;
+      case "overdue": {
+        const r = row as OverdueLine;
+        return `ovd-${r.bookingReference}-${r.sequenceNumber}-${index}`;
+      }
+      default:
+        return `np-${index}`;
+    }
+  };
 
   return (
     <>
@@ -501,24 +696,34 @@ export default function FinanceDashboardPage({ user }: Props) {
 
           {/* Summary cards */}
           <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-            {summaryCards.map((card) => (
-              <div
-                key={card.label}
-                className={`rounded-xl border bg-[var(--bg-card)] px-4 py-4 shadow-sm ${card.border}`}
-              >
-                <p className="text-xs text-[var(--text-muted)]">{card.label}</p>
-                <p className={`mt-1.5 text-lg font-bold sm:text-xl ${card.color}`}>
-                  {loading ? "…" : formatMoney(card.value)}
-                </p>
-              </div>
-            ))}
+            {summaryCards.map((card) => {
+              const active = view === card.view;
+              return (
+                <button
+                  key={card.label}
+                  type="button"
+                  onClick={() => focusView(card.view)}
+                  className={`cursor-pointer rounded-xl border bg-[var(--bg-card)] px-4 py-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${card.border} ${
+                    active ? "ring-2 ring-[var(--accent)]" : ""
+                  }`}
+                >
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {card.label}
+                    <span className="ml-1 opacity-50">›</span>
+                  </p>
+                  <p className={`mt-1.5 text-lg font-bold sm:text-xl ${card.color}`}>
+                    {summaryLoading ? "…" : formatMoney(card.value)}
+                  </p>
+                </button>
+              );
+            })}
           </div>
 
-          {data && (
+          {summary && (
             <p className="mt-3 text-xs text-[var(--text-muted)]">
-              Revenue breakdown: {formatMoney(data.summary.automaticRevenue)} from payments
+              Revenue breakdown: {formatMoney(summary.automaticRevenue)} from payments
               {" + "}
-              {formatMoney(data.summary.manualRevenue)} manual
+              {formatMoney(summary.manualRevenue)} manual
             </p>
           )}
         </Container>
@@ -526,31 +731,12 @@ export default function FinanceDashboardPage({ user }: Props) {
 
       {/* Content */}
       <Container className="py-8">
-        {/* Tabs + actions */}
+        <div ref={tableRef} className="scroll-mt-4" />
+        {/* View title + actions */}
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-1">
-            <button
-              type="button"
-              onClick={() => setTab("revenue")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
-                tab === "revenue"
-                  ? "bg-[var(--bg-card)] text-[var(--accent)] shadow-sm"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              }`}
-            >
-              Revenue
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("expense")}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
-                tab === "expense"
-                  ? "bg-[var(--bg-card)] text-[var(--accent)] shadow-sm"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              }`}
-            >
-              Expenses
-            </button>
+          <div>
+            <h2 className="text-lg font-bold text-[var(--text-heading)]">{VIEW_TITLES[view]}</h2>
+            <p className="text-xs text-[var(--text-muted)]">Select a summary card above to switch views.</p>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
@@ -568,93 +754,17 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
         )}
 
-        {/* Revenue table */}
-        {tab === "revenue" && (
-          <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-            <table className="min-w-[900px] w-full border-collapse text-left">
-              <thead>
-                <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
-                  {["Date", "Project", "Revenue Type", "Amount", "Source", "Reference", ""].map((h) => (
-                    <th key={h} className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-[var(--text-muted)]">Loading…</td></tr>
-                ) : revenue.length === 0 ? (
-                  <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-[var(--text-muted)]">No revenue for the selected filters.</td></tr>
-                ) : (
-                  revenue.map((row, i) => (
-                    <tr key={`${row.source}-${row.manualRevenueId ?? "p"}-${i}`} className="border-b border-[var(--border)] transition-colors hover:bg-[var(--surface-glass-hover)] last:border-b-0">
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-secondary)] whitespace-nowrap">{formatDate(row.date)}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-primary)]">{row.projectName}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-primary)]">{row.revenueType}</td>
-                      <td className="px-5 py-3.5 text-sm font-semibold text-emerald-400 whitespace-nowrap">{formatMoney(row.amount)}</td>
-                      <td className="px-5 py-3.5">
-                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${
-                          row.source === "Manual Revenue"
-                            ? "text-violet-400 bg-violet-500/10 border-violet-500/20"
-                            : "text-sky-400 bg-sky-500/10 border-sky-500/20"
-                        }`}>
-                          {row.source}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-secondary)] max-w-[260px] truncate">{row.reference || "—"}</td>
-                      <td className="px-5 py-3.5 whitespace-nowrap text-right">
-                        {row.manualRevenueId != null && (
-                          <div className="inline-flex gap-2">
-                            <button onClick={() => editRevenue(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
-                            <button onClick={() => deleteRevenue(row.manualRevenueId!)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Expense table */}
-        {tab === "expense" && (
-          <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
-            <table className="min-w-[900px] w-full border-collapse text-left">
-              <thead>
-                <tr className="border-b border-[var(--border)] bg-[var(--surface-glass)]">
-                  {["Date", "Project", "Category", "Amount", "Description", "Reference", ""].map((h) => (
-                    <th key={h} className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-[var(--text-muted)]">Loading…</td></tr>
-                ) : expenses.length === 0 ? (
-                  <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-[var(--text-muted)]">No expenses for the selected filters.</td></tr>
-                ) : (
-                  expenses.map((row) => (
-                    <tr key={row.id} className="border-b border-[var(--border)] transition-colors hover:bg-[var(--surface-glass-hover)] last:border-b-0">
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-secondary)] whitespace-nowrap">{formatDate(row.date)}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-primary)]">{row.projectName}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-primary)]">{row.category}</td>
-                      <td className="px-5 py-3.5 text-sm font-semibold text-rose-400 whitespace-nowrap">{formatMoney(row.amount)}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-secondary)] max-w-[260px] truncate">{row.description || "—"}</td>
-                      <td className="px-5 py-3.5 text-sm text-[var(--text-secondary)] max-w-[200px] truncate">{row.reference || "—"}</td>
-                      <td className="px-5 py-3.5 whitespace-nowrap text-right">
-                        <div className="inline-flex gap-2">
-                          <button onClick={() => editExpense(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
-                          <button onClick={() => deleteExpense(row.id)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <VirtualInfiniteTable<AnyRow>
+          columns={columns}
+          rows={rows}
+          rowKey={rowKey}
+          loading={loading}
+          loadingMore={loadingMore}
+          hasMore={hasMore}
+          onLoadMore={loadMore}
+          emptyText={emptyText}
+          minWidth={minWidth}
+        />
       </Container>
 
       {/* Revenue modal */}
