@@ -563,12 +563,12 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email)
+        public async Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email, int? userId = null)
         {
-            if (string.IsNullOrWhiteSpace(email))
+            if (string.IsNullOrWhiteSpace(email) && !userId.HasValue)
                 return new List<BookingResponseDto>();
 
-            var normalized = email.Trim().ToLowerInvariant();
+            var normalized = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
             var entities = await _context.Bookings
                 .AsNoTracking()
@@ -578,38 +578,38 @@ namespace DAMS.Application.Services
                 .Include(b => b.Installments)
                 .AsSplitQuery()
                 .Where(b => b.Customer != null
-                         && b.Customer.Email != null
-                         && b.Customer.Email.ToLower() == normalized
-                         && b.Status != BookingStatus.Cancelled)
+                         && b.Status != BookingStatus.Cancelled
+                         && ((userId.HasValue && b.Customer.UserId == userId.Value)
+                             || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)))
                 .OrderByDescending(b => b.BookingDate)
                 .ToListAsync();
 
             return entities.Select(b => SanitizeForClient(MapProjection(b))).ToList();
         }
 
-        public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email)
+        public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null)
         {
-            if (!await CustomerOwnsBookingByEmailAsync(id, email))
+            if (!await CustomerOwnsBookingByEmailAsync(id, email, userId))
                 return null;
 
             var dto = await GetResponseAsync(id);
             return dto == null ? null : SanitizeForClient(dto);
         }
 
-        public async Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email)
+        public async Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email, int? userId = null)
         {
-            if (string.IsNullOrWhiteSpace(email))
+            if (string.IsNullOrWhiteSpace(email) && !userId.HasValue)
                 return false;
 
-            var normalized = email.Trim().ToLowerInvariant();
+            var normalized = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
             return await _context.Bookings
                 .AsNoTracking()
                 .AnyAsync(b => b.Id == bookingId
                             && b.Status != BookingStatus.Cancelled
                             && b.Customer != null
-                            && b.Customer.Email != null
-                            && b.Customer.Email.ToLower() == normalized);
+                            && ((userId.HasValue && b.Customer.UserId == userId.Value)
+                                || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)));
         }
 
         private static (decimal Paid, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(Booking b)

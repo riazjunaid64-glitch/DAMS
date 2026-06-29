@@ -23,10 +23,11 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetMyProjects()
         {
             var email = User.FindFirstValue(ClaimTypes.Email);
-            if (string.IsNullOrWhiteSpace(email))
+            var userId = GetUserId();
+            if (string.IsNullOrWhiteSpace(email) && userId == null)
                 return Unauthorized(new { message = "Email not found in your account." });
 
-            var items = await _bookingService.GetBookingsByCustomerEmailAsync(email);
+            var items = await _bookingService.GetBookingsByCustomerEmailAsync(email ?? string.Empty, userId);
             return Ok(items);
         }
 
@@ -34,10 +35,11 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetMyProject(int id)
         {
             var email = User.FindFirstValue(ClaimTypes.Email);
-            if (string.IsNullOrWhiteSpace(email))
+            var userId = GetUserId();
+            if (string.IsNullOrWhiteSpace(email) && userId == null)
                 return Unauthorized(new { message = "Email not found in your account." });
 
-            var result = await _bookingService.GetBookingByIdForCustomerEmailAsync(id, email);
+            var result = await _bookingService.GetBookingByIdForCustomerEmailAsync(id, email ?? string.Empty, userId);
             if (result == null)
                 return NotFound(new { message = "Project purchase not found for your account." });
 
@@ -48,10 +50,11 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetInstallmentSchedule(int id)
         {
             var email = User.FindFirstValue(ClaimTypes.Email);
-            if (string.IsNullOrWhiteSpace(email))
+            var userId = GetUserId();
+            if (string.IsNullOrWhiteSpace(email) && userId == null)
                 return Unauthorized(new { message = "Email not found in your account." });
 
-            if (!await _bookingService.CustomerOwnsBookingByEmailAsync(id, email))
+            if (!await _bookingService.CustomerOwnsBookingByEmailAsync(id, email ?? string.Empty, userId))
                 return NotFound(new { message = "Project purchase not found for your account." });
 
             try
@@ -69,10 +72,11 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetPaymentReceipt(int id, int paymentId)
         {
             var email = User.FindFirstValue(ClaimTypes.Email);
-            if (string.IsNullOrWhiteSpace(email))
+            var userId = GetUserId();
+            if (string.IsNullOrWhiteSpace(email) && userId == null)
                 return Unauthorized(new { message = "Email not found in your account." });
 
-            if (!await _bookingService.CustomerOwnsBookingByEmailAsync(id, email))
+            if (!await _bookingService.CustomerOwnsBookingByEmailAsync(id, email ?? string.Empty, userId))
                 return NotFound(new { message = "Project purchase not found for your account." });
 
             try
@@ -84,6 +88,12 @@ namespace DAMS.Api.Controllers
             {
                 return NotFound(new { message = ex.Message });
             }
+        }
+
+        private int? GetUserId()
+        {
+            var claim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return int.TryParse(claim, out var id) ? id : (int?)null;
         }
     }
 }

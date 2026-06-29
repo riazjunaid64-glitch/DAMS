@@ -147,7 +147,8 @@ namespace DAMS.Application.Services
             DateTime? dateOfBirth = null,
             string? nationality = null,
             string? occupation = null,
-            string? whatsapp = null)
+            string? whatsapp = null,
+            int? linkUserId = null)
         {
             var normalizedPhone = NormalizePhone(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
@@ -165,10 +166,21 @@ namespace DAMS.Application.Services
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Email == normalizedEmail);
 
             if (existing != null)
+            {
+                // Link this customer to the login account if it isn't already, so their
+                // bookings surface under "My Projects" regardless of the email they typed.
+                if (linkUserId.HasValue && existing.UserId == null)
+                {
+                    existing.UserId = linkUserId.Value;
+                    existing.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
+                }
                 return existing.Id;
+            }
 
             var customer = new Customer
             {
+                UserId = linkUserId,
                 FullName = fullName.Trim(),
                 FatherName = string.IsNullOrWhiteSpace(fatherName) ? null : fatherName.Trim(),
                 Phone = normalizedPhone,

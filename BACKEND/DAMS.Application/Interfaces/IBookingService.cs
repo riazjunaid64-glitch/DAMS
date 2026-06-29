@@ -41,10 +41,10 @@ namespace DAMS.Application.Interfaces
         /// </summary>
         Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId);
 
-        Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email);
+        Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email, int? userId = null);
 
-        Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email);
+        Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null);
 
-        Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email);
+        Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email, int? userId = null);
     }
 }

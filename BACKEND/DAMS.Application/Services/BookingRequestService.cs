@@ -208,7 +208,8 @@ namespace DAMS.Application.Services
                 bookingRequest.Address,
                 CustomerSource.Website,
                 "Created from website booking request.",
-                adminUserId);
+                adminUserId,
+                linkUserId: bookingRequest.UserId);
 
             bookingRequest.Status = BookingRequestStatus.Approved;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
