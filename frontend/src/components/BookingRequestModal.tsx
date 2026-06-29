@@ -107,7 +107,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
           address: form.address.trim(),
           notes: form.notes.trim() || null,
         }),
-      }, false);
+      });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
