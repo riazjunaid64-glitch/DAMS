@@ -342,12 +342,13 @@ export default function FinanceDashboardPage({ user }: Props) {
     ];
   }, [summary]);
 
-  // Clicking any card selects its view below and scrolls to it, keeping whatever
-  // project/period filters are already applied.
+  // Clicking any card just switches the view below in place (like the period
+  // chips), keeping whatever project/period filters are already applied. No
+  // page scroll — animating a smooth scroll while the table reloads/resizes
+  // made the transition feel jerky.
   const tableRef = useRef<HTMLDivElement>(null);
   const focusView = useCallback((target: View) => {
     setView(target);
-    requestAnimationFrame(() => tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }, []);
 
   const resetForms = () => {
