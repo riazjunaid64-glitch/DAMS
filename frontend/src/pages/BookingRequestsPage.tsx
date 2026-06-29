@@ -4,6 +4,7 @@ import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
+import { formatPkr } from "../utils/currency.ts";
 
 interface BookingRequest {
   id: number;
@@ -53,9 +54,7 @@ const statusConfig = {
   Rejected: { color: "text-rose-400 bg-rose-500/10 border-rose-500/20", label: "Rejected" },
 };
 
-function formatCurrency(value: number) {
-  return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-}
+const formatCurrency = formatPkr;
 
 function formatRequestDate(date: string) {
   const parsed = new Date(date);
@@ -490,7 +489,7 @@ export default function BookingRequestsPage({ user }: Props) {
                       <p className="text-sm text-[var(--text-muted)]">{selectedRequest.projectName} • {selectedRequest.projectLocation}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-lg font-bold text-[var(--text-heading)]">${selectedRequest.unitPrice.toLocaleString()}</p>
+                      <p className="text-lg font-bold text-[var(--text-heading)]">{formatCurrency(selectedRequest.unitPrice)}</p>
                     </div>
                   </div>
                 </div>

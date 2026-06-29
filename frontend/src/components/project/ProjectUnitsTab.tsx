@@ -6,6 +6,7 @@ import Field from "../../lib/Field.tsx";
 import Pagination from "../../lib/Pagination.tsx";
 import { api } from "../../api/api.ts";
 import { parseUnitsPayload } from "../../utils/parseUnit.ts";
+import { formatPkr } from "../../utils/currency.ts";
 
 interface Unit {
   id: number;
@@ -114,8 +115,7 @@ const icons = {
   ),
 };
 
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value || 0);
+const formatCurrency = formatPkr;
 
 const getPercent = (value: number, total: number) => {
   if (!total) return "0% of total";

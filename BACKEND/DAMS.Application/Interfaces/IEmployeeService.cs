@@ -1,4 +1,5 @@
 using DAMS.Application.DTOs.EmployeeDtos;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Interfaces
 {
@@ -14,6 +15,7 @@ namespace DAMS.Application.Interfaces
         // Attendance
         Task<AttendanceResponseDto> RecordAttendanceAsync(int employeeId, RecordAttendanceDto dto);
         Task<List<AttendanceResponseDto>> GetAttendanceAsync(int employeeId, DateTime? from = null, DateTime? to = null);
+        Task<List<AttendanceResponseDto>> GetAttendanceHistoryAsync(DateTime from, DateTime to, AttendanceStatus? status = null, int? employeeId = null);
         Task<Dictionary<string, int>> GetAttendanceSummaryAsync(int employeeId, int month, int year);
 
         // Tasks
@@ -28,6 +30,7 @@ namespace DAMS.Application.Interfaces
         Task<List<SalaryResponseDto>> GetSalariesAsync(int employeeId);
         Task<List<SalaryMonthSummaryDto>> GetSalaryMonthSummariesAsync(int employeeId);
         Task<List<SalaryResponseDto>> GetSalariesByMonthAsync(int employeeId, int month, int year);
+        Task<List<SalaryResponseDto>> GetSalaryHistoryAsync(DateTime from, DateTime to, int? employeeId = null);
         Task<SalaryResponseDto?> GetSalaryByIdAsync(int salaryId);
         Task<List<AttendanceBatchItemDto>> GetAttendanceBatchAsync(DateTime date);
         Task<List<SalaryBatchItemDto>> GetSalaryBatchAsync(int month, int year);

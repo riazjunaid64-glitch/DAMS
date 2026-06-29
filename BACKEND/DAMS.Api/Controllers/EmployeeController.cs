@@ -124,6 +124,20 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("attendance/history")]
+        public async Task<IActionResult> GetAttendanceHistory(
+            [FromQuery] DateTime? from = null,
+            [FromQuery] DateTime? to = null,
+            [FromQuery] DAMS.Domain.Enums.AttendanceStatus? status = null,
+            [FromQuery] int? employeeId = null)
+        {
+            var now = DateTime.UtcNow;
+            var fromDate = from ?? new DateTime(now.Year, now.Month, 1);
+            var toDate = to ?? now;
+            var result = await _employeeService.GetAttendanceHistoryAsync(fromDate, toDate, status, employeeId);
+            return Ok(result);
+        }
+
         // ─── Tasks ───────────────────────────────────────────────────────────────
 
         [HttpPost("tasks")]
@@ -179,6 +193,19 @@ namespace DAMS.Api.Controllers
                 return BadRequest(new { message = "Month must be between 1 and 12." });
 
             var result = await _employeeService.GetSalaryBatchAsync(month, year);
+            return Ok(result);
+        }
+
+        [HttpGet("salary/history")]
+        public async Task<IActionResult> GetSalaryHistory(
+            [FromQuery] DateTime? from = null,
+            [FromQuery] DateTime? to = null,
+            [FromQuery] int? employeeId = null)
+        {
+            var now = DateTime.UtcNow;
+            var fromDate = from ?? new DateTime(now.Year, now.Month, 1);
+            var toDate = to ?? now;
+            var result = await _employeeService.GetSalaryHistoryAsync(fromDate, toDate, employeeId);
             return Ok(result);
         }
 

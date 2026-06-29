@@ -145,17 +145,29 @@ namespace DAMS.Application.Services
             if (to.HasValue)   query = query.Where(a => a.Date <= to.Value.Date);
 
             var list = await query.OrderByDescending(a => a.Date).ToListAsync();
-            return list.Select(a => new AttendanceResponseDto
-            {
-                Id           = a.Id,
-                EmployeeId   = a.EmployeeId,
-                EmployeeName = a.Employee.FullName,
-                Date         = a.Date,
-                Status       = a.Status,
-                CheckInTime  = a.CheckInTime,
-                CheckOutTime = a.CheckOutTime,
-                Notes        = a.Notes
-            }).ToList();
+            return list.Select(MapAttendance).ToList();
+        }
+
+        public async Task<List<AttendanceResponseDto>> GetAttendanceHistoryAsync(
+            DateTime from, DateTime to, AttendanceStatus? status = null, int? employeeId = null)
+        {
+            var fromDate = from.Date;
+            var toDate = to.Date;
+
+            var query = _context.EmployeeAttendances
+                .AsNoTracking()
+                .Include(a => a.Employee)
+                .Where(a => a.Date >= fromDate && a.Date <= toDate);
+
+            if (status.HasValue)     query = query.Where(a => a.Status == status.Value);
+            if (employeeId.HasValue) query = query.Where(a => a.EmployeeId == employeeId.Value);
+
+            var list = await query
+                .OrderByDescending(a => a.Date)
+                .ThenBy(a => a.Employee.FullName)
+                .ToListAsync();
+
+            return list.Select(MapAttendance).ToList();
         }
 
         public async Task<Dictionary<string, int>> GetAttendanceSummaryAsync(int employeeId, int month, int year)
@@ -410,6 +422,23 @@ namespace DAMS.Application.Services
             return list.Select(s => MapSalary(s, s.Employee)).ToList();
         }
 
+        public async Task<List<SalaryResponseDto>> GetSalaryHistoryAsync(DateTime from, DateTime to, int? employeeId = null)
+        {
+            var fromDate = from.Date;
+            var toDate = to.Date;
+
+            var query = _context.EmployeeSalaries
+                .AsNoTracking()
+                .Include(s => s.Employee)
+                .Where(s => s.PayDate >= fromDate && s.PayDate <= toDate);
+
+            if (employeeId.HasValue)
+                query = query.Where(s => s.EmployeeId == employeeId.Value);
+
+            var list = await query.OrderByDescending(s => s.PayDate).ToListAsync();
+            return list.Select(s => MapSalary(s, s.Employee)).ToList();
+        }
+
         public async Task<SalaryResponseDto?> GetSalaryByIdAsync(int salaryId)
         {
             var salary = await _context.EmployeeSalaries
@@ -567,6 +596,20 @@ namespace DAMS.Application.Services
             Status     = e.Status,
             CreatedAt  = e.CreatedAt,
             UpdatedAt  = e.UpdatedAt
+        };
+
+        private static AttendanceResponseDto MapAttendance(EmployeeAttendance a) => new()
+        {
+            Id           = a.Id,
+            EmployeeId   = a.EmployeeId,
+            EmployeeName = a.Employee.FullName,
+            Department   = a.Employee.Department,
+            JobTitle     = a.Employee.JobTitle,
+            Date         = a.Date,
+            Status       = a.Status,
+            CheckInTime  = a.CheckInTime,
+            CheckOutTime = a.CheckOutTime,
+            Notes        = a.Notes
         };
 
         private async Task<AttendanceResponseDto> MapAttendanceAsync(EmployeeAttendance a)

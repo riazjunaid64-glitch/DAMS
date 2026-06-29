@@ -3,6 +3,7 @@ import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import Field from "../lib/Field.tsx";
 import ModalPortal from "../lib/ModalPortal.tsx";
+import { formatPkr } from "../utils/currency.ts";
 import {
   PLACEHOLDERS,
   formatCnic,
@@ -247,7 +248,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
                 )}
               </div>
               <div className="text-right">
-                <p className="text-lg font-bold text-[var(--text-heading)]">${unit.price.toLocaleString()}</p>
+                <p className="text-lg font-bold text-[var(--text-heading)]">{formatPkr(unit.price)}</p>
               </div>
             </div>
           </div>

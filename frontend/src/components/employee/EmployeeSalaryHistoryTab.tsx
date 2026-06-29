@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
 import Modal from "../../lib/Modal.tsx";
 import SalarySlip from "../SalarySlip.tsx";
 import type { EmployeeFromApi } from "../../utils/parseEmployee.ts";
+import { formatPkr } from "../../utils/currency.ts";
 
 interface SalaryRecord {
   id: number;
@@ -24,9 +25,7 @@ interface MonthSummary {
   totalAmount: number;
 }
 
-function formatCurrency(n: number) {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 });
-}
+const formatCurrency = formatPkr;
 
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -76,6 +75,12 @@ export default function EmployeeSalaryHistoryTab({ employee }: Props) {
 
   useEffect(() => { loadSummaries(); }, [loadSummaries]);
 
+  const lifetime = useMemo(() => ({
+    total: summaries.reduce((s, m) => s + m.totalAmount, 0),
+    months: summaries.length,
+    payments: summaries.reduce((s, m) => s + m.count, 0),
+  }), [summaries]);
+
   const loadMonthRecords = async (summary: MonthSummary) => {
     setSelectedMonth(summary);
     setLoadingMonth(true);
@@ -119,6 +124,23 @@ export default function EmployeeSalaryHistoryTab({ employee }: Props) {
           <h2 className="section-title mb-1">Salary History</h2>
           <p className="text-sm text-[var(--text-muted)]">Past salary payments for this employee</p>
         </div>
+
+        {!loadingHistory && summaries.length > 0 && (
+          <div className="mb-6 grid grid-cols-3 gap-3">
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 shadow-sm">
+              <p className="text-2xl font-bold text-emerald-400">{formatCurrency(lifetime.total)}</p>
+              <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Total Paid</p>
+            </div>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 shadow-sm">
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{lifetime.payments}</p>
+              <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Payments</p>
+            </div>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 shadow-sm">
+              <p className="text-2xl font-bold text-[var(--text-primary)]">{lifetime.months}</p>
+              <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Months</p>
+            </div>
+          </div>
+        )}
 
         {loadingHistory ? (
           <div className="space-y-3">
