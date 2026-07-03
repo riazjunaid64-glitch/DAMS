@@ -14,6 +14,8 @@ namespace DAMS.Application.DTOs.InstallmentDtos
 
         public decimal DiscountAmount { get; set; }
 
+        public decimal DiscountPercent { get; set; }
+
         public decimal BookingAmountReceived { get; set; }
 
         public decimal PossessionAmount { get; set; }

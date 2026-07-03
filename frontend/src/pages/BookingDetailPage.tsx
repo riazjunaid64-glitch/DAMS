@@ -18,6 +18,7 @@ interface BookingDetail {
   status: string;
   agreedSalePrice: number;
   discountAmount: number;
+  discountPercent: number;
   bookingAmountRequired: number;
   bookingAmountReceived: number;
   bookingAmountRemaining: number;
@@ -58,6 +59,7 @@ interface InstallmentSchedule {
   bookingStatus: string;
   agreedSalePrice: number;
   discountAmount: number;
+  discountPercent: number;
   bookingAmountReceived: number;
   possessionAmount: number;
   installmentPool: number;
@@ -153,7 +155,7 @@ export default function BookingDetailPage({ user }: Props) {
   const [finError, setFinError] = useState<string | null>(null);
   const [finForm, setFinForm] = useState({
     agreedSalePrice: "",
-    discountAmount: "0",
+    discountPercent: "0",
     discountReason: "",
     bookingPercent: "10",
     bookingAmountRequired: "",
@@ -177,7 +179,7 @@ export default function BookingDetailPage({ user }: Props) {
 
   const [form, setForm] = useState({
     agreedSalePrice: "",
-    discountAmount: "0",
+    discountPercent: "0",
     discountReason: "",
     frequency: "Monthly",
     numberOfInstallments: "12",
@@ -209,7 +211,7 @@ export default function BookingDetailPage({ user }: Props) {
       const isPreset = ["5", "10", "15", "20", "25", "30"].includes(String(derivedPercent));
       setFinForm({
         agreedSalePrice: String(b.agreedSalePrice || ""),
-        discountAmount: String(b.discountAmount ?? 0),
+        discountPercent: String(b.discountPercent ?? 0),
         discountReason: "",
         bookingPercent: b.bookingAmountRequired > 0 ? (isPreset ? String(derivedPercent) : "custom") : "10",
         bookingAmountRequired: b.bookingAmountRequired ? String(b.bookingAmountRequired) : "",
@@ -227,14 +229,14 @@ export default function BookingDetailPage({ user }: Props) {
           setForm((prev) => ({
             ...prev,
             agreedSalePrice: String(b.agreedSalePrice),
-            discountAmount: String(b.discountAmount ?? 0),
+            discountPercent: String(b.discountPercent ?? 0),
             installmentStartDate: toDateInput(b.installmentPlanStartDate) || new Date().toISOString().slice(0, 10),
           }));
         } else {
           setForm((prev) => ({
             ...prev,
             agreedSalePrice: String(s.agreedSalePrice),
-            discountAmount: String(s.discountAmount ?? 0),
+            discountPercent: String(s.discountPercent ?? 0),
             frequency: s.frequency ?? "Monthly",
             numberOfInstallments: String(s.numberOfInstallments ?? 12),
             installmentStartDate: toDateInput(s.installmentStartDate),
@@ -258,8 +260,10 @@ export default function BookingDetailPage({ user }: Props) {
     const agreed = Number(form.agreedSalePrice) || 0;
     const possession = Number(form.possessionAmount) || 0;
     const received = booking?.bookingAmountReceived ?? 0;
-    return Math.max(0, agreed - received - possession);
-  }, [form.agreedSalePrice, form.possessionAmount, booking?.bookingAmountReceived]);
+    const discountPct = Math.min(100, Math.max(0, Number(form.discountPercent) || 0));
+    const net = agreed - Math.round((agreed * discountPct) / 100 * 100) / 100;
+    return Math.max(0, net - received - possession);
+  }, [form.agreedSalePrice, form.possessionAmount, form.discountPercent, booking?.bookingAmountReceived]);
 
   const previewPerInstallment = useMemo(() => {
     const n = Number(form.numberOfInstallments) || 0;
@@ -275,7 +279,7 @@ export default function BookingDetailPage({ user }: Props) {
       const possessionAmt = Number(form.possessionAmount) || 0;
       const body = {
         agreedSalePrice: Number(form.agreedSalePrice),
-        discountAmount: Number(form.discountAmount) || 0,
+        discountPercent: Number(form.discountPercent) || 0,
         discountReason: form.discountReason.trim() || null,
         frequency: form.frequency,
         numberOfInstallments: Number(form.numberOfInstallments),
@@ -353,7 +357,7 @@ export default function BookingDetailPage({ user }: Props) {
           : Math.round(agreed * (Number(finForm.bookingPercent) / 100) * 100) / 100;
       const body = {
         agreedSalePrice: agreed,
-        discountAmount: Number(finForm.discountAmount) || 0,
+        discountPercent: Number(finForm.discountPercent) || 0,
         discountReason: finForm.discountReason.trim() || null,
         bookingAmountRequired: requiredAmount,
         bookingAmountDueDate: finForm.bookingAmountDueDate || null,
@@ -557,9 +561,9 @@ export default function BookingDetailPage({ user }: Props) {
                   value={finForm.bookingAmountRequired}
                   onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
               )}
-              <Field label="Discount Amount" type="number" min="0" step="0.01"
-                value={finForm.discountAmount}
-                onChange={(e) => setFinForm({ ...finForm, discountAmount: e.target.value })} />
+              <Field label="Discount %" type="number" min="0" max="100" step="0.01"
+                value={finForm.discountPercent}
+                onChange={(e) => setFinForm({ ...finForm, discountPercent: e.target.value })} />
               <Field label="Booking Amount Due Date (optional)" type="date"
                 value={finForm.bookingAmountDueDate}
                 onChange={(e) => setFinForm({ ...finForm, bookingAmountDueDate: e.target.value })} />
@@ -604,9 +608,9 @@ export default function BookingDetailPage({ user }: Props) {
             <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
               value={form.agreedSalePrice} disabled={planLocked}
               onChange={(e) => setForm({ ...form, agreedSalePrice: e.target.value })} />
-            <Field label="Discount Amount" type="number" min="0" step="0.01"
-              value={form.discountAmount} disabled={planLocked}
-              onChange={(e) => setForm({ ...form, discountAmount: e.target.value })} />
+            <Field label="Discount %" type="number" min="0" max="100" step="0.01"
+              value={form.discountPercent} disabled={planLocked}
+              onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} />
             <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
               <span>Frequency</span>
               <select value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}

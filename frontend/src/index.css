@@ -2133,6 +2133,8 @@ h1, h2, h3, h4, h5, h6 {
   .receipt-print,
   .receipt-print * {
     visibility: visible;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .receipt-print {
     position: absolute;

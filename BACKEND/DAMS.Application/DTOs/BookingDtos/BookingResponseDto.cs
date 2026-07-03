@@ -59,6 +59,9 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public string? DiscountReason { get; set; }
 
+        // Effective price the customer owes after the discount is applied.
+        public decimal NetSalePrice => AgreedSalePrice - DiscountAmount;
+
         public decimal BookingAmountRequired { get; set; }
 
         public decimal BookingAmountReceived { get; set; }

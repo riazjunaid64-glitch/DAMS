@@ -145,7 +145,8 @@ const EXPENSE_CATEGORIES = [
 
 function formatMoney(n: number) {
   const sign = n < 0 ? "-" : "";
-  return `${sign}Rs ${Math.abs(n).toLocaleString("en-PK", { maximumFractionDigits: 0 })}`;
+  // Show paisa when present so rows visibly add up to the totals (whole amounts stay clean).
+  return `${sign}Rs ${Math.abs(n).toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
 }
 
 function formatDate(date: string) {

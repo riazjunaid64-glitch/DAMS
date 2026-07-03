@@ -171,9 +171,13 @@ namespace DAMS.Application.Services
             if (possessionAmount > 0m && !dto.PossessionDueDate.HasValue)
                 throw new InvalidOperationException("Possession due date is required when a possession amount is set.");
 
-            var installmentPool = dto.AgreedSalePrice - booking.BookingAmountReceived - possessionAmount;
+            // Discount is a percentage of the agreed sale price; the customer only owes the net price.
+            var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
+            var netSalePrice = dto.AgreedSalePrice - discountAmount;
+
+            var installmentPool = netSalePrice - booking.BookingAmountReceived - possessionAmount;
             if (installmentPool <= 0m)
-                throw new InvalidOperationException("Installment pool must be greater than zero after booking amount and possession amount.");
+                throw new InvalidOperationException("Installment pool must be greater than zero after discount, booking amount and possession amount.");
 
             if (hasExisting)
             {
@@ -182,7 +186,8 @@ namespace DAMS.Application.Services
             }
 
             booking.AgreedSalePrice = dto.AgreedSalePrice;
-            booking.DiscountAmount = dto.DiscountAmount;
+            booking.DiscountPercent = dto.DiscountPercent;
+            booking.DiscountAmount = discountAmount;
             booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
             booking.InstallmentFrequency = dto.Frequency;
             booking.NumberOfInstallments = dto.NumberOfInstallments;
@@ -215,8 +220,8 @@ namespace DAMS.Application.Services
             if (dto.NumberOfInstallments < 1)
                 throw new InvalidOperationException("Number of installments must be at least 1.");
 
-            if (dto.DiscountAmount < 0m)
-                throw new InvalidOperationException("Discount amount cannot be negative.");
+            if (dto.DiscountPercent < 0m || dto.DiscountPercent > 100m)
+                throw new InvalidOperationException("Discount percent must be between 0 and 100.");
 
             if (dto.PossessionAmount < 0m)
                 throw new InvalidOperationException("Possession amount cannot be negative.");
@@ -307,7 +312,7 @@ namespace DAMS.Application.Services
                               && booking.BookingAmountReceived >= booking.BookingAmountRequired
                               && (!hasSchedule || canRegenerate);
 
-            var installmentPool = booking.AgreedSalePrice - booking.BookingAmountReceived - booking.PossessionAmount;
+            var installmentPool = (booking.AgreedSalePrice - booking.DiscountAmount) - booking.BookingAmountReceived - booking.PossessionAmount;
             var today = DateTime.UtcNow.Date;
 
             var items = booking.Installments
@@ -354,6 +359,7 @@ namespace DAMS.Application.Services
                 BookingStatus = booking.Status,
                 AgreedSalePrice = booking.AgreedSalePrice,
                 DiscountAmount = booking.DiscountAmount,
+                DiscountPercent = booking.DiscountPercent ?? 0m,
                 BookingAmountReceived = booking.BookingAmountReceived,
                 PossessionAmount = booking.PossessionAmount,
                 InstallmentPool = Math.Max(0m, installmentPool),

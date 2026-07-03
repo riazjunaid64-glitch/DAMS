@@ -13,8 +13,9 @@ namespace DAMS.Application.DTOs.BookingDtos
         [Range(0.01, double.MaxValue, ErrorMessage = "Agreed sale price must be greater than zero.")]
         public decimal AgreedSalePrice { get; set; }
 
-        [Range(0, double.MaxValue)]
-        public decimal DiscountAmount { get; set; }
+        // Discount is entered as a percentage of the agreed sale price (0–100).
+        [Range(0, 100, ErrorMessage = "Discount percent must be between 0 and 100.")]
+        public decimal DiscountPercent { get; set; }
 
         [StringLength(500)]
         public string? DiscountReason { get; set; }

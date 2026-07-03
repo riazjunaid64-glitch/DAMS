@@ -26,6 +26,7 @@ interface BookingFull {
   status: string;
   agreedSalePrice: number;
   discountAmount: number;
+  discountPercent: number;
   bookingAmountRequired: number;
   bookingAmountReceived: number;
   bookingAmountRemaining: number;
@@ -268,7 +269,10 @@ export default function MyProjectDetailPage({ user }: Props) {
                   <dl className="space-y-3 text-sm">
                     {[
                       ["Agreed Sale Price", formatMoney(booking.agreedSalePrice)],
-                      ["Discount", formatMoney(booking.discountAmount)],
+                      ["Discount", booking.discountPercent > 0
+                        ? `${formatMoney(booking.discountAmount)} (${booking.discountPercent}%)`
+                        : formatMoney(booking.discountAmount)],
+                      ["Net Payable", formatMoney(booking.agreedSalePrice - booking.discountAmount)],
                       ["Booking Amount Required", formatMoney(booking.bookingAmountRequired)],
                       ["Booking Amount Paid", formatMoney(booking.bookingAmountReceived)],
                       ["Booking Amount Remaining", formatMoney(booking.bookingAmountRemaining ?? Math.max(0, booking.bookingAmountRequired - booking.bookingAmountReceived))],

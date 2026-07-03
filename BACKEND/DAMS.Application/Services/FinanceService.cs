@@ -36,7 +36,7 @@ namespace DAMS.Application.Services
             // sum the positive ones in memory; filtering a projected scalar in SQL does not
             // translate.
             var outstandingBalances = await OutstandingBookings(projectId)
-                .Select(b => b.AgreedSalePrice - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                .Select(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
                 .ToListAsync();
             var outstandingTotal = outstandingBalances.Where(v => v > 0).Sum();
 
@@ -165,8 +165,8 @@ namespace DAMS.Application.Services
         public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take)
         {
             var rows = await OutstandingBookings(projectId)
-                .Where(b => b.AgreedSalePrice - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0)
-                .OrderByDescending(b => b.AgreedSalePrice - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                .Where(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0)
+                .OrderByDescending(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
                 .ThenBy(b => b.Id)
                 .Skip(skip).Take(take + 1)
                 .Select(b => new OutstandingLineDto
@@ -176,9 +176,10 @@ namespace DAMS.Application.Services
                     ProjectId = b.Unit.ProjectId,
                     ProjectName = b.Unit.Project != null ? b.Unit.Project.ProjectName : "General",
                     UnitNumber = b.Unit.UnitNumber,
-                    AgreedSalePrice = b.AgreedSalePrice,
+                    // Show the net (post-discount) price so the row ties out: price − received = outstanding.
+                    AgreedSalePrice = b.AgreedSalePrice - b.DiscountAmount,
                     ReceivedAmount = (decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m,
-                    OutstandingAmount = b.AgreedSalePrice - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    OutstandingAmount = (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
                 })
                 .ToListAsync();
 

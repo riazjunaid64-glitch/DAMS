@@ -65,7 +65,11 @@ namespace DAMS.Application.Services
             }
 
             var agreedSalePrice = dto.AgreedSalePrice ?? unit.Price;
-            var discount = dto.DiscountAmount ?? 0m;
+            var discountPercent = dto.DiscountPercent ?? 0m;
+            if (discountPercent < 0m || discountPercent > 100m)
+                throw new InvalidOperationException("Discount percent must be between 0 and 100.");
+            var discount = Math.Round(agreedSalePrice * discountPercent / 100m, 2, MidpointRounding.AwayFromZero);
+            var netSalePrice = agreedSalePrice - discount;
             var bookingAmountRequired = dto.BookingAmountRequired ?? 0m;
 
             var booking = new Booking
@@ -82,7 +86,7 @@ namespace DAMS.Application.Services
                 DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim(),
                 BookingAmountRequired = bookingAmountRequired,
                 BookingAmountReceived = 0m,
-                TotalInstallmentAmount = agreedSalePrice - bookingAmountRequired,
+                TotalInstallmentAmount = netSalePrice - bookingAmountRequired,
                 BookingDate = DateTime.UtcNow,
                 BookingAmountDueDate = dto.BookingAmountDueDate,
                 CustomerNotes = string.IsNullOrWhiteSpace(dto.CustomerNotes) ? null : dto.CustomerNotes.Trim(),
@@ -93,7 +97,7 @@ namespace DAMS.Application.Services
                 Tower = string.IsNullOrWhiteSpace(dto.Tower) ? null : dto.Tower.Trim(),
                 IsCorner = dto.IsCorner,
                 PricePerSft = dto.PricePerSft,
-                DiscountPercent = dto.DiscountPercent,
+                DiscountPercent = discountPercent,
                 ReferenceId = string.IsNullOrWhiteSpace(dto.ReferenceId) ? null : dto.ReferenceId.Trim(),
                 PaymentThrough = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
                 ApplicationPaymentType = string.IsNullOrWhiteSpace(dto.ApplicationPaymentType) ? null : dto.ApplicationPaymentType.Trim(),
@@ -250,11 +254,14 @@ namespace DAMS.Application.Services
             if (dto.BookingAmountRequired <= 0m)
                 throw new InvalidOperationException("Booking amount required must be greater than zero.");
 
-            if (dto.BookingAmountRequired > dto.AgreedSalePrice)
-                throw new InvalidOperationException("Booking amount required cannot exceed the agreed sale price.");
+            if (dto.DiscountPercent < 0m || dto.DiscountPercent > 100m)
+                throw new InvalidOperationException("Discount percent must be between 0 and 100.");
 
-            if (dto.DiscountAmount < 0m)
-                throw new InvalidOperationException("Discount amount cannot be negative.");
+            var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
+            var netSalePrice = dto.AgreedSalePrice - discountAmount;
+
+            if (dto.BookingAmountRequired > netSalePrice)
+                throw new InvalidOperationException("Booking amount required cannot exceed the discounted sale price.");
 
             // Cannot drop the required amount below what has already been received.
             if (dto.BookingAmountRequired < booking.BookingAmountReceived)
@@ -262,11 +269,12 @@ namespace DAMS.Application.Services
                     $"Booking amount required cannot be less than the amount already received ({booking.BookingAmountReceived:0.00}).");
 
             booking.AgreedSalePrice = dto.AgreedSalePrice;
-            booking.DiscountAmount = dto.DiscountAmount;
+            booking.DiscountPercent = dto.DiscountPercent;
+            booking.DiscountAmount = discountAmount;
             booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
             booking.BookingAmountRequired = dto.BookingAmountRequired;
             booking.BookingAmountDueDate = dto.BookingAmountDueDate;
-            booking.TotalInstallmentAmount = dto.AgreedSalePrice - dto.BookingAmountRequired;
+            booking.TotalInstallmentAmount = netSalePrice - dto.BookingAmountRequired;
             booking.UpdatedAt = DateTime.UtcNow;
 
             // If terms now mean the booking amount is already covered, advance the workflow.

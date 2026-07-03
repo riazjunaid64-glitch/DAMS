@@ -24,8 +24,6 @@ namespace DAMS.Application.DTOs.BookingDtos
         // Optional financial terms. Defaults to unit list price when omitted.
         public decimal? AgreedSalePrice { get; set; }
 
-        public decimal? DiscountAmount { get; set; }
-
         [StringLength(500)]
         public string? DiscountReason { get; set; }
 

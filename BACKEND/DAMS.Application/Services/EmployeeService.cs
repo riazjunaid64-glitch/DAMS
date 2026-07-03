@@ -353,6 +353,19 @@ namespace DAMS.Application.Services
             if (dto.PayDate.HasValue)
             {
                 var payDate = dto.PayDate.Value.Date;
+
+                // Moving to a different month must not collide with an existing salary for that month.
+                if (payDate.Month != salary.PayMonth || payDate.Year != salary.PayYear)
+                {
+                    var clash = await _context.EmployeeSalaries.AnyAsync(s =>
+                        s.EmployeeId == salary.EmployeeId &&
+                        s.Id != salary.Id &&
+                        s.PayMonth == payDate.Month &&
+                        s.PayYear == payDate.Year);
+                    if (clash)
+                        throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+                }
+
                 salary.PayDate = payDate;
                 salary.PayMonth = payDate.Month;
                 salary.PayYear = payDate.Year;

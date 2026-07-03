@@ -8,8 +8,9 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         [Range(0.01, double.MaxValue)]
         public decimal AgreedSalePrice { get; set; }
 
-        [Range(0, double.MaxValue)]
-        public decimal DiscountAmount { get; set; }
+        // Discount is entered as a percentage of the agreed sale price (0–100).
+        [Range(0, 100)]
+        public decimal DiscountPercent { get; set; }
 
         [StringLength(500)]
         public string? DiscountReason { get; set; }

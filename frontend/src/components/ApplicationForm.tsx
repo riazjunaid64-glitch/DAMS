@@ -220,13 +220,27 @@ export default function ApplicationForm({ data = {} }: { data?: ApplicationFormD
         {/* ── Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
-            <FloriaMark />
-            <div style={{ lineHeight: 1 }}>
-              <div style={{ fontSize: "24px", fontWeight: 800, letterSpacing: "1px", color: "#1f2937" }}>
-                {RECEIPT_CONFIG.companyName}
-              </div>
-              <div style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "6px", color: "#6b7280", marginTop: "2px" }}>
-                {RECEIPT_CONFIG.companyNameAccent}
+            {RECEIPT_CONFIG.companyLogoSrc ? (
+              <img
+                src={RECEIPT_CONFIG.companyLogoSrc}
+                alt={`${RECEIPT_CONFIG.companyName} ${RECEIPT_CONFIG.companyNameAccent}`}
+                style={{ height: "46px", width: "auto", display: "block" }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                  const fb = e.currentTarget.nextElementSibling as HTMLElement | null;
+                  if (fb) fb.style.display = "flex";
+                }}
+              />
+            ) : null}
+            <div style={{ display: RECEIPT_CONFIG.companyLogoSrc ? "none" : "flex", alignItems: "center", gap: "10px" }}>
+              <FloriaMark />
+              <div style={{ lineHeight: 1 }}>
+                <div style={{ fontSize: "24px", fontWeight: 800, letterSpacing: "1px", color: "#1f2937" }}>
+                  {RECEIPT_CONFIG.companyName}
+                </div>
+                <div style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "6px", color: "#6b7280", marginTop: "2px" }}>
+                  {RECEIPT_CONFIG.companyNameAccent}
+                </div>
               </div>
             </div>
           </div>
@@ -241,9 +255,23 @@ export default function ApplicationForm({ data = {} }: { data?: ApplicationFormD
             <div style={{ fontSize: "9.5px", color: "#6b7280", letterSpacing: "1px" }}>
               {RECEIPT_CONFIG.projectByLabel}
             </div>
-            <SevenVenturesMark />
-            <div style={{ fontSize: "10px", color: "#3f3f46", letterSpacing: "1px", fontWeight: 600 }}>
-              {RECEIPT_CONFIG.developerName}
+            {RECEIPT_CONFIG.developerLogoSrc ? (
+              <img
+                src={RECEIPT_CONFIG.developerLogoSrc}
+                alt={RECEIPT_CONFIG.developerName}
+                style={{ height: "34px", width: "auto", display: "block", marginTop: "2px" }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                  const fb = e.currentTarget.nextElementSibling as HTMLElement | null;
+                  if (fb) fb.style.display = "flex";
+                }}
+              />
+            ) : null}
+            <div style={{ display: RECEIPT_CONFIG.developerLogoSrc ? "none" : "flex", flexDirection: "column", alignItems: "flex-end" }}>
+              <SevenVenturesMark />
+              <div style={{ fontSize: "10px", color: "#3f3f46", letterSpacing: "1px", fontWeight: 600 }}>
+                {RECEIPT_CONFIG.developerName}
+              </div>
             </div>
           </div>
         </div>
