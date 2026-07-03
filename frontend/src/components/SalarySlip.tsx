@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
+import { ReceiptBrandHeader } from "./BrandLogos.tsx";
 
 export interface SalarySlipData {
   employeeName: string;
@@ -164,18 +165,7 @@ export default function SalarySlip({ data, editable, onAmountChange, onDateChang
         border: "1px solid #e5e7eb",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", paddingBottom: "10px" }}>
-        <div>
-          <div style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "1px", lineHeight: 1 }}>
-            {RECEIPT_CONFIG.companyName}{" "}
-            <span style={{ fontWeight: 400, letterSpacing: "4px" }}>{RECEIPT_CONFIG.companyNameAccent}</span>
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: "10px", color: "#6b7280", letterSpacing: "1px" }}>{RECEIPT_CONFIG.projectByLabel}</div>
-          <div style={{ fontSize: "16px", fontWeight: 700 }}>{RECEIPT_CONFIG.developerName}</div>
-        </div>
-      </div>
+      <ReceiptBrandHeader />
 
       <div
         style={{

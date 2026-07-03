@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
+import { CompanyLogo, DeveloperLogo } from "./BrandLogos.tsx";
 
 /** All values that can appear on the printed Application Form. Every field is optional
  *  so the same component renders a blank form (for hand-filling) or a filled one. */
@@ -168,37 +169,6 @@ function Row({ children, gap = 14 }: { children: React.ReactNode; gap?: number }
   return <div style={{ display: "flex", gap: `${gap}px`, marginBottom: "10px" }}>{children}</div>;
 }
 
-/** Floria Heights skyline mark (vector recreation of the logo). */
-function FloriaMark() {
-  return (
-    <svg width="46" height="48" viewBox="0 0 46 48" fill="none" aria-hidden>
-      <rect x="2" y="14" width="9" height="32" fill="#2b2b2b" />
-      <rect x="13" y="6" width="11" height="40" fill="#1f1f1f" />
-      <rect x="26" y="18" width="9" height="28" fill="#2b2b2b" />
-      {/* window lines */}
-      {[20, 26, 32, 38].map((y) => (
-        <line key={`a${y}`} x1="14.5" y1={y} x2="22.5" y2={y} stroke="#fff" strokeWidth="1" />
-      ))}
-      {[24, 30, 36, 42].map((y) => (
-        <line key={`b${y}`} x1="3.5" y1={y} x2="9.5" y2={y} stroke="#fff" strokeWidth="0.8" />
-      ))}
-      {[26, 32, 38].map((y) => (
-        <line key={`c${y}`} x1="27.5" y1={y} x2="33.5" y2={y} stroke="#fff" strokeWidth="0.8" />
-      ))}
-    </svg>
-  );
-}
-
-/** Seven Ventures "7V" monogram (vector recreation). */
-function SevenVenturesMark() {
-  return (
-    <svg width="38" height="34" viewBox="0 0 38 34" fill="none" aria-hidden>
-      <path d="M5 4 H33 L31 9 H10 L22 33" stroke="#2b2b2b" strokeWidth="2.4" fill="none" strokeLinejoin="round" />
-      <path d="M14 12 L22 28 L30 12" stroke={MAROON} strokeWidth="2.2" fill="none" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 export default function ApplicationForm({ data = {} }: { data?: ApplicationFormData }) {
   return (
     <div
@@ -220,29 +190,7 @@ export default function ApplicationForm({ data = {} }: { data?: ApplicationFormD
         {/* ── Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
-            {RECEIPT_CONFIG.companyLogoSrc ? (
-              <img
-                src={RECEIPT_CONFIG.companyLogoSrc}
-                alt={`${RECEIPT_CONFIG.companyName} ${RECEIPT_CONFIG.companyNameAccent}`}
-                style={{ height: "46px", width: "auto", display: "block" }}
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                  const fb = e.currentTarget.nextElementSibling as HTMLElement | null;
-                  if (fb) fb.style.display = "flex";
-                }}
-              />
-            ) : null}
-            <div style={{ display: RECEIPT_CONFIG.companyLogoSrc ? "none" : "flex", alignItems: "center", gap: "10px" }}>
-              <FloriaMark />
-              <div style={{ lineHeight: 1 }}>
-                <div style={{ fontSize: "24px", fontWeight: 800, letterSpacing: "1px", color: "#1f2937" }}>
-                  {RECEIPT_CONFIG.companyName}
-                </div>
-                <div style={{ fontSize: "11px", fontWeight: 500, letterSpacing: "6px", color: "#6b7280", marginTop: "2px" }}>
-                  {RECEIPT_CONFIG.companyNameAccent}
-                </div>
-              </div>
-            </div>
+            <CompanyLogo height={46} fallbackStyle={{ fontSize: "24px" }} />
           </div>
 
           <div style={{ flex: 1.5, textAlign: "center" }}>
@@ -255,24 +203,7 @@ export default function ApplicationForm({ data = {} }: { data?: ApplicationFormD
             <div style={{ fontSize: "9.5px", color: "#6b7280", letterSpacing: "1px" }}>
               {RECEIPT_CONFIG.projectByLabel}
             </div>
-            {RECEIPT_CONFIG.developerLogoSrc ? (
-              <img
-                src={RECEIPT_CONFIG.developerLogoSrc}
-                alt={RECEIPT_CONFIG.developerName}
-                style={{ height: "34px", width: "auto", display: "block", marginTop: "2px" }}
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                  const fb = e.currentTarget.nextElementSibling as HTMLElement | null;
-                  if (fb) fb.style.display = "flex";
-                }}
-              />
-            ) : null}
-            <div style={{ display: RECEIPT_CONFIG.developerLogoSrc ? "none" : "flex", flexDirection: "column", alignItems: "flex-end" }}>
-              <SevenVenturesMark />
-              <div style={{ fontSize: "10px", color: "#3f3f46", letterSpacing: "1px", fontWeight: 600 }}>
-                {RECEIPT_CONFIG.developerName}
-              </div>
-            </div>
+            <DeveloperLogo height={34} fallbackStyle={{ fontSize: "10px", color: "#3f3f46", letterSpacing: "1px" }} />
           </div>
         </div>
 

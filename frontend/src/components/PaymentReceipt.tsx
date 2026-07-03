@@ -1,5 +1,6 @@
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
+import { ReceiptBrandHeader } from "./BrandLogos.tsx";
 
 export interface PaymentReceiptData {
   paymentId: number;
@@ -124,52 +125,7 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
       }}
     >
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "10px" }}>
-        <div>
-          {RECEIPT_CONFIG.companyLogoSrc ? (
-            <img
-              src={RECEIPT_CONFIG.companyLogoSrc}
-              alt={`${RECEIPT_CONFIG.companyName} ${RECEIPT_CONFIG.companyNameAccent}`}
-              style={{ height: "56px", width: "auto", display: "block" }}
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-                const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
-                if (fallback) fallback.style.display = "block";
-              }}
-            />
-          ) : null}
-          <div
-            style={{
-              fontSize: "30px",
-              fontWeight: 800,
-              letterSpacing: "1px",
-              lineHeight: 1,
-              display: RECEIPT_CONFIG.companyLogoSrc ? "none" : "block",
-            }}
-          >
-            {RECEIPT_CONFIG.companyName}{" "}
-            <span style={{ fontWeight: 400, letterSpacing: "4px" }}>{RECEIPT_CONFIG.companyNameAccent}</span>
-          </div>
-        </div>
-        <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "2px" }}>
-          <div style={{ fontSize: "10px", color: "#6b7280", letterSpacing: "1px" }}>{RECEIPT_CONFIG.projectByLabel}</div>
-          {RECEIPT_CONFIG.developerLogoSrc ? (
-            <img
-              src={RECEIPT_CONFIG.developerLogoSrc}
-              alt={RECEIPT_CONFIG.developerName}
-              style={{ height: "40px", width: "auto", display: "block" }}
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-                const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
-                if (fallback) fallback.style.display = "block";
-              }}
-            />
-          ) : null}
-          <div style={{ fontSize: "16px", fontWeight: 700, display: RECEIPT_CONFIG.developerLogoSrc ? "none" : "block" }}>
-            {RECEIPT_CONFIG.developerName}
-          </div>
-        </div>
-      </div>
+      <ReceiptBrandHeader />
 
       {/* Title */}
       <div

@@ -2147,8 +2147,10 @@ h1, h2, h3, h4, h5, h6 {
   .no-print {
     display: none !important;
   }
+  /* margin:0 removes the browser's auto date/title/URL header & footer.
+     Each receipt supplies its own inner padding for print margins. */
   @page {
     size: A4;
-    margin: 12mm;
+    margin: 0;
   }
 }
