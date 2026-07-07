@@ -4,6 +4,7 @@ import { api, refreshAccessToken, setAccessToken } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
 import SiteLogo from "./components/SiteLogo.tsx";
+import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
 import Button from "./lib/Button.tsx";
 
 const AboutPage = lazy(() => import("./pages/AboutPage.tsx"));
@@ -100,6 +101,7 @@ function App() {
   };
 
   return (
+    <ProjectsProvider>
     <div className="flex min-h-screen flex-col">
       {/* ─── Navbar ─── */}
       <header className="site-header sticky top-0 z-50 border-b border-[var(--nav-border)] bg-[var(--nav-bg)] shadow-md transition-all duration-300">
@@ -274,6 +276,7 @@ function App() {
         />
       )}
     </div>
+    </ProjectsProvider>
   );
 }
 

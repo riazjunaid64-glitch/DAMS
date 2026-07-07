@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../api/api.ts";
+import { api, resolveMediaUrl } from "../api/api.ts";
 import { parseProjectRow } from "../utils/parseProject.ts";
 import { parseUnitsPayload } from "../utils/parseUnit.ts";
 import { getProjectMedia } from "../api/media.ts";
@@ -87,9 +87,9 @@ export default function ProjectDetailPage({ user }: Props) {
     load();
   }, [projectId]);
 
-  // Lazy-load media only when media tab is active
+  // Load media once the project is available — the overview gallery and media tab both need it.
   useEffect(() => {
-    if (activeTab !== "media" || !projectId || Number.isNaN(projectId) || media.length > 0) return;
+    if (!projectId || Number.isNaN(projectId)) return;
     const loadMedia = async () => {
       setMediaLoading(true);
       try { setMedia(await getProjectMedia(projectId)); }
@@ -97,7 +97,7 @@ export default function ProjectDetailPage({ user }: Props) {
       finally { setMediaLoading(false); }
     };
     loadMedia();
-  }, [activeTab, media.length, projectId]);
+  }, [projectId]);
 
   const unitStats = useMemo(() => {
     const s = { available: 0, sold: 0, reserved: 0 };
@@ -110,9 +110,13 @@ export default function ProjectDetailPage({ user }: Props) {
     return s;
   }, [units]);
 
-  const coverImage = useMemo(() => {
-    const cover = media.find((m) => m.isCover);
-    return cover?.mediaUrl ?? (media.length > 0 ? media[0].mediaUrl : null);
+  // Ordered list of image URLs for the overview gallery: cover first, then by displayOrder. Videos/documents excluded.
+  const galleryImages = useMemo(() => {
+    return media
+      .filter((m) => m.mediaType !== "video" && m.category !== 4 && m.category !== 8)
+      .slice()
+      .sort((a, b) => Number(b.isCover) - Number(a.isCover) || a.displayOrder - b.displayOrder)
+      .map((m) => resolveMediaUrl(m.mediaUrl));
   }, [media]);
 
   const statusNum = project ? getStatusNum(project.status) : 1;
@@ -195,7 +199,7 @@ export default function ProjectDetailPage({ user }: Props) {
               project={project}
               totalUnits={units.length}
               unitStats={unitStats}
-              coverImage={coverImage}
+              galleryImages={galleryImages}
               activeUnitStatus={unitStatusFilter}
               onUnitStatusSelect={(status) => {
                 setUnitStatusFilter(status);

@@ -16,6 +16,12 @@ namespace DAMS.Application.Interfaces
 
         Task<BookingRequestResponseDto> RejectBookingRequestAsync(int bookingRequestId, int adminUserId, string? rejectionReason);
 
+        /// <summary>
+        /// The requesting customer withdraws their own pending request, releasing
+        /// the unit back to the market.
+        /// </summary>
+        Task<BookingRequestResponseDto> CancelBookingRequestAsync(int bookingRequestId, int userId);
+
         Task<bool> HasPendingRequestForUnitAsync(int unitId);
 
         Task<Dictionary<string, int>> GetBookingRequestStatsAsync();

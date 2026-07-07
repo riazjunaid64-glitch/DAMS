@@ -1,16 +1,9 @@
 import { Link } from "react-router-dom";
 import { resolveMediaUrl } from "../api/api.ts";
 import type { ProjectFromApi } from "../utils/parseProject.ts";
+import { PUBLIC_STATUS_LABELS, getStatusNum } from "../utils/projectStatus.ts";
 
 const DEFAULT_COVER = "/images/home-hero-bg.jpg";
-
-const statusLabels: Record<number, string> = {
-  1: "Planning",
-  2: "Available",
-  3: "Completed",
-  4: "Cancelled",
-  5: "Archived",
-};
 
 type ProjectCardProps = {
   project: ProjectFromApi;
@@ -19,8 +12,8 @@ type ProjectCardProps = {
 };
 
 export default function ProjectCard({ project, onEdit, showAdminActions = false }: ProjectCardProps) {
-  const statusNum = typeof project.status === "number" ? project.status : 1;
-  const statusText = statusLabels[statusNum] ?? "Unknown";
+  const statusNum = getStatusNum(project.status);
+  const statusText = PUBLIC_STATUS_LABELS[statusNum] ?? "Unknown";
   const badge = (project.category || "Mixed Use").toUpperCase();
   const coverSrc = project.coverImageUrl
     ? resolveMediaUrl(project.coverImageUrl)

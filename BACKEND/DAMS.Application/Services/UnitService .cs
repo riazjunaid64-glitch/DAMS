@@ -100,6 +100,18 @@ namespace DAMS.Application.Services
         if (!Enum.TryParse<UnitStatus>(dto.Status, true, out var parsedStatus))
             throw new Exception("Invalid unit status provided.");
 
+        // While a unit has an active booking its status is workflow-managed; editing it
+        // here (e.g. back to Available) would allow a second booking on the same unit.
+        if (parsedStatus != unit.Status)
+        {
+            var hasActiveBooking = await _context.Bookings
+                .AnyAsync(b => b.UnitId == id && b.Status != BookingStatus.Cancelled);
+
+            if (hasActiveBooking)
+                throw new Exception(
+                    "This unit has an active booking, so its status is managed by the booking workflow and cannot be changed here. Cancel or complete the booking instead.");
+        }
+
         unit.Status = parsedStatus;
         unit.UpdatedAt = DateTime.UtcNow;
 
@@ -114,6 +126,12 @@ namespace DAMS.Application.Services
 
         if (unit == null)
             throw new Exception("Unit not found");
+
+        // The Booking->Unit FK is Restrict; without this check the delete surfaces as
+        // an unhandled database error instead of a friendly message.
+        var hasBookings = await _context.Bookings.AnyAsync(b => b.UnitId == id);
+        if (hasBookings)
+            throw new Exception("This unit has bookings and cannot be deleted.");
 
         _context.Units.Remove(unit);
         await _context.SaveChangesAsync();

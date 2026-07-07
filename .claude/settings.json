@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls DAMS.Api/wwwroot)",
+      "Bash(find . -type d -name \"uploads\")",
+      "WebFetch(domain:thedeenassociates.com)",
+      "WebFetch(domain:www.floriaheights.com.pk)",
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"const b=require\\('bcryptjs'\\);const h=b.hashSync\\('1234',11\\);console.log\\(h\\);console.log\\('verify:',b.compareSync\\('1234',h\\)\\)\")",
+      "Bash(dotnet ef *)"
+    ]
+  }
+}

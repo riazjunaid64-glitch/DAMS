@@ -155,21 +155,36 @@ namespace DAMS.Application.Services
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
             Customer? existing = null;
+            var matchedByStrongIdentifier = false;
 
             if (normalizedCnic != null)
+            {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.CNIC == normalizedCnic);
+                matchedByStrongIdentifier = existing != null;
+            }
 
             if (existing == null)
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Phone == normalizedPhone);
 
             if (existing == null && normalizedEmail != null)
+            {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Email == normalizedEmail);
+                matchedByStrongIdentifier = existing != null;
+            }
 
             if (existing != null)
             {
+                // A blocked customer must not silently re-enter the pipeline through
+                // "new customer" details that match their record.
+                if (existing.Status == CustomerStatus.Blocked)
+                    throw new InvalidOperationException(
+                        "These details match a blocked customer. The booking cannot proceed.");
+
                 // Link this customer to the login account if it isn't already, so their
                 // bookings surface under "My Projects" regardless of the email they typed.
-                if (linkUserId.HasValue && existing.UserId == null)
+                // Only link on a CNIC or email match — a phone-only match (shared family
+                // number, typo) must not expose another person's bookings to this login.
+                if (linkUserId.HasValue && existing.UserId == null && matchedByStrongIdentifier)
                 {
                     existing.UserId = linkUserId.Value;
                     existing.UpdatedAt = DateTime.UtcNow;
@@ -204,9 +219,13 @@ namespace DAMS.Application.Services
             return customer.Id;
         }
 
+        // "0300-1234567", "0300 1234567" and "03001234567" must all match the same
+        // customer, so strip everything except digits (and a leading +).
         private static string NormalizePhone(string phone)
         {
-            return phone.Trim();
+            var trimmed = phone.Trim();
+            var digits = new string(trimmed.Where(char.IsDigit).ToArray());
+            return trimmed.StartsWith('+') ? "+" + digits : digits;
         }
 
         private static CustomerResponseDto Map(Customer c, int bookingsCount)

@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -301,7 +302,9 @@ namespace DAMS.Application.Services
         // ── Filtered base queries (shared by summary totals and paged rows) ──
         private IQueryable<Payment> PaymentsQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive)
         {
-            var q = _context.Payments.AsNoTracking().Where(p => p.Booking.Status != BookingStatus.Cancelled);
+            // Payments on cancelled bookings stay in revenue: the money was really
+            // received, and cancelling a booking must not rewrite finance history.
+            var q = _context.Payments.AsNoTracking().AsQueryable();
             if (projectId.HasValue) q = q.Where(p => p.Booking.Unit.ProjectId == projectId.Value);
             if (fromValue.HasValue) q = q.Where(p => p.PaidAt >= fromValue.Value);
             if (toExclusive.HasValue) q = q.Where(p => p.PaidAt < toExclusive.Value);
@@ -335,7 +338,7 @@ namespace DAMS.Application.Services
 
         private IQueryable<Installment> OverdueInstallments(int? projectId)
         {
-            var today = DateTime.UtcNow.Date;
+            var today = PakistanTime.Today;
             var q = _context.Installments.AsNoTracking()
                 .Where(i => i.DueDate < today
                     && i.Status != InstallmentStatus.Paid

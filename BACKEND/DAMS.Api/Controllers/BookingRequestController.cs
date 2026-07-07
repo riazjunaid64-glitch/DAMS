@@ -133,6 +133,26 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Customer withdraws their own pending request; the unit returns to the market.
+        [HttpPost("{id:int}/cancel")]
+        [Authorize]
+        public async Task<IActionResult> CancelBookingRequest([FromRoute] int id)
+        {
+            var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out var userId))
+                return Unauthorized();
+
+            try
+            {
+                var result = await _bookingRequestService.CancelBookingRequestAsync(id, userId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpGet("stats")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetStats()

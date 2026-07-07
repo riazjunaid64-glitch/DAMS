@@ -3,6 +3,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
@@ -65,12 +66,28 @@ namespace DAMS.Application.Services
             }
 
             var agreedSalePrice = dto.AgreedSalePrice ?? unit.Price;
+            if (agreedSalePrice <= 0m)
+                throw new InvalidOperationException("Agreed sale price must be greater than zero.");
+
             var discountPercent = dto.DiscountPercent ?? 0m;
             if (discountPercent < 0m || discountPercent > 100m)
                 throw new InvalidOperationException("Discount percent must be between 0 and 100.");
             var discount = Math.Round(agreedSalePrice * discountPercent / 100m, 2, MidpointRounding.AwayFromZero);
             var netSalePrice = agreedSalePrice - discount;
+
             var bookingAmountRequired = dto.BookingAmountRequired ?? 0m;
+            if (bookingAmountRequired < 0m)
+                throw new InvalidOperationException("Booking amount required cannot be negative.");
+            if (bookingAmountRequired > netSalePrice)
+                throw new InvalidOperationException("Booking amount required cannot exceed the discounted sale price.");
+
+            var applicationAmountReceived = dto.ApplicationAmountReceived ?? 0m;
+            if (applicationAmountReceived < 0m)
+                throw new InvalidOperationException("Application amount received cannot be negative.");
+            if (applicationAmountReceived > 0m && bookingAmountRequired <= 0m)
+                throw new InvalidOperationException("Set a booking amount required before recording an amount received with the application.");
+            if (applicationAmountReceived > bookingAmountRequired)
+                throw new InvalidOperationException("Application amount received cannot exceed the booking amount required.");
 
             var booking = new Booking
             {
@@ -113,7 +130,43 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
             await PersistNewBookingAsync(booking, unit);
+
+            // Money collected with the application form is a real booking-amount payment —
+            // otherwise it never reaches Finance revenue, receipts, or booking progress.
+            if (applicationAmountReceived > 0m)
+            {
+                var payment = new Payment
+                {
+                    BookingId = booking.Id,
+                    InstallmentId = null,
+                    Type = PaymentType.BookingAmount,
+                    Amount = applicationAmountReceived,
+                    PaymentMethod = ParseApplicationPaymentMethod(dto.ApplicationPaymentType),
+                    PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
+                    Notes = "Received with the application form.",
+                    RecordedByUserId = adminUserId,
+                    PaidAt = dto.ApplicationDate ?? DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.Payments.Add(payment);
+
+                booking.BookingAmountReceived = applicationAmountReceived;
+                if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+                {
+                    booking.Status = BookingStatus.PaymentPlanActive;
+                    booking.BookingAmountConfirmedDate = DateTime.UtcNow;
+                    booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                    unit.Status = UnitStatus.OnPaymentPlan;
+                    unit.UpdatedAt = DateTime.UtcNow;
+                }
+
+                await SaveWithUniqueReceiptNumberAsync(payment);
+            }
+
+            await transaction.CommitAsync();
 
             return await GetResponseAsync(booking.Id);
         }
@@ -148,7 +201,9 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            await using var transaction = await _context.Database.BeginTransactionAsync();
             await PersistNewBookingAsync(booking, unit);
+            await transaction.CommitAsync();
 
             return await GetResponseAsync(booking.Id);
         }
@@ -226,7 +281,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("A booking that reached possession or completion cannot be cancelled here.");
 
             booking.Status = BookingStatus.Cancelled;
-            booking.InternalNotes = AppendNote(booking.InternalNotes, reason, adminUserId);
+            booking.InternalNotes = AppendNote(booking.InternalNotes,
+                $"Cancelled by user {adminUserId}" +
+                (string.IsNullOrWhiteSpace(reason) ? "." : $": {reason.Trim()}"));
             booking.UpdatedAt = DateTime.UtcNow;
 
             // Release the unit back to the market.
@@ -331,7 +388,6 @@ namespace DAMS.Application.Services
                 PaymentMethod = dto.PaymentMethod,
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
-                ReceiptNumber = await GenerateReceiptNumberAsync(),
                 RecordedByUserId = adminUserId,
                 PaidAt = dto.PaidAt ?? DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow
@@ -352,6 +408,61 @@ namespace DAMS.Application.Services
                 booking.Unit.Status = UnitStatus.OnPaymentPlan;
                 booking.Unit.UpdatedAt = DateTime.UtcNow;
             }
+
+            await SaveWithUniqueReceiptNumberAsync(payment);
+
+            return await GetResponseAsync(booking.Id);
+        }
+
+        public async Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId)
+        {
+            var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
+
+            if (booking == null)
+                throw new InvalidOperationException("Booking not found.");
+
+            if (booking.Status != BookingStatus.PaymentPlanActive)
+                throw new InvalidOperationException("Possession can only be given while the payment plan is active.");
+
+            booking.Status = BookingStatus.PossessionGiven;
+            booking.PossessionDate = possessionDate ?? DateTime.UtcNow;
+            booking.InternalNotes = AppendNote(booking.InternalNotes,
+                $"Possession given by user {adminUserId}.");
+            booking.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return await GetResponseAsync(booking.Id);
+        }
+
+        public async Task<BookingResponseDto> CompleteSaleAsync(int id, int adminUserId)
+        {
+            var booking = await _context.Bookings
+                .Include(b => b.Unit)
+                .Include(b => b.Installments)
+                .FirstOrDefaultAsync(b => b.Id == id);
+
+            if (booking == null)
+                throw new InvalidOperationException("Booking not found.");
+
+            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
+                throw new InvalidOperationException("Only an active or possession-given booking can be completed.");
+
+            if (booking.BookingAmountReceived < booking.BookingAmountRequired)
+                throw new InvalidOperationException("Booking amount has not been fully received yet.");
+
+            var unpaidInstallments = booking.Installments.Count(i => i.Status != InstallmentStatus.Paid);
+            if (unpaidInstallments > 0)
+                throw new InvalidOperationException($"{unpaidInstallments} installment(s) are still unpaid.");
+
+            booking.Status = BookingStatus.SaleCompleted;
+            booking.CompletionDate = DateTime.UtcNow;
+            booking.InternalNotes = AppendNote(booking.InternalNotes,
+                $"Sale completed by user {adminUserId}.");
+            booking.UpdatedAt = DateTime.UtcNow;
+
+            booking.Unit.Status = UnitStatus.Sold;
+            booking.Unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
 
@@ -457,8 +568,14 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("This unit already has an active booking.");
         }
 
+        // Callers must wrap this in a transaction: the reference depends on the generated
+        // id, so the row is saved twice, and a failure in between must roll back both.
         private async Task PersistNewBookingAsync(Booking booking, Unit unit)
         {
+            // Unique placeholder so concurrent creates never collide on the unique
+            // BookingReference index before the id-based reference is known.
+            booking.BookingReference = $"BK-PENDING-{Guid.NewGuid():N}";
+
             _context.Bookings.Add(booking);
 
             unit.Status = UnitStatus.Reserved;
@@ -627,7 +744,7 @@ namespace DAMS.Application.Services
                 return (0m, 0m, false);
 
             var paidByInstallment = (b.Payments ?? new List<Payment>())
-                .Where(p => p.InstallmentId.HasValue)
+                .Where(p => p.InstallmentId.HasValue && p.Type == PaymentType.Installment)
                 .GroupBy(p => p.InstallmentId!.Value)
                 .ToDictionary(g => g.Key, g => g.Sum(p => p.Amount));
 
@@ -665,11 +782,46 @@ namespace DAMS.Application.Services
             return $"RCP-{(max + 1):D6}";
         }
 
-        private static string AppendNote(string? existing, string? reason, int adminUserId)
+        private static string AppendNote(string? existing, string note)
         {
-            var entry = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC] Cancelled by user {adminUserId}" +
-                        (string.IsNullOrWhiteSpace(reason) ? "." : $": {reason.Trim()}");
+            var entry = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC] {note}";
             return string.IsNullOrWhiteSpace(existing) ? entry : $"{existing}\n{entry}";
+        }
+
+        private static PaymentMethod ParseApplicationPaymentMethod(string? applicationPaymentType)
+        {
+            if (string.IsNullOrWhiteSpace(applicationPaymentType))
+                return PaymentMethod.Cash;
+
+            var compact = applicationPaymentType.Replace(" ", "").Replace("-", "");
+            return Enum.TryParse<PaymentMethod>(compact, true, out var method) ? method : PaymentMethod.Cash;
+        }
+
+        // Receipt numbers are read-max-then-insert; two concurrent payments can pick the
+        // same number and the unique index rejects the loser with a raw 500. Retry the
+        // save with a freshly generated number instead.
+        private async Task SaveWithUniqueReceiptNumberAsync(Payment payment)
+        {
+            const int maxAttempts = 5;
+            for (var attempt = 1; ; attempt++)
+            {
+                payment.ReceiptNumber = await GenerateReceiptNumberAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    return;
+                }
+                catch (DbUpdateException ex) when (attempt < maxAttempts && IsReceiptNumberCollision(ex))
+                {
+                    // Another payment claimed this number between read and insert; retry.
+                }
+            }
+        }
+
+        private static bool IsReceiptNumberCollision(DbUpdateException ex)
+        {
+            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("ReceiptNumber", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

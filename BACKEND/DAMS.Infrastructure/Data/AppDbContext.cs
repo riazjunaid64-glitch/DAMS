@@ -225,6 +225,12 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(b => b.BookingReference).IsUnique();
                 entity.HasIndex(b => b.CustomerId);
                 entity.HasIndex(b => b.UnitId);
+                // At most one non-cancelled booking per unit, enforced by the database so
+                // two concurrent creates cannot both pass the app-level check. The named
+                // overload keeps this separate from the plain UnitId index above.
+                entity.HasIndex(b => b.UnitId, "IX_Bookings_UnitId_Active")
+                      .IsUnique()
+                      .HasFilter($"[Status] <> {(int)BookingStatus.Cancelled}");
                 entity.HasIndex(b => b.Status);
                 // Bookings list pages order by BookingDate (often within a Status filter); these
                 // indexes let SQL Server serve the sorted page from the index instead of sorting.
@@ -332,7 +338,8 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.ProjectName).HasMaxLength(200);
                 entity.Property(s => s.Notes).HasMaxLength(500);
                 entity.HasIndex(s => s.EmployeeId);
-                entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth });
+                // Unique so a double-click cannot record the same month twice.
+                entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth }).IsUnique();
                 entity.HasOne(s => s.Employee)
                       .WithMany(e => e.Salaries)
                       .HasForeignKey(s => s.EmployeeId)

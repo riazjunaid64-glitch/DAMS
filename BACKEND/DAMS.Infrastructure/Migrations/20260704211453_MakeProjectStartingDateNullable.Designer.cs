@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260704211453_MakeProjectStartingDateNullable")]
+    partial class MakeProjectStartingDateNullable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -203,13 +206,12 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status");
 
-                    b.HasIndex("UnitId");
+                    b.HasIndex("UnitId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Bookings_UnitId_Active")
+                        .HasFilter("[Status] <> 4");
 
                     b.HasIndex("Status", "BookingDate");
-
-                    b.HasIndex(new[] { "UnitId" }, "IX_Bookings_UnitId_Active")
-                        .IsUnique()
-                        .HasFilter("[Status] <> 4");
 
                     b.ToTable("Bookings");
                 });

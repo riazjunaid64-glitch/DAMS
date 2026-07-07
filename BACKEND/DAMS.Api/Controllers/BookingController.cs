@@ -93,6 +93,38 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Mark possession as handed over (payment plan must be active).
+        [HttpPost("{id:int}/possession")]
+        public async Task<IActionResult> GivePossession(int id, [FromBody] GivePossessionDto? dto)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _bookingService.GivePossessionAsync(id, dto?.PossessionDate, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Complete the sale once everything is paid; moves the unit to Sold.
+        [HttpPost("{id:int}/complete")]
+        public async Task<IActionResult> CompleteSale(int id)
+        {
+            try
+            {
+                var adminUserId = GetUserId();
+                var result = await _bookingService.CompleteSaleAsync(id, adminUserId);
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         // Set negotiated terms (sale price, discount, booking amount required) before taking payments.
         [HttpPut("{id:int}/financials")]
         public async Task<IActionResult> UpdateFinancials(int id, [FromBody] UpdateBookingFinancialsDto dto)

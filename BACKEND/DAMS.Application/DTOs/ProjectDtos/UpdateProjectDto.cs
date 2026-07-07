@@ -12,7 +12,7 @@ namespace DAMS.Application.DTOs.ProjectDtos
 
         public string? Description { get; set; }
 
-        public DateTime StartingDate { get; set; }
+        public DateTime? StartingDate { get; set; }
 
         public DateTime? ExpectedCompletionDate { get; set; }
 

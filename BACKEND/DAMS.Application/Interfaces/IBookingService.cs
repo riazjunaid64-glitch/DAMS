@@ -34,6 +34,15 @@ namespace DAMS.Application.Interfaces
         /// </summary>
         Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId);
 
+        /// <summary>Marks possession as handed over on an active payment plan.</summary>
+        Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId);
+
+        /// <summary>
+        /// Completes the sale once the booking amount and every installment are fully
+        /// paid. Moves the unit to Sold.
+        /// </summary>
+        Task<BookingResponseDto> CompleteSaleAsync(int id, int adminUserId);
+
         Task<List<BookingPaymentDto>> GetBookingPaymentsAsync(int bookingId);
 
         /// <summary>

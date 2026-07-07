@@ -56,20 +56,28 @@ export function amountInWords(amount: number, currency = "Rupees"): string {
 
   const negative = amount < 0;
   const abs = Math.abs(amount);
-  const rupees = Math.floor(abs);
-  const paisa = Math.round((abs - rupees) * 100);
+  let rupees = Math.floor(abs);
+  let paisa = Math.round((abs - rupees) * 100);
+
+  // Rounding can carry paisa to a full rupee (e.g. 5.999 -> 100 paisa).
+  if (paisa === 100) {
+    rupees += 1;
+    paisa = 0;
+  }
 
   let words = "";
 
   if (rupees === 0) {
     words = "Zero";
   } else {
-    const crore = Math.floor(rupees / 10000000);
+    const arab = Math.floor(rupees / 1000000000);
+    const crore = Math.floor((rupees % 1000000000) / 10000000);
     const lac = Math.floor((rupees % 10000000) / 100000);
     const thousand = Math.floor((rupees % 100000) / 1000);
     const hundredsBlock = rupees % 1000;
 
     const parts: string[] = [];
+    if (arab) parts.push(twoOrThreeDigitsToWords(arab) + " Arab");
     if (crore) parts.push(twoOrThreeDigitsToWords(crore) + " Crore");
     if (lac) parts.push(twoOrThreeDigitsToWords(lac) + " Lac");
     if (thousand) parts.push(twoOrThreeDigitsToWords(thousand) + " Thousand");

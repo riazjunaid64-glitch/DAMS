@@ -39,7 +39,7 @@ interface MyRequest {
   unitPrice: number;
   projectName: string;
   projectLocation: string;
-  status: "Pending" | "Approved" | "Rejected";
+  status: "Pending" | "Approved" | "Rejected" | "Cancelled";
   requestedAt: string;
   reviewedAt: string | null;
   rejectionReason: string | null;
@@ -95,7 +95,8 @@ function formatDate(iso: string) {
 
 function requestToJourney(r: MyRequest): JourneyItem | null {
   // Approved requests already surface as confirmed bookings — avoid duplicates.
-  if (r.status === "Approved") return null;
+  // Requests the customer cancelled themselves are not shown either.
+  if (r.status === "Approved" || r.status === "Cancelled") return null;
 
   if (r.status === "Rejected") {
     return {
@@ -267,7 +268,26 @@ function CardShell({ item, children, to }: { item: JourneyItem; children: React.
   return <div className={base}>{inner}</div>;
 }
 
-function PendingCard({ item }: { item: JourneyItem }) {
+function PendingCard({ item, onCancelled }: { item: JourneyItem; onCancelled: () => void }) {
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  const handleCancel = async () => {
+    if (!item.request) return;
+    if (!window.confirm("Withdraw this booking request? The unit will become available to other buyers.")) return;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      const res = await api(`/api/BookingRequest/${item.request.id}/cancel`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Failed to cancel the request.");
+      onCancelled();
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : "Failed to cancel the request.");
+      setCancelling(false);
+    }
+  };
+
   return (
     <CardShell item={item}>
       <div className="mb-5 grid grid-cols-2 gap-3 text-sm">
@@ -285,13 +305,20 @@ function PendingCard({ item }: { item: JourneyItem }) {
         <JourneyStepper currentStep={item.currentStep} />
       </div>
 
-      <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3.5 py-3">
+      <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3.5 py-3">
         <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-amber-400 animate-pulse" />
         <p className="text-xs leading-relaxed text-amber-200/90">
           Your request has been received and is being reviewed by our team. We&apos;ll notify you as soon as it&apos;s
           approved, and your booking details will appear here.
         </p>
       </div>
+
+      {cancelError && (
+        <p className="mb-3 text-xs text-rose-400">{cancelError}</p>
+      )}
+      <Button variant="outline" size="sm" onClick={handleCancel} disabled={cancelling}>
+        {cancelling ? "Withdrawing..." : "Withdraw Request"}
+      </Button>
     </CardShell>
   );
 }
@@ -431,6 +458,7 @@ export default function MyProjectsPage({ user }: Props) {
   const [items, setItems] = useState<JourneyItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const isClient = user && user.role !== "Admin";
 
@@ -477,7 +505,7 @@ export default function MyProjectsPage({ user }: Props) {
       }
     };
     load();
-  }, [isClient]);
+  }, [isClient, reloadKey]);
 
   if (user?.role === "Admin") return null;
 
@@ -578,7 +606,7 @@ export default function MyProjectsPage({ user }: Props) {
             {items.map((item) => {
               if (item.kind === "booking" && !item.declined) return <BookingCard key={item.key} item={item} />;
               if (item.declined) return <DeclinedCard key={item.key} item={item} />;
-              return <PendingCard key={item.key} item={item} />;
+              return <PendingCard key={item.key} item={item} onCancelled={() => setReloadKey((k) => k + 1)} />;
             })}
           </div>
         )}

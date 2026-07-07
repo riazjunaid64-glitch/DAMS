@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import { resolveMediaUrl } from "../../api/api.ts";
+import { useRef, useState } from "react";
+import { ADMIN_STATUS_LABELS, getStatusNum } from "../../utils/projectStatus.ts";
 
 interface Project {
   id: number;
@@ -15,25 +15,10 @@ interface Props {
   project: Project;
   totalUnits: number;
   unitStats: { available: number; sold: number; reserved: number };
-  coverImage?: string | null;
+  galleryImages?: string[];
   activeUnitStatus?: string;
   onUnitStatusSelect?: (status: string) => void;
 }
-
-const statusLabels: Record<number, string> = { 1: "Planning", 2: "Ongoing", 3: "Completed", 4: "Cancelled", 5: "Archived" };
-
-const dummyGalleryImages = [
-  "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600573472592-401b489a3cdc?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600047509807-ba8f99d2cdde?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600607687920-4e2a09cf159d?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600566753086-00f18fb6b3ea?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1605276374104-dee2a0ed3cd6?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600607688969-a5bfcd646154?auto=format&fit=crop&w=1800&q=85",
-  "https://images.unsplash.com/photo-1600566752355-35792bedcfea?auto=format&fit=crop&w=1800&q=85",
-];
 
 const formatDate = (date?: string | null) => {
   if (!date) return "--";
@@ -41,8 +26,6 @@ const formatDate = (date?: string | null) => {
   if (Number.isNaN(parsed.getTime())) return "--";
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
-
-const getStatusNum = (s: number | string) => (typeof s === "number" ? s : 1);
 
 const getPercent = (value: number, total: number) => {
   if (!total) return "0% of total";
@@ -117,17 +100,17 @@ const icons = {
   ),
 };
 
-export default function ProjectOverviewTab({ project, totalUnits, unitStats, coverImage, activeUnitStatus = "", onUnitStatusSelect }: Props) {
+export default function ProjectOverviewTab({ project, totalUnits, unitStats, galleryImages = [], activeUnitStatus = "", onUnitStatusSelect }: Props) {
   const [activeImage, setActiveImage] = useState(0);
   const touchStartX = useRef<number | null>(null);
   const heroRef = useRef<HTMLElement | null>(null);
   const statusNum = getStatusNum(project.status);
-  const statusLabel = statusLabels[statusNum] ?? "Unknown";
+  const statusLabel = ADMIN_STATUS_LABELS[statusNum] ?? "Unknown";
 
-  const galleryImages = useMemo(() => {
-    const cover = coverImage ? [resolveMediaUrl(coverImage)] : [];
-    return [...cover, ...dummyGalleryImages].slice(0, 10);
-  }, [coverImage]);
+  const hasMultipleImages = galleryImages.length > 1;
+  // Keep the active index in range if the image list changes (e.g. media finishes loading).
+  const safeIndex = (index: number) => (Number.isInteger(index) && index < galleryImages.length ? index : 0);
+  const safeActiveImage = safeIndex(activeImage);
 
   const timeline = [
     { label: "Planning", state: statusNum === 1 ? "Current" : "Done", icon: icons.clipboard },
@@ -135,6 +118,8 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
     { label: "Handover", state: statusNum === 3 ? "Current" : statusNum > 3 ? "Done" : "Upcoming", icon: icons.flag },
     { label: "Completed", state: statusNum === 3 ? "Done" : "Upcoming", icon: icons.check },
   ];
+  // Fraction of the way to the current node (nodes sit at the center of 4 equal columns, so 3 gaps between them).
+  const timelineProgress = Math.max(0, Math.min(statusNum - 1, 3)) / 3;
 
   const details = [
     { label: "Location", value: project.location || "--", icon: icons.location, tone: "text-[var(--accent)] bg-[var(--accent-glow)]" },
@@ -151,7 +136,9 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
   ];
 
   const showImage = (direction: number) => {
-    setActiveImage((current) => (current + direction + galleryImages.length) % galleryImages.length);
+    // A swipe can land before any image has loaded; % 0 would poison the index with NaN.
+    if (galleryImages.length === 0) return;
+    setActiveImage((current) => (safeIndex(current) + direction + galleryImages.length) % galleryImages.length);
   };
 
   return (
@@ -172,36 +159,50 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
           }}
         >
           <div className="relative w-full aspect-[16/10] min-h-[210px] sm:aspect-[16/7] sm:min-h-[300px] lg:aspect-[16/5.4] lg:min-h-[340px]">
-            <img
-              key={galleryImages[activeImage]}
-              src={galleryImages[activeImage]}
-              alt={`${project.projectName} gallery ${activeImage + 1}`}
-              className="absolute inset-0 block h-full w-full object-cover object-center animate-fade-in"
-            />
+            {galleryImages.length > 0 ? (
+              <img
+                key={galleryImages[safeActiveImage]}
+                src={galleryImages[safeActiveImage]}
+                alt={`${project.projectName} gallery ${safeActiveImage + 1}`}
+                className="absolute inset-0 block h-full w-full object-cover object-center animate-fade-in"
+              />
+            ) : (
+              <div className="absolute inset-0 grid place-items-center bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
+                <div className="flex flex-col items-center gap-2">
+                  {icons.camera}
+                  <span className="text-sm font-semibold">No project images yet</span>
+                </div>
+              </div>
+            )}
           </div>
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/55 via-black/5 to-transparent" />
 
-          <button
-            type="button"
-            onClick={() => showImage(-1)}
-            className="focus-ring absolute left-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:-translate-x-0.5 hover:bg-white sm:left-5 sm:h-11 sm:w-11"
-            aria-label="Previous image"
-          >
-            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={() => showImage(1)}
-            className="focus-ring absolute right-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:translate-x-0.5 hover:bg-white sm:right-5 sm:h-11 sm:w-11"
-            aria-label="Next image"
-          >
-            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </button>
+          {hasMultipleImages && (
+            <>
+              <button
+                type="button"
+                onClick={() => showImage(-1)}
+                className="focus-ring absolute left-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:-translate-x-0.5 hover:bg-white sm:left-5 sm:h-11 sm:w-11"
+                aria-label="Previous image"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => showImage(1)}
+                className="focus-ring absolute right-3 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-white/25 bg-white/80 text-slate-950 shadow-lg backdrop-blur-xl transition hover:translate-x-0.5 hover:bg-white sm:right-5 sm:h-11 sm:w-11"
+                aria-label="Next image"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m9 18 6-6-6-6" />
+                </svg>
+              </button>
+            </>
+          )}
 
+          {galleryImages.length > 0 && (
           <button
             type="button"
             onClick={() => heroRef.current?.requestFullscreen?.()}
@@ -212,23 +213,28 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
               <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
             </svg>
           </button>
+          )}
 
-          <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl border border-white/20 bg-black/35 px-3 py-2 text-xs font-bold text-white shadow-lg backdrop-blur-xl sm:bottom-5 sm:left-5">
-            {icons.camera}
-            <span>{activeImage + 1} / {galleryImages.length}</span>
-          </div>
+          {hasMultipleImages && (
+            <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl border border-white/20 bg-black/35 px-3 py-2 text-xs font-bold text-white shadow-lg backdrop-blur-xl sm:bottom-5 sm:left-5">
+              {icons.camera}
+              <span>{safeActiveImage + 1} / {galleryImages.length}</span>
+            </div>
+          )}
 
-          <div className="absolute bottom-5 left-1/2 flex max-w-[48%] -translate-x-1/2 items-center justify-center gap-1.5 rounded-full bg-black/20 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
-            {galleryImages.map((_, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setActiveImage(index)}
-                className={`h-2 rounded-full transition-all ${index === activeImage ? "w-6 bg-[var(--accent)]" : "w-2 bg-white/75 hover:bg-white"}`}
-                aria-label={`Show image ${index + 1}`}
-              />
-            ))}
-          </div>
+          {hasMultipleImages && (
+            <div className="absolute bottom-5 left-1/2 flex max-w-[48%] -translate-x-1/2 items-center justify-center gap-1.5 rounded-full bg-black/20 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
+              {galleryImages.map((_, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => setActiveImage(index)}
+                  className={`h-2 rounded-full transition-all ${index === safeActiveImage ? "w-6 bg-[var(--accent)]" : "w-2 bg-white/75 hover:bg-white"}`}
+                  aria-label={`Show image ${index + 1}`}
+                />
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-[var(--border)] bg-[var(--glass-bg)] p-5 shadow-[var(--shadow-sm)] animate-fade-in-up-delay-1 sm:p-7 lg:p-8">
@@ -258,10 +264,10 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, cov
             <p className="text-sm font-semibold text-[var(--text-secondary)]">Current stage: <span className="text-[var(--accent)]">{statusLabel}</span></p>
           </div>
           <div className="relative grid gap-7 sm:grid-cols-4 sm:px-4">
-            <div className="absolute left-10 right-10 top-6 hidden h-px bg-[var(--border)] sm:block" />
-            <div className="absolute left-10 top-6 hidden h-px bg-[var(--accent)] sm:block" style={{ width: `${Math.max(0, Math.min(statusNum - 1, 3)) * 30}%` }} />
+            <div className="absolute left-[12.5%] right-[12.5%] top-6 hidden h-px bg-[var(--border)] sm:block" />
+            <div className="absolute left-[12.5%] top-6 hidden h-px bg-[var(--accent)] transition-all duration-500 sm:block" style={{ width: `${timelineProgress * 75}%` }} />
             <div className="absolute bottom-6 left-6 top-6 w-px bg-[var(--border)] sm:hidden" />
-            <div className="absolute left-6 top-6 w-px bg-[var(--accent)] sm:hidden" style={{ height: `${Math.max(0, Math.min(statusNum - 1, 3)) * 32}%` }} />
+            <div className="absolute left-6 top-6 w-px bg-[var(--accent)] transition-all duration-500 sm:hidden" style={{ height: `${timelineProgress * 100}%` }} />
             {timeline.map((item) => {
               const isCurrent = item.state === "Current";
               const isDone = item.state === "Done";

@@ -1,8 +1,10 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.InstallmentDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
@@ -76,7 +78,6 @@ namespace DAMS.Application.Services
                 PaymentMethod = dto.PaymentMethod,
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
-                ReceiptNumber = await GenerateReceiptNumberAsync(),
                 RecordedByUserId = adminUserId,
                 PaidAt = dto.PaidAt ?? DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow
@@ -98,9 +99,36 @@ namespace DAMS.Application.Services
 
             booking.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync();
+            await SaveWithUniqueReceiptNumberAsync(payment);
 
             return await GetScheduleAsync(bookingId);
+        }
+
+        // Receipt numbers are read-max-then-insert; two concurrent payments can pick the
+        // same number and the unique index rejects the loser with a raw 500. Retry the
+        // save with a freshly generated number instead.
+        private async Task SaveWithUniqueReceiptNumberAsync(Payment payment)
+        {
+            const int maxAttempts = 5;
+            for (var attempt = 1; ; attempt++)
+            {
+                payment.ReceiptNumber = await GenerateReceiptNumberAsync();
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    return;
+                }
+                catch (DbUpdateException ex) when (attempt < maxAttempts && IsReceiptNumberCollision(ex))
+                {
+                    // Another payment claimed this number between read and insert; retry.
+                }
+            }
+        }
+
+        private static bool IsReceiptNumberCollision(DbUpdateException ex)
+        {
+            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("ReceiptNumber", StringComparison.OrdinalIgnoreCase);
         }
 
         private async Task<Dictionary<int, decimal>> GetPaidByInstallmentAsync(int bookingId)
@@ -245,7 +273,14 @@ namespace DAMS.Application.Services
                 });
             }
 
-            var perInstallment = Math.Round(installmentPool / dto.NumberOfInstallments, 2, MidpointRounding.AwayFromZero);
+            // Round DOWN so the remainder folded into the last installment is always
+            // positive — rounding up could overshoot and leave the last row at zero or
+            // negative, which can never be paid (payments must be > 0).
+            var perInstallment = Math.Floor(installmentPool / dto.NumberOfInstallments * 100m) / 100m;
+            if (perInstallment <= 0m)
+                throw new InvalidOperationException(
+                    "Installment pool is too small for this number of installments. Reduce the number of installments.");
+
             var allocated = 0m;
 
             for (var i = 1; i <= dto.NumberOfInstallments; i++)
@@ -313,7 +348,7 @@ namespace DAMS.Application.Services
                               && (!hasSchedule || canRegenerate);
 
             var installmentPool = (booking.AgreedSalePrice - booking.DiscountAmount) - booking.BookingAmountReceived - booking.PossessionAmount;
-            var today = DateTime.UtcNow.Date;
+            var today = PakistanTime.Today;
 
             var items = booking.Installments
                 .OrderBy(i => i.Type == InstallmentType.Possession ? 0 : 1)

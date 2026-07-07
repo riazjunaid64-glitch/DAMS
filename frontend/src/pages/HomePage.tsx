@@ -1,14 +1,19 @@
 import { Link } from "react-router-dom";
 import FeaturedProjectCard from "../components/FeaturedProjectCard.tsx";
+import { useProjects } from "../contexts/ProjectsContext.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import { COMPANY_STATS } from "../lib/companyStats.ts";
-import { FEATURED_HERO_PROJECT, FEATURED_PROJECTS } from "../lib/featuredProjects.ts";
+import { isPubliclyVisible } from "../utils/projectStatus.ts";
 
 export default function HomePage() {
+  const { projects, loading, error, reload } = useProjects();
+  const publicProjects = projects.filter((p) => isPubliclyVisible(p.status));
+  const [hero, ...rest] = publicProjects;
+
   return (
     <>
-      {/* ─── Hero (About-style) ─── */}
+      {/* ─── Hero ─── */}
       <section className="home-hero">
         <div className="home-hero__bg" aria-hidden="true">
           <img
@@ -65,15 +70,44 @@ export default function HomePage() {
             </p>
           </div>
 
-          <div className="op-layout">
-            <FeaturedProjectCard project={FEATURED_HERO_PROJECT} variant="featured" priority />
-
-            <div className="op-grid">
-              {FEATURED_PROJECTS.map((project, index) => (
-                <FeaturedProjectCard key={project.id} project={project} priority={index < 3} />
-              ))}
+          {loading ? (
+            <div className="op-layout">
+              <div className="op-card op-card--featured op-card--skeleton">
+                <div className="skeleton op-skeleton-thumb" />
+                <div className="op-body">
+                  <div className="skeleton mb-3 h-6 w-3/4" />
+                  <div className="skeleton h-4 w-1/2" />
+                </div>
+              </div>
+              <div className="op-grid">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="op-card op-card--skeleton">
+                    <div className="skeleton op-skeleton-thumb" />
+                    <div className="op-body">
+                      <div className="skeleton mb-3 h-5 w-2/3" />
+                      <div className="skeleton h-4 w-full" />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : error ? (
+            <div className="flex flex-col items-center gap-4 py-10 text-center">
+              <p className="text-sm text-[var(--text-secondary)]">{error}</p>
+              <Button variant="outline" size="sm" onClick={() => void reload()}>
+                Try Again
+              </Button>
+            </div>
+          ) : (
+            <div className="op-layout">
+              {hero && <FeaturedProjectCard project={hero} variant="featured" priority />}
+              <div className="op-grid">
+                {rest.map((project, index) => (
+                  <FeaturedProjectCard key={project.id} project={project} priority={index < 3} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </>

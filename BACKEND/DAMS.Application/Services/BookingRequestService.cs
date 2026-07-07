@@ -254,6 +254,38 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Rejected booking request could not be loaded.");
         }
 
+        public async Task<BookingRequestResponseDto> CancelBookingRequestAsync(int bookingRequestId, int userId)
+        {
+            var bookingRequest = await _context.BookingRequests
+                .Include(br => br.Unit)
+                .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
+
+            if (bookingRequest == null)
+                throw new InvalidOperationException("Booking request not found.");
+
+            if (bookingRequest.UserId != userId)
+                throw new InvalidOperationException("You can only cancel your own booking requests.");
+
+            if (bookingRequest.Status != BookingRequestStatus.Pending)
+                throw new InvalidOperationException("Only pending booking requests can be cancelled.");
+
+            bookingRequest.Status = BookingRequestStatus.Cancelled;
+            bookingRequest.ReviewedAt = DateTime.UtcNow;
+            bookingRequest.UpdatedAt = DateTime.UtcNow;
+
+            // Release the unit back to the market.
+            if (bookingRequest.Unit.Status == UnitStatus.PendingReview)
+            {
+                bookingRequest.Unit.Status = UnitStatus.Available;
+                bookingRequest.Unit.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+
+            return await MapToResponseAsync(bookingRequestId)
+                ?? throw new InvalidOperationException("Cancelled booking request could not be loaded.");
+        }
+
         public async Task<bool> HasPendingRequestForUnitAsync(int unitId)
         {
             return await _context.BookingRequests
@@ -272,6 +304,7 @@ namespace DAMS.Application.Services
                 ["pending"] = stats.FirstOrDefault(s => s.Status == BookingRequestStatus.Pending)?.Count ?? 0,
                 ["approved"] = stats.FirstOrDefault(s => s.Status == BookingRequestStatus.Approved)?.Count ?? 0,
                 ["rejected"] = stats.FirstOrDefault(s => s.Status == BookingRequestStatus.Rejected)?.Count ?? 0,
+                ["cancelled"] = stats.FirstOrDefault(s => s.Status == BookingRequestStatus.Cancelled)?.Count ?? 0,
                 ["total"] = stats.Sum(s => s.Count)
             };
 

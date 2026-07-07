@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
@@ -93,6 +94,13 @@ namespace DAMS.Application.Services
             var employee = await _context.Employees.FindAsync(id)
                 ?? throw new Exception("Employee not found.");
 
+            // Deleting would cascade-delete the salary history while the linked Expense
+            // rows survive, leaving the finance ledger and salary records inconsistent.
+            var hasSalaryHistory = await _context.EmployeeSalaries.AnyAsync(s => s.EmployeeId == id);
+            if (hasSalaryHistory)
+                throw new Exception(
+                    "This employee has salary records and cannot be deleted. Set their status to Terminated instead.");
+
             _context.Employees.Remove(employee);
             await _context.SaveChangesAsync();
         }
@@ -105,6 +113,12 @@ namespace DAMS.Application.Services
             if (!employeeExists) throw new Exception("Employee not found.");
 
             var dateOnly = dto.Date.Date;
+
+            if (dateOnly > PakistanTime.Today)
+                throw new Exception("Attendance cannot be recorded for a future date.");
+
+            if (dto.CheckInTime.HasValue && dto.CheckOutTime.HasValue && dto.CheckOutTime <= dto.CheckInTime)
+                throw new Exception("Check-out time must be after check-in time.");
 
             var existing = await _context.EmployeeAttendances
                 .FirstOrDefaultAsync(a => a.EmployeeId == employeeId && a.Date == dateOnly);
@@ -293,6 +307,7 @@ namespace DAMS.Application.Services
                 throw new Exception("Salary amount must be greater than zero.");
 
             var payDate = dto.PayDate.Date;
+            ValidatePayDate(payDate);
 
             var alreadyPaid = await _context.EmployeeSalaries
                 .AnyAsync(s => s.EmployeeId == employeeId && s.PayMonth == payDate.Month && s.PayYear == payDate.Year);
@@ -312,6 +327,11 @@ namespace DAMS.Application.Services
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
+
+            // Expense and salary must persist together — a failure between the two
+            // saves would leave an orphaned salary expense inflating costs.
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
             _context.Expenses.Add(expense);
             await _context.SaveChangesAsync();
 
@@ -331,9 +351,35 @@ namespace DAMS.Application.Services
             };
 
             _context.EmployeeSalaries.Add(salary);
-            await _context.SaveChangesAsync();
+
+            try
+            {
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+            }
+            catch (DbUpdateException ex) when (IsDuplicateSalaryMonth(ex))
+            {
+                // Unique index (EmployeeId, PayYear, PayMonth) — a concurrent request
+                // (e.g. a double-click) recorded this month first.
+                throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+            }
 
             return MapSalary(salary, employee);
+        }
+
+        private static void ValidatePayDate(DateTime payDate)
+        {
+            if (payDate > PakistanTime.Today)
+                throw new Exception("Pay date cannot be in the future.");
+
+            if (payDate.Year < 2000)
+                throw new Exception("Pay date is not valid.");
+        }
+
+        private static bool IsDuplicateSalaryMonth(DbUpdateException ex)
+        {
+            return ex.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("PayYear", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task<SalaryResponseDto> UpdateSalaryAsync(int salaryId, UpdateSalaryDto dto)
@@ -353,6 +399,7 @@ namespace DAMS.Application.Services
             if (dto.PayDate.HasValue)
             {
                 var payDate = dto.PayDate.Value.Date;
+                ValidatePayDate(payDate);
 
                 // Moving to a different month must not collide with an existing salary for that month.
                 if (payDate.Month != salary.PayMonth || payDate.Year != salary.PayYear)

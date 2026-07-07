@@ -176,6 +176,7 @@ export default function BookingDetailPage({ user }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [showCancel, setShowCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [transitioning, setTransitioning] = useState(false);
 
   const [form, setForm] = useState({
     agreedSalePrice: "",
@@ -417,6 +418,25 @@ export default function BookingDetailPage({ user }: Props) {
     }
   };
 
+  const handleTransition = async (path: "possession" | "complete", confirmText: string) => {
+    if (!window.confirm(confirmText)) return;
+    setTransitioning(true);
+    setError(null);
+    try {
+      const res = await api(`/api/Booking/${bookingId}/${path}`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || "Failed to update booking status");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update booking status.");
+    } finally {
+      setTransitioning(false);
+    }
+  };
+
   const handleCancelBooking = async () => {
     setCancelling(true);
     try {
@@ -474,6 +494,18 @@ export default function BookingDetailPage({ user }: Props) {
           <Button variant="outline" size="sm" onClick={() => navigate(`/application-form?bookingId=${booking.id}`)}>
             Print Application Form
           </Button>
+          {booking.status === "PaymentPlanActive" && (
+            <Button variant="outline" size="sm" disabled={transitioning}
+              onClick={() => handleTransition("possession", "Mark possession as handed over to the customer?")}>
+              Give Possession
+            </Button>
+          )}
+          {(booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven") && (
+            <Button variant="outline" size="sm" disabled={transitioning}
+              onClick={() => handleTransition("complete", "Complete this sale? All payments must be fully received. The unit will be marked as Sold.")}>
+              Complete Sale
+            </Button>
+          )}
           {booking.status !== "Cancelled" && booking.status !== "PossessionGiven" && booking.status !== "SaleCompleted" && (
             <Button variant="danger" size="sm" onClick={() => { setCancelReason(""); setShowCancel(true); }}>
               Cancel Booking

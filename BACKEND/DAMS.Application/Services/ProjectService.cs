@@ -74,7 +74,7 @@ namespace DAMS.Application.Services
 
             var projects = await _context.Projects
                 .AsNoTracking()
-                .OrderByDescending(p => p.CreatedAt)
+                .OrderBy(p => p.Id)
                 .Select(MapToDtoExpression)
                 .ToListAsync();
 

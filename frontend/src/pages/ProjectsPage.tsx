@@ -3,7 +3,8 @@ import { api } from "../api/api.ts";
 import { uploadProjectMedia } from "../api/media.ts";
 import CoverImageField from "../components/CoverImageField.tsx";
 import ProjectCard from "../components/ProjectCard.tsx";
-import { parseProjectsPayload, type ProjectFromApi } from "../utils/parseProject.ts";
+import { useProjects } from "../contexts/ProjectsContext.tsx";
+import type { ProjectFromApi } from "../utils/parseProject.ts";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
@@ -36,11 +37,9 @@ const emptyForm = () => ({
 });
 
 export default function ProjectsPage({ user }: Props) {
-  const PROJECTS_PER_PAGE = 6;
-  const [projects, setProjects] = useState<ProjectFromApi[]>([]);
+  const PROJECTS_PER_PAGE = 12;
+  const { projects, loading: projectsLoading, error: projectsError, reload } = useProjects();
   const [currentPage, setCurrentPage] = useState(1);
-  const [projectsLoading, setProjectsLoading] = useState(false);
-  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -57,7 +56,6 @@ export default function ProjectsPage({ user }: Props) {
     const errors: Record<string, string> = {};
     if (!projectForm.projectName.trim()) errors.projectName = "Project name is required.";
     if (!projectForm.location.trim()) errors.location = "Location is required.";
-    if (!projectForm.startingDate) errors.startingDate = "Starting date is required.";
     if (
       projectForm.expectedCompletionDate &&
       projectForm.startingDate &&
@@ -79,45 +77,6 @@ export default function ProjectsPage({ user }: Props) {
     if (Number.isNaN(date.getTime())) return "";
     return date.toISOString().slice(0, 10);
   };
-
-  const loadProjects = async () => {
-    setProjectsLoading(true);
-    setProjectsError(null);
-    try {
-      const res = await api("/api/Project", undefined, false);
-      if (!res.ok) {
-        setProjectsError(
-          res.status === 0
-            ? "Cannot reach the API. Is the backend running (e.g. http://localhost:5219), and is npm dev restarted after vite proxy changes?"
-            : `Unable to load projects (HTTP ${res.status}).`
-        );
-        return;
-      }
-      const raw: unknown = await res.json();
-      if (!Array.isArray(raw)) {
-        setProjectsError("Unexpected API response (expected a JSON array of projects).");
-        setProjects([]);
-        return;
-      }
-      const data = parseProjectsPayload(raw);
-      if (raw.length > 0 && data.length === 0) {
-        setProjectsError(
-          "The API returned data but no valid project rows were parsed. Open the Network tab and confirm the JSON uses id/projectName (or Id/ProjectName)."
-        );
-        setProjects([]);
-        return;
-      }
-      setProjects(data);
-    } catch {
-      setProjectsError("Unable to load projects right now.");
-    } finally {
-      setProjectsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadProjects();
-  }, [user]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
@@ -165,14 +124,12 @@ export default function ProjectsPage({ user }: Props) {
   const submitProject = async (event: FormEvent) => {
     event.preventDefault();
     setModalError(null);
-    setProjectsError(null);
 
     if (!isFormValid) {
       // Reveal every field's error and keep focus in the form.
       setTouched({
         projectName: true,
         location: true,
-        startingDate: true,
         expectedCompletionDate: true,
       });
       return;
@@ -183,7 +140,7 @@ export default function ProjectsPage({ user }: Props) {
       location: projectForm.location,
       category: projectForm.category || null,
       description: projectForm.description || null,
-      startingDate: new Date(projectForm.startingDate).toISOString(),
+      startingDate: projectForm.startingDate ? new Date(projectForm.startingDate).toISOString() : null,
       expectedCompletionDate: projectForm.expectedCompletionDate
         ? new Date(projectForm.expectedCompletionDate).toISOString()
         : null,
@@ -218,14 +175,13 @@ export default function ProjectsPage({ user }: Props) {
           });
         } catch {
           resetProjectForm();
-          await loadProjects();
-          setProjectsError("Project saved, but the cover image could not be uploaded.");
+          await reload();
           return;
         }
       }
 
       resetProjectForm();
-      await loadProjects();
+      await reload();
     } catch {
       setModalError("Unable to save project right now.");
     } finally {
@@ -413,8 +369,8 @@ export default function ProjectsPage({ user }: Props) {
                 <div className="project-modal__dates">
                   <Field
                     label="Starting Date"
-                    required
                     type="date"
+                    hint="Optional"
                     value={projectForm.startingDate}
                     onChange={(e) =>
                       setProjectForm((prev) => ({
