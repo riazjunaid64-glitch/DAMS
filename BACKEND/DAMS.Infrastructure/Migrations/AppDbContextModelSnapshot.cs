@@ -211,7 +211,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[Status] <> 4");
 
-                    b.ToTable("Bookings");
+                    b.ToTable("Bookings", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.BookingRequest", b =>
@@ -302,7 +302,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UserId", "RequestedAt");
 
-                    b.ToTable("BookingRequests");
+                    b.ToTable("BookingRequests", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
@@ -394,7 +394,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Customers");
+                    b.ToTable("Customers", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
@@ -450,7 +450,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Employees");
+                    b.ToTable("Employees", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeAttendance", b =>
@@ -488,7 +488,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "Date")
                         .IsUnique();
 
-                    b.ToTable("EmployeeAttendances");
+                    b.ToTable("EmployeeAttendances", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeSalary", b =>
@@ -545,7 +545,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "PayYear", "PayMonth")
                         .IsUnique();
 
-                    b.ToTable("EmployeeSalaries");
+                    b.ToTable("EmployeeSalaries", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeTask", b =>
@@ -595,7 +595,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("EmployeeTasks");
+                    b.ToTable("EmployeeTasks", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Expense", b =>
@@ -642,7 +642,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("Expenses");
+                    b.ToTable("Expenses", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -685,7 +685,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "DueDate");
 
-                    b.ToTable("Installments");
+                    b.ToTable("Installments", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
@@ -732,7 +732,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RevenueType");
 
-                    b.ToTable("ManualRevenues");
+                    b.ToTable("ManualRevenues", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -845,7 +845,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectName")
                         .IsUnique();
 
-                    b.ToTable("Projects");
+                    b.ToTable("Projects", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
@@ -917,7 +917,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "IsCover");
 
-                    b.ToTable("ProjectMedias");
+                    b.ToTable("ProjectMedias", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
@@ -934,7 +934,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("RoleId");
 
-                    b.ToTable("Roles");
+                    b.ToTable("Roles", (string)null);
 
                     b.HasData(
                         new
@@ -995,7 +995,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "FloorNumber", "UnitNumber");
 
-                    b.ToTable("Units");
+                    b.ToTable("Units", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
@@ -1067,7 +1067,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UnitId", "IsCover");
 
-                    b.ToTable("UnitMedias");
+                    b.ToTable("UnitMedias", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -1103,7 +1103,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RoleId");
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>

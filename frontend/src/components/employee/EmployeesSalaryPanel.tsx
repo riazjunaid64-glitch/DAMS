@@ -3,7 +3,8 @@ import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
 import Modal from "../../lib/Modal.tsx";
 import SalarySlip from "../SalarySlip.tsx";
-import DateRangeFilter, { defaultRange, todayIso, type DateRange } from "./DateRangeFilter.tsx";
+import DateRangeFilter from "./DateRangeFilter.tsx";
+import { defaultRange, todayIso, type DateRange } from "./dateRange";
 import { formatPkr } from "../../utils/currency.ts";
 
 interface BatchRow {

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import FeaturedProjectCard from "../components/FeaturedProjectCard.tsx";
-import { useProjects } from "../contexts/ProjectsContext.tsx";
+import { useProjects } from "../contexts/projectsContextValue";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import { COMPANY_STATS } from "../lib/companyStats.ts";

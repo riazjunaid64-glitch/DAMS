@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260704213101_RestoreBookingsUnitIdIndex")]
-    partial class RestoreBookingsUnitIdIndex
+    [Migration("20260713004924_AddFinancialConcurrencyAndPendingRequestConstraint")]
+    partial class AddFinancialConcurrencyAndPendingRequestConstraint
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

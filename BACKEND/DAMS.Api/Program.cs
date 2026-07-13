@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Http.Features;
 using System.IO.Compression;
 using Microsoft.Net.Http.Headers;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,14 +34,17 @@ builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = Compre
 
 builder.Services.AddRateLimiter(options =>
 {
-    options.AddSlidingWindowLimiter("auth", opt =>
-    {
-        opt.Window = TimeSpan.FromMinutes(15);
-        opt.PermitLimit = 20;
-        opt.SegmentsPerWindow = 3;
-        opt.QueueLimit = 0;
-        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-    });
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? IPAddress.None.ToString(),
+            factory: _ => new SlidingWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(15),
+                PermitLimit = 20,
+                SegmentsPerWindow = 3,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
@@ -87,7 +91,11 @@ builder.Services.AddAuthentication(options =>
 .AddJwtBearer(options =>
 {
     var jwtSettings = builder.Configuration.GetSection("Jwt");
-    var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]!);
+    var configuredKey = jwtSettings["Key"];
+    if (string.IsNullOrWhiteSpace(configuredKey) || configuredKey.Length < 64)
+        throw new InvalidOperationException(
+            "Jwt:Key must be supplied through secure configuration (for example Jwt__Key) and contain at least 64 characters.");
+    var key = Encoding.UTF8.GetBytes(configuredKey);
 
     options.TokenValidationParameters = new TokenValidationParameters
     {

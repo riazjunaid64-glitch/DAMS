@@ -3,6 +3,8 @@ using DAMS.Infrastructure.Data;
 using DAMS.Application.DTOs.Auth;
 using DAMS.Application.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace DAMS.Application.Services
 {
@@ -61,7 +63,8 @@ namespace DAMS.Application.Services
 
         public async Task<AuthResponseDto?> LoginAsync(LoginRequestDto request)
         {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Email);
+            var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
             if (user == null)
                 return null;
 
@@ -74,7 +77,7 @@ namespace DAMS.Application.Services
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var refreshToken = _tokenService.GenerateRefreshToken();
 
-            user.RefreshToken = refreshToken;
+            user.RefreshToken = HashRefreshToken(refreshToken);
             user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(RefreshTokenDays);
             await _context.SaveChangesAsync();
 
@@ -88,7 +91,8 @@ namespace DAMS.Application.Services
 
         public async Task<AuthResponseDto?> RefreshTokenAsync(RefreshTokenRequestDto request)
         {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == request.RefreshToken);
+            var refreshTokenHash = HashRefreshToken(request.RefreshToken);
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == refreshTokenHash);
             if (user == null)
                 return null;
 
@@ -100,7 +104,7 @@ namespace DAMS.Application.Services
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var newRefreshToken = _tokenService.GenerateRefreshToken();
 
-            user.RefreshToken = newRefreshToken;
+            user.RefreshToken = HashRefreshToken(newRefreshToken);
             user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(RefreshTokenDays);
             await _context.SaveChangesAsync();
 
@@ -110,6 +114,27 @@ namespace DAMS.Application.Services
                 RefreshToken = newRefreshToken,
                 ExpiresInMinutes = AccessTokenMinutes
             };
+        }
+
+        public async Task RevokeRefreshTokenAsync(string refreshToken)
+        {
+            if (string.IsNullOrWhiteSpace(refreshToken))
+                return;
+
+            var refreshTokenHash = HashRefreshToken(refreshToken);
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == refreshTokenHash);
+            if (user == null)
+                return;
+
+            user.RefreshToken = null;
+            user.RefreshTokenExpiresAt = null;
+            await _context.SaveChangesAsync();
+        }
+
+        private static string HashRefreshToken(string refreshToken)
+        {
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken));
+            return Convert.ToBase64String(hash);
         }
 
     }

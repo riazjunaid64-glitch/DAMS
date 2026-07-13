@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api.ts";
-import DateRangeFilter, { defaultRange, type DateRange } from "./DateRangeFilter.tsx";
+import DateRangeFilter from "./DateRangeFilter.tsx";
+import { defaultRange, type DateRange } from "./dateRange";
 import {
   attendanceMeta,
   parseAttendanceStatus,

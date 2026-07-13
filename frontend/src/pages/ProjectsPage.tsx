@@ -3,7 +3,7 @@ import { api } from "../api/api.ts";
 import { uploadProjectMedia } from "../api/media.ts";
 import CoverImageField from "../components/CoverImageField.tsx";
 import ProjectCard from "../components/ProjectCard.tsx";
-import { useProjects } from "../contexts/ProjectsContext.tsx";
+import { useProjects } from "../contexts/projectsContextValue";
 import type { ProjectFromApi } from "../utils/parseProject.ts";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";

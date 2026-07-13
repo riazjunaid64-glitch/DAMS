@@ -4,6 +4,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 
 namespace DAMS.Application.Services
 {
@@ -60,7 +61,14 @@ namespace DAMS.Application.Services
             unit.Status = UnitStatus.PendingReview;
             unit.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsPendingRequestCollision(ex))
+            {
+                throw new InvalidOperationException("This unit already has a pending booking request.");
+            }
 
             return await MapToResponseAsync(bookingRequest.Id)
                 ?? throw new InvalidOperationException("Created booking request could not be loaded.");
@@ -69,6 +77,12 @@ namespace DAMS.Application.Services
         public async Task<BookingRequestResponseDto?> GetBookingRequestByIdAsync(int id)
         {
             return await MapToResponseAsync(id);
+        }
+
+        private static bool IsPendingRequestCollision(DbUpdateException ex)
+        {
+            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("IX_BookingRequests_UnitId_Status", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task<BookingRequestListDto> GetBookingRequestsAsync(BookingRequestFilterDto filter)

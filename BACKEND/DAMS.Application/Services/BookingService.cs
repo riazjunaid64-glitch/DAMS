@@ -409,7 +409,15 @@ namespace DAMS.Application.Services
                 booking.Unit.UpdatedAt = DateTime.UtcNow;
             }
 
-            await SaveWithUniqueReceiptNumberAsync(payment);
+            try
+            {
+                await SaveWithUniqueReceiptNumberAsync(payment);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(
+                    "This booking was updated by another payment. No payment was recorded; reload and try again.");
+            }
 
             return await GetResponseAsync(booking.Id);
         }

@@ -221,6 +221,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(b => b.Source).HasConversion<int>();
                 entity.Property(b => b.Status).HasConversion<int>();
                 entity.Property(b => b.InstallmentFrequency).HasConversion<int>();
+                entity.Property(b => b.RowVersion).IsRowVersion();
 
                 entity.HasIndex(b => b.BookingReference).IsUnique();
                 entity.HasIndex(b => b.CustomerId);
@@ -371,7 +372,9 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(br => br.RequestedAt);
                 entity.HasIndex(br => new { br.Status, br.RequestedAt });
                 entity.HasIndex(br => new { br.UserId, br.RequestedAt });
-                entity.HasIndex(br => new { br.UnitId, br.Status });
+                entity.HasIndex(br => new { br.UnitId, br.Status })
+                      .IsUnique()
+                      .HasFilter($"[Status] = {(int)BookingRequestStatus.Pending}");
 
                 entity.HasOne(br => br.Unit)
                       .WithMany()

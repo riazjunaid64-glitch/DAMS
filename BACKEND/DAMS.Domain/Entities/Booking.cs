@@ -110,6 +110,10 @@ namespace DAMS.Domain.Entities
 
         public DateTime? UpdatedAt { get; set; }
 
+        // SQL Server rowversion prevents concurrent financial updates from silently
+        // overwriting one another.
+        public byte[] RowVersion { get; set; } = Array.Empty<byte>();
+
         // Navigation
         public Customer Customer { get; set; } = null!;
 

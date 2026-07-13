@@ -56,6 +56,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("refresh")]
+        [EnableRateLimiting("auth")]
         public async Task<IActionResult> Refresh()
         {
             var refreshToken = Request.Cookies["refreshToken"];
@@ -75,8 +76,12 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("logout")]
-        public IActionResult Logout()
+        public async Task<IActionResult> Logout()
         {
+            var refreshToken = Request.Cookies["refreshToken"];
+            if (!string.IsNullOrWhiteSpace(refreshToken))
+                await _authService.RevokeRefreshTokenAsync(refreshToken);
+
             Response.Cookies.Delete("refreshToken", new CookieOptions { Path = "/api/Auth" });
             return Ok();
         }

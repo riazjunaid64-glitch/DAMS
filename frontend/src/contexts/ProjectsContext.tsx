@@ -1,20 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/api";
 import { parseProjectsPayload, type ProjectFromApi } from "../utils/parseProject";
-
-interface ProjectsContextValue {
-  projects: ProjectFromApi[];
-  loading: boolean;
-  error: string | null;
-  reload: () => Promise<void>;
-}
-
-const ProjectsContext = createContext<ProjectsContextValue>({
-  projects: [],
-  loading: true,
-  error: null,
-  reload: async () => {},
-});
+import { ProjectsContext } from "./projectsContextValue";
 
 export function ProjectsProvider({ children }: { children: ReactNode }) {
   const [projects, setProjects] = useState<ProjectFromApi[]>([]);
@@ -54,5 +41,3 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
 
   return <ProjectsContext.Provider value={value}>{children}</ProjectsContext.Provider>;
 }
-
-export const useProjects = () => useContext(ProjectsContext);
