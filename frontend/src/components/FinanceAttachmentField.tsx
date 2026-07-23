@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
 import type { FinanceAttachmentInfo } from "../api/financeAttachments";
+import ModalPortal from "../lib/ModalPortal";
 
 export const FINANCE_ATTACHMENT_MAX_SIZE = 15 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ".xls", ".xlsx"];
-const ACCEPT = "image/jpeg,image/png,image/webp,.pdf,.doc,.docx,.xls,.xlsx";
+const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp";
+const DOCUMENT_ACCEPT = ".pdf,.doc,.docx,.xls,.xlsx";
 
 interface Props {
   existing: FinanceAttachmentInfo | null;
@@ -42,15 +44,24 @@ export default function FinanceAttachmentField({
   onViewExisting,
   onDownloadExisting,
 }: Props) {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+
+  const clearInputs = () => {
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (documentInputRef.current) documentInputRef.current.value = "";
+  };
 
   const choose = (file?: File) => {
     if (!file) return;
     const validationError = validateFile(file);
     if (validationError) {
       setError(validationError);
-      if (inputRef.current) inputRef.current.value = "";
+      clearInputs();
       return;
     }
     setError(null);
@@ -61,7 +72,7 @@ export default function FinanceAttachmentField({
   const clearSelected = () => {
     setError(null);
     onSelected(null);
-    if (inputRef.current) inputRef.current.value = "";
+    clearInputs();
   };
 
   return (
@@ -105,23 +116,95 @@ export default function FinanceAttachmentField({
         <button
           type="button"
           disabled={disabled}
-          onClick={() => inputRef.current?.click()}
+          onClick={() => setSourcePickerOpen(true)}
           className="w-full rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface-glass)] px-4 py-3 text-left transition-colors hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="block text-sm font-medium text-[var(--text-primary)]">{existing && !removeExisting ? "Replace attachment" : "Choose attachment"}</span>
-          <span className="block text-xs text-[var(--text-muted)]">Select a document or a photo from this device</span>
+          <span className="block text-xs text-[var(--text-muted)]">Take a photo or choose from gallery and files</span>
         </button>
       )}
 
       <input
-        ref={inputRef}
+        ref={galleryInputRef}
         type="file"
-        accept={ACCEPT}
+        accept={IMAGE_ACCEPT}
+        disabled={disabled}
+        className="sr-only"
+        onChange={(event) => choose(event.target.files?.[0])}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        capture="environment"
+        disabled={disabled}
+        className="sr-only"
+        onChange={(event) => choose(event.target.files?.[0])}
+      />
+      <input
+        ref={documentInputRef}
+        type="file"
+        accept={DOCUMENT_ACCEPT}
         disabled={disabled}
         className="sr-only"
         onChange={(event) => choose(event.target.files?.[0])}
       />
       {error && <p role="alert" className="text-xs text-rose-300">{error}</p>}
+
+      {sourcePickerOpen && (
+        <ModalPortal>
+          <div className="fixed inset-0 z-[100] flex items-end justify-center sm:items-center sm:p-4">
+            <button
+              type="button"
+              aria-label="Close attachment options"
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setSourcePickerOpen(false)}
+            />
+            <div role="dialog" aria-modal="true" aria-labelledby="attachment-source-title" className="relative z-10 w-full rounded-t-3xl border border-[var(--border)] bg-[var(--modal-bg)] p-5 shadow-2xl sm:max-w-sm sm:rounded-2xl">
+              <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-[var(--border)] sm:hidden" />
+              <h3 id="attachment-source-title" className="text-base font-semibold text-[var(--text-heading)]">Add supporting evidence</h3>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">Choose where you want to get the attachment from.</p>
+
+              <div className="mt-4 space-y-2">
+                <SourceOption
+                  title="Take photo"
+                  description="Open your phone camera"
+                  icon="camera"
+                  onClick={() => { setSourcePickerOpen(false); cameraInputRef.current?.click(); }}
+                />
+                <SourceOption
+                  title="Choose from gallery"
+                  description="Select a photo already on your phone"
+                  icon="gallery"
+                  onClick={() => { setSourcePickerOpen(false); galleryInputRef.current?.click(); }}
+                />
+                <SourceOption
+                  title="Choose document"
+                  description="Select a PDF, Word, or Excel file"
+                  icon="document"
+                  onClick={() => { setSourcePickerOpen(false); documentInputRef.current?.click(); }}
+                />
+              </div>
+
+              <button type="button" onClick={() => setSourcePickerOpen(false)} className="mt-3 w-full rounded-xl px-4 py-3 text-sm font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-glass-hover)]">Cancel</button>
+            </div>
+          </div>
+        </ModalPortal>
+      )}
     </div>
+  );
+}
+
+function SourceOption({ title, description, icon, onClick }: { title: string; description: string; icon: "camera" | "gallery" | "document"; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="flex w-full items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-3 text-left transition-colors hover:border-[var(--accent)] hover:bg-[var(--surface-glass-hover)]">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--accent-glow)] text-[var(--accent)]" aria-hidden="true">
+        {icon === "camera" ? "●" : icon === "gallery" ? "▧" : "▤"}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
+        <span className="block text-xs text-[var(--text-muted)]">{description}</span>
+      </span>
+    </button>
   );
 }
