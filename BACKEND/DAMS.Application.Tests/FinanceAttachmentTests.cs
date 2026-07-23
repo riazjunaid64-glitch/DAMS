@@ -9,6 +9,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
 
 namespace DAMS.Application.Tests;
 
@@ -51,6 +52,20 @@ public sealed class FinanceAttachmentTests
             new CreateExpenseDto { Amount = 500, Category = "Office" }, 1, Pdf("bill.pdf"));
 
         Assert.NotNull(created.Attachment);
+        Assert.Single(storage.Files);
+
+        var removed = await service.UpdateExpenseAsync(
+            created.Id,
+            new UpdateExpenseDto { Amount = 500, Category = "Office" },
+            removeAttachment: true);
+        Assert.Null(removed.Attachment);
+        Assert.Empty(storage.Files);
+        Assert.True(await context.Expenses.AnyAsync(e => e.Id == created.Id));
+
+        await service.UpdateExpenseAsync(
+            created.Id,
+            new UpdateExpenseDto { Amount = 500, Category = "Office" },
+            Pdf("new-bill.pdf"));
         Assert.Single(storage.Files);
         await service.DeleteExpenseAsync(created.Id);
         Assert.Empty(storage.Files);
@@ -155,6 +170,30 @@ public sealed class FinanceAttachmentTests
         var authorize = typeof(FinanceController).GetCustomAttribute<AuthorizeAttribute>();
         Assert.NotNull(authorize);
         Assert.Equal("Admin", authorize.Roles);
+    }
+
+    [Fact]
+    public async Task PrivateStorage_RejectsPathTraversal_AndRoundTripsFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"dams-finance-tests-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new PrivateFinanceAttachmentStorage(root);
+            await using var source = new MemoryStream([1, 2, 3]);
+            var key = await storage.SaveAsync(source, ".pdf");
+            Assert.DoesNotContain("/", key);
+            Assert.DoesNotContain("\\", key);
+            await using var opened = await storage.OpenReadAsync(key);
+            Assert.NotNull(opened);
+            Assert.Equal(3, opened.Length);
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => storage.OpenReadAsync("../outside.pdf"));
+            await storage.DeleteAsync(key);
+            Assert.Null(await storage.OpenReadAsync(key));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     private static AppDbContext CreateContext() => new(

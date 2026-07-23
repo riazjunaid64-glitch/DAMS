@@ -84,11 +84,15 @@ builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
 {
     var env = sp.GetRequiredService<IWebHostEnvironment>();
     var configuredPath = sp.GetRequiredService<IConfiguration>()["FinanceAttachments:StoragePath"];
-    var storagePath = string.IsNullOrWhiteSpace(configuredPath)
+    var storagePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
         ? Path.Combine(env.ContentRootPath, "App_Data", "finance-attachments")
         : Path.IsPathRooted(configuredPath)
             ? configuredPath
-            : Path.Combine(env.ContentRootPath, configuredPath);
+            : Path.Combine(env.ContentRootPath, configuredPath));
+    var webRoot = Path.GetFullPath(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"));
+    if (storagePath.Equals(webRoot, StringComparison.OrdinalIgnoreCase)
+        || storagePath.StartsWith(webRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Finance attachment storage must be outside wwwroot.");
     return new PrivateFinanceAttachmentStorage(storagePath);
 });
 

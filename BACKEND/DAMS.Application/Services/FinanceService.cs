@@ -512,7 +512,7 @@ namespace DAMS.Application.Services
             }
 
             if ((attachment != null || removeAttachment) && oldStoredFileName != null)
-                await DeleteObsoleteFileAsync(oldStoredFileName, cancellationToken);
+                await DeleteObsoleteFileAsync(oldStoredFileName);
 
             return await MapManualRevenueAsync(revenue);
         }
@@ -528,7 +528,7 @@ namespace DAMS.Application.Services
             var storedFileName = revenue.Attachment?.StoredFileName;
             _context.ManualRevenues.Remove(revenue);
             await _context.SaveChangesAsync(cancellationToken);
-            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName);
         }
 
         public async Task<ExpenseResponseDto> CreateExpenseAsync(
@@ -635,7 +635,7 @@ namespace DAMS.Application.Services
             }
 
             if ((attachment != null || removeAttachment) && oldStoredFileName != null)
-                await DeleteObsoleteFileAsync(oldStoredFileName, cancellationToken);
+                await DeleteObsoleteFileAsync(oldStoredFileName);
 
             return await MapExpenseAsync(expense);
         }
@@ -651,7 +651,7 @@ namespace DAMS.Application.Services
             var storedFileName = expense.Attachment?.StoredFileName;
             _context.Expenses.Remove(expense);
             await _context.SaveChangesAsync(cancellationToken);
-            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName);
         }
 
         public async Task<FinanceAttachmentDownload> GetAttachmentAsync(
@@ -713,7 +713,7 @@ namespace DAMS.Application.Services
             var storedFileName = attachment.StoredFileName;
             _context.FinanceAttachments.Remove(attachment);
             await _context.SaveChangesAsync(cancellationToken);
-            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName);
         }
 
         private async Task EnsureProjectExistsAsync(int? projectId, CancellationToken cancellationToken = default)
@@ -803,13 +803,13 @@ namespace DAMS.Application.Services
             }
         }
 
-        private async Task DeleteObsoleteFileAsync(string? storedFileName, CancellationToken cancellationToken)
+        private async Task DeleteObsoleteFileAsync(string? storedFileName)
         {
             if (storedFileName == null)
                 return;
             try
             {
-                await _attachmentStorage.DeleteAsync(storedFileName, cancellationToken);
+                await _attachmentStorage.DeleteAsync(storedFileName, CancellationToken.None);
             }
             catch (Exception ex)
             {

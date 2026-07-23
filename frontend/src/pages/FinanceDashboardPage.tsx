@@ -85,9 +85,6 @@ interface OverdueLine {
 
 interface NetProfitLine {
   date: string;
-  attachment: FinanceAttachmentInfo | null;
-  selectedAttachment: File | null;
-  removeAttachment: boolean;
   projectName: string;
   label: string;
   kind: "revenue" | "expense";

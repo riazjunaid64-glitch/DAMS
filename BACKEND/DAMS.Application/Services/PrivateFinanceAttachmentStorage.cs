@@ -42,7 +42,7 @@ namespace DAMS.Application.Services
             cancellationToken.ThrowIfCancellationRequested();
             var fullPath = Resolve(storedFileName);
             Stream? stream = File.Exists(fullPath)
-                ? new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)
+                ? new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)
                 : null;
             return Task.FromResult(stream);
         }
