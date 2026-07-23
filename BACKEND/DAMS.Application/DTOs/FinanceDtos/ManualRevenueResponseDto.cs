@@ -8,6 +8,12 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public string? ProjectName { get; set; }
 
+        public int? FinanceAccountId { get; set; }
+
+        public string? FinanceAccountName { get; set; }
+
+        public string? AccountHolderName { get; set; }
+
         public decimal Amount { get; set; }
 
         public string RevenueType { get; set; } = string.Empty;

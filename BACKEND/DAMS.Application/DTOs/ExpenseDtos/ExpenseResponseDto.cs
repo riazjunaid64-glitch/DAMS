@@ -10,6 +10,12 @@ namespace DAMS.Application.DTOs.ExpenseDtos
 
         public string? ProjectName { get; set; }
 
+        public int? FinanceAccountId { get; set; }
+
+        public string? FinanceAccountName { get; set; }
+
+        public string? AccountHolderName { get; set; }
+
         public decimal Amount { get; set; }
 
         public string Category { get; set; } = string.Empty;

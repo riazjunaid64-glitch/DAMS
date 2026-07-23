@@ -11,6 +11,9 @@ namespace DAMS.Domain.Entities
         // Nullable: some income (e.g. general office income) is not tied to a single project.
         public int? ProjectId { get; set; }
 
+        // Nullable only for records created before finance accounts were introduced.
+        public int? FinanceAccountId { get; set; }
+
         public decimal Amount { get; set; }
 
         // Free-text type with a suggested set on the UI (Transfer Charges, Documentation Charges, etc.).
@@ -31,5 +34,7 @@ namespace DAMS.Domain.Entities
         public Project? Project { get; set; }
 
         public FinanceAttachment? Attachment { get; set; }
+
+        public FinanceAccount? FinanceAccount { get; set; }
     }
 }

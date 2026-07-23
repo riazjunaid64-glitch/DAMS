@@ -27,7 +27,8 @@ export function usePaginatedRows<T>(
   view: string,
   projectId: string,
   fromDate: string,
-  toDate: string
+  toDate: string,
+  account: string = ""
 ): PaginatedRows<T> {
   const [rows, setRows] = useState<T[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -53,6 +54,7 @@ export function usePaginatedRows<T>(
         if (projectId) params.set("projectId", projectId);
         if (fromDate) params.set("from", fromDate);
         if (toDate) params.set("to", toDate);
+        if (account) params.set("account", account);
 
         const res = await api(`/api/Finance/rows?${params.toString()}`);
         if (!res.ok) throw new Error("request failed");
@@ -73,7 +75,7 @@ export function usePaginatedRows<T>(
         inFlightRef.current = false;
       }
     },
-    [view, projectId, fromDate, toDate]
+    [view, projectId, fromDate, toDate, account]
   );
 
   // Reset + fetch first page whenever the view or filters change.
