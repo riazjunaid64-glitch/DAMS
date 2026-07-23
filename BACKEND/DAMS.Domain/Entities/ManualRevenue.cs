@@ -29,5 +29,7 @@ namespace DAMS.Domain.Entities
 
         // Navigation
         public Project? Project { get; set; }
+
+        public FinanceAttachment? Attachment { get; set; }
     }
 }

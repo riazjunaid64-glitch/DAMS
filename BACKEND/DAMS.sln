@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DAMS.Infrastructure", "DAMS
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DAMS.Application", "DAMS.Application\DAMS.Application.csproj", "{4D809CAB-1A72-4847-B88E-2BA36BA44969}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DAMS.Application.Tests", "DAMS.Application.Tests\DAMS.Application.Tests.csproj", "{4B411219-69B0-47BD-9A8D-6B98DF4D8B5A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,5 +38,9 @@ Global
 		{4D809CAB-1A72-4847-B88E-2BA36BA44969}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4D809CAB-1A72-4847-B88E-2BA36BA44969}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4D809CAB-1A72-4847-B88E-2BA36BA44969}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B411219-69B0-47BD-9A8D-6B98DF4D8B5A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B411219-69B0-47BD-9A8D-6B98DF4D8B5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B411219-69B0-47BD-9A8D-6B98DF4D8B5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B411219-69B0-47BD-9A8D-6B98DF4D8B5A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

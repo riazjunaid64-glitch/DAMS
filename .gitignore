@@ -13,3 +13,6 @@ build/
 # Environment
 appsettings.Development.json
 .env
+
+# Private runtime files
+App_Data/

@@ -1,0 +1,65 @@
+import { api } from "./api";
+
+export type FinanceRecordKind = "revenue" | "expense";
+
+export interface FinanceAttachmentInfo {
+  fileName: string;
+  contentType: string;
+  fileSize: number;
+  uploadedAt: string;
+}
+
+async function responseMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { message?: string };
+    return body.message || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function openFinanceAttachment(
+  kind: FinanceRecordKind,
+  recordId: number,
+  fileName: string,
+  download: boolean,
+): Promise<void> {
+  // Opening the placeholder synchronously avoids mobile popup blockers while the
+  // authenticated request is in flight. Downloads do not need a new window.
+  const previewWindow = download ? null : window.open("", "_blank");
+  if (previewWindow) previewWindow.opener = null;
+  try {
+    const resource = kind === "revenue" ? "revenue" : "expenses";
+    const response = await api(`/api/Finance/${resource}/${recordId}/attachment?download=${download}`);
+    if (!response.ok) {
+      previewWindow?.close();
+      throw new Error(await responseMessage(response, "The attachment could not be opened."));
+    }
+
+    const blobUrl = URL.createObjectURL(await response.blob());
+    if (download) {
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } else if (previewWindow) {
+      previewWindow.location.replace(blobUrl);
+    } else {
+      // Some browsers block new windows even when pre-opened. Navigating the current
+      // tab still gives the admin access to the evidence instead of silently failing.
+      window.location.assign(blobUrl);
+    }
+
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  } catch (error) {
+    previewWindow?.close();
+    throw error;
+  }
+}
+
+export async function financeApiError(response: Response, fallback: string): Promise<string> {
+  if (response.status === 413) return "The attachment is too large. The maximum allowed size is 15 MB.";
+  return responseMessage(response, fallback);
+}

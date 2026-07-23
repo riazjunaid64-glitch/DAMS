@@ -1,3 +1,5 @@
+using DAMS.Application.DTOs.FinanceDtos;
+
 namespace DAMS.Application.DTOs.ExpenseDtos
 {
     public class ExpenseResponseDto
@@ -19,5 +21,7 @@ namespace DAMS.Application.DTOs.ExpenseDtos
         public DateTime Date { get; set; }
 
         public DateTime CreatedAt { get; set; }
+
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 }

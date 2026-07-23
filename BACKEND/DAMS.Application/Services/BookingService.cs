@@ -130,43 +130,50 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            await using var transaction = await _context.Database.BeginTransactionAsync();
+            // Wrapped in an execution strategy because the DbContext has retry-on-failure
+            // enabled, which is incompatible with a bare BeginTransactionAsync.
+            var strategy = _context.Database.CreateExecutionStrategy();
 
-            await PersistNewBookingAsync(booking, unit);
-
-            // Money collected with the application form is a real booking-amount payment —
-            // otherwise it never reaches Finance revenue, receipts, or booking progress.
-            if (applicationAmountReceived > 0m)
+            await strategy.ExecuteAsync(async () =>
             {
-                var payment = new Payment
-                {
-                    BookingId = booking.Id,
-                    InstallmentId = null,
-                    Type = PaymentType.BookingAmount,
-                    Amount = applicationAmountReceived,
-                    PaymentMethod = ParseApplicationPaymentMethod(dto.ApplicationPaymentType),
-                    PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
-                    Notes = "Received with the application form.",
-                    RecordedByUserId = adminUserId,
-                    PaidAt = dto.ApplicationDate ?? DateTime.UtcNow,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.Payments.Add(payment);
+                await using var transaction = await _context.Database.BeginTransactionAsync();
 
-                booking.BookingAmountReceived = applicationAmountReceived;
-                if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+                await PersistNewBookingAsync(booking, unit);
+
+                // Money collected with the application form is a real booking-amount payment —
+                // otherwise it never reaches Finance revenue, receipts, or booking progress.
+                if (applicationAmountReceived > 0m)
                 {
-                    booking.Status = BookingStatus.PaymentPlanActive;
-                    booking.BookingAmountConfirmedDate = DateTime.UtcNow;
-                    booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
-                    unit.Status = UnitStatus.OnPaymentPlan;
-                    unit.UpdatedAt = DateTime.UtcNow;
+                    var payment = new Payment
+                    {
+                        BookingId = booking.Id,
+                        InstallmentId = null,
+                        Type = PaymentType.BookingAmount,
+                        Amount = applicationAmountReceived,
+                        PaymentMethod = ParseApplicationPaymentMethod(dto.ApplicationPaymentType),
+                        PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
+                        Notes = "Received with the application form.",
+                        RecordedByUserId = adminUserId,
+                        PaidAt = dto.ApplicationDate ?? DateTime.UtcNow,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.Payments.Add(payment);
+
+                    booking.BookingAmountReceived = applicationAmountReceived;
+                    if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+                    {
+                        booking.Status = BookingStatus.PaymentPlanActive;
+                        booking.BookingAmountConfirmedDate = DateTime.UtcNow;
+                        booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                        unit.Status = UnitStatus.OnPaymentPlan;
+                        unit.UpdatedAt = DateTime.UtcNow;
+                    }
+
+                    await SaveWithUniqueReceiptNumberAsync(payment);
                 }
 
-                await SaveWithUniqueReceiptNumberAsync(payment);
-            }
-
-            await transaction.CommitAsync();
+                await transaction.CommitAsync();
+            });
 
             return await GetResponseAsync(booking.Id);
         }
@@ -201,9 +208,13 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            await using var transaction = await _context.Database.BeginTransactionAsync();
-            await PersistNewBookingAsync(booking, unit);
-            await transaction.CommitAsync();
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await PersistNewBookingAsync(booking, unit);
+                await transaction.CommitAsync();
+            });
 
             return await GetResponseAsync(booking.Id);
         }

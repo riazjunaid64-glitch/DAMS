@@ -33,6 +33,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         /// <summary>Set for manual revenue rows so they can be edited/deleted from the UI.</summary>
         public int? ManualRevenueId { get; set; }
+
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 
     /// <summary>A single row in the expense table.</summary>
@@ -46,6 +48,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal Amount { get; set; }
         public string? Description { get; set; }
         public string? Reference { get; set; }
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 
     /// <summary>A booking with an unpaid balance (Agreed Sale Price − Received).</summary>

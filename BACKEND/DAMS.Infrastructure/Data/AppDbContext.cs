@@ -28,6 +28,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
+        public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -429,6 +430,34 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(r => r.ProjectId)
                       .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<FinanceAttachment>(entity =>
+            {
+                entity.Property(a => a.StoredFileName).IsRequired().HasMaxLength(100);
+                entity.Property(a => a.OriginalFileName).IsRequired().HasMaxLength(180);
+                entity.Property(a => a.ContentType).IsRequired().HasMaxLength(150);
+
+                entity.HasIndex(a => a.ManualRevenueId)
+                      .IsUnique()
+                      .HasFilter("[ManualRevenueId] IS NOT NULL");
+                entity.HasIndex(a => a.ExpenseId)
+                      .IsUnique()
+                      .HasFilter("[ExpenseId] IS NOT NULL");
+
+                entity.ToTable(t => t.HasCheckConstraint(
+                    "CK_FinanceAttachments_ExactlyOneOwner",
+                    "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)"));
+
+                entity.HasOne(a => a.ManualRevenue)
+                      .WithOne(r => r.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.ManualRevenueId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.Expense)
+                      .WithOne(e => e.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.ExpenseId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }

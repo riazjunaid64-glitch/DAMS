@@ -20,8 +20,6 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
 
-// Brotli + Gzip with explicit providers so JSON API payloads ship far smaller over the wire,
-// which is the single biggest lever on perceived response time for list/detail endpoints.
 builder.Services.AddResponseCompression(options =>
 {
     options.EnableForHttps = true;
@@ -31,6 +29,10 @@ builder.Services.AddResponseCompression(options =>
 });
 builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = FinanceAttachmentFileValidator.MaxRequestSize;
+});
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -78,10 +80,20 @@ builder.Services.AddScoped<IFileStorageService>(sp =>
     var env = sp.GetRequiredService<IWebHostEnvironment>();
     return new LocalFileStorageService(env.WebRootPath);
 });
+builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
+{
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    var configuredPath = sp.GetRequiredService<IConfiguration>()["FinanceAttachments:StoragePath"];
+    var storagePath = string.IsNullOrWhiteSpace(configuredPath)
+        ? Path.Combine(env.ContentRootPath, "App_Data", "finance-attachments")
+        : Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.Combine(env.ContentRootPath, configuredPath);
+    return new PrivateFinanceAttachmentStorage(storagePath);
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
 
 builder.Services.AddAuthentication(options =>
 {
@@ -109,31 +121,26 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// CORS — restrict to known frontend origins; AllowCredentials() enables httpOnly cookie auth
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend",
-        policy =>
-        {
-            policy.WithOrigins(allowedOrigins)
-                  .AllowAnyHeader()
-                  .AllowAnyMethod()
-                  .AllowCredentials();
-        });
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
 });
-
-
 
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseRateLimiter();
 
-// JSON API: discourage caching so clients never get empty bodies on 304 with fetch().
 app.Use(async (context, next) =>
 {
-    context.Response.OnStarting(static (state) =>
+    context.Response.OnStarting(static state =>
     {
         var ctx = (HttpContext)state!;
         if (ctx.Request.Path.StartsWithSegments("/api"))
@@ -155,25 +162,19 @@ if (app.Environment.IsDevelopment())
 app.UseResponseCompression();
 app.UseHttpsRedirection();
 
-// Uploaded media never changes once written (filenames are unique). Tell browsers to cache it
-// aggressively so repeat page views don't re-download images — makes navigation feel instant.
 app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
         var path = ctx.Context.Request.Path;
         if (path.StartsWithSegments("/uploads"))
-        {
             ctx.Context.Response.Headers[HeaderNames.CacheControl] = "public, max-age=2592000, immutable";
-        }
     }
 });
 
 app.UseCors("AllowFrontend");
-
 app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
 
 app.Run();

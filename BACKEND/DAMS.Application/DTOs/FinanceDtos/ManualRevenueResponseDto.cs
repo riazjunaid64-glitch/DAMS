@@ -19,5 +19,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public DateTime Date { get; set; }
 
         public DateTime CreatedAt { get; set; }
+
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 }

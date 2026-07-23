@@ -8,6 +8,13 @@ import Button from "../lib/Button.tsx";
 import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
+import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
+import {
+  financeApiError,
+  openFinanceAttachment,
+  type FinanceAttachmentInfo,
+  type FinanceRecordKind,
+} from "../api/financeAttachments.ts";
 
 type Props = { user: User | null };
 
@@ -36,6 +43,7 @@ interface RevenueLine {
   reference: string | null;
   description: string | null;
   manualRevenueId: number | null;
+  attachment: FinanceAttachmentInfo | null;
 }
 
 interface ExpenseLine {
@@ -47,6 +55,7 @@ interface ExpenseLine {
   amount: number;
   description: string | null;
   reference: string | null;
+  attachment: FinanceAttachmentInfo | null;
 }
 
 interface OutstandingLine {
@@ -76,6 +85,9 @@ interface OverdueLine {
 
 interface NetProfitLine {
   date: string;
+  attachment: FinanceAttachmentInfo | null;
+  selectedAttachment: File | null;
+  removeAttachment: boolean;
   projectName: string;
   label: string;
   kind: "revenue" | "expense";
@@ -205,6 +217,9 @@ interface RevenueFormState {
   description: string;
   reference: string;
   date: string;
+  attachment: FinanceAttachmentInfo | null;
+  selectedAttachment: File | null;
+  removeAttachment: boolean;
 }
 
 interface ExpenseFormState {
@@ -215,6 +230,9 @@ interface ExpenseFormState {
   description: string;
   vendor: string;
   date: string;
+  attachment: FinanceAttachmentInfo | null;
+  selectedAttachment: File | null;
+  removeAttachment: boolean;
 }
 
 const emptyRevenueForm = (): RevenueFormState => ({
@@ -225,6 +243,9 @@ const emptyRevenueForm = (): RevenueFormState => ({
   description: "",
   reference: "",
   date: todayInput(),
+  attachment: null,
+  selectedAttachment: null,
+  removeAttachment: false,
 });
 
 const emptyExpenseForm = (): ExpenseFormState => ({
@@ -235,6 +256,9 @@ const emptyExpenseForm = (): ExpenseFormState => ({
   description: "",
   vendor: "",
   date: todayInput(),
+  attachment: null,
+  selectedAttachment: null,
+  removeAttachment: false,
 });
 
 export default function FinanceDashboardPage({ user }: Props) {
@@ -257,6 +281,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const loadProjects = useCallback(async () => {
@@ -357,6 +382,19 @@ export default function FinanceDashboardPage({ user }: Props) {
     setExpenseForm(null);
     setFormError(null);
     setSaving(false);
+    savingRef.current = false;
+  };
+
+  const startSaving = () => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true);
+    return true;
+  };
+
+  const finishSaving = () => {
+    savingRef.current = false;
+    setSaving(false);
   };
 
   const submitRevenue = async () => {
@@ -371,30 +409,30 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Revenue type is required.");
       return;
     }
-    setSaving(true);
+    if (!startSaving()) return;
     try {
-      const body = JSON.stringify({
-        projectId: revenueForm.projectId ? Number(revenueForm.projectId) : null,
-        amount,
-        revenueType: revenueForm.revenueType.trim(),
-        description: revenueForm.description.trim() || null,
-        reference: revenueForm.reference.trim() || null,
-        date: revenueForm.date || null,
-      });
+      const body = new FormData();
+      if (revenueForm.projectId) body.append("projectId", revenueForm.projectId);
+      body.append("amount", String(amount));
+      body.append("revenueType", revenueForm.revenueType.trim());
+      body.append("description", revenueForm.description.trim());
+      body.append("reference", revenueForm.reference.trim());
+      if (revenueForm.date) body.append("date", revenueForm.date);
+      if (revenueForm.selectedAttachment) body.append("attachment", revenueForm.selectedAttachment);
+      if (revenueForm.removeAttachment) body.append("removeAttachment", "true");
       const res = revenueForm.id
-        ? await api(`/api/Finance/revenue/${revenueForm.id}`, { method: "PUT", body })
-        : await api("/api/Finance/revenue", { method: "POST", body });
+        ? await api(`/api/Finance/revenue/${revenueForm.id}/form`, { method: "PUT", body })
+        : await api("/api/Finance/revenue/form", { method: "POST", body });
       if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        setFormError(d.message || "Failed to save revenue entry.");
+        setFormError(await financeApiError(res, "Failed to save revenue entry."));
         return;
       }
       resetForms();
       await refreshAll();
     } catch {
-      setFormError("Something went wrong while saving.");
+      setFormError("The revenue entry could not be saved. Check your connection and try again.");
     } finally {
-      setSaving(false);
+      finishSaving();
     }
   };
 
@@ -410,30 +448,30 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Category is required.");
       return;
     }
-    setSaving(true);
+    if (!startSaving()) return;
     try {
-      const body = JSON.stringify({
-        projectId: expenseForm.projectId ? Number(expenseForm.projectId) : null,
-        amount,
-        category: expenseForm.category.trim(),
-        description: expenseForm.description.trim() || null,
-        vendor: expenseForm.vendor.trim() || null,
-        date: expenseForm.date || null,
-      });
+      const body = new FormData();
+      if (expenseForm.projectId) body.append("projectId", expenseForm.projectId);
+      body.append("amount", String(amount));
+      body.append("category", expenseForm.category.trim());
+      body.append("description", expenseForm.description.trim());
+      body.append("vendor", expenseForm.vendor.trim());
+      if (expenseForm.date) body.append("date", expenseForm.date);
+      if (expenseForm.selectedAttachment) body.append("attachment", expenseForm.selectedAttachment);
+      if (expenseForm.removeAttachment) body.append("removeAttachment", "true");
       const res = expenseForm.id
-        ? await api(`/api/Finance/expenses/${expenseForm.id}`, { method: "PUT", body })
-        : await api("/api/Finance/expenses", { method: "POST", body });
+        ? await api(`/api/Finance/expenses/${expenseForm.id}/form`, { method: "PUT", body })
+        : await api("/api/Finance/expenses/form", { method: "POST", body });
       if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        setFormError(d.message || "Failed to save expense.");
+        setFormError(await financeApiError(res, "Failed to save expense."));
         return;
       }
       resetForms();
       await refreshAll();
     } catch {
-      setFormError("Something went wrong while saving.");
+      setFormError("The expense could not be saved. Check your connection and try again.");
     } finally {
-      setSaving(false);
+      finishSaving();
     }
   };
 
@@ -463,6 +501,9 @@ export default function FinanceDashboardPage({ user }: Props) {
       description: row.description ?? "",
       reference: row.reference ?? "",
       date: row.date.slice(0, 10),
+      attachment: row.attachment,
+      selectedAttachment: null,
+      removeAttachment: false,
     });
   };
 
@@ -477,7 +518,23 @@ export default function FinanceDashboardPage({ user }: Props) {
       description: row.description ?? "",
       vendor: row.reference ?? "",
       date: row.date.slice(0, 10),
+      attachment: row.attachment,
+      selectedAttachment: null,
+      removeAttachment: false,
     });
+  };
+
+  const accessAttachment = async (
+    kind: FinanceRecordKind,
+    id: number,
+    attachment: FinanceAttachmentInfo,
+    download: boolean,
+  ) => {
+    try {
+      await openFinanceAttachment(kind, id, attachment.fileName, download);
+    } catch (attachmentError) {
+      window.alert(attachmentError instanceof Error ? attachmentError.message : "The attachment could not be opened.");
+    }
   };
 
   if (!isAdmin) return null;
@@ -485,6 +542,17 @@ export default function FinanceDashboardPage({ user }: Props) {
   const money = (n: number, cls = "text-[var(--text-secondary)]") => (
     <span className={`font-semibold whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
   );
+
+  const attachmentCell = (
+    kind: FinanceRecordKind,
+    id: number | null,
+    attachment: FinanceAttachmentInfo | null,
+  ) => attachment && id != null ? (
+    <span className="inline-flex items-center gap-2 whitespace-nowrap">
+      <button type="button" onClick={() => void accessAttachment(kind, id, attachment, false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
+      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={() => void accessAttachment(kind, id, attachment, true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
+    </span>
+  ) : <span className="text-xs text-[var(--text-muted)]">None</span>;
 
   // Column config + horizontal min-width for the active view's virtualized table.
   const { columns, minWidth, emptyText } = ((): {
@@ -495,7 +563,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     switch (view) {
       case "revenue":
         return {
-          minWidth: 940,
+          minWidth: 1080,
           emptyText: "No revenue for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
@@ -509,6 +577,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               );
             } },
             { key: "reference", header: "Reference", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as RevenueLine).reference || "—"}</span> },
+            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
             { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
               const row = r as RevenueLine;
               return row.manualRevenueId != null ? (
@@ -522,7 +591,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "expense":
         return {
-          minWidth: 940,
+          minWidth: 1080,
           emptyText: "No expenses for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as ExpenseLine).date)}</span> },
@@ -531,6 +600,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
             { key: "description", header: "Description", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).description || "—"}</span> },
             { key: "reference", header: "Reference", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).reference || "—"}</span> },
+            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as ExpenseLine; return attachmentCell("expense", row.id, row.attachment); } },
             { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
               const row = r as ExpenseLine;
               return (
@@ -773,8 +843,8 @@ export default function FinanceDashboardPage({ user }: Props) {
       {/* Revenue modal */}
       {revenueForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={resetForms} />
-          <div className="relative z-10 w-[460px] max-w-[92vw] animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
+          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             <div className="border-b border-[var(--border)] px-6 py-4">
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {revenueForm.id ? "Edit Manual Revenue" : "Add Manual Revenue"}
@@ -805,6 +875,16 @@ export default function FinanceDashboardPage({ user }: Props) {
               <FormInput label="Date" type="date" value={revenueForm.date} onChange={(v) => setRevenueForm({ ...revenueForm, date: v })} />
               <FormInput label="Reference (optional)" value={revenueForm.reference} onChange={(v) => setRevenueForm({ ...revenueForm, reference: v })} />
               <FormInput label="Description (optional)" value={revenueForm.description} onChange={(v) => setRevenueForm({ ...revenueForm, description: v })} />
+              <FinanceAttachmentField
+                existing={revenueForm.attachment}
+                selected={revenueForm.selectedAttachment}
+                removeExisting={revenueForm.removeAttachment}
+                disabled={saving}
+                onSelected={(file) => setRevenueForm((current) => current ? { ...current, selectedAttachment: file } : current)}
+                onRemoveExisting={(remove) => setRevenueForm((current) => current ? { ...current, removeAttachment: remove } : current)}
+                onViewExisting={() => { if (revenueForm.id && revenueForm.attachment) void accessAttachment("revenue", revenueForm.id, revenueForm.attachment, false); }}
+                onDownloadExisting={() => { if (revenueForm.id && revenueForm.attachment) void accessAttachment("revenue", revenueForm.id, revenueForm.attachment, true); }}
+              />
             </div>
             <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
               <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
@@ -817,8 +897,8 @@ export default function FinanceDashboardPage({ user }: Props) {
       {/* Expense modal */}
       {expenseForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={resetForms} />
-          <div className="relative z-10 w-[460px] max-w-[92vw] animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
+          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             <div className="border-b border-[var(--border)] px-6 py-4">
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {expenseForm.id ? "Edit Expense" : "Add Expense"}
@@ -849,6 +929,16 @@ export default function FinanceDashboardPage({ user }: Props) {
               <FormInput label="Date" type="date" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
               <FormInput label="Vendor / Reference (optional)" value={expenseForm.vendor} onChange={(v) => setExpenseForm({ ...expenseForm, vendor: v })} />
               <FormInput label="Description (optional)" value={expenseForm.description} onChange={(v) => setExpenseForm({ ...expenseForm, description: v })} />
+              <FinanceAttachmentField
+                existing={expenseForm.attachment}
+                selected={expenseForm.selectedAttachment}
+                removeExisting={expenseForm.removeAttachment}
+                disabled={saving}
+                onSelected={(file) => setExpenseForm((current) => current ? { ...current, selectedAttachment: file } : current)}
+                onRemoveExisting={(remove) => setExpenseForm((current) => current ? { ...current, removeAttachment: remove } : current)}
+                onViewExisting={() => { if (expenseForm.id && expenseForm.attachment) void accessAttachment("expense", expenseForm.id, expenseForm.attachment, false); }}
+                onDownloadExisting={() => { if (expenseForm.id && expenseForm.attachment) void accessAttachment("expense", expenseForm.id, expenseForm.attachment, true); }}
+              />
             </div>
             <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
               <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>

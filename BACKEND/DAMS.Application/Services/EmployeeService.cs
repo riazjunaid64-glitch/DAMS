@@ -330,39 +330,47 @@ namespace DAMS.Application.Services
 
             // Expense and salary must persist together — a failure between the two
             // saves would leave an orphaned salary expense inflating costs.
-            await using var transaction = await _context.Database.BeginTransactionAsync();
+            // Wrapped in an execution strategy because the DbContext has retry-on-failure
+            // enabled, which is incompatible with a bare BeginTransactionAsync.
+            var strategy = _context.Database.CreateExecutionStrategy();
+            EmployeeSalary salary = null!;
 
-            _context.Expenses.Add(expense);
-            await _context.SaveChangesAsync();
-
-            var salary = new EmployeeSalary
+            await strategy.ExecuteAsync(async () =>
             {
-                EmployeeId = employeeId,
-                Amount = dto.Amount,
-                PayDate = payDate,
-                PayMonth = payDate.Month,
-                PayYear = payDate.Year,
-                ProjectId = projectInfo.ProjectId,
-                ProjectName = projectInfo.ProjectName,
-                ExpenseId = expense.Id,
-                Notes = dto.Notes?.Trim(),
-                CreatedByUserId = adminUserId,
-                CreatedAt = DateTime.UtcNow
-            };
+                await using var transaction = await _context.Database.BeginTransactionAsync();
 
-            _context.EmployeeSalaries.Add(salary);
-
-            try
-            {
+                _context.Expenses.Add(expense);
                 await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-            }
-            catch (DbUpdateException ex) when (IsDuplicateSalaryMonth(ex))
-            {
-                // Unique index (EmployeeId, PayYear, PayMonth) — a concurrent request
-                // (e.g. a double-click) recorded this month first.
-                throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
-            }
+
+                salary = new EmployeeSalary
+                {
+                    EmployeeId = employeeId,
+                    Amount = dto.Amount,
+                    PayDate = payDate,
+                    PayMonth = payDate.Month,
+                    PayYear = payDate.Year,
+                    ProjectId = projectInfo.ProjectId,
+                    ProjectName = projectInfo.ProjectName,
+                    ExpenseId = expense.Id,
+                    Notes = dto.Notes?.Trim(),
+                    CreatedByUserId = adminUserId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.EmployeeSalaries.Add(salary);
+
+                try
+                {
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                }
+                catch (DbUpdateException ex) when (IsDuplicateSalaryMonth(ex))
+                {
+                    // Unique index (EmployeeId, PayYear, PayMonth) — a concurrent request
+                    // (e.g. a double-click) recorded this month first.
+                    throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+                }
+            });
 
             return MapSalary(salary, employee);
         }

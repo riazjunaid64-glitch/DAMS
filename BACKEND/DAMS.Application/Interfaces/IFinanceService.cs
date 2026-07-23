@@ -19,13 +19,16 @@ namespace DAMS.Application.Interfaces
         Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take);
 
         // Manual revenue CRUD
-        Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId);
-        Task<ManualRevenueResponseDto> UpdateManualRevenueAsync(int id, UpdateManualRevenueDto dto);
-        Task DeleteManualRevenueAsync(int id);
+        Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
+        Task<ManualRevenueResponseDto> UpdateManualRevenueAsync(int id, UpdateManualRevenueDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
+        Task DeleteManualRevenueAsync(int id, CancellationToken cancellationToken = default);
 
         // Expense CRUD
-        Task<ExpenseResponseDto> CreateExpenseAsync(CreateExpenseDto dto, int? adminUserId);
-        Task<ExpenseResponseDto> UpdateExpenseAsync(int id, UpdateExpenseDto dto);
-        Task DeleteExpenseAsync(int id);
+        Task<ExpenseResponseDto> CreateExpenseAsync(CreateExpenseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
+        Task<ExpenseResponseDto> UpdateExpenseAsync(int id, UpdateExpenseDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
+        Task DeleteExpenseAsync(int id, CancellationToken cancellationToken = default);
+
+        Task<FinanceAttachmentDownload> GetAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);
+        Task RemoveAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);
     }
 }

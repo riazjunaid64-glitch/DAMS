@@ -6,16 +6,21 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services
 {
     public class FinanceService : IFinanceService
     {
         private readonly AppDbContext _context;
+        private readonly IFinanceAttachmentStorage _attachmentStorage;
+        private readonly ILogger<FinanceService> _logger;
 
-        public FinanceService(AppDbContext context)
+        public FinanceService(AppDbContext context, IFinanceAttachmentStorage attachmentStorage, ILogger<FinanceService> logger)
         {
             _context = context;
+            _attachmentStorage = attachmentStorage;
+            _logger = logger;
         }
 
         public async Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to)
@@ -88,7 +93,11 @@ namespace DAMS.Application.Services
                     CustomerName = p.Booking.Customer.FullName,
                     RevenueType = null,
                     Reference = null,
-                    Description = null
+                    Description = null,
+                    AttachmentFileName = null,
+                    AttachmentContentType = null,
+                    AttachmentFileSize = null,
+                    AttachmentUploadedAt = null
                 });
 
             var manual = ManualQuery(projectId, fromValue, toExclusive)
@@ -108,7 +117,11 @@ namespace DAMS.Application.Services
                     CustomerName = null,
                     RevenueType = r.RevenueType,
                     Reference = r.Reference,
-                    Description = r.Description
+                    Description = r.Description,
+                    AttachmentFileName = r.Attachment != null ? r.Attachment.OriginalFileName : null,
+                    AttachmentContentType = r.Attachment != null ? r.Attachment.ContentType : null,
+                    AttachmentFileSize = r.Attachment != null ? r.Attachment.FileSize : null,
+                    AttachmentUploadedAt = r.Attachment != null ? r.Attachment.UploadedAt : null
                 });
 
             var raw = await payments.Concat(manual)
@@ -132,7 +145,8 @@ namespace DAMS.Application.Services
                 Reference = r.Source == "Payment"
                     ? BuildPaymentReference(r.ReceiptNumber, r.BookingReference ?? string.Empty, r.CustomerName ?? string.Empty)
                     : r.Reference,
-                Description = r.Description
+                Description = r.Description,
+                Attachment = MapAttachment(r.AttachmentFileName, r.AttachmentContentType, r.AttachmentFileSize, r.AttachmentUploadedAt)
             }).ToList();
 
             return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take };
@@ -156,7 +170,14 @@ namespace DAMS.Application.Services
                     Category = e.Category,
                     Amount = e.Amount,
                     Description = e.Description,
-                    Reference = e.Vendor
+                    Reference = e.Vendor,
+                    Attachment = e.Attachment == null ? null : new FinanceAttachmentDto
+                    {
+                        FileName = e.Attachment.OriginalFileName,
+                        ContentType = e.Attachment.ContentType,
+                        FileSize = e.Attachment.FileSize,
+                        UploadedAt = e.Attachment.UploadedAt
+                    }
                 })
                 .ToListAsync();
 
@@ -368,6 +389,10 @@ namespace DAMS.Application.Services
             public string? RevenueType { get; set; }
             public string? Reference { get; set; }
             public string? Description { get; set; }
+            public string? AttachmentFileName { get; set; }
+            public string? AttachmentContentType { get; set; }
+            public long? AttachmentFileSize { get; set; }
+            public DateTime? AttachmentUploadedAt { get; set; }
         }
 
         private sealed class NetProfitRow
@@ -383,14 +408,14 @@ namespace DAMS.Application.Services
             public string? Label { get; set; }
         }
 
-        public async Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId)
+        public async Task<ManualRevenueResponseDto> CreateManualRevenueAsync(
+            CreateManualRevenueDto dto,
+            int? adminUserId,
+            FinanceAttachmentUpload? attachment = null,
+            CancellationToken cancellationToken = default)
         {
-            if (dto.Amount <= 0)
-                throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(dto.RevenueType))
-                throw new InvalidOperationException("Revenue type is required.");
-
-            await EnsureProjectExistsAsync(dto.ProjectId);
+            ValidateRevenue(dto.Amount, dto.RevenueType);
+            await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
 
             var revenue = new ManualRevenue
             {
@@ -404,23 +429,69 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            string? newStoredFileName = null;
+            if (attachment != null)
+            {
+                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = saved.StoredFileName;
+                revenue.Attachment = new FinanceAttachment
+                {
+                    StoredFileName = saved.StoredFileName,
+                    OriginalFileName = saved.Metadata.OriginalFileName,
+                    ContentType = saved.Metadata.ContentType,
+                    FileSize = saved.Metadata.FileSize,
+                    UploadedAt = DateTime.UtcNow
+                };
+            }
+
             _context.ManualRevenues.Add(revenue);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await DeleteNewFileAfterFailureAsync(newStoredFileName);
+                throw;
+            }
 
             return await MapManualRevenueAsync(revenue);
         }
 
-        public async Task<ManualRevenueResponseDto> UpdateManualRevenueAsync(int id, UpdateManualRevenueDto dto)
+        public async Task<ManualRevenueResponseDto> UpdateManualRevenueAsync(
+            int id,
+            UpdateManualRevenueDto dto,
+            FinanceAttachmentUpload? attachment = null,
+            bool removeAttachment = false,
+            CancellationToken cancellationToken = default)
         {
-            var revenue = await _context.ManualRevenues.FirstOrDefaultAsync(r => r.Id == id);
+            ValidateAttachmentChange(attachment, removeAttachment);
+            var revenue = await _context.ManualRevenues
+                .Include(r => r.Attachment)
+                .FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
             if (revenue == null)
                 throw new InvalidOperationException("Manual revenue entry not found.");
-            if (dto.Amount <= 0)
-                throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(dto.RevenueType))
-                throw new InvalidOperationException("Revenue type is required.");
+            ValidateRevenue(dto.Amount, dto.RevenueType);
+            await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
 
-            await EnsureProjectExistsAsync(dto.ProjectId);
+            var oldStoredFileName = revenue.Attachment?.StoredFileName;
+            string? newStoredFileName = null;
+
+            if (attachment != null)
+            {
+                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = saved.StoredFileName;
+                if (revenue.Attachment == null)
+                {
+                    revenue.Attachment = new FinanceAttachment { ManualRevenueId = revenue.Id };
+                }
+                ApplyAttachment(revenue.Attachment, saved);
+            }
+            else if (removeAttachment && revenue.Attachment != null)
+            {
+                _context.FinanceAttachments.Remove(revenue.Attachment);
+                revenue.Attachment = null;
+            }
 
             revenue.ProjectId = dto.ProjectId;
             revenue.Amount = dto.Amount;
@@ -430,29 +501,44 @@ namespace DAMS.Application.Services
             if (dto.Date.HasValue)
                 revenue.Date = dto.Date.Value.Date;
 
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await DeleteNewFileAfterFailureAsync(newStoredFileName);
+                throw;
+            }
+
+            if ((attachment != null || removeAttachment) && oldStoredFileName != null)
+                await DeleteObsoleteFileAsync(oldStoredFileName, cancellationToken);
 
             return await MapManualRevenueAsync(revenue);
         }
 
-        public async Task DeleteManualRevenueAsync(int id)
+        public async Task DeleteManualRevenueAsync(int id, CancellationToken cancellationToken = default)
         {
-            var revenue = await _context.ManualRevenues.FirstOrDefaultAsync(r => r.Id == id);
+            var revenue = await _context.ManualRevenues
+                .Include(r => r.Attachment)
+                .FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
             if (revenue == null)
                 throw new InvalidOperationException("Manual revenue entry not found.");
 
+            var storedFileName = revenue.Attachment?.StoredFileName;
             _context.ManualRevenues.Remove(revenue);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
         }
 
-        public async Task<ExpenseResponseDto> CreateExpenseAsync(CreateExpenseDto dto, int? adminUserId)
+        public async Task<ExpenseResponseDto> CreateExpenseAsync(
+            CreateExpenseDto dto,
+            int? adminUserId,
+            FinanceAttachmentUpload? attachment = null,
+            CancellationToken cancellationToken = default)
         {
-            if (dto.Amount <= 0)
-                throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(dto.Category))
-                throw new InvalidOperationException("Category is required.");
-
-            await EnsureProjectExistsAsync(dto.ProjectId);
+            ValidateExpense(dto.Amount, dto.Category);
+            await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
 
             var expense = new Expense
             {
@@ -466,23 +552,69 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            string? newStoredFileName = null;
+            if (attachment != null)
+            {
+                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = saved.StoredFileName;
+                expense.Attachment = new FinanceAttachment
+                {
+                    StoredFileName = saved.StoredFileName,
+                    OriginalFileName = saved.Metadata.OriginalFileName,
+                    ContentType = saved.Metadata.ContentType,
+                    FileSize = saved.Metadata.FileSize,
+                    UploadedAt = DateTime.UtcNow
+                };
+            }
+
             _context.Expenses.Add(expense);
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await DeleteNewFileAfterFailureAsync(newStoredFileName);
+                throw;
+            }
 
             return await MapExpenseAsync(expense);
         }
 
-        public async Task<ExpenseResponseDto> UpdateExpenseAsync(int id, UpdateExpenseDto dto)
+        public async Task<ExpenseResponseDto> UpdateExpenseAsync(
+            int id,
+            UpdateExpenseDto dto,
+            FinanceAttachmentUpload? attachment = null,
+            bool removeAttachment = false,
+            CancellationToken cancellationToken = default)
         {
-            var expense = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
+            ValidateAttachmentChange(attachment, removeAttachment);
+            var expense = await _context.Expenses
+                .Include(e => e.Attachment)
+                .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
-            if (dto.Amount <= 0)
-                throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(dto.Category))
-                throw new InvalidOperationException("Category is required.");
+            ValidateExpense(dto.Amount, dto.Category);
+            await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
 
-            await EnsureProjectExistsAsync(dto.ProjectId);
+            var oldStoredFileName = expense.Attachment?.StoredFileName;
+            string? newStoredFileName = null;
+
+            if (attachment != null)
+            {
+                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = saved.StoredFileName;
+                if (expense.Attachment == null)
+                {
+                    expense.Attachment = new FinanceAttachment { ExpenseId = expense.Id };
+                }
+                ApplyAttachment(expense.Attachment, saved);
+            }
+            else if (removeAttachment && expense.Attachment != null)
+            {
+                _context.FinanceAttachments.Remove(expense.Attachment);
+                expense.Attachment = null;
+            }
 
             expense.ProjectId = dto.ProjectId;
             expense.Amount = dto.Amount;
@@ -492,26 +624,103 @@ namespace DAMS.Application.Services
             if (dto.Date.HasValue)
                 expense.Date = dto.Date.Value.Date;
 
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await DeleteNewFileAfterFailureAsync(newStoredFileName);
+                throw;
+            }
+
+            if ((attachment != null || removeAttachment) && oldStoredFileName != null)
+                await DeleteObsoleteFileAsync(oldStoredFileName, cancellationToken);
 
             return await MapExpenseAsync(expense);
         }
 
-        public async Task DeleteExpenseAsync(int id)
+        public async Task DeleteExpenseAsync(int id, CancellationToken cancellationToken = default)
         {
-            var expense = await _context.Expenses.FirstOrDefaultAsync(e => e.Id == id);
+            var expense = await _context.Expenses
+                .Include(e => e.Attachment)
+                .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
 
+            var storedFileName = expense.Attachment?.StoredFileName;
             _context.Expenses.Remove(expense);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
         }
 
-        private async Task EnsureProjectExistsAsync(int? projectId)
+        public async Task<FinanceAttachmentDownload> GetAttachmentAsync(
+            FinanceRecordKind kind,
+            int recordId,
+            CancellationToken cancellationToken = default)
+        {
+            var attachment = kind == FinanceRecordKind.Revenue
+                ? await _context.ManualRevenues.AsNoTracking()
+                    .Where(r => r.Id == recordId && r.Attachment != null)
+                    .Select(r => r.Attachment!)
+                    .FirstOrDefaultAsync(cancellationToken)
+                : await _context.Expenses.AsNoTracking()
+                    .Where(e => e.Id == recordId && e.Attachment != null)
+                    .Select(e => e.Attachment!)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+            if (attachment == null)
+                throw new FileNotFoundException("This finance record does not have an attachment.");
+
+            var content = await _attachmentStorage.OpenReadAsync(attachment.StoredFileName, cancellationToken);
+            if (content == null)
+                throw new FileNotFoundException("The attachment file is missing from storage. Please replace it from the edit form.");
+
+            return new FinanceAttachmentDownload
+            {
+                Content = content,
+                FileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType
+            };
+        }
+
+        public async Task RemoveAttachmentAsync(
+            FinanceRecordKind kind,
+            int recordId,
+            CancellationToken cancellationToken = default)
+        {
+            FinanceAttachment? attachment;
+            if (kind == FinanceRecordKind.Revenue)
+            {
+                var revenue = await _context.ManualRevenues
+                    .Include(r => r.Attachment)
+                    .FirstOrDefaultAsync(r => r.Id == recordId, cancellationToken)
+                    ?? throw new InvalidOperationException("Manual revenue entry not found.");
+                attachment = revenue.Attachment;
+            }
+            else
+            {
+                var expense = await _context.Expenses
+                    .Include(e => e.Attachment)
+                    .FirstOrDefaultAsync(e => e.Id == recordId, cancellationToken)
+                    ?? throw new InvalidOperationException("Expense not found.");
+                attachment = expense.Attachment;
+            }
+
+            if (attachment == null)
+                return;
+
+            var storedFileName = attachment.StoredFileName;
+            _context.FinanceAttachments.Remove(attachment);
+            await _context.SaveChangesAsync(cancellationToken);
+            await DeleteObsoleteFileAsync(storedFileName, cancellationToken);
+        }
+
+        private async Task EnsureProjectExistsAsync(int? projectId, CancellationToken cancellationToken = default)
         {
             if (!projectId.HasValue)
                 return;
-            var exists = await _context.Projects.AnyAsync(p => p.Id == projectId.Value);
+            var exists = await _context.Projects.AnyAsync(p => p.Id == projectId.Value, cancellationToken);
             if (!exists)
                 throw new InvalidOperationException("Selected project does not exist.");
         }
@@ -538,7 +747,8 @@ namespace DAMS.Application.Services
                 Description = r.Description,
                 Reference = r.Reference,
                 Date = r.Date,
-                CreatedAt = r.CreatedAt
+                CreatedAt = r.CreatedAt,
+                Attachment = MapAttachment(r.Attachment)
             };
         }
 
@@ -554,8 +764,107 @@ namespace DAMS.Application.Services
                 Description = e.Description,
                 Vendor = e.Vendor,
                 Date = e.Date,
-                CreatedAt = e.CreatedAt
+                CreatedAt = e.CreatedAt,
+                Attachment = MapAttachment(e.Attachment)
             };
+        }
+
+        private async Task<(string StoredFileName, ValidatedFinanceAttachment Metadata)> SaveAttachmentAsync(
+            FinanceAttachmentUpload upload,
+            CancellationToken cancellationToken)
+        {
+            var metadata = FinanceAttachmentFileValidator.Validate(upload);
+            var storedFileName = await _attachmentStorage.SaveAsync(upload.Content, metadata.Extension, cancellationToken);
+            return (storedFileName, metadata);
+        }
+
+        private static void ApplyAttachment(
+            FinanceAttachment attachment,
+            (string StoredFileName, ValidatedFinanceAttachment Metadata) saved)
+        {
+            attachment.StoredFileName = saved.StoredFileName;
+            attachment.OriginalFileName = saved.Metadata.OriginalFileName;
+            attachment.ContentType = saved.Metadata.ContentType;
+            attachment.FileSize = saved.Metadata.FileSize;
+            attachment.UploadedAt = DateTime.UtcNow;
+        }
+
+        private async Task DeleteNewFileAfterFailureAsync(string? storedFileName)
+        {
+            if (storedFileName == null)
+                return;
+            try
+            {
+                await _attachmentStorage.DeleteAsync(storedFileName, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not clean up failed finance attachment {StoredFileName}", storedFileName);
+            }
+        }
+
+        private async Task DeleteObsoleteFileAsync(string? storedFileName, CancellationToken cancellationToken)
+        {
+            if (storedFileName == null)
+                return;
+            try
+            {
+                await _attachmentStorage.DeleteAsync(storedFileName, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Metadata is already removed/changed, so the orphan is inaccessible. Keep the
+                // successful finance operation successful and surface the cleanup issue in logs.
+                _logger.LogWarning(ex, "Could not delete obsolete finance attachment {StoredFileName}", storedFileName);
+            }
+        }
+
+        private static FinanceAttachmentDto? MapAttachment(FinanceAttachment? attachment) =>
+            attachment == null
+                ? null
+                : new FinanceAttachmentDto
+                {
+                    FileName = attachment.OriginalFileName,
+                    ContentType = attachment.ContentType,
+                    FileSize = attachment.FileSize,
+                    UploadedAt = attachment.UploadedAt
+                };
+
+        private static FinanceAttachmentDto? MapAttachment(
+            string? fileName,
+            string? contentType,
+            long? fileSize,
+            DateTime? uploadedAt) =>
+            fileName == null || contentType == null || fileSize == null || uploadedAt == null
+                ? null
+                : new FinanceAttachmentDto
+                {
+                    FileName = fileName,
+                    ContentType = contentType,
+                    FileSize = fileSize.Value,
+                    UploadedAt = uploadedAt.Value
+                };
+
+        private static void ValidateAttachmentChange(FinanceAttachmentUpload? attachment, bool removeAttachment)
+        {
+            if (attachment != null && removeAttachment)
+                throw new InvalidOperationException("Choose either a replacement attachment or removal, not both.");
+        }
+
+        private static void ValidateRevenue(decimal amount, string revenueType)
+        {
+            if (amount <= 0)
+                throw new InvalidOperationException("Amount must be greater than zero.");
+            if (string.IsNullOrWhiteSpace(revenueType))
+                throw new InvalidOperationException("Revenue type is required.");
+        }
+
+        private static void ValidateExpense(decimal amount, string category)
+        {
+            if (amount <= 0)
+                throw new InvalidOperationException("Amount must be greater than zero.");
+            if (string.IsNullOrWhiteSpace(category))
+                throw new InvalidOperationException("Category is required.");
         }
 
         private static string ResolveAutomaticRevenueType(PaymentType type, InstallmentType? installmentType)
