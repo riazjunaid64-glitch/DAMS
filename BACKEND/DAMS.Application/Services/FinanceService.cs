@@ -14,26 +14,28 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly IFinanceAttachmentStorage _attachmentStorage;
+        private readonly IFinanceAccountService _accountService;
         private readonly ILogger<FinanceService> _logger;
 
-        public FinanceService(AppDbContext context, IFinanceAttachmentStorage attachmentStorage, ILogger<FinanceService> logger)
+        public FinanceService(AppDbContext context, IFinanceAttachmentStorage attachmentStorage, IFinanceAccountService accountService, ILogger<FinanceService> logger)
         {
             _context = context;
             _attachmentStorage = attachmentStorage;
+            _accountService = accountService;
             _logger = logger;
         }
 
-        public async Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to)
+        public async Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to, int? accountId = null, bool unassigned = false)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
 
             // All totals are computed in SQL — no rows are materialised for the cards.
-            var automaticRevenue = await PaymentsQuery(projectId, fromValue, toExclusive)
+            var automaticRevenue = accountId.HasValue ? 0m : await PaymentsQuery(projectId, fromValue, toExclusive)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive)
+            var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-            var totalExpenses = await ExpenseQuery(projectId, fromValue, toExclusive)
+            var totalExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(e => (decimal?)e.Amount) ?? 0m;
 
             // Outstanding/overdue are balance snapshots (not date-filtered); totals are the
@@ -41,15 +43,43 @@ namespace DAMS.Application.Services
             // the per-row balances (a small, bounded set — same projection the tables use) and
             // sum the positive ones in memory; filtering a projected scalar in SQL does not
             // translate.
-            var outstandingBalances = await OutstandingBookings(projectId)
-                .Select(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
-                .ToListAsync();
-            var outstandingTotal = outstandingBalances.Where(v => v > 0).Sum();
+            var accountFilterApplied = accountId.HasValue || unassigned;
+            var outstandingTotal = 0m;
+            var overdueTotal = 0m;
+            if (!accountFilterApplied)
+            {
+                var outstandingBalances = await OutstandingBookings(projectId)
+                    .Select(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                    .ToListAsync();
+                outstandingTotal = outstandingBalances.Where(v => v > 0).Sum();
 
-            var overdueBalances = await OverdueInstallments(projectId)
-                .Select(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
-                .ToListAsync();
-            var overdueTotal = overdueBalances.Where(v => v > 0).Sum();
+                var overdueBalances = await OverdueInstallments(projectId)
+                    .Select(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                    .ToListAsync();
+                overdueTotal = overdueBalances.Where(v => v > 0).Sum();
+            }
+
+            // When a single account is selected, surface its running balance up to the end of
+            // the selected period. This is account-wide (project filter is ignored) because the
+            // balance is a property of the account, matching the Accounts detail view.
+            decimal? accountOpeningBalance = null;
+            decimal? accountCurrentBalance = null;
+            if (accountId.HasValue)
+            {
+                var opening = await _context.FinanceAccounts.AsNoTracking()
+                    .Where(a => a.Id == accountId.Value)
+                    .Select(a => (decimal?)a.OpeningBalance)
+                    .SingleOrDefaultAsync();
+                if (opening.HasValue)
+                {
+                    var cumulativeRevenue = await ManualQuery(null, null, toExclusive, accountId, false)
+                        .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                    var cumulativeExpenses = await ExpenseQuery(null, null, toExclusive, accountId, false)
+                        .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+                    accountOpeningBalance = opening.Value;
+                    accountCurrentBalance = opening.Value + cumulativeRevenue - cumulativeExpenses;
+                }
+            }
 
             var totalRevenue = automaticRevenue + manualRevenue;
             return new FinancialSummaryDto
@@ -60,7 +90,9 @@ namespace DAMS.Application.Services
                 TotalExpenses = totalExpenses,
                 NetProfit = totalRevenue - totalExpenses,
                 OutstandingAmount = outstandingTotal,
-                OverdueAmount = overdueTotal
+                OverdueAmount = overdueTotal,
+                AccountOpeningBalance = accountOpeningBalance,
+                AccountCurrentBalance = accountCurrentBalance
             };
         }
 
@@ -68,7 +100,7 @@ namespace DAMS.Application.Services
         // Each method fetches `take + 1` rows in SQL (OFFSET/FETCH) so HasMore is known
         // without a separate COUNT query.
 
-        public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take)
+        public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -76,7 +108,7 @@ namespace DAMS.Application.Services
             // Payments and manual revenue are unioned (UNION ALL) into one shape, ordered
             // and paged in SQL. A stable secondary key (Source + entity Id) keeps paging
             // deterministic across chunks.
-            var payments = PaymentsQuery(projectId, fromValue, toExclusive)
+            var payments = PaymentsQuery(projectId, fromValue, toExclusive).Where(_ => !accountId.HasValue)
                 .Select(p => new RevenueRow
                 {
                     SortId = p.Id,
@@ -97,10 +129,13 @@ namespace DAMS.Application.Services
                     AttachmentFileName = null,
                     AttachmentContentType = null,
                     AttachmentFileSize = null,
-                    AttachmentUploadedAt = null
+                    AttachmentUploadedAt = null,
+                    FinanceAccountId = null,
+                    FinanceAccountName = null,
+                    AccountHolderName = null
                 });
 
-            var manual = ManualQuery(projectId, fromValue, toExclusive)
+            var manual = ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new RevenueRow
                 {
                     SortId = r.Id,
@@ -121,7 +156,10 @@ namespace DAMS.Application.Services
                     AttachmentFileName = r.Attachment != null ? r.Attachment.OriginalFileName : null,
                     AttachmentContentType = r.Attachment != null ? r.Attachment.ContentType : null,
                     AttachmentFileSize = r.Attachment != null ? r.Attachment.FileSize : null,
-                    AttachmentUploadedAt = r.Attachment != null ? r.Attachment.UploadedAt : null
+                    AttachmentUploadedAt = r.Attachment != null ? r.Attachment.UploadedAt : null,
+                    FinanceAccountId = r.FinanceAccountId,
+                    FinanceAccountName = r.FinanceAccount != null ? r.FinanceAccount.Name : null,
+                    AccountHolderName = r.FinanceAccount != null ? r.FinanceAccount.AccountHolderName : null
                 });
 
             var raw = await payments.Concat(manual)
@@ -146,18 +184,21 @@ namespace DAMS.Application.Services
                     ? BuildPaymentReference(r.ReceiptNumber, r.BookingReference ?? string.Empty, r.CustomerName ?? string.Empty)
                     : r.Reference,
                 Description = r.Description,
+                FinanceAccountId = r.FinanceAccountId,
+                FinanceAccountName = r.FinanceAccountName,
+                AccountHolderName = r.AccountHolderName,
                 Attachment = MapAttachment(r.AttachmentFileName, r.AttachmentContentType, r.AttachmentFileSize, r.AttachmentUploadedAt)
             }).ToList();
 
             return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take };
         }
 
-        public async Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take)
+        public async Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
 
-            var rows = await ExpenseQuery(projectId, fromValue, toExclusive)
+            var rows = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .OrderByDescending(e => e.Date)
                 .ThenByDescending(e => e.Id)
                 .Skip(skip).Take(take + 1)
@@ -171,6 +212,9 @@ namespace DAMS.Application.Services
                     Amount = e.Amount,
                     Description = e.Description,
                     Reference = e.Vendor,
+                    FinanceAccountId = e.FinanceAccountId,
+                    FinanceAccountName = e.FinanceAccount != null ? e.FinanceAccount.Name : null,
+                    AccountHolderName = e.FinanceAccount != null ? e.FinanceAccount.AccountHolderName : null,
                     Attachment = e.Attachment == null ? null : new FinanceAttachmentDto
                     {
                         FileName = e.Attachment.OriginalFileName,
@@ -250,14 +294,14 @@ namespace DAMS.Application.Services
             return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take };
         }
 
-        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take)
+        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
 
             // Net Profit = every revenue line (+) and expense line (−). Three sources are
             // unioned, ordered and paged in SQL.
-            var payments = PaymentsQuery(projectId, fromValue, toExclusive)
+            var payments = PaymentsQuery(projectId, fromValue, toExclusive).Where(_ => !accountId.HasValue)
                 .Select(p => new NetProfitRow
                 {
                     SortId = p.Id,
@@ -271,7 +315,7 @@ namespace DAMS.Application.Services
                     Label = null
                 });
 
-            var manual = ManualQuery(projectId, fromValue, toExclusive)
+            var manual = ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new NetProfitRow
                 {
                     SortId = r.Id,
@@ -285,7 +329,7 @@ namespace DAMS.Application.Services
                     Label = r.RevenueType
                 });
 
-            var expenses = ExpenseQuery(projectId, fromValue, toExclusive)
+            var expenses = ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(e => new NetProfitRow
                 {
                     SortId = e.Id,
@@ -332,21 +376,25 @@ namespace DAMS.Application.Services
             return q;
         }
 
-        private IQueryable<ManualRevenue> ManualQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive)
+        private IQueryable<ManualRevenue> ManualQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive, int? accountId = null, bool unassigned = false)
         {
             var q = _context.ManualRevenues.AsNoTracking().AsQueryable();
             if (projectId.HasValue) q = q.Where(r => r.ProjectId == projectId.Value);
             if (fromValue.HasValue) q = q.Where(r => r.Date >= fromValue.Value);
             if (toExclusive.HasValue) q = q.Where(r => r.Date < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(r => r.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(r => r.FinanceAccountId == null);
             return q;
         }
 
-        private IQueryable<Expense> ExpenseQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive)
+        private IQueryable<Expense> ExpenseQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive, int? accountId = null, bool unassigned = false)
         {
             var q = _context.Expenses.AsNoTracking().AsQueryable();
             if (projectId.HasValue) q = q.Where(e => e.ProjectId == projectId.Value);
             if (fromValue.HasValue) q = q.Where(e => e.Date >= fromValue.Value);
             if (toExclusive.HasValue) q = q.Where(e => e.Date < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(e => e.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(e => e.FinanceAccountId == null);
             return q;
         }
 
@@ -393,6 +441,9 @@ namespace DAMS.Application.Services
             public string? AttachmentContentType { get; set; }
             public long? AttachmentFileSize { get; set; }
             public DateTime? AttachmentUploadedAt { get; set; }
+            public int? FinanceAccountId { get; set; }
+            public string? FinanceAccountName { get; set; }
+            public string? AccountHolderName { get; set; }
         }
 
         private sealed class NetProfitRow
@@ -416,10 +467,14 @@ namespace DAMS.Application.Services
         {
             ValidateRevenue(dto.Amount, dto.RevenueType);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Received In Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
             var revenue = new ManualRevenue
             {
                 ProjectId = dto.ProjectId,
+                FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 RevenueType = dto.RevenueType.Trim(),
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
@@ -473,6 +528,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Manual revenue entry not found.");
             ValidateRevenue(dto.Amount, dto.RevenueType);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Received In Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, revenue.FinanceAccountId, cancellationToken);
 
             var oldStoredFileName = revenue.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -494,6 +552,7 @@ namespace DAMS.Application.Services
             }
 
             revenue.ProjectId = dto.ProjectId;
+            revenue.FinanceAccountId = dto.FinanceAccountId;
             revenue.Amount = dto.Amount;
             revenue.RevenueType = dto.RevenueType.Trim();
             revenue.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
@@ -539,10 +598,14 @@ namespace DAMS.Application.Services
         {
             ValidateExpense(dto.Amount, dto.Category);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Paid From Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
             var expense = new Expense
             {
                 ProjectId = dto.ProjectId,
+                FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Category = dto.Category.Trim(),
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
@@ -596,6 +659,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Expense not found.");
             ValidateExpense(dto.Amount, dto.Category);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Paid From Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
 
             var oldStoredFileName = expense.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -617,6 +683,7 @@ namespace DAMS.Application.Services
             }
 
             expense.ProjectId = dto.ProjectId;
+            expense.FinanceAccountId = dto.FinanceAccountId;
             expense.Amount = dto.Amount;
             expense.Category = dto.Category.Trim();
             expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
@@ -737,11 +804,15 @@ namespace DAMS.Application.Services
 
         private async Task<ManualRevenueResponseDto> MapManualRevenueAsync(ManualRevenue r)
         {
+            var account = await GetAccountIdentityAsync(r.FinanceAccountId);
             return new ManualRevenueResponseDto
             {
                 Id = r.Id,
                 ProjectId = r.ProjectId,
                 ProjectName = await GetProjectNameAsync(r.ProjectId),
+                FinanceAccountId = r.FinanceAccountId,
+                FinanceAccountName = account?.Name,
+                AccountHolderName = account?.Holder,
                 Amount = r.Amount,
                 RevenueType = r.RevenueType,
                 Description = r.Description,
@@ -754,11 +825,15 @@ namespace DAMS.Application.Services
 
         private async Task<ExpenseResponseDto> MapExpenseAsync(Expense e)
         {
+            var account = await GetAccountIdentityAsync(e.FinanceAccountId);
             return new ExpenseResponseDto
             {
                 Id = e.Id,
                 ProjectId = e.ProjectId,
                 ProjectName = await GetProjectNameAsync(e.ProjectId),
+                FinanceAccountId = e.FinanceAccountId,
+                FinanceAccountName = account?.Name,
+                AccountHolderName = account?.Holder,
                 Amount = e.Amount,
                 Category = e.Category,
                 Description = e.Description,
@@ -767,6 +842,18 @@ namespace DAMS.Application.Services
                 CreatedAt = e.CreatedAt,
                 Attachment = MapAttachment(e.Attachment)
             };
+        }
+
+        private async Task<(string Name, string Holder)?> GetAccountIdentityAsync(int? accountId, CancellationToken cancellationToken = default)
+        {
+            if (!accountId.HasValue)
+                return null;
+
+            var account = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Id == accountId.Value)
+                .Select(a => new { a.Name, a.AccountHolderName })
+                .SingleOrDefaultAsync(cancellationToken);
+            return account == null ? null : (account.Name, account.AccountHolderName);
         }
 
         private async Task<(string StoredFileName, ValidatedFinanceAttachment Metadata)> SaveAttachmentAsync(

@@ -4,6 +4,8 @@ namespace DAMS.Application.DTOs.ExpenseDtos
     {
         public int? ProjectId { get; set; }
 
+        public int? FinanceAccountId { get; set; }
+
         public decimal Amount { get; set; }
 
         public string Category { get; set; } = string.Empty;

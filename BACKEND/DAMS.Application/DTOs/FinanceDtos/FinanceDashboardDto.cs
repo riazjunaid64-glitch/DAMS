@@ -10,6 +10,12 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal NetProfit { get; set; }
         public decimal OutstandingAmount { get; set; }
         public decimal OverdueAmount { get; set; }
+
+        // Populated only when a single finance account is selected. Opening balance and the
+        // balance accumulated up to the end of the selected period (period start is ignored so
+        // the figure is a true running balance, not a period delta).
+        public decimal? AccountOpeningBalance { get; set; }
+        public decimal? AccountCurrentBalance { get; set; }
     }
 
     /// <summary>A single row in the revenue table (automatic payment OR manual revenue).</summary>
@@ -34,6 +40,10 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <summary>Set for manual revenue rows so they can be edited/deleted from the UI.</summary>
         public int? ManualRevenueId { get; set; }
 
+        public int? FinanceAccountId { get; set; }
+        public string? FinanceAccountName { get; set; }
+        public string? AccountHolderName { get; set; }
+
         public FinanceAttachmentDto? Attachment { get; set; }
     }
 
@@ -48,6 +58,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal Amount { get; set; }
         public string? Description { get; set; }
         public string? Reference { get; set; }
+        public int? FinanceAccountId { get; set; }
+        public string? FinanceAccountName { get; set; }
+        public string? AccountHolderName { get; set; }
         public FinanceAttachmentDto? Attachment { get; set; }
     }
 

@@ -7,6 +7,9 @@ namespace DAMS.Domain.Entities
         // Nullable: company-wide costs (salary, marketing, office) need not be tied to a project.
         public int? ProjectId { get; set; }
 
+        // Nullable for legacy and system-generated expenses that predate account assignment.
+        public int? FinanceAccountId { get; set; }
+
         public decimal Amount { get; set; }
 
         public string Category { get; set; } = string.Empty;
@@ -26,5 +29,7 @@ namespace DAMS.Domain.Entities
         public Project? Project { get; set; }
 
         public FinanceAttachment? Attachment { get; set; }
+
+        public FinanceAccount? FinanceAccount { get; set; }
     }
 }
