@@ -112,9 +112,7 @@ export default function EmployeeDetailPage({ user }: Props) {
   return (
     <>
       {/* Workspace Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
+      <Container className="border-b border-[var(--border)] pt-8 pb-6 sm:pt-10">
           {/* Breadcrumb */}
           <div className="mb-4 flex items-center gap-2 text-sm text-[var(--text-muted)]">
             <button onClick={() => navigate("/employees")} className="hover:text-[var(--text-primary)] transition-colors">Employees</button>
@@ -166,8 +164,7 @@ export default function EmployeeDetailPage({ user }: Props) {
               )}
             </div>
           </div>
-        </Container>
-      </div>
+      </Container>
 
       {/* Error */}
       {error && (

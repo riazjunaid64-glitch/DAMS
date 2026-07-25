@@ -184,38 +184,31 @@ export default function EmployeesPage({ user }: Props) {
   return (
     <>
       {/* Page Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-3 py-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">Admin Module</span>
-              </div>
-              <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Employees</h1>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
-                {employees.length} team member{employees.length !== 1 ? "s" : ""} - {activeCount} active
-              </p>
-            </div>
-            {activeTab === "team" && (
-              <Button onClick={() => setShowForm(v => !v)}>
-                {showForm ? (
-                  <>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                    Cancel
-                  </>
-                ) : (
-                  <>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                    Add Employee
-                  </>
-                )}
-              </Button>
-            )}
+      <Container className="pt-8 sm:pt-10">
+        <div className="flex flex-col gap-4 border-b border-[var(--border)] pb-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Employees</h1>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              {employees.length} team member{employees.length !== 1 ? "s" : ""} - {activeCount} active
+            </p>
           </div>
-        </Container>
-      </div>
+          {activeTab === "team" && (
+            <Button onClick={() => setShowForm(v => !v)}>
+              {showForm ? (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  Cancel
+                </>
+              ) : (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Add Employee
+                </>
+              )}
+            </Button>
+          )}
+        </div>
+      </Container>
 
       <TabLayout
         tabs={[

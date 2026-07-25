@@ -5,6 +5,8 @@ import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
+import StatCard from "../lib/StatCard.tsx";
+import FinanceOverviewCharts from "../components/FinanceOverviewCharts.tsx";
 import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
@@ -389,11 +391,11 @@ export default function FinanceDashboardPage({ user }: Props) {
   const summaryCards = useMemo(() => {
     const s = summary;
     return [
-      { label: "Total Revenue", value: s?.totalRevenue ?? 0, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", view: "revenue" as View },
-      { label: "Total Expenses", value: s?.totalExpenses ?? 0, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", view: "expense" as View },
-      { label: "Net Profit", value: s?.netProfit ?? 0, color: (s?.netProfit ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20", view: "netProfit" as View },
-      { label: "Outstanding", value: s?.outstandingAmount ?? 0, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", view: "outstanding" as View },
-      { label: "Overdue", value: s?.overdueAmount ?? 0, color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20", view: "overdue" as View },
+      { label: "Total Revenue", value: s?.totalRevenue ?? 0, tone: "emerald" as const, view: "revenue" as View },
+      { label: "Total Expenses", value: s?.totalExpenses ?? 0, tone: "rose" as const, view: "expense" as View },
+      { label: "Net Profit", value: s?.netProfit ?? 0, tone: ((s?.netProfit ?? 0) >= 0 ? ("indigo" as const) : ("rose" as const)), view: "netProfit" as View },
+      { label: "Outstanding", value: s?.outstandingAmount ?? 0, tone: "amber" as const, view: "outstanding" as View },
+      { label: "Overdue", value: s?.overdueAmount ?? 0, tone: "orange" as const, view: "overdue" as View },
     ];
   }, [summary]);
 
@@ -730,9 +732,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   return (
     <>
       {/* Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
+      <Container className="pt-8 sm:pt-10">
           <div>
             {/* Filters */}
             <div className="flex w-full flex-wrap items-end gap-3">
@@ -803,37 +803,30 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
 
           {/* Summary cards */}
-          <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-            {summaryCards.map((card) => {
-              const active = view === card.view;
-              return (
-                <button
-                  key={card.label}
-                  type="button"
-                  onClick={() => focusView(card.view)}
-                  className={`cursor-pointer rounded-xl border bg-[var(--bg-card)] px-4 py-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${card.border} ${
-                    active ? "ring-2 ring-[var(--accent)]" : ""
-                  }`}
-                >
-                  <p className="text-xs text-[var(--text-muted)]">
-                    {card.label}
-                    <span className="ml-1 opacity-50">›</span>
-                  </p>
-                  <p className={`mt-1.5 text-lg font-bold sm:text-xl ${card.color}`}>
-                    {summaryLoading ? "…" : formatMoney(card.value)}
-                  </p>
-                </button>
-              );
-            })}
+          <div className="stat-grid stat-grid--5 mt-6">
+            {summaryCards.map((card) => (
+              <StatCard
+                key={card.label}
+                label={card.label}
+                tone={card.tone}
+                active={view === card.view}
+                onClick={() => focusView(card.view)}
+                value={summaryLoading ? "…" : formatMoney(card.value)}
+              />
+            ))}
           </div>
 
-          {summary && (
-            <p className="mt-3 text-xs text-[var(--text-muted)]">
-              Revenue breakdown: {formatMoney(summary.automaticRevenue)} from payments
-              {" + "}
-              {formatMoney(summary.manualRevenue)} manual
-            </p>
-          )}
+          <FinanceOverviewCharts
+            totalRevenue={summary?.totalRevenue ?? 0}
+            totalExpenses={summary?.totalExpenses ?? 0}
+            netProfit={summary?.netProfit ?? 0}
+            automaticRevenue={summary?.automaticRevenue ?? 0}
+            manualRevenue={summary?.manualRevenue ?? 0}
+            outstandingAmount={summary?.outstandingAmount ?? 0}
+            overdueAmount={summary?.overdueAmount ?? 0}
+            formatMoney={formatMoney}
+            loading={summaryLoading}
+          />
 
           {summary && summary.accountCurrentBalance != null && (
             <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
@@ -851,8 +844,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               </div>
             </div>
           )}
-        </Container>
-      </div>
+      </Container>
 
       {/* Content */}
       <Container className="py-8">

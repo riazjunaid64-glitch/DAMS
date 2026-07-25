@@ -4,6 +4,7 @@ import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
+import StatCard from "../lib/StatCard.tsx";
 import { formatPkr } from "../utils/currency.ts";
 
 interface BookingRequest {
@@ -175,60 +176,56 @@ export default function BookingRequestsPage({ user }: Props) {
   return (
     <>
       {/* Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-3 py-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
-                  Admin Module
-                </span>
-              </div>
-              <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
-                Booking Requests
-              </h1>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
-                Review and manage customer booking requests
-              </p>
-            </div>
+      <Container className="pt-8 sm:pt-10">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
+              Booking Requests
+            </h1>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              Review and manage customer booking requests
+            </p>
           </div>
+        </div>
 
-          {/* Stats Cards */}
-          {stats && (
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {[
-                { filter: "Pending" as const, label: "Pending", value: stats.pending, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", activeBorder: "border-amber-400/60", icon: <path d="M12 8v4l2.5 2.5"/>, circle: true },
-                { filter: "Approved" as const, label: "Approved", value: stats.approved, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", activeBorder: "border-emerald-400/60", icon: <path d="M20 6 9 17l-5-5"/>, circle: false },
-                { filter: "Rejected" as const, label: "Rejected", value: stats.rejected, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", activeBorder: "border-rose-400/60", icon: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>, circle: false },
-                { filter: "all" as const, label: "Total", value: stats.total, color: "text-[var(--accent)]", bg: "bg-[var(--accent-glow)]", border: "border-[var(--accent-glow-strong)]", activeBorder: "border-[var(--accent)]", icon: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>, circle: false },
-              ].map((stat) => (
-                <button
-                  key={stat.label}
-                  type="button"
-                  onClick={() => { setActiveFilter(stat.filter); setPage(1); }}
-                  className={`flex items-center gap-4 rounded-xl border bg-[var(--bg-card)] px-4 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${
-                    activeFilter === stat.filter ? stat.activeBorder : stat.border
-                  }`}
-                  aria-pressed={activeFilter === stat.filter}
-                >
-                  <div className={`flex h-10 w-10 items-center justify-center rounded-full ${stat.bg} ${stat.color}`}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      {stat.circle && <circle cx="12" cy="12" r="9" />}
-                      {stat.icon}
-                    </svg>
-                  </div>
-                  <div>
-                    <p className={`text-xl font-bold ${stat.color}`}>{stat.value}</p>
-                    <p className="text-xs text-[var(--text-muted)]">{stat.label}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </Container>
-      </div>
+        {/* Stats Cards */}
+        {stats && (
+          <div className="stat-grid mt-6">
+            <StatCard
+              label="Pending"
+              value={stats.pending}
+              tone="amber"
+              active={activeFilter === "Pending"}
+              onClick={() => { setActiveFilter("Pending"); setPage(1); }}
+              icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v4l2.5 2.5"/></svg>}
+            />
+            <StatCard
+              label="Approved"
+              value={stats.approved}
+              tone="emerald"
+              active={activeFilter === "Approved"}
+              onClick={() => { setActiveFilter("Approved"); setPage(1); }}
+              icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>}
+            />
+            <StatCard
+              label="Rejected"
+              value={stats.rejected}
+              tone="rose"
+              active={activeFilter === "Rejected"}
+              onClick={() => { setActiveFilter("Rejected"); setPage(1); }}
+              icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>}
+            />
+            <StatCard
+              label="Total"
+              value={stats.total}
+              tone="accent"
+              active={activeFilter === "all"}
+              onClick={() => { setActiveFilter("all"); setPage(1); }}
+              icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>}
+            />
+          </div>
+        )}
+      </Container>
 
       {/* Content */}
       <Container className="py-8">

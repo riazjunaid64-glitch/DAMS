@@ -134,21 +134,16 @@ export default function SiteFooter({ navLinks }: SiteFooterProps) {
 
       <div className="site-footer__bar">
         <Container className="site-footer__bar-inner">
-          <p>
-            © {new Date().getFullYear()} All Rights Reserved | {SITE_CONTACT.brandName} Management System | Made by{" "}
-            <span className="site-footer__credit">Junaid Riaz</span>
-          </p>
+          <p>© {new Date().getFullYear()} {SITE_CONTACT.brandName}. All rights reserved.</p>
           <ul className="site-footer__bar-links">
             <li>
-              <Link to="/contact">Send Message</Link>
+              <Link to="/about">About</Link>
             </li>
             <li>
-              <a href={`tel:${SITE_CONTACT.phoneTel}`}>Phone Call</a>
+              <Link to="/projects">Projects</Link>
             </li>
             <li>
-              <a href={SITE_CONTACT.whatsappUrl} target="_blank" rel="noopener noreferrer">
-                Whatsapp Chat
-              </a>
+              <Link to="/contact">Contact</Link>
             </li>
           </ul>
         </Container>

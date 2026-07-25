@@ -195,7 +195,7 @@ export default function CustomerDetailPage({ user }: Props) {
 
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !saving && setEditing(false)}>
-          <div className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-[var(--text-heading)]">Edit Customer</h3>
             <p className="mt-1 text-sm text-[var(--text-muted)]">Father / Husband name appears on official payment receipts.</p>
 
