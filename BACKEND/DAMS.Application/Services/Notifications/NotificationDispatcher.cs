@@ -29,6 +29,7 @@ namespace DAMS.Application.Services.Notifications
         private Dictionary<(int UserId, NotificationCategory Category), NotificationPreference>? _preferences;
         private bool? _emailGloballyOn;
         private bool? _pushGloballyOn;
+        private bool? _schemaAvailable;
 
         /// <summary>Users to nudge once the caller's own SaveChanges succeeds.</summary>
         private readonly HashSet<int> _pendingRealtime = new();
@@ -59,6 +60,9 @@ namespace DAMS.Application.Services.Notifications
             var hasUser = request.RecipientUserId is > 0;
             var hasAddress = SmtpEmailSender.IsValidAddress(request.RecipientEmail);
             if (!hasUser && !hasAddress)
+                return false;
+
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
                 return false;
 
             var key = LeadContactNormalizer.Limit(request.DedupKey, 200);
@@ -295,6 +299,36 @@ namespace DAMS.Application.Services.Notifications
             // The column is bounded; an oversized payload loses its variables rather than
             // failing the business operation that raised it.
             return json.Length <= 4000 ? json : null;
+        }
+
+        private async Task<bool> NotificationSchemaExistsAsync(CancellationToken cancellationToken)
+        {
+            if (_schemaAvailable.HasValue)
+                return _schemaAvailable.Value;
+
+            var connection = _context.Database.GetDbConnection();
+            await _context.Database.OpenConnectionAsync(cancellationToken);
+            try
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT CASE WHEN
+                        OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[NotificationDeliveries]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[NotificationRules]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[NotificationPreferences]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[NotificationSettings]', N'U') IS NOT NULL
+                    THEN 1 ELSE 0 END
+                    """;
+
+                var result = await command.ExecuteScalarAsync(cancellationToken);
+                _schemaAvailable = Convert.ToInt32(result) == 1;
+                return _schemaAvailable.Value;
+            }
+            finally
+            {
+                await _context.Database.CloseConnectionAsync();
+            }
         }
 
         /// <summary>Removes rows staged for a dispatch that lost a uniqueness race, so the

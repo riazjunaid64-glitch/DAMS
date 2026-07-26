@@ -24,6 +24,7 @@ namespace DAMS.Application.Services.Notifications
         private readonly NotificationSettingsStore _settings;
         private readonly TimeProvider _clock;
         private readonly ILogger<NotificationEventService> _logger;
+        private bool? _schemaAvailable;
 
         public NotificationEventService(
             AppDbContext context,
@@ -43,6 +44,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task NotifyPaymentRecordedAsync(int paymentId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var payment = await _context.Payments
                 .AsNoTracking()
                 .Where(p => p.Id == paymentId)
@@ -110,6 +114,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> ReconcilePaymentReceiptsAsync(int maxRows, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return 0;
+
             var missing = await _context.Payments
                 .AsNoTracking()
                 .Where(p => !_context.Notifications.Any(n =>
@@ -130,6 +137,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<int> ReconcileBusinessEventsAsync(
             int maxRows, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return 0;
+
             var rawCutoff = await _settings.GetAsync(NotificationSettingKeys.PlatformActivatedAt, cancellationToken);
             var cutoff = DateTime.TryParse(
                 rawCutoff,
@@ -269,6 +279,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task NotifyBookingStatusAsync(
             int bookingId, NotificationType type, string? reason, int? actorUserId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var booking = await _context.Bookings
                 .AsNoTracking()
                 .Where(b => b.Id == bookingId)
@@ -329,6 +342,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task NotifyBookingRequestReceivedAsync(int bookingRequestId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var request = await _context.BookingRequests
                 .AsNoTracking()
                 .Where(r => r.Id == bookingRequestId)
@@ -369,6 +385,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task NotifyBookingRequestRejectedAsync(
             int bookingRequestId, string? reason, int? actorUserId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var request = await _context.BookingRequests
                 .AsNoTracking()
                 .Where(r => r.Id == bookingRequestId)
@@ -417,6 +436,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task NotifyEmployeeTaskAssignedAsync(int taskId, int? actorUserId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var task = await _context.EmployeeTasks
                 .AsNoTracking()
                 .Where(t => t.Id == taskId)
@@ -466,6 +488,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task NotifyProjectUpdatedAsync(
             int projectId, string summary, int? actorUserId, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return;
+
             var project = await _context.Projects
                 .AsNoTracking()
                 .Where(p => p.Id == projectId)
@@ -523,6 +548,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> RunInstallmentRemindersAsync(int maxRows, CancellationToken cancellationToken = default)
         {
+            if (!await NotificationSchemaExistsAsync(cancellationToken))
+                return 0;
+
             var rules = await _context.NotificationRules
                 .AsNoTracking()
                 .Where(r => r.Type == NotificationType.InstallmentDue || r.Type == NotificationType.InstallmentOverdue)
@@ -668,6 +696,50 @@ namespace DAMS.Application.Services.Notifications
             catch (Exception ex)
             {
                 _logger.LogError(ex, "The notification for {Context} could not be created. The business record is unaffected.", context);
+                return false;
+            }
+        }
+
+        private async Task<bool> NotificationSchemaExistsAsync(CancellationToken cancellationToken)
+        {
+            if (_schemaAvailable.HasValue)
+                return _schemaAvailable.Value;
+
+            try
+            {
+                var connection = _context.Database.GetDbConnection();
+                await _context.Database.OpenConnectionAsync(cancellationToken);
+                try
+                {
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = """
+                        SELECT CASE WHEN
+                            OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
+                            OBJECT_ID(N'[dbo].[NotificationDeliveries]', N'U') IS NOT NULL AND
+                            OBJECT_ID(N'[dbo].[NotificationRules]', N'U') IS NOT NULL AND
+                            OBJECT_ID(N'[dbo].[NotificationSettings]', N'U') IS NOT NULL
+                        THEN 1 ELSE 0 END
+                        """;
+
+                    var result = await command.ExecuteScalarAsync(cancellationToken);
+                    _schemaAvailable = Convert.ToInt32(result) == 1;
+                    return _schemaAvailable.Value;
+                }
+                finally
+                {
+                    await _context.Database.CloseConnectionAsync();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Notification event processing is paused because the notification schema check failed.");
+                _schemaAvailable = false;
                 return false;
             }
         }
