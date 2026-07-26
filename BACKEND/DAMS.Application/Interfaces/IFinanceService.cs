@@ -9,14 +9,14 @@ namespace DAMS.Application.Interfaces
         /// Builds the 5 summary cards (totals only) for the selected project
         /// (null = all projects) and optional date range. Table rows are paged separately.
         /// </summary>
-        Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to);
+        Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to, int? accountId = null, bool unassigned = false);
 
         // ── Paged table rows (infinite scroll). Each returns one page + HasMore. ──
-        Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take);
-        Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take);
+        Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
+        Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
         Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take);
         Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take);
-        Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take);
+        Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
 
         // Manual revenue CRUD
         Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);

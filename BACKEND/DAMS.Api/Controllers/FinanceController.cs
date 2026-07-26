@@ -25,9 +25,11 @@ namespace DAMS.Api.Controllers
         public async Task<IActionResult> GetSummary(
             [FromQuery] int? projectId,
             [FromQuery] DateTime? from,
-            [FromQuery] DateTime? to)
+            [FromQuery] DateTime? to,
+            [FromQuery] string? account)
         {
-            var result = await _financeService.GetSummaryAsync(projectId, from, to);
+            if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
+            var result = await _financeService.GetSummaryAsync(projectId, from, to, accountId, unassigned);
             return Ok(result);
         }
 
@@ -38,19 +40,23 @@ namespace DAMS.Api.Controllers
             [FromQuery] int? projectId,
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to,
+            [FromQuery] string? account,
             [FromQuery] int skip = 0,
             [FromQuery] int take = 100)
         {
             if (skip < 0) skip = 0;
             take = Math.Clamp(take, 1, 200);
+            if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
 
             return (view?.ToLowerInvariant()) switch
             {
-                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take)),
-                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take)),
+                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                "outstanding" when accountId.HasValue || unassigned => Ok(new PagedResult<OutstandingLineDto>()),
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
+                "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
-                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take)),
+                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take, accountId, unassigned)),
                 _ => BadRequest(new { message = "Unknown view. Use revenue, expense, outstanding, overdue or netProfit." })
             };
         }
@@ -69,6 +75,15 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        private static bool TryParseAccount(string? value, out int? accountId, out bool unassigned)
+        {
+            accountId = null; unassigned = false;
+            if (string.IsNullOrWhiteSpace(value) || value.Equals("all", StringComparison.OrdinalIgnoreCase)) return true;
+            if (value.Equals("unassigned", StringComparison.OrdinalIgnoreCase)) { unassigned = true; return true; }
+            if (int.TryParse(value, out var id) && id > 0) { accountId = id; return true; }
+            return false;
         }
 
         [HttpPost("revenue/form")]

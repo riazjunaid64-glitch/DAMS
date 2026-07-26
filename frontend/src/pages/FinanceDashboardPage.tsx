@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
@@ -23,6 +23,13 @@ interface ProjectOption {
   projectName: string;
 }
 
+interface FinanceAccountOption {
+  id: number;
+  name: string;
+  accountHolderName: string;
+  isActive: boolean;
+}
+
 interface FinancialSummary {
   totalRevenue: number;
   automaticRevenue: number;
@@ -31,6 +38,8 @@ interface FinancialSummary {
   netProfit: number;
   outstandingAmount: number;
   overdueAmount: number;
+  accountOpeningBalance: number | null;
+  accountCurrentBalance: number | null;
 }
 
 interface RevenueLine {
@@ -43,6 +52,9 @@ interface RevenueLine {
   reference: string | null;
   description: string | null;
   manualRevenueId: number | null;
+  financeAccountId: number | null;
+  financeAccountName: string | null;
+  accountHolderName: string | null;
   attachment: FinanceAttachmentInfo | null;
 }
 
@@ -55,6 +67,9 @@ interface ExpenseLine {
   amount: number;
   description: string | null;
   reference: string | null;
+  financeAccountId: number | null;
+  financeAccountName: string | null;
+  accountHolderName: string | null;
   attachment: FinanceAttachmentInfo | null;
 }
 
@@ -209,6 +224,7 @@ function periodRange(period: Period): { from: string; to: string } {
 interface RevenueFormState {
   id: number | null;
   projectId: string;
+  financeAccountId: string;
   amount: string;
   revenueType: string;
   description: string;
@@ -222,6 +238,7 @@ interface RevenueFormState {
 interface ExpenseFormState {
   id: number | null;
   projectId: string;
+  financeAccountId: string;
   amount: string;
   category: string;
   description: string;
@@ -235,6 +252,7 @@ interface ExpenseFormState {
 const emptyRevenueForm = (): RevenueFormState => ({
   id: null,
   projectId: "",
+  financeAccountId: "",
   amount: "",
   revenueType: REVENUE_TYPES[0],
   description: "",
@@ -248,6 +266,7 @@ const emptyRevenueForm = (): RevenueFormState => ({
 const emptyExpenseForm = (): ExpenseFormState => ({
   id: null,
   projectId: "",
+  financeAccountId: "",
   amount: "",
   category: EXPENSE_CATEGORIES[0],
   description: "",
@@ -263,7 +282,9 @@ export default function FinanceDashboardPage({ user }: Props) {
   const isAdmin = user?.role === "Admin";
 
   const [projects, setProjects] = useState<ProjectOption[]>([]);
+  const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
   const [projectId, setProjectId] = useState<string>("");
+  const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
 
@@ -273,7 +294,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
   const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
-    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate);
+    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter);
 
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
@@ -301,6 +322,15 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
+  const loadFinanceAccounts = useCallback(async () => {
+    try {
+      const res = await api("/api/finance/accounts/options?includeInactive=true");
+      if (res.ok) setFinanceAccounts(await res.json());
+    } catch {
+      /* The form will retain its validation message if accounts cannot be loaded. */
+    }
+  }, []);
+
   const loadSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
@@ -308,6 +338,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (projectId) params.set("projectId", projectId);
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
+      if (accountFilter) params.set("account", accountFilter);
       const qs = params.toString();
       const res = await api(`/api/Finance/summary${qs ? `?${qs}` : ""}`);
       if (!res.ok) throw new Error("Failed to load summary");
@@ -317,7 +348,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     } finally {
       setSummaryLoading(false);
     }
-  }, [projectId, fromDate, toDate]);
+  }, [projectId, fromDate, toDate, accountFilter]);
 
   // After a create/edit/delete, refresh both the totals and the visible rows.
   const refreshAll = useCallback(async () => {
@@ -331,7 +362,8 @@ export default function FinanceDashboardPage({ user }: Props) {
       return;
     }
     loadProjects();
-  }, [isAdmin, navigate, loadProjects]);
+    loadFinanceAccounts();
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -406,10 +438,15 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Revenue type is required.");
       return;
     }
+    if (!revenueForm.financeAccountId) {
+      setFormError("Select the account where this revenue was received.");
+      return;
+    }
     if (!startSaving()) return;
     try {
       const body = new FormData();
       if (revenueForm.projectId) body.append("projectId", revenueForm.projectId);
+      body.append("financeAccountId", revenueForm.financeAccountId);
       body.append("amount", String(amount));
       body.append("revenueType", revenueForm.revenueType.trim());
       body.append("description", revenueForm.description.trim());
@@ -445,10 +482,15 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Category is required.");
       return;
     }
+    if (!expenseForm.financeAccountId) {
+      setFormError("Select the account this expense was paid from.");
+      return;
+    }
     if (!startSaving()) return;
     try {
       const body = new FormData();
       if (expenseForm.projectId) body.append("projectId", expenseForm.projectId);
+      body.append("financeAccountId", expenseForm.financeAccountId);
       body.append("amount", String(amount));
       body.append("category", expenseForm.category.trim());
       body.append("description", expenseForm.description.trim());
@@ -493,6 +535,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     setRevenueForm({
       id: row.manualRevenueId,
       projectId: row.projectId != null ? String(row.projectId) : "",
+      financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
       revenueType: row.revenueType,
       description: row.description ?? "",
@@ -510,6 +553,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     setExpenseForm({
       id: row.id,
       projectId: row.projectId != null ? String(row.projectId) : "",
+      financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
       category: row.category,
       description: row.description ?? "",
@@ -565,6 +609,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).projectName}</span> },
+            { key: "account", header: "Received In", width: "minmax(150px,1fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "type", header: "Revenue Type", width: "minmax(150px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).revenueType}</span> },
             { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
             { key: "source", header: "Source", width: "150px", render: (r) => {
@@ -593,6 +638,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as ExpenseLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).projectName}</span> },
+            { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x=r as ExpenseLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).category}</span> },
             { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
             { key: "description", header: "Description", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).description || "—"}</span> },
@@ -687,24 +733,9 @@ export default function FinanceDashboardPage({ user }: Props) {
       <div className="relative overflow-hidden border-b border-[var(--border)]">
         <div className="absolute inset-0 mesh-gradient-subtle" />
         <Container className="relative py-8 sm:py-10">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-3 py-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
-                  Admin Module
-                </span>
-              </div>
-              <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
-                Financial Dashboard
-              </h1>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
-                Revenue, expenses and profitability across all projects
-              </p>
-            </div>
-
+          <div>
             {/* Filters */}
-            <div className="flex flex-wrap items-end gap-3">
+            <div className="flex w-full flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Period</label>
                 <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-1">
@@ -735,6 +766,14 @@ export default function FinanceDashboardPage({ user }: Props) {
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>{p.projectName}</option>
                   ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Account</label>
+                <select value={accountFilter} onChange={(e)=>setAccountFilter(e.target.value)} className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
+                  <option value="">All Accounts</option>
+                  {financeAccounts.map(a=><option key={a.id} value={a.id}>{a.name}{a.isActive?"":" (Inactive)"}</option>)}
+                  <option value="unassigned">Unassigned</option>
                 </select>
               </div>
               <div className="flex flex-col gap-1">
@@ -795,6 +834,23 @@ export default function FinanceDashboardPage({ user }: Props) {
               {formatMoney(summary.manualRevenue)} manual
             </p>
           )}
+
+          {summary && summary.accountCurrentBalance != null && (
+            <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Balance{(fromDate || toDate) ? " (to period end)" : ""}</p>
+                <p className={`text-lg font-bold ${summary.accountCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{formatMoney(summary.accountCurrentBalance)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Opening Balance</p>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">{formatMoney(summary.accountOpeningBalance ?? 0)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Net Movement{(fromDate || toDate) ? " (period)" : ""}</p>
+                <p className={`text-sm font-semibold ${summary.netProfit >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.netProfit)}</p>
+              </div>
+            </div>
+          )}
         </Container>
       </div>
 
@@ -808,6 +864,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             <p className="text-xs text-[var(--text-muted)]">Select a summary card above to switch views.</p>
           </div>
           <div className="flex gap-2">
+            <Link to="/finance/accounts"><Button size="sm" variant="ghost">Manage Accounts</Button></Link>
             <Button size="sm" variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
             </Button>
@@ -852,6 +909,10 @@ export default function FinanceDashboardPage({ user }: Props) {
               <FormSelect label="Project" value={revenueForm.projectId} onChange={(v) => setRevenueForm({ ...revenueForm, projectId: v })}>
                 <option value="">General (no specific project)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+              </FormSelect>
+              <FormSelect label="Received In Account" value={revenueForm.financeAccountId} onChange={(v) => setRevenueForm({ ...revenueForm, financeAccountId: v })}>
+                <option value="">Select account</option>
+                {financeAccounts.filter((a) => a.isActive || String(a.id) === revenueForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
               </FormSelect>
               <FormSelect
                 label="Revenue Type"
@@ -906,6 +967,10 @@ export default function FinanceDashboardPage({ user }: Props) {
               <FormSelect label="Project" value={expenseForm.projectId} onChange={(v) => setExpenseForm({ ...expenseForm, projectId: v })}>
                 <option value="">General (no specific project)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+              </FormSelect>
+              <FormSelect label="Paid From Account" value={expenseForm.financeAccountId} onChange={(v) => setExpenseForm({ ...expenseForm, financeAccountId: v })}>
+                <option value="">Select account</option>
+                {financeAccounts.filter((a) => a.isActive || String(a.id) === expenseForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
               </FormSelect>
               <FormSelect
                 label="Category"

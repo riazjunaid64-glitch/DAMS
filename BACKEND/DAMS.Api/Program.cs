@@ -152,6 +152,7 @@ builder.Services.AddScoped<IBookingRequestService, BookingRequestService>();
 builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
+builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
 builder.Services.AddScoped<ILeadUserContextResolver, LeadUserContextResolver>();
 builder.Services.AddScoped<ILeadNotificationService, LeadNotificationService>();
 builder.Services.AddScoped<ILeadService, LeadService>();

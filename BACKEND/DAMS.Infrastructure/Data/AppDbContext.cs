@@ -29,6 +29,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
+        public DbSet<FinanceAccount> FinanceAccounts { get; set; }
         public DbSet<Team> Teams { get; set; }
         public DbSet<LeadSource> LeadSources { get; set; }
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
@@ -470,11 +471,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(e => e.ProjectId);
                 entity.HasIndex(e => e.Date);
                 entity.HasIndex(e => e.Category);
+                entity.HasIndex(e => e.FinanceAccountId);
 
                 entity.HasOne(e => e.Project)
                       .WithMany()
                       .HasForeignKey(e => e.ProjectId)
                       .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(e => e.FinanceAccount)
+                      .WithMany(a => a.Expenses)
+                      .HasForeignKey(e => e.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<ManualRevenue>(entity =>
@@ -487,11 +494,31 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(r => r.ProjectId);
                 entity.HasIndex(r => r.Date);
                 entity.HasIndex(r => r.RevenueType);
+                entity.HasIndex(r => r.FinanceAccountId);
 
                 entity.HasOne(r => r.Project)
                       .WithMany()
                       .HasForeignKey(r => r.ProjectId)
                       .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(r => r.FinanceAccount)
+                      .WithMany(a => a.ManualRevenues)
+                      .HasForeignKey(r => r.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<FinanceAccount>(entity =>
+            {
+                entity.Property(a => a.Name).IsRequired().HasMaxLength(120);
+                entity.Property(a => a.AccountHolderName).IsRequired().HasMaxLength(150);
+                entity.Property(a => a.BankOrWalletName).HasMaxLength(150);
+                entity.Property(a => a.Description).HasMaxLength(1000);
+                entity.Property(a => a.OpeningBalance).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.RowVersion).IsRowVersion();
+
+                entity.HasIndex(a => a.Name).IsUnique();
+                entity.HasIndex(a => new { a.IsActive, a.Type });
+                entity.HasIndex(a => a.AccountHolderName);
             });
 
             modelBuilder.Entity<FinanceAttachment>(entity =>

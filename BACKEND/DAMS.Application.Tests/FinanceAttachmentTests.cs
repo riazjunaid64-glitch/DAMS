@@ -22,7 +22,7 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         var created = await service.CreateManualRevenueAsync(
-            new CreateManualRevenueDto { Amount = 1250, RevenueType = "Other Income" }, 1, Pdf("receipt.pdf"));
+            new CreateManualRevenueDto { FinanceAccountId = 1, Amount = 1250, RevenueType = "Other Income" }, 1, Pdf("receipt.pdf"));
 
         Assert.NotNull(created.Attachment);
         Assert.Equal("receipt.pdf", created.Attachment.FileName);
@@ -31,7 +31,7 @@ public sealed class FinanceAttachmentTests
 
         var updated = await service.UpdateManualRevenueAsync(
             created.Id,
-            new UpdateManualRevenueDto { Amount = 1300, RevenueType = "Other Income" },
+            new UpdateManualRevenueDto { FinanceAccountId = 1, Amount = 1300, RevenueType = "Other Income" },
             Pdf("replacement.pdf"));
         Assert.Equal("replacement.pdf", updated.Attachment?.FileName);
         Assert.Single(storage.Files);
@@ -49,14 +49,14 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         var created = await service.CreateExpenseAsync(
-            new CreateExpenseDto { Amount = 500, Category = "Office" }, 1, Pdf("bill.pdf"));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" }, 1, Pdf("bill.pdf"));
 
         Assert.NotNull(created.Attachment);
         Assert.Single(storage.Files);
 
         var removed = await service.UpdateExpenseAsync(
             created.Id,
-            new UpdateExpenseDto { Amount = 500, Category = "Office" },
+            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" },
             removeAttachment: true);
         Assert.Null(removed.Attachment);
         Assert.Empty(storage.Files);
@@ -64,7 +64,7 @@ public sealed class FinanceAttachmentTests
 
         await service.UpdateExpenseAsync(
             created.Id,
-            new UpdateExpenseDto { Amount = 500, Category = "Office" },
+            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" },
             Pdf("new-bill.pdf"));
         Assert.Single(storage.Files);
         await service.DeleteExpenseAsync(created.Id);
@@ -78,9 +78,9 @@ public sealed class FinanceAttachmentTests
         await using var context = CreateContext();
         var service = CreateService(context, new MemoryAttachmentStorage());
         var revenue = await service.CreateManualRevenueAsync(
-            new CreateManualRevenueDto { Amount = 100, RevenueType = "Other Income" }, 1);
+            new CreateManualRevenueDto { FinanceAccountId = 1, Amount = 100, RevenueType = "Other Income" }, 1);
         var expense = await service.CreateExpenseAsync(
-            new CreateExpenseDto { Amount = 100, Category = "Office" }, 1);
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1);
         Assert.Null(revenue.Attachment);
         Assert.Null(expense.Attachment);
 
@@ -100,15 +100,15 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage { FailSaves = true };
         var service = CreateService(context, storage);
         await Assert.ThrowsAsync<IOException>(() => service.CreateExpenseAsync(
-            new CreateExpenseDto { Amount = 100, Category = "Office" }, 1, Pdf("bill.pdf")));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1, Pdf("bill.pdf")));
         Assert.False(await context.Expenses.AnyAsync());
 
         storage.FailSaves = false;
         var revenue = await service.CreateManualRevenueAsync(
-            new CreateManualRevenueDto { Amount = 100, RevenueType = "Other Income" }, 1, Pdf("original.pdf"));
+            new CreateManualRevenueDto { FinanceAccountId = 1, Amount = 100, RevenueType = "Other Income" }, 1, Pdf("original.pdf"));
         storage.FailSaves = true;
         await Assert.ThrowsAsync<IOException>(() => service.UpdateManualRevenueAsync(
-            revenue.Id, new UpdateManualRevenueDto { Amount = 999, RevenueType = "Changed" }, Pdf("replacement.pdf")));
+            revenue.Id, new UpdateManualRevenueDto { FinanceAccountId = 1, Amount = 999, RevenueType = "Changed" }, Pdf("replacement.pdf")));
         context.ChangeTracker.Clear();
         var unchanged = await context.ManualRevenues.Include(r => r.Attachment).SingleAsync();
         Assert.Equal(100, unchanged.Amount);
@@ -119,11 +119,14 @@ public sealed class FinanceAttachmentTests
     public async Task DatabaseFailureAfterUpload_CleansUpNewFile()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
-        await using var context = new FailingDbContext(options) { FailNextSave = true };
+        await using var context = new FailingDbContext(options);
+        context.FinanceAccounts.Add(TestAccount());
+        await context.SaveChangesAsync();
+        context.FailNextSave = true;
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         await Assert.ThrowsAsync<DbUpdateException>(() => service.CreateManualRevenueAsync(
-            new CreateManualRevenueDto { Amount = 100, RevenueType = "Other Income" }, 1, Pdf("proof.pdf")));
+            new CreateManualRevenueDto { FinanceAccountId = 1, Amount = 100, RevenueType = "Other Income" }, 1, Pdf("proof.pdf")));
         Assert.Empty(storage.Files);
     }
 
@@ -134,7 +137,7 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         var expense = await service.CreateExpenseAsync(
-            new CreateExpenseDto { Amount = 100, Category = "Office" }, 1, Pdf("proof.pdf"));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1, Pdf("proof.pdf"));
         storage.Files.Clear();
         var error = await Assert.ThrowsAsync<FileNotFoundException>(() => service.GetAttachmentAsync(FinanceRecordKind.Expense, expense.Id));
         Assert.Contains("missing", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -196,11 +199,18 @@ public sealed class FinanceAttachmentTests
         }
     }
 
-    private static AppDbContext CreateContext() => new(
-        new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    private static AppDbContext CreateContext()
+    {
+        var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        context.FinanceAccounts.Add(TestAccount());
+        context.SaveChanges();
+        return context;
+    }
+
+    private static FinanceAccount TestAccount() => new() { Id = 1, Name = "Test Cash", AccountHolderName = "Test Holder", IsActive = true };
 
     private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage) =>
-        new(context, storage, NullLogger<FinanceService>.Instance);
+        new(context, storage, new FinanceAccountService(context), NullLogger<FinanceService>.Instance);
 
     private static FinanceAttachmentUpload Pdf(string name)
     {
