@@ -6,6 +6,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace DAMS.Application.Services
 {
@@ -110,6 +111,12 @@ namespace DAMS.Application.Services
                     br.Unit.UnitNumber.ToLower().Contains(term) ||
                     br.Unit.Project.ProjectName.ToLower().Contains(term));
             }
+
+            if (filter.RequestedFrom.HasValue)
+                query = query.Where(br => br.RequestedAt >= filter.RequestedFrom.Value);
+
+            if (filter.RequestedTo.HasValue)
+                query = query.Where(br => br.RequestedAt < filter.RequestedTo.Value);
 
             var totalCount = await query.CountAsync();
             var page = Math.Max(1, filter.Page);
@@ -318,7 +325,7 @@ namespace DAMS.Application.Services
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 await action();
                 await transaction.CommitAsync();
             });

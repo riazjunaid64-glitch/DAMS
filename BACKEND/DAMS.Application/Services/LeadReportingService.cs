@@ -53,7 +53,7 @@ namespace DAMS.Application.Services
             int? ClosureReasonId,
             string? ClosureReasonName,
             DateTime CreatedAt,
-            DateTime? UpdatedAt,
+            DateTime? CurrentStageEnteredAt,
             DateTime? AssignedAt,
             DateTime? FirstContactAt,
             DateTime? ConvertedAt);
@@ -77,7 +77,11 @@ namespace DAMS.Application.Services
                     l.ClosureReasonId,
                     l.ClosureReason != null ? l.ClosureReason.Name : null,
                     l.CreatedAt,
-                    l.UpdatedAt,
+                    l.Activities
+                        .Where(a => a.Type == LeadActivityType.StageChanged)
+                        .OrderByDescending(a => a.OccurredAt)
+                        .Select(a => (DateTime?)a.OccurredAt)
+                        .FirstOrDefault(),
                     l.AssignedAt,
                     l.FirstContactAt,
                     l.ConvertedAt))
@@ -255,7 +259,7 @@ namespace DAMS.Application.Services
                     Stage = g.Key,
                     Count = g.Count(),
                     // Stage aging: how long these leads have been sitting where they are.
-                    AverageAgeDays = Math.Round(g.Average(f => (now - (f.UpdatedAt ?? f.CreatedAt)).TotalDays), 2)
+                    AverageAgeDays = Math.Round(g.Average(f => (now - (f.CurrentStageEnteredAt ?? f.CreatedAt)).TotalDays), 2)
                 })
                 .OrderBy(r => r.Stage)
                 .ToList();

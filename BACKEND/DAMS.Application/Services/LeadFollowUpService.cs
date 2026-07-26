@@ -67,6 +67,7 @@ namespace DAMS.Application.Services
                 a => a.Notes = followUp.Title);
 
             await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
 
             activity.FollowUpId = followUp.Id;
 
@@ -92,7 +93,7 @@ namespace DAMS.Application.Services
             if (followUp.Status != LeadFollowUpStatus.Pending && followUp.Status != LeadFollowUpStatus.Missed)
                 throw new InvalidOperationException($"This follow-up is already {followUp.Status}.");
 
-            var lead = await LeadGate.LoadAsync(_context, followUp.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, followUp.LeadId, cancellationToken);
 
             followUp.Status = LeadFollowUpStatus.Completed;
             followUp.CompletedAt = DateTime.UtcNow;
@@ -135,7 +136,8 @@ namespace DAMS.Application.Services
                     a => a.Notes = next.Title);
 
             await _context.SaveChangesAsync(cancellationToken);
-            await RefreshNextActionAsync(lead, cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(followUp.Id, cancellationToken);
         }
@@ -151,7 +153,7 @@ namespace DAMS.Application.Services
             if (followUp.Status is LeadFollowUpStatus.Completed or LeadFollowUpStatus.Cancelled)
                 throw new InvalidOperationException($"This follow-up is already {followUp.Status}.");
 
-            var lead = await LeadGate.LoadAsync(_context, followUp.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, followUp.LeadId, cancellationToken);
 
             followUp.Status = LeadFollowUpStatus.Cancelled;
             followUp.Outcome = reason.Trim();
@@ -165,7 +167,8 @@ namespace DAMS.Application.Services
                 });
 
             await _context.SaveChangesAsync(cancellationToken);
-            await RefreshNextActionAsync(lead, cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(followUp.Id, cancellationToken);
         }
@@ -186,7 +189,7 @@ namespace DAMS.Application.Services
             if (followUp.Status is not (LeadFollowUpStatus.Pending or LeadFollowUpStatus.Missed))
                 throw new InvalidOperationException($"This follow-up is already {followUp.Status}.");
 
-            var lead = await LeadGate.LoadActiveAsync(_context, followUp.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, followUp.LeadId, cancellationToken);
             var previousDueAt = followUp.DueAt;
 
             followUp.DueAt = dto.DueAt;
@@ -205,7 +208,8 @@ namespace DAMS.Application.Services
                 });
 
             await _context.SaveChangesAsync(cancellationToken);
-            await RefreshNextActionAsync(lead, cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
             return await LoadAsync(followUp.Id, cancellationToken);
         }
 
@@ -246,27 +250,6 @@ namespace DAMS.Application.Services
                 .ToListAsync(cancellationToken);
         }
 
-        /// <summary>
-        /// Recomputes the lead's next action from whatever follow-ups are still open, so the
-        /// overdue dashboards and escalation scan never work from a stale date.
-        /// </summary>
-        private async Task RefreshNextActionAsync(Lead lead, CancellationToken cancellationToken)
-        {
-            var next = await _context.LeadFollowUps
-                .AsNoTracking()
-                .Where(f => f.LeadId == lead.Id && f.Status == LeadFollowUpStatus.Pending)
-                .OrderBy(f => f.DueAt)
-                .Select(f => new { f.DueAt, f.Title })
-                .FirstOrDefaultAsync(cancellationToken);
-
-            var tracked = await _context.Leads.FirstAsync(l => l.Id == lead.Id, cancellationToken);
-            tracked.NextActionAt = next?.DueAt;
-            tracked.NextActionSummary = next == null ? null : LeadContactNormalizer.Limit(next.Title, 300);
-            tracked.UpdatedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
         private async Task<LeadFollowUp> LoadForWriteAsync(int followUpId, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             LeadAccess.EnsureStaff(ctx);
@@ -275,8 +258,8 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(f => f.Id == followUpId, cancellationToken)
                 ?? throw new InvalidOperationException("Follow-up not found.");
 
-            // Reaching a follow-up must not bypass the lead's access rules.
-            await LeadGate.EnsureVisibleAsync(_context, followUp.LeadId, ctx, cancellationToken);
+            await LeadGate.EnsureCanWorkItemAsync(
+                _context, followUp.AssignedEmployeeId, followUp.LeadId, ctx, cancellationToken);
 
             return followUp;
         }

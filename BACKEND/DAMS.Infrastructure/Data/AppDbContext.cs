@@ -33,6 +33,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<LeadSource> LeadSources { get; set; }
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
         public DbSet<Lead> Leads { get; set; }
+        public DbSet<LeadExternalSubmission> LeadExternalSubmissions { get; set; }
         public DbSet<LeadActivity> LeadActivities { get; set; }
         public DbSet<LeadAssignmentHistory> LeadAssignmentHistories { get; set; }
         public DbSet<LeadCommunication> LeadCommunications { get; set; }
@@ -418,12 +419,9 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(br => br.RequestedAt);
                 entity.HasIndex(br => new { br.Status, br.RequestedAt });
                 entity.HasIndex(br => new { br.UserId, br.RequestedAt });
-                // A website enquiry is a lead, and several people may legitimately enquire
-                // about the same unit, so the old one-pending-request-per-unit rule is gone.
-                // Each request still maps to exactly one lead.
-                entity.HasIndex(br => br.LeadId)
-                      .IsUnique()
-                      .HasFilter("[LeadId] IS NOT NULL");
+                // A known lead may submit several website enquiries over time. Each request
+                // points at one lead; many requests may point at the same lead.
+                entity.HasIndex(br => br.LeadId);
 
                 entity.HasOne(br => br.Lead)
                       .WithMany()
@@ -629,6 +627,21 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(l => l.ConvertedBookingId)
                       .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadExternalSubmission>(entity =>
+            {
+                entity.Property(s => s.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(s => s.ExternalLeadId).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.ExternalFormReference).HasMaxLength(200);
+
+                entity.HasIndex(s => new { s.Provider, s.ExternalLeadId }).IsUnique();
+                entity.HasIndex(s => new { s.LeadId, s.ReceivedAt });
+
+                entity.HasOne(s => s.Lead)
+                      .WithMany(l => l.ExternalSubmissions)
+                      .HasForeignKey(s => s.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<LeadActivity>(entity =>

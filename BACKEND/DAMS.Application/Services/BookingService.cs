@@ -5,6 +5,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace DAMS.Application.Services
 {
@@ -190,7 +191,7 @@ namespace DAMS.Application.Services
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 await action();
                 await transaction.CommitAsync();
             });

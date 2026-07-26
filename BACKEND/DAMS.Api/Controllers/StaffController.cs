@@ -46,10 +46,13 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("customer-lookup")]
         [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public Task<List<CustomerLookupDto>> SearchCustomers(
+        public async Task<List<CustomerLookupDto>> SearchCustomers(
             [FromQuery] string search,
-            CancellationToken cancellationToken) =>
-            _staff.SearchCustomersAsync(search, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            var actor = await _resolver.ResolveAsync(User, cancellationToken);
+            return await _staff.SearchCustomersAsync(actor, search, cancellationToken);
+        }
 
         [HttpPost("accounts")]
         [Authorize(Roles = LeadRoles.Admin)]

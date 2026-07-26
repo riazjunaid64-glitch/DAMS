@@ -372,7 +372,7 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task MentioningAColleagueSharesTheLeadWithThem()
+    public async Task MentioningAColleagueNotifiesButDoesNotShareLeadAcrossTeams()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
@@ -380,15 +380,21 @@ public sealed class LeadAssignmentAndPipelineTests
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
 
-        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
         {
             Body = "Omar, can you cover the viewing?",
             MentionedUserIds = { h.OtherSalesUserId }
+        }, h.Sales));
+
+        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
+        {
+            Body = "Manager, please review.",
+            MentionedUserIds = { h.ManagerUserId }
         }, h.Sales);
 
-        Assert.NotNull(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
+        Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
         Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.OtherSalesUserId && n.Type == LeadNotificationType.MentionedInComment));
+            n => n.RecipientUserId == h.ManagerUserId && n.Type == LeadNotificationType.MentionedInComment));
     }
 
     [Fact]

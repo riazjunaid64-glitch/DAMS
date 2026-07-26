@@ -13,8 +13,6 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // A website enquiry is now a lead, and several people may enquire about the same
-            // unit, so the "one pending request per unit" rule no longer applies.
             migrationBuilder.DropIndex(
                 name: "IX_BookingRequests_UnitId_Status",
                 table: "BookingRequests");
@@ -347,6 +345,30 @@ namespace DAMS.Infrastructure.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "LeadExternalSubmissions",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    LeadId = table.Column<int>(type: "int", nullable: false),
+                    Provider = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: false),
+                    ExternalLeadId = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
+                    ExternalFormReference = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
+                    ExternalSubmittedAt = table.Column<DateTime>(type: "datetime2", nullable: true),
+                    ReceivedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_LeadExternalSubmissions", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_LeadExternalSubmissions_Leads_LeadId",
+                        column: x => x.LeadId,
+                        principalTable: "Leads",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "LeadFollowUps",
                 columns: table => new
                 {
@@ -596,9 +618,7 @@ namespace DAMS.Infrastructure.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_BookingRequests_LeadId",
                 table: "BookingRequests",
-                column: "LeadId",
-                unique: true,
-                filter: "[LeadId] IS NOT NULL");
+                column: "LeadId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_LeadActivities_LeadId_OccurredAt",
@@ -673,6 +693,17 @@ namespace DAMS.Infrastructure.Migrations
                 name: "IX_LeadDocuments_StoredFileName",
                 table: "LeadDocuments",
                 column: "StoredFileName",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_LeadExternalSubmissions_LeadId_ReceivedAt",
+                table: "LeadExternalSubmissions",
+                columns: new[] { "LeadId", "ReceivedAt" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_LeadExternalSubmissions_Provider_ExternalLeadId",
+                table: "LeadExternalSubmissions",
+                columns: new[] { "Provider", "ExternalLeadId" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
@@ -866,18 +897,20 @@ namespace DAMS.Infrastructure.Migrations
                 principalColumn: "UserId",
                 onDelete: ReferentialAction.SetNull);
 
-            // Units held at PendingReview by the old flow are released back to the market:
-            // an enquiry no longer takes a unit off sale. Units with a live booking are left
-            // exactly as they are. Re-running this is harmless.
-            migrationBuilder.Sql(@"
-UPDATE u
-SET u.[Status] = 'Available', u.[UpdatedAt] = SYSUTCDATETIME()
-FROM [Units] u
-WHERE u.[Status] = 'PendingReview'
-  AND NOT EXISTS (
-      SELECT 1 FROM [Bookings] b
-      WHERE b.[UnitId] = u.[Id] AND b.[Status] <> 4);
-");
+            // Units held at PendingReview by the old enquiry flow are released back to the
+            // market: a website enquiry now creates a lead instead of reserving stock.
+            // Units with a live booking are left alone.
+            migrationBuilder.Sql("""
+                UPDATE [Units]
+                SET [Status] = 'Available'
+                WHERE [Status] = 'PendingReview'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM [Bookings] AS [b]
+                      WHERE [b].[UnitId] = [Units].[Id]
+                        AND [b].[Status] <> 4
+                  );
+                """);
         }
 
         /// <inheritdoc />
@@ -906,6 +939,9 @@ WHERE u.[Status] = 'PendingReview'
 
             migrationBuilder.DropTable(
                 name: "LeadDocuments");
+
+            migrationBuilder.DropTable(
+                name: "LeadExternalSubmissions");
 
             migrationBuilder.DropTable(
                 name: "LeadFollowUps");
@@ -945,16 +981,6 @@ WHERE u.[Status] = 'PendingReview'
             migrationBuilder.DropIndex(
                 name: "IX_BookingRequests_LeadId",
                 table: "BookingRequests");
-
-            migrationBuilder.DeleteData(
-                table: "Roles",
-                keyColumn: "RoleId",
-                keyValue: 3);
-
-            migrationBuilder.DeleteData(
-                table: "Roles",
-                keyColumn: "RoleId",
-                keyValue: 4);
 
             migrationBuilder.DropColumn(
                 name: "TeamId",

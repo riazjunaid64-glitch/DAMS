@@ -37,12 +37,21 @@ namespace DAMS.Application.Services
             {
                 var existingId = await _context.LeadCommunications
                     .AsNoTracking()
-                    .Where(c => c.ExternalProvider == provider && c.ExternalMessageId == externalMessageId)
+                    .Where(c => c.ExternalProvider == provider
+                                && c.ExternalMessageId == externalMessageId
+                                && c.LeadId == leadId)
                     .Select(c => c.Id)
                     .FirstOrDefaultAsync(cancellationToken);
 
                 if (existingId != 0)
                     return await LoadAsync(existingId, cancellationToken);
+
+                var usedOnAnotherLead = await _context.LeadCommunications
+                    .AsNoTracking()
+                    .AnyAsync(c => c.ExternalProvider == provider
+                                   && c.ExternalMessageId == externalMessageId, cancellationToken);
+                if (usedOnAnotherLead)
+                    throw new InvalidOperationException("That external message is already linked to another lead.");
             }
 
             var communication = new LeadCommunication
@@ -88,8 +97,8 @@ namespace DAMS.Application.Services
 
             if (dto.NextActionAt.HasValue)
             {
-                lead.NextActionAt = dto.NextActionAt;
-                lead.NextActionSummary = LeadContactNormalizer.LimitOrNull(dto.NextAction, 300);
+                if (dto.NextActionAt <= DateTime.UtcNow.AddMinutes(-1))
+                    throw new InvalidOperationException("The next action must be scheduled for a future time.");
             }
 
             lead.UpdatedAt = DateTime.UtcNow;
@@ -106,6 +115,7 @@ namespace DAMS.Application.Services
 
             // The activity's link to the communication needs the generated id.
             activity.CommunicationId = communication.Id;
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(communication.Id, cancellationToken);
@@ -157,6 +167,10 @@ namespace DAMS.Application.Services
                 var invalid = mentionedUserIds.Except(validStaff).ToList();
                 if (invalid.Count > 0)
                     throw new InvalidOperationException("You can only mention colleagues who work on leads.");
+
+                foreach (var mentionedUserId in mentionedUserIds)
+                    await LeadGate.EnsureEmployeeCanBeMentionedAsync(
+                        _context, mentionedUserId, lead, ctx, cancellationToken);
             }
 
             var comment = new LeadComment

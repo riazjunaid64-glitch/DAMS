@@ -64,7 +64,9 @@ namespace DAMS.Application.Services
         public async Task<AuthResponseDto?> LoginAsync(LoginRequestDto request)
         {
             var normalizedEmail = request.Email.Trim().ToLowerInvariant();
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+            var user = await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.Email == normalizedEmail);
             if (user == null)
                 return null;
 
@@ -72,7 +74,9 @@ namespace DAMS.Application.Services
             if (!isValid)
                 return null;
 
-            var role = await _context.Roles.FirstAsync(r => r.RoleId == user.RoleId);
+            var role = user.Role;
+            if (!await StaffLoginIsAllowedAsync(user.UserId, role.Role_name))
+                return null;
 
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var refreshToken = _tokenService.GenerateRefreshToken();
@@ -92,14 +96,23 @@ namespace DAMS.Application.Services
         public async Task<AuthResponseDto?> RefreshTokenAsync(RefreshTokenRequestDto request)
         {
             var refreshTokenHash = HashRefreshToken(request.RefreshToken);
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == refreshTokenHash);
+            var user = await _context.Users
+                .Include(u => u.Role)
+                .FirstOrDefaultAsync(u => u.RefreshToken == refreshTokenHash);
             if (user == null)
                 return null;
 
             if (!user.RefreshTokenExpiresAt.HasValue || user.RefreshTokenExpiresAt <= DateTime.UtcNow)
                 return null;
 
-            var role = await _context.Roles.FirstAsync(r => r.RoleId == user.RoleId);
+            var role = user.Role;
+            if (!await StaffLoginIsAllowedAsync(user.UserId, role.Role_name))
+            {
+                user.RefreshToken = null;
+                user.RefreshTokenExpiresAt = null;
+                await _context.SaveChangesAsync();
+                return null;
+            }
 
             var accessToken = _tokenService.GenerateAccessToken(user, role.Role_name);
             var newRefreshToken = _tokenService.GenerateRefreshToken();
@@ -135,6 +148,15 @@ namespace DAMS.Application.Services
         {
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken));
             return Convert.ToBase64String(hash);
+        }
+
+        private async Task<bool> StaffLoginIsAllowedAsync(int userId, string roleName)
+        {
+            if (roleName is not ("Manager" or "Employee"))
+                return true;
+
+            return await _context.Employees
+                .AnyAsync(e => e.UserId == userId && e.Status == Domain.Enums.EmployeeStatus.Active);
         }
 
     }

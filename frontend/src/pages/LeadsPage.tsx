@@ -189,7 +189,7 @@ function LeadsWorkspace({ user }: { user: User }) {
           <LeadTable leads={data.items} />
         )}
 
-        {view === "list" && data && data.totalPages > 1 && (
+        {data && data.totalPages > 1 && (
           <div className="flex items-center justify-between text-sm text-[var(--text-muted)]">
             <span>{data.totalCount} leads</span>
             <div className="flex items-center gap-2">

@@ -14,6 +14,7 @@ namespace DAMS.Application.Interfaces
         Task<List<LinkableUserDto>> GetLinkableUsersAsync(CancellationToken cancellationToken = default);
 
         Task<List<CustomerLookupDto>> SearchCustomersAsync(
+            LeadUserContext actor,
             string search,
             CancellationToken cancellationToken = default);
 

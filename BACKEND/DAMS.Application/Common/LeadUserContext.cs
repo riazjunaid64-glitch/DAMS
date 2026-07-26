@@ -74,14 +74,10 @@ namespace DAMS.Application.Common
             if (ctx.IsEmployee)
             {
                 var employeeId = ctx.EmployeeId;
-                var userId = ctx.UserId;
-                // Assigned to them, or explicitly shared: given a task or visit on the lead,
-                // or tagged in an internal comment.
-                return query.Where(l =>
-                    (employeeId != null && l.AssignedEmployeeId == employeeId)
-                    || (employeeId != null && l.FollowUps.Any(f => f.AssignedEmployeeId == employeeId))
-                    || (employeeId != null && l.SiteVisits.Any(v => v.AssignedEmployeeId == employeeId))
-                    || l.Comments.Any(c => c.Mentions.Any(m => m.MentionedUserId == userId)));
+                // Employees see leads they own. Assigned tasks/visits and mentions can notify
+                // them or let them complete that one work item, but they do not silently grant
+                // full lead-record access across teams.
+                return query.Where(l => employeeId != null && l.AssignedEmployeeId == employeeId);
             }
 
             // Clients and any future non-staff role see no leads at all.

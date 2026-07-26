@@ -36,10 +36,7 @@ namespace DAMS.Application.Services
             LeadUserContext ctx,
             CancellationToken cancellationToken = default)
         {
-            var lead = await LeadGate.LoadAsync(_context, leadId, ctx, cancellationToken);
-
-            if (lead.Stage == LeadStage.Won)
-                throw new InvalidOperationException("This lead has been converted; attach further paperwork to the booking.");
+            var lead = await LeadGate.LoadActiveAsync(_context, leadId, ctx, cancellationToken);
 
             if (communicationId.HasValue)
             {
@@ -147,7 +144,7 @@ namespace DAMS.Application.Services
             if (!ctx.IsAdmin && !ctx.IsManager && document.UploadedByUserId != ctx.UserId)
                 throw new LeadAuthorizationException("You can only remove documents you uploaded.");
 
-            var lead = await LeadGate.LoadAsync(_context, document.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveAsync(_context, document.LeadId, ctx, cancellationToken);
             var storedFileName = document.StoredFileName;
 
             _context.LeadDocuments.Remove(document);

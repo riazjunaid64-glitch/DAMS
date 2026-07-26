@@ -219,21 +219,30 @@ public sealed class LeadEngagementTests
                 AssignedEmployeeId = h.OtherSalesEmployeeId
             }, h.Sales));
 
-        // A manager may, and the colleague is told.
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.FollowUps.CreateAsync(leadId,
+            new CreateLeadFollowUpDto
+            {
+                Title = "Manager handoff",
+                DueAt = DateTime.UtcNow.AddDays(1),
+                AssignedEmployeeId = h.OtherSalesEmployeeId
+            }, h.Manager));
+
+        // Admin can make an explicit cross-team work assignment, and the assignee can act on
+        // that work item without receiving full lead access.
         var task = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
         {
-            Title = "Cover the viewing",
+            Title = "Admin-approved cover",
             DueAt = DateTime.UtcNow.AddDays(1),
             AssignedEmployeeId = h.OtherSalesEmployeeId
-        }, h.Manager);
+        }, h.Admin);
 
         Assert.Equal(h.OtherSalesEmployeeId, task.AssignedEmployeeId);
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.OtherSalesUserId && n.Type == LeadNotificationType.TaskAssigned));
+        await h.FollowUps.CompleteAsync(task.Id, new CompleteLeadFollowUpDto { Outcome = "Covered." }, h.OtherSales);
+        Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
     }
 
     [Fact]
-    public async Task ATaskOnALeadGrantsTheAssigneeAccessToIt()
+    public async Task ATaskOnALeadDoesNotGrantTheAssigneeFullLeadAccess()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
@@ -245,9 +254,9 @@ public sealed class LeadEngagementTests
             Title = "Cover the viewing",
             DueAt = DateTime.UtcNow.AddDays(1),
             AssignedEmployeeId = h.OtherSalesEmployeeId
-        }, h.Manager);
+        }, h.Admin);
 
-        Assert.NotNull(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
+        Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
     }
 
     // ── Site visits ─────────────────────────────────────────────────────────────

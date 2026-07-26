@@ -96,6 +96,12 @@ export default function BookingRequestsPage({ user }: Props) {
       const params = new URLSearchParams();
       if (activeFilter !== "all") params.append("status", activeFilter);
       if (debouncedSearch.trim()) params.append("search", debouncedSearch.trim());
+      if (dateFilter) {
+        params.append("requestedFrom", `${dateFilter}T00:00:00`);
+        const next = new Date(`${dateFilter}T00:00:00`);
+        next.setDate(next.getDate() + 1);
+        params.append("requestedTo", next.toISOString().slice(0, 19));
+      }
       params.append("page", String(page));
       params.append("pageSize", "15");
 
@@ -110,7 +116,7 @@ export default function BookingRequestsPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [activeFilter, debouncedSearch, page]);
+  }, [activeFilter, debouncedSearch, dateFilter, page]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 300);
@@ -146,9 +152,7 @@ export default function BookingRequestsPage({ user }: Props) {
 
   if (!isAdmin) return null;
 
-  const visibleRequests = dateFilter
-    ? requests.filter((req) => req.requestedAt.slice(0, 10) === dateFilter)
-    : requests;
+  const visibleRequests = requests;
 
   return (
     <>
@@ -243,7 +247,7 @@ export default function BookingRequestsPage({ user }: Props) {
             <input
               type="date"
               value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
+              onChange={(e) => { setDateFilter(e.target.value); setPage(1); }}
               className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] py-2.5 pl-10 pr-4 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)] lg:w-56"
             />
           </div>

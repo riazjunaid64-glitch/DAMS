@@ -8,6 +8,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Data;
 
 namespace DAMS.Application.Services
 {
@@ -56,11 +57,20 @@ namespace DAMS.Application.Services
             var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
             if (provider != null && externalId != null)
             {
-                var existingExternal = await _context.Leads
+                var existingExternal = await _context.LeadExternalSubmissions
                     .AsNoTracking()
-                    .Where(l => l.ExternalProvider == provider && l.ExternalLeadId == externalId)
-                    .Select(l => l.Id)
+                    .Where(s => s.Provider == provider && s.ExternalLeadId == externalId)
+                    .Select(s => s.LeadId)
                     .FirstOrDefaultAsync(cancellationToken);
+
+                if (existingExternal == 0)
+                {
+                    existingExternal = await _context.Leads
+                        .AsNoTracking()
+                        .Where(l => l.ExternalProvider == provider && l.ExternalLeadId == externalId)
+                        .Select(l => l.Id)
+                        .FirstOrDefaultAsync(cancellationToken);
+                }
 
                 if (existingExternal != 0)
                 {
@@ -105,6 +115,7 @@ namespace DAMS.Application.Services
             await ApplyInitialAssignmentAsync(lead, dto, actor, cancellationToken);
 
             _context.Leads.Add(lead);
+            AddExternalReceipt(lead, dto);
 
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
                 $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
@@ -123,10 +134,10 @@ namespace DAMS.Application.Services
                 // website request flow may still have unsaved changes of its own — then
                 // return the winner instead of a 500.
                 DetachPendingInserts();
-                var winnerId = await _context.Leads
+                var winnerId = await _context.LeadExternalSubmissions
                     .AsNoTracking()
-                    .Where(l => l.ExternalProvider == provider && l.ExternalLeadId == externalId)
-                    .Select(l => l.Id)
+                    .Where(s => s.Provider == provider && s.ExternalLeadId == externalId)
+                    .Select(s => s.LeadId)
                     .FirstOrDefaultAsync(cancellationToken);
 
                 if (winnerId == 0)
@@ -341,6 +352,8 @@ namespace DAMS.Application.Services
             if (lead.PurchaseIntent == LeadPurchaseIntent.Unknown)
                 lead.PurchaseIntent = dto.PurchaseIntent;
 
+            AddExternalReceipt(lead, dto);
+
             // Adopt the provider reference when the lead has none, so replaying this exact
             // submission later is recognised as already ingested rather than re-enriching.
             var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
@@ -378,6 +391,25 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
+        }
+
+        private void AddExternalReceipt(Lead lead, LeadIntakeDto dto)
+        {
+            var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
+            var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
+            if (provider == null || externalId == null)
+                return;
+
+            _context.LeadExternalSubmissions.Add(new LeadExternalSubmission
+            {
+                Lead = lead,
+                LeadId = lead.Id,
+                Provider = provider,
+                ExternalLeadId = externalId,
+                ExternalFormReference = LeadContactNormalizer.Clean(dto.ExternalFormReference),
+                ExternalSubmittedAt = dto.ExternalSubmittedAt,
+                ReceivedAt = DateTime.UtcNow
+            });
         }
 
         private async Task<LeadDuplicateMatchDto?> FindDuplicateAsync(
@@ -1094,6 +1126,24 @@ namespace DAMS.Application.Services
                     InternalNotes = LeadContactNormalizer.Clean(dto.Notes)
                 }, ctx.UserId);
 
+                var linkedRequest = await _context.BookingRequests
+                    .Where(br => br.LeadId == lead.Id
+                                 && br.UnitId == dto.UnitId
+                                 && br.Status == BookingRequestStatus.Pending)
+                    .OrderBy(br => br.RequestedAt)
+                    .ThenBy(br => br.Id)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (linkedRequest != null)
+                {
+                    linkedRequest.Status = BookingRequestStatus.Approved;
+                    linkedRequest.ReviewedAt = DateTime.UtcNow;
+                    linkedRequest.ReviewedByUserId = ctx.UserId;
+                    linkedRequest.CustomerId = customerId;
+                    linkedRequest.UpdatedAt = DateTime.UtcNow;
+                    booking.BookingRequestId = linkedRequest.Id;
+                }
+
                 lead.Stage = LeadStage.Won;
                 lead.ConvertedAt = DateTime.UtcNow;
                 lead.ConvertedByUserId = ctx.UserId;
@@ -1213,9 +1263,16 @@ namespace DAMS.Application.Services
             {
                 // Re-runnable: an earlier partial run may already have produced the lead.
                 var externalId = request.Id.ToString();
-                var existing = await _context.Leads
-                    .FirstOrDefaultAsync(l => l.ExternalProvider == BookingRequestProvider
-                                              && l.ExternalLeadId == externalId, cancellationToken);
+                var existingLeadId = await _context.LeadExternalSubmissions
+                    .AsNoTracking()
+                    .Where(s => s.Provider == BookingRequestProvider && s.ExternalLeadId == externalId)
+                    .Select(s => s.LeadId)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                var existing = existingLeadId == 0
+                    ? await _context.Leads.FirstOrDefaultAsync(l => l.ExternalProvider == BookingRequestProvider
+                                                                    && l.ExternalLeadId == externalId, cancellationToken)
+                    : await _context.Leads.FirstOrDefaultAsync(l => l.Id == existingLeadId, cancellationToken);
 
                 if (existing != null)
                 {
@@ -1227,6 +1284,14 @@ namespace DAMS.Application.Services
                 var lead = BuildLeadFromBookingRequest(request, websiteSource, otherReasonId,
                     bookingId == 0 ? null : bookingId);
                 _context.Leads.Add(lead);
+                _context.LeadExternalSubmissions.Add(new LeadExternalSubmission
+                {
+                    Lead = lead,
+                    Provider = BookingRequestProvider,
+                    ExternalLeadId = request.Id.ToString(),
+                    ExternalSubmittedAt = request.RequestedAt,
+                    ReceivedAt = DateTime.UtcNow
+                });
 
                 LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
                     $"Lead created from historical website booking request #{request.Id}.", null,
@@ -1527,7 +1592,7 @@ namespace DAMS.Application.Services
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 await action();
                 await transaction.CommitAsync();
             });

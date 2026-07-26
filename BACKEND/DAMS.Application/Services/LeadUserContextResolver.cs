@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
+using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,8 +28,15 @@ namespace DAMS.Application.Services
             var employee = await _context.Employees
                 .AsNoTracking()
                 .Where(e => e.UserId == userId)
-                .Select(e => new { e.Id, e.TeamId, e.FullName })
+                .Select(e => new { e.Id, e.TeamId, e.FullName, e.Status })
                 .FirstOrDefaultAsync(cancellationToken);
+
+            if ((role.Equals(LeadRoles.Manager, StringComparison.OrdinalIgnoreCase)
+                    || role.Equals(LeadRoles.Employee, StringComparison.OrdinalIgnoreCase))
+                && employee?.Status != EmployeeStatus.Active)
+            {
+                throw new LeadAuthorizationException("Your staff account is not active. Ask an Admin to reactivate it.");
+            }
 
             var managedTeamIds = new List<int>();
             if (employee != null)

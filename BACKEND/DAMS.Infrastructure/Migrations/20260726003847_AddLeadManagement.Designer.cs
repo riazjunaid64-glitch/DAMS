@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260725212850_AddLeadManagement")]
+    [Migration("20260726003847_AddLeadManagement")]
     partial class AddLeadManagement
     {
         /// <inheritdoc />
@@ -298,9 +298,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("CustomerId");
 
-                    b.HasIndex("LeadId")
-                        .IsUnique()
-                        .HasFilter("[LeadId] IS NOT NULL");
+                    b.HasIndex("LeadId");
 
                     b.HasIndex("RequestedAt");
 
@@ -1497,6 +1495,47 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("LeadId", "UploadedAt");
 
                     b.ToTable("LeadDocuments");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadExternalSubmission", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ExternalFormReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalLeadId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("ExternalSubmittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LeadId", "ReceivedAt");
+
+                    b.HasIndex("Provider", "ExternalLeadId")
+                        .IsUnique();
+
+                    b.ToTable("LeadExternalSubmissions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
@@ -2711,6 +2750,17 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Lead");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadExternalSubmission", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("ExternalSubmissions")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Lead");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Employee", "AssignedEmployee")
@@ -2906,6 +2956,8 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Communications");
 
                     b.Navigation("Documents");
+
+                    b.Navigation("ExternalSubmissions");
 
                     b.Navigation("FollowUps");
 

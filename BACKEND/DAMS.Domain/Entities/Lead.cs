@@ -163,6 +163,8 @@ namespace DAMS.Domain.Entities
 
         public ICollection<LeadCommunication> Communications { get; set; } = new List<LeadCommunication>();
 
+        public ICollection<LeadExternalSubmission> ExternalSubmissions { get; set; } = new List<LeadExternalSubmission>();
+
         public ICollection<LeadFollowUp> FollowUps { get; set; } = new List<LeadFollowUp>();
 
         public ICollection<LeadSiteVisit> SiteVisits { get; set; } = new List<LeadSiteVisit>();

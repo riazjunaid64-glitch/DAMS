@@ -217,7 +217,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[Status] <> 4");
 
-                    b.ToTable("Bookings", (string)null);
+                    b.ToTable("Bookings");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.BookingRequest", b =>
@@ -295,9 +295,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("CustomerId");
 
-                    b.HasIndex("LeadId")
-                        .IsUnique()
-                        .HasFilter("[LeadId] IS NOT NULL");
+                    b.HasIndex("LeadId");
 
                     b.HasIndex("RequestedAt");
 
@@ -313,7 +311,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UserId", "RequestedAt");
 
-                    b.ToTable("BookingRequests", (string)null);
+                    b.ToTable("BookingRequests");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
@@ -405,7 +403,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Customers", (string)null);
+                    b.ToTable("Customers");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
@@ -473,7 +471,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[UserId] IS NOT NULL");
 
-                    b.ToTable("Employees", (string)null);
+                    b.ToTable("Employees");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeAttendance", b =>
@@ -511,7 +509,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "Date")
                         .IsUnique();
 
-                    b.ToTable("EmployeeAttendances", (string)null);
+                    b.ToTable("EmployeeAttendances");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeSalary", b =>
@@ -568,7 +566,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "PayYear", "PayMonth")
                         .IsUnique();
 
-                    b.ToTable("EmployeeSalaries", (string)null);
+                    b.ToTable("EmployeeSalaries");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeTask", b =>
@@ -618,7 +616,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("EmployeeTasks", (string)null);
+                    b.ToTable("EmployeeTasks");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Expense", b =>
@@ -665,7 +663,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("Expenses", (string)null);
+                    b.ToTable("Expenses");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAttachment", b =>
@@ -713,7 +711,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[ManualRevenueId] IS NOT NULL");
 
-                    b.ToTable("FinanceAttachments", null, t =>
+                    b.ToTable("FinanceAttachments", t =>
                         {
                             t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)");
                         });
@@ -759,7 +757,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "DueDate");
 
-                    b.ToTable("Installments", (string)null);
+                    b.ToTable("Installments");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Lead", b =>
@@ -1021,7 +1019,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Stage", "CreatedAt");
 
-                    b.ToTable("Leads", (string)null);
+                    b.ToTable("Leads");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadActivity", b =>
@@ -1098,7 +1096,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("LeadId", "OccurredAt");
 
-                    b.ToTable("LeadActivities", (string)null);
+                    b.ToTable("LeadActivities");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadAssignmentHistory", b =>
@@ -1142,7 +1140,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("LeadId", "AssignedAt");
 
-                    b.ToTable("LeadAssignmentHistories", (string)null);
+                    b.ToTable("LeadAssignmentHistories");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadClosureReason", b =>
@@ -1186,7 +1184,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("Code")
                         .IsUnique();
 
-                    b.ToTable("LeadClosureReasons", (string)null);
+                    b.ToTable("LeadClosureReasons");
 
                     b.HasData(
                         new
@@ -1342,7 +1340,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("LeadId", "CreatedAt");
 
-                    b.ToTable("LeadComments", (string)null);
+                    b.ToTable("LeadComments");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadCommentMention", b =>
@@ -1366,7 +1364,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("LeadCommentId", "MentionedUserId")
                         .IsUnique();
 
-                    b.ToTable("LeadCommentMentions", (string)null);
+                    b.ToTable("LeadCommentMentions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadCommunication", b =>
@@ -1432,7 +1430,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("LeadId", "OccurredAt");
 
-                    b.ToTable("LeadCommunications", (string)null);
+                    b.ToTable("LeadCommunications");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadDocument", b =>
@@ -1493,7 +1491,48 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("LeadId", "UploadedAt");
 
-                    b.ToTable("LeadDocuments", (string)null);
+                    b.ToTable("LeadDocuments");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadExternalSubmission", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ExternalFormReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalLeadId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("ExternalSubmittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LeadId", "ReceivedAt");
+
+                    b.HasIndex("Provider", "ExternalLeadId")
+                        .IsUnique();
+
+                    b.ToTable("LeadExternalSubmissions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
@@ -1561,7 +1600,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("AssignedEmployeeId", "Status", "DueAt");
 
-                    b.ToTable("LeadFollowUps", (string)null);
+                    b.ToTable("LeadFollowUps");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadNotification", b =>
@@ -1616,7 +1655,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RecipientUserId", "IsRead", "CreatedAt");
 
-                    b.ToTable("LeadNotifications", (string)null);
+                    b.ToTable("LeadNotifications");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadSiteVisit", b =>
@@ -1714,7 +1753,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("AssignedEmployeeId", "Status", "ScheduledAt");
 
-                    b.ToTable("LeadSiteVisits", (string)null);
+                    b.ToTable("LeadSiteVisits");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadSource", b =>
@@ -1758,7 +1797,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("Code")
                         .IsUnique();
 
-                    b.ToTable("LeadSources", (string)null);
+                    b.ToTable("LeadSources");
 
                     b.HasData(
                         new
@@ -1950,7 +1989,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RevenueType");
 
-                    b.ToTable("ManualRevenues", (string)null);
+                    b.ToTable("ManualRevenues");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -2063,7 +2102,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectName")
                         .IsUnique();
 
-                    b.ToTable("Projects", (string)null);
+                    b.ToTable("Projects");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
@@ -2135,7 +2174,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "IsCover");
 
-                    b.ToTable("ProjectMedias", (string)null);
+                    b.ToTable("ProjectMedias");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
@@ -2152,7 +2191,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("RoleId");
 
-                    b.ToTable("Roles", (string)null);
+                    b.ToTable("Roles");
 
                     b.HasData(
                         new
@@ -2209,7 +2248,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("Teams", (string)null);
+                    b.ToTable("Teams");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -2258,7 +2297,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "FloorNumber", "UnitNumber");
 
-                    b.ToTable("Units", (string)null);
+                    b.ToTable("Units");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
@@ -2330,7 +2369,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UnitId", "IsCover");
 
-                    b.ToTable("UnitMedias", (string)null);
+                    b.ToTable("UnitMedias");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -2366,7 +2405,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RoleId");
 
-                    b.ToTable("Users", (string)null);
+                    b.ToTable("Users");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
@@ -2708,6 +2747,17 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Lead");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadExternalSubmission", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("ExternalSubmissions")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Lead");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Employee", "AssignedEmployee")
@@ -2903,6 +2953,8 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Communications");
 
                     b.Navigation("Documents");
+
+                    b.Navigation("ExternalSubmissions");
 
                     b.Navigation("FollowUps");
 

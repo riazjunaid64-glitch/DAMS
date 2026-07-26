@@ -82,12 +82,15 @@ namespace DAMS.Application.Services
                 a => a.Notes = visit.MeetingLocation);
 
             await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
 
             activity.SiteVisitId = visit.Id;
             await NotifyEmployeeAsync(lead, employeeId, ctx, LeadNotificationType.TaskAssigned,
                 $"Site visit booked for {LeadService.FullName(lead)}",
                 $"{dto.ScheduledAt:yyyy-MM-dd HH:mm} UTC at {visit.MeetingLocation}.",
                 $"visit:{visit.Id}", cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);
@@ -104,7 +107,7 @@ namespace DAMS.Application.Services
             if (dto.ScheduledAt <= DateTime.UtcNow)
                 throw new InvalidOperationException("A site visit must be scheduled for a future time.");
 
-            var lead = await LeadGate.LoadActiveAsync(_context, visit.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, visit.LeadId, cancellationToken);
 
             var previous = visit.ScheduledAt;
             visit.OriginalScheduledAt ??= previous;
@@ -130,6 +133,8 @@ namespace DAMS.Application.Services
                 });
 
             await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);
         }
@@ -142,7 +147,7 @@ namespace DAMS.Application.Services
             if (visit.Status is not (LeadSiteVisitStatus.Scheduled or LeadSiteVisitStatus.Rescheduled or LeadSiteVisitStatus.Missed))
                 throw new InvalidOperationException($"A {visit.Status} visit cannot be completed.");
 
-            var lead = await LeadGate.LoadActiveAsync(_context, visit.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, visit.LeadId, cancellationToken);
 
             visit.Status = LeadSiteVisitStatus.Completed;
             visit.Outcome = dto.Outcome;
@@ -203,7 +208,7 @@ namespace DAMS.Application.Services
             if (visit.Status is LeadSiteVisitStatus.Completed or LeadSiteVisitStatus.Cancelled)
                 throw new InvalidOperationException($"This visit is already {visit.Status}.");
 
-            var lead = await LeadGate.LoadAsync(_context, visit.LeadId, ctx, cancellationToken);
+            var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, visit.LeadId, cancellationToken);
 
             visit.Status = status;
             visit.CancellationReason = dto.Reason.Trim();
@@ -226,6 +231,8 @@ namespace DAMS.Application.Services
                     $"missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
             }
 
+            await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);
@@ -252,14 +259,24 @@ namespace DAMS.Application.Services
             var now = DateTime.UtcNow;
             var until = now.AddDays(Math.Clamp(days, 1, 90));
 
-            // Scoped through the lead so nobody sees visits on leads they cannot access.
-            var visibleLeadIds = LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx).Select(l => l.Id);
-
-            return await _context.LeadSiteVisits
+            var query = _context.LeadSiteVisits
                 .AsNoTracking()
-                .Where(v => visibleLeadIds.Contains(v.LeadId)
-                            && (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled)
-                            && v.ScheduledAt >= now && v.ScheduledAt <= until)
+                .Where(v => (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled)
+                            && v.ScheduledAt >= now && v.ScheduledAt <= until);
+
+            if (ctx.IsEmployee)
+            {
+                query = ctx.EmployeeId == null
+                    ? query.Where(_ => false)
+                    : query.Where(v => v.AssignedEmployeeId == ctx.EmployeeId);
+            }
+            else if (!ctx.IsAdmin)
+            {
+                var visibleLeadIds = LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx).Select(l => l.Id);
+                query = query.Where(v => visibleLeadIds.Contains(v.LeadId));
+            }
+
+            return await query
                 .OrderBy(v => v.ScheduledAt)
                 .Select(LeadMapping.ToSiteVisitDto)
                 .ToListAsync(cancellationToken);
@@ -317,7 +334,8 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(v => v.Id == visitId, cancellationToken)
                 ?? throw new InvalidOperationException("Site visit not found.");
 
-            await LeadGate.EnsureVisibleAsync(_context, visit.LeadId, ctx, cancellationToken);
+            await LeadGate.EnsureCanWorkItemAsync(
+                _context, visit.AssignedEmployeeId, visit.LeadId, ctx, cancellationToken);
 
             return visit;
         }
@@ -330,3 +348,4 @@ namespace DAMS.Application.Services
                 .FirstAsync(cancellationToken);
     }
 }
+

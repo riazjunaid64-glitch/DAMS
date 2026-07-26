@@ -102,19 +102,47 @@ namespace DAMS.Application.Services
                 .ToListAsync(cancellationToken);
 
         public async Task<List<CustomerLookupDto>> SearchCustomersAsync(
+            LeadUserContext actor,
             string search,
             CancellationToken cancellationToken = default)
         {
+            LeadAccess.EnsureCanConvert(actor);
+
             var term = search?.Trim().ToLowerInvariant() ?? string.Empty;
             if (term.Length < 2)
                 return new List<CustomerLookupDto>();
 
-            return await _context.Customers
+            var query = _context.Customers
                 .AsNoTracking()
                 .Where(c => c.FullName.ToLower().Contains(term)
                     || c.Phone.Contains(term)
                     || (c.Email != null && c.Email.ToLower().Contains(term))
-                    || (c.CNIC != null && c.CNIC.Contains(term)))
+                    || (c.CNIC != null && c.CNIC.Contains(term)));
+
+            if (!actor.IsAdmin)
+            {
+                var visibleLeadCustomerIds = LeadAccess.Scope(_context.Leads.AsNoTracking(), actor)
+                    .Where(l => l.ConvertedCustomerId != null)
+                    .Select(l => l.ConvertedCustomerId!.Value);
+
+                var managedTeamIds = actor.ManagedTeamIds.ToArray();
+                var managedUserIds = _context.Employees
+                    .AsNoTracking()
+                    .Where(e => e.UserId != null
+                                && (e.Id == actor.EmployeeId
+                                    || (e.TeamId.HasValue && managedTeamIds.Contains(e.TeamId.Value))))
+                    .Select(e => e.UserId!.Value);
+
+                var managedBookingCustomerIds = _context.Bookings
+                    .AsNoTracking()
+                    .Where(b => b.AssignedSalesUserId != null && managedUserIds.Contains(b.AssignedSalesUserId.Value))
+                    .Select(b => b.CustomerId);
+
+                query = query.Where(c => visibleLeadCustomerIds.Contains(c.Id)
+                                         || managedBookingCustomerIds.Contains(c.Id));
+            }
+
+            return await query
                 .OrderBy(c => c.FullName)
                 .Take(10)
                 .Select(c => new CustomerLookupDto
