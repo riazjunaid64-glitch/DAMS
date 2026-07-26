@@ -17,6 +17,7 @@ namespace DAMS.Application.Services.Notifications
     {
         private readonly AppDbContext _context;
         private readonly TimeProvider _clock;
+        private bool? _schemaAvailable;
 
         public NotificationInboxService(AppDbContext context, TimeProvider clock)
         {
@@ -29,6 +30,15 @@ namespace DAMS.Application.Services.Notifications
         public async Task<NotificationPageDto> GetAsync(
             NotificationUserContext ctx, NotificationFilterDto filter, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+            {
+                return new NotificationPageDto
+                {
+                    Page = filter.Page < 1 ? 1 : filter.Page,
+                    PageSize = filter.PageSize is < 1 or > 100 ? 20 : filter.PageSize
+                };
+            }
+
             var query = Mine(ctx);
 
             if (filter.Category.HasValue)
@@ -72,6 +82,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<NotificationSummaryDto> GetSummaryAsync(
             NotificationUserContext ctx, int take, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return new NotificationSummaryDto();
+
             var unread = UnreadQuery(ctx);
 
             var byCategory = await unread
@@ -95,12 +108,17 @@ namespace DAMS.Application.Services.Notifications
             };
         }
 
-        public Task<int> GetUnreadCountAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default) =>
-            UnreadQuery(ctx).CountAsync(cancellationToken);
+        public async Task<int> GetUnreadCountAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default) =>
+            await SchemaExistsAsync(cancellationToken)
+                ? await UnreadQuery(ctx).CountAsync(cancellationToken)
+                : 0;
 
         public async Task<NotificationDto> MarkReadAsync(
             int notificationId, NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                throw new LeadNotFoundException("Notification not found.");
+
             var notification = await _context.Notifications
                 .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
                 // Deliberately indistinguishable from "does not exist": probing ids must not
@@ -121,6 +139,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<int> MarkAllReadAsync(
             NotificationUserContext ctx, NotificationCategory? category, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return 0;
+
             var query = _context.Notifications
                 .Where(n => n.RecipientUserId == ctx.UserId && !n.IsRead);
 
@@ -145,6 +166,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task ArchiveAsync(int notificationId, NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return;
+
             var notification = await _context.Notifications
                 .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
@@ -167,6 +191,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<NotificationOpenResult> OpenAsync(
             int notificationId, NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                throw new LeadNotFoundException("Notification not found.");
+
             var notification = await _context.Notifications
                 .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
@@ -408,6 +435,15 @@ namespace DAMS.Application.Services.Notifications
 
         private IQueryable<Notification> UnreadQuery(NotificationUserContext ctx) =>
             Mine(ctx).Where(n => !n.IsRead && !n.IsArchived);
+
+        private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
+        {
+            if (_schemaAvailable.HasValue)
+                return _schemaAvailable.Value;
+
+            _schemaAvailable = await NotificationSchemaProbe.ExistsAsync(_context, cancellationToken);
+            return _schemaAvailable.Value;
+        }
 
         private static readonly System.Linq.Expressions.Expression<Func<Notification, NotificationDto>> Projection =
             n => new NotificationDto

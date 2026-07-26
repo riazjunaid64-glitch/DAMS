@@ -17,6 +17,7 @@ namespace DAMS.Application.Services.Notifications
     {
         private readonly AppDbContext _context;
         private readonly NotificationSettingsStore _settings;
+        private bool? _schemaAvailable;
 
         public NotificationPreferenceService(AppDbContext context, NotificationSettingsStore settings)
         {
@@ -43,13 +44,16 @@ namespace DAMS.Application.Services.Notifications
         public async Task<List<NotificationPreferenceDto>> GetAsync(
             NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
-            var stored = await _context.NotificationPreferences
-                .AsNoTracking()
-                .Where(p => p.UserId == ctx.UserId)
-                .ToDictionaryAsync(p => p.Category, cancellationToken);
+            var schemaExists = await SchemaExistsAsync(cancellationToken);
+            var stored = schemaExists
+                ? await _context.NotificationPreferences
+                    .AsNoTracking()
+                    .Where(p => p.UserId == ctx.UserId)
+                    .ToDictionaryAsync(p => p.Category, cancellationToken)
+                : new Dictionary<NotificationCategory, NotificationPreference>();
 
-            var emailOn = await _settings.GetBoolAsync(NotificationSettingKeys.EmailEnabled, false, cancellationToken);
-            var pushOn = await _settings.GetBoolAsync(NotificationSettingKeys.PushEnabled, false, cancellationToken);
+            var emailOn = schemaExists && await _settings.GetBoolAsync(NotificationSettingKeys.EmailEnabled, false, cancellationToken);
+            var pushOn = schemaExists && await _settings.GetBoolAsync(NotificationSettingKeys.PushEnabled, false, cancellationToken);
 
             // A category is only offered when at least one notification in it can actually
             // reach this person on that channel.
@@ -81,6 +85,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<List<NotificationPreferenceDto>> UpdateAsync(
             NotificationUserContext ctx, UpdateNotificationPreferencesDto dto, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return await GetAsync(ctx, cancellationToken);
+
             var existing = await _context.NotificationPreferences
                 .Where(p => p.UserId == ctx.UserId)
                 .ToDictionaryAsync(p => p.Category, cancellationToken);
@@ -131,5 +138,14 @@ namespace DAMS.Application.Services.Notifications
                      or NotificationCategory.ProjectUpdates
                      or NotificationCategory.Announcements
                      or NotificationCategory.AccountAndSecurity;
+
+        private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
+        {
+            if (_schemaAvailable.HasValue)
+                return _schemaAvailable.Value;
+
+            _schemaAvailable = await NotificationSchemaProbe.ExistsAsync(_context, cancellationToken);
+            return _schemaAvailable.Value;
+        }
     }
 }

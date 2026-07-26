@@ -558,7 +558,9 @@ h1, h2, h3, h4, h5, h6 {
 /* ─── Site Header / Nav ─── */
 .site-nav {
   display: grid;
-  grid-template-columns: 1fr auto;
+  /* brand | menu-btn | bell — the mobile-only nav-links/actions panels are
+     display:none below 640px, so they don't consume a track. */
+  grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 1rem;
   width: 100%;
@@ -568,7 +570,9 @@ h1, h2, h3, h4, h5, h6 {
 
 @media (min-width: 640px) {
   .site-nav {
-    grid-template-columns: auto 1fr auto;
+    /* brand | links | actions | bell — menu-btn becomes display:none here,
+       so the track count must match what's actually visible at this width. */
+    grid-template-columns: auto 1fr auto auto;
     min-height: 4.5rem;
     padding: 0 2rem;
   }
@@ -593,7 +597,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .site-nav__actions,
-.site-nav__menu-btn {
+.site-nav__menu-btn,
+.site-nav__bell {
   justify-self: end;
 }
 

@@ -178,10 +178,8 @@ function App() {
             )}
           </div>
 
-          {/* The bell is mounted once, outside the responsive containers: two instances
-              would open two live streams and poll twice for the same person. */}
-          <div className="flex items-center gap-2">
-            {user && <NotificationBell signedIn />}
+          {/* Mobile Toggle — a direct grid child (matches .site-nav's column count at
+              each breakpoint; see index.css) and display:none above sm, same as before. */}
           <button
             type="button"
             className="site-nav__menu-btn inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-[var(--nav-text)] transition hover:bg-white/15 sm:hidden"
@@ -198,7 +196,14 @@ function App() {
               </svg>
             )}
           </button>
-          </div>
+
+          {/* The bell: its own grid column at every breakpoint (see .site-nav__bell in
+              index.css), mounted once so it never opens two live streams for one person. */}
+          {user && (
+            <div className="site-nav__bell">
+              <NotificationBell signedIn />
+            </div>
+          )}
         </div>
 
         {/* Mobile Menu */}

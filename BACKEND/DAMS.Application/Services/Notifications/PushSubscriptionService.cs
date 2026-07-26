@@ -20,6 +20,7 @@ namespace DAMS.Application.Services.Notifications
         private readonly NotificationSettingsStore _settings;
         private readonly IWebPushSender _push;
         private readonly NotificationOptions _options;
+        private bool? _schemaAvailable;
 
         public PushSubscriptionService(
             AppDbContext context,
@@ -35,6 +36,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<PushConfigDto> GetConfigAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return new PushConfigDto { Enabled = false, DisplayName = "DAMS" };
+
             var enabled = await _settings.GetBoolAsync(NotificationSettingKeys.PushEnabled, false, cancellationToken);
             var publicKey = await _settings.GetAsync(NotificationSettingKeys.PushVapidPublicKey, cancellationToken);
             var privateKey = await _settings.GetAsync(NotificationSettingKeys.PushVapidPrivateKey, cancellationToken);
@@ -65,6 +69,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task RegisterAsync(
             NotificationUserContext ctx, RegisterPushSubscriptionDto dto, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                throw new InvalidOperationException("Browser push is not configured for this database yet.");
+
             var endpoint = Validate(dto.Endpoint);
             var p256dh = RequireKey(dto.P256dh, "p256dh");
             var auth = RequireKey(dto.Auth, "auth");
@@ -123,6 +130,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task UnregisterAsync(NotificationUserContext ctx, string endpoint, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return;
+
             var normalized = LeadContactNormalizer.Clean(endpoint);
             if (normalized == null)
                 return;
@@ -141,6 +151,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> UnregisterAllAsync(int userId, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return 0;
+
             var subscriptions = await _context.PushSubscriptions
                 .Where(s => s.UserId == userId)
                 .ToListAsync(cancellationToken);
@@ -156,6 +169,9 @@ namespace DAMS.Application.Services.Notifications
         public async Task<List<PushDeviceDto>> GetMyDevicesAsync(
             NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return new List<PushDeviceDto>();
+
             var rows = await _context.PushSubscriptions
                 .AsNoTracking()
                 .Where(s => s.UserId == ctx.UserId)
@@ -176,6 +192,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> SendTestAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                throw new InvalidOperationException("Browser push is not configured for this database yet.");
+
             var config = await GetConfigAsync(ctx, cancellationToken);
             if (!config.Enabled)
                 throw new InvalidOperationException("Browser push is not enabled or not configured.");
@@ -239,6 +258,9 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<WebPushCredentials?> GetCredentialsAsync(CancellationToken cancellationToken = default)
         {
+            if (!await SchemaExistsAsync(cancellationToken))
+                return null;
+
             var publicKey = await _settings.GetAsync(NotificationSettingKeys.PushVapidPublicKey, cancellationToken);
             var privateKey = await _settings.GetAsync(NotificationSettingKeys.PushVapidPrivateKey, cancellationToken);
             var subject = await _settings.GetAsync(NotificationSettingKeys.PushVapidSubject, cancellationToken);
@@ -282,6 +304,15 @@ namespace DAMS.Application.Services.Notifications
             return Uri.TryCreate(value, UriKind.Absolute, out var uri)
                    && uri.Scheme == Uri.UriSchemeHttps
                    && !string.IsNullOrWhiteSpace(uri.Host);
+        }
+
+        private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
+        {
+            if (_schemaAvailable.HasValue)
+                return _schemaAvailable.Value;
+
+            _schemaAvailable = await NotificationSchemaProbe.ExistsAsync(_context, cancellationToken, includePush: true);
+            return _schemaAvailable.Value;
         }
 
         private string Validate(string? endpoint)
