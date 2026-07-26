@@ -274,7 +274,7 @@ function PendingCard({ item, onCancelled }: { item: JourneyItem; onCancelled: ()
 
   const handleCancel = async () => {
     if (!item.request) return;
-    if (!window.confirm("Withdraw this booking request? The unit will become available to other buyers.")) return;
+    if (!window.confirm("Withdraw this property inquiry? This will not change the unit's availability.")) return;
     setCancelling(true);
     setCancelError(null);
     try {
@@ -540,7 +540,7 @@ export default function MyProjectsPage({ user }: Props) {
           </div>
           <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">My Projects</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Track every property from booking request to possession ·{" "}
+            Track every property from initial inquiry to confirmed booking and possession ·{" "}
             <span className="text-[var(--text-secondary)]">{user.email}</span>
           </p>
 
@@ -586,7 +586,7 @@ export default function MyProjectsPage({ user }: Props) {
             </div>
             <h3 className="text-lg font-semibold text-[var(--text-heading)]">No projects yet</h3>
             <p className="mx-auto mt-2 max-w-md text-sm text-[var(--text-muted)]">
-              You haven&apos;t requested any units yet. Browse available properties and submit a booking request — it
+              You haven&apos;t made any property inquiries yet. Browse available properties and ask our sales team for details — it
               will appear here and you can track it all the way to possession.
             </p>
             <Button className="mt-6" onClick={() => navigate("/projects")}>

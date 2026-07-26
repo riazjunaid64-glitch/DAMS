@@ -23,6 +23,10 @@ namespace DAMS.Application.DTOs.BookingRequestDtos
 
         public string? SearchTerm { get; set; }
 
+        public DateTime? RequestedFrom { get; set; }
+
+        public DateTime? RequestedTo { get; set; }
+
         public int Page { get; set; } = 1;
 
         public int PageSize { get; set; } = 20;

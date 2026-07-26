@@ -5,6 +5,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace DAMS.Application.Services
 {
@@ -12,11 +13,38 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly ICustomerService _customerService;
+        private readonly INotificationEventService? _notifications;
 
-        public BookingService(AppDbContext context, ICustomerService customerService)
+        /// <param name="notifications">
+        /// Optional on purpose: booking and payment work must be able to run without the
+        /// notification platform present. Every call into it happens after the money is
+        /// committed and is wrapped so a notification problem cannot undo a payment.
+        /// </param>
+        public BookingService(AppDbContext context, ICustomerService customerService, INotificationEventService? notifications = null)
         {
             _context = context;
             _customerService = customerService;
+            _notifications = notifications;
+        }
+
+        /// <summary>
+        /// Raises a business notification after the fact. Deliberately swallowing: the
+        /// notification platform has its own reconciliation sweep for anything missed here,
+        /// and nothing it does may turn a successful payment into a failed request.
+        /// </summary>
+        private async Task NotifyQuietlyAsync(Func<INotificationEventService, Task> action)
+        {
+            if (_notifications == null)
+                return;
+
+            try
+            {
+                await action(_notifications);
+            }
+            catch (Exception)
+            {
+                // Intentionally ignored — see the reconciliation sweep.
+            }
         }
 
         public async Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId)
@@ -45,7 +73,7 @@ namespace DAMS.Application.Services
             }
             else if (dto.NewCustomer != null)
             {
-                customerId = await _customerService.FindOrCreateCustomerAsync(
+                var resolution = await _customerService.FindOrCreateCustomerAsync(
                     dto.NewCustomer.FullName,
                     dto.NewCustomer.Phone,
                     dto.NewCustomer.CNIC,
@@ -59,6 +87,7 @@ namespace DAMS.Application.Services
                     dto.NewCustomer.Nationality,
                     dto.NewCustomer.Occupation,
                     dto.NewCustomer.Whatsapp);
+                customerId = resolution.CustomerId;
             }
             else
             {
@@ -130,14 +159,12 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
-            // Wrapped in an execution strategy because the DbContext has retry-on-failure
-            // enabled, which is incompatible with a bare BeginTransactionAsync.
-            var strategy = _context.Database.CreateExecutionStrategy();
+            // Set inside the transaction, notified after it: the receipt notification must
+            // never be part of what makes the booking succeed or fail.
+            int? applicationPaymentId = null;
 
-            await strategy.ExecuteAsync(async () =>
+            await RunInTransactionAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
-
                 await PersistNewBookingAsync(booking, unit);
 
                 // Money collected with the application form is a real booking-amount payment —
@@ -170,53 +197,39 @@ namespace DAMS.Application.Services
                     }
 
                     await SaveWithUniqueReceiptNumberAsync(payment);
+                    applicationPaymentId = payment.Id;
                 }
-
-                await transaction.CommitAsync();
             });
+
+            if (applicationPaymentId.HasValue)
+                await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(applicationPaymentId.Value));
 
             return await GetResponseAsync(booking.Id);
         }
 
-        public async Task<BookingResponseDto> CreateBookingForApprovedRequestAsync(BookingRequest request, int customerId, int adminUserId)
+        /// <summary>
+        /// Runs booking persistence atomically. When a caller (lead conversion) has already
+        /// opened a transaction on this DbContext, the work joins that one instead — EF
+        /// rejects nested transactions, and the outer caller must be able to roll the
+        /// booking back with the rest of its own changes.
+        /// </summary>
+        private async Task RunInTransactionAsync(Func<Task> action)
         {
-            var unit = await _context.Units
-                .Include(u => u.Project)
-                .FirstOrDefaultAsync(u => u.Id == request.UnitId);
-
-            if (unit == null)
-                throw new InvalidOperationException("Unit not found.");
-
-            await EnsureNoActiveBookingAsync(unit.Id);
-
-            var booking = new Booking
+            if (_context.Database.CurrentTransaction != null)
             {
-                CustomerId = customerId,
-                UnitId = unit.Id,
-                BookingRequestId = request.Id,
-                Source = CustomerSource.Website,
-                Status = BookingStatus.AwaitingBookingAmount,
-                ListPrice = unit.Price,
-                AgreedSalePrice = unit.Price,
-                DiscountAmount = 0m,
-                BookingAmountRequired = 0m,
-                BookingAmountReceived = 0m,
-                TotalInstallmentAmount = unit.Price,
-                BookingDate = DateTime.UtcNow,
-                CustomerNotes = string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
-                CreatedByUserId = adminUserId,
-                CreatedAt = DateTime.UtcNow
-            };
+                await action();
+                return;
+            }
 
+            // Wrapped in an execution strategy because the DbContext has retry-on-failure
+            // enabled, which is incompatible with a bare BeginTransactionAsync.
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
-                await PersistNewBookingAsync(booking, unit);
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                await action();
                 await transaction.CommitAsync();
             });
-
-            return await GetResponseAsync(booking.Id);
         }
 
         public async Task<BookingResponseDto?> GetBookingByIdAsync(int id)
@@ -302,6 +315,9 @@ namespace DAMS.Application.Services
             booking.Unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.BookingCancelled, reason, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }
@@ -430,6 +446,9 @@ namespace DAMS.Application.Services
                     "This booking was updated by another payment. No payment was recorded; reload and try again.");
             }
 
+            // The money is committed. Everything below is best-effort.
+            await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(payment.Id));
+
             return await GetResponseAsync(booking.Id);
         }
 
@@ -450,6 +469,9 @@ namespace DAMS.Application.Services
             booking.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.PossessionGiven, null, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }
@@ -484,6 +506,9 @@ namespace DAMS.Application.Services
             booking.Unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.SaleCompleted, null, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }

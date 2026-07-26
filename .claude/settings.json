@@ -1,6 +1,17 @@
 {
   "permissions": {
     "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash",
+      "PowerShell",
+      "WebFetch",
+      "Agent",
+      "Artifact",
+      "Monitor",
       "Bash(ls DAMS.Api/wwwroot)",
       "Bash(find . -type d -name \"uploads\")",
       "WebFetch(domain:thedeenassociates.com)",
@@ -9,7 +20,15 @@
       "Bash(npm install *)",
       "Bash(node -e \"const b=require\\('bcryptjs'\\);const h=b.hashSync\\('1234',11\\);console.log\\(h\\);console.log\\('verify:',b.compareSync\\('1234',h\\)\\)\")",
       "Bash(dotnet ef *)",
-      "PowerShell(dotnet build \"c:\\\\Users\\\\PC\\\\Desktop\\\\DAMS\\\\BACKEND\" -v q 2>$null)"
+      "PowerShell(dotnet build \"c:\\\\Users\\\\PC\\\\Desktop\\\\DAMS\\\\BACKEND\" -v q 2>$null)",
+      "Bash(timeout 25 curl -s -o /dev/null -w \"nuget:%{http_code}\\\\n\" https://api.nuget.org/v3/index.json)",
+      "Bash(timeout 25 curl -s -o /dev/null -w \"npm:%{http_code}\\\\n\" https://registry.npmjs.org/)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git commit *)",
+      "PowerShell(git push *)",
+      "PowerShell(git commit *)"
     ]
   }
 }

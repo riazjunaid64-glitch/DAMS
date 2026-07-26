@@ -15,9 +15,10 @@ namespace DAMS.Application.Interfaces
 
         /// <summary>
         /// Finds an existing customer (by CNIC, then phone, then email) or creates a new one.
-        /// Returns the customer id. Used by booking and booking-request approval flows.
+        /// Used by booking, booking-request approval and lead conversion. The result states
+        /// whether a customer was created, which conversion has to report and audit.
         /// </summary>
-        Task<int> FindOrCreateCustomerAsync(
+        Task<CustomerResolution> FindOrCreateCustomerAsync(
             string fullName,
             string phone,
             string? cnic,

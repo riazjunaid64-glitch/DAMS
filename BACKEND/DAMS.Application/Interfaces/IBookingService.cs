@@ -8,12 +8,6 @@ namespace DAMS.Application.Interfaces
         /// <summary>Admin creates a booking for a walk-in / phone customer.</summary>
         Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId);
 
-        /// <summary>
-        /// Creates a booking from an approved booking request. Called by the
-        /// booking-request approval flow. Sets the unit to Reserved.
-        /// </summary>
-        Task<BookingResponseDto> CreateBookingForApprovedRequestAsync(BookingRequest request, int customerId, int adminUserId);
-
         Task<BookingResponseDto?> GetBookingByIdAsync(int id);
 
         Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter);

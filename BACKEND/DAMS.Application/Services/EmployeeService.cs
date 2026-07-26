@@ -11,10 +11,16 @@ namespace DAMS.Application.Services
     public class EmployeeService : IEmployeeService
     {
         private readonly AppDbContext _context;
+        private readonly INotificationEventService? _notifications;
 
-        public EmployeeService(AppDbContext context)
+        /// <param name="notifications">
+        /// Optional: employee administration must work with or without the notification
+        /// platform, so it is only ever called after the change is committed.
+        /// </param>
+        public EmployeeService(AppDbContext context, INotificationEventService? notifications = null)
         {
             _context = context;
+            _notifications = notifications;
         }
 
         // ─── Employee CRUD ───────────────────────────────────────────────────────
@@ -31,6 +37,8 @@ namespace DAMS.Application.Services
             if (dto.JoinDate.Year < 1900)
                 throw new Exception("Join date is not valid.");
 
+            await EnsureLinkableAsync(dto.UserId, dto.TeamId, employeeId: null);
+
             var employee = new Employee
             {
                 FullName   = dto.FullName.Trim(),
@@ -41,7 +49,9 @@ namespace DAMS.Application.Services
                 Address    = dto.Address?.Trim(),
                 Salary     = dto.Salary,
                 JoinDate   = dto.JoinDate,
-                Status     = dto.Status
+                Status     = dto.Status,
+                UserId     = dto.UserId,
+                TeamId     = dto.TeamId
             };
 
             _context.Employees.Add(employee);
@@ -83,6 +93,18 @@ namespace DAMS.Application.Services
             if (dto.Address    != null) employee.Address    = dto.Address.Trim();
             if (dto.Salary     != null) employee.Salary     = dto.Salary.Value;
             if (dto.Status     != null) employee.Status     = dto.Status.Value;
+
+            // -1 is the explicit "unlink" signal; null simply means "leave as it is".
+            if (dto.UserId != null || dto.TeamId != null)
+            {
+                var newUserId = dto.UserId == null ? employee.UserId : dto.UserId == -1 ? null : dto.UserId;
+                var newTeamId = dto.TeamId == null ? employee.TeamId : dto.TeamId == -1 ? null : dto.TeamId;
+
+                await EnsureLinkableAsync(newUserId, newTeamId, employee.Id);
+
+                employee.UserId = newUserId;
+                employee.TeamId = newTeamId;
+            }
 
             employee.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync();
@@ -230,6 +252,19 @@ namespace DAMS.Application.Services
 
             _context.EmployeeTasks.Add(task);
             await _context.SaveChangesAsync();
+
+            if (_notifications != null)
+            {
+                try
+                {
+                    await _notifications.NotifyEmployeeTaskAssignedAsync(task.Id, null);
+                }
+                catch (Exception)
+                {
+                    // The task is assigned either way; telling them about it is best-effort.
+                }
+            }
+
             return await MapTaskAsync(task.Id);
         }
 
@@ -662,9 +697,34 @@ namespace DAMS.Application.Services
             Salary     = e.Salary,
             JoinDate   = e.JoinDate,
             Status     = e.Status,
+            UserId     = e.UserId,
+            TeamId     = e.TeamId,
             CreatedAt  = e.CreatedAt,
             UpdatedAt  = e.UpdatedAt
         };
+
+        /// <summary>
+        /// Validates the login and team an employee is being attached to. One login maps to
+        /// at most one employee, so a mistyped id cannot silently give someone else's
+        /// account access to a colleague's leads.
+        /// </summary>
+        private async Task EnsureLinkableAsync(int? userId, int? teamId, int? employeeId)
+        {
+            if (userId.HasValue)
+            {
+                if (!await _context.Users.AnyAsync(u => u.UserId == userId.Value))
+                    throw new Exception("The selected login account does not exist.");
+
+                var taken = await _context.Employees
+                    .AnyAsync(e => e.UserId == userId.Value && (employeeId == null || e.Id != employeeId.Value));
+
+                if (taken)
+                    throw new Exception("That login account is already linked to another employee.");
+            }
+
+            if (teamId.HasValue && !await _context.Teams.AnyAsync(t => t.Id == teamId.Value))
+                throw new Exception("The selected team does not exist.");
+        }
 
         private static AttendanceResponseDto MapAttendance(EmployeeAttendance a) => new()
         {

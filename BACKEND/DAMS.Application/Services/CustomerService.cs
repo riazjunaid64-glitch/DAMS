@@ -4,6 +4,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace DAMS.Application.Services
 {
@@ -134,7 +135,7 @@ namespace DAMS.Application.Services
             return Map(customer, bookingsCount);
         }
 
-        public async Task<int> FindOrCreateCustomerAsync(
+        public async Task<CustomerResolution> FindOrCreateCustomerAsync(
             string fullName,
             string phone,
             string? cnic,
@@ -150,6 +151,37 @@ namespace DAMS.Application.Services
             string? whatsapp = null,
             int? linkUserId = null)
         {
+            if (_context.Database.CurrentTransaction == null)
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                var resolution = await FindOrCreateCustomerCoreAsync(
+                    fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
+                    fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
+                await transaction.CommitAsync();
+                return resolution;
+            }
+
+            return await FindOrCreateCustomerCoreAsync(
+                fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
+                fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
+        }
+
+        private async Task<CustomerResolution> FindOrCreateCustomerCoreAsync(
+            string fullName,
+            string phone,
+            string? cnic,
+            string? email,
+            string? address,
+            CustomerSource source,
+            string? sourceNotes,
+            int? createdByUserId,
+            string? fatherName,
+            DateTime? dateOfBirth,
+            string? nationality,
+            string? occupation,
+            string? whatsapp,
+            int? linkUserId)
+        {
             var normalizedPhone = NormalizePhone(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
@@ -164,7 +196,12 @@ namespace DAMS.Application.Services
             }
 
             if (existing == null)
+            {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Phone == normalizedPhone);
+
+                if (existing != null)
+                    EnsureWeakMatchDoesNotConflict(existing, normalizedCnic, normalizedEmail);
+            }
 
             if (existing == null && normalizedEmail != null)
             {
@@ -190,7 +227,7 @@ namespace DAMS.Application.Services
                     existing.UpdatedAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
                 }
-                return existing.Id;
+                return new CustomerResolution(existing.Id, WasCreated: false);
             }
 
             var customer = new Customer
@@ -216,7 +253,27 @@ namespace DAMS.Application.Services
             _context.Customers.Add(customer);
             await _context.SaveChangesAsync();
 
-            return customer.Id;
+            return new CustomerResolution(customer.Id, WasCreated: true);
+        }
+
+        private static void EnsureWeakMatchDoesNotConflict(
+            Customer existing, string? normalizedCnic, string? normalizedEmail)
+        {
+            if (normalizedCnic != null &&
+                !string.IsNullOrWhiteSpace(existing.CNIC) &&
+                !string.Equals(existing.CNIC, normalizedCnic, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "These details match an existing customer by phone, but the CNIC is different. Choose the customer explicitly or create a separate record.");
+            }
+
+            if (normalizedEmail != null &&
+                !string.IsNullOrWhiteSpace(existing.Email) &&
+                !string.Equals(existing.Email, normalizedEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "These details match an existing customer by phone, but the email is different. Choose the customer explicitly or create a separate record.");
+            }
         }
 
         // "0300-1234567", "0300 1234567" and "03001234567" must all match the same

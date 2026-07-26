@@ -12,10 +12,16 @@ namespace DAMS.Application.Services
     public class InstallmentService : IInstallmentService
     {
         private readonly AppDbContext _context;
+        private readonly INotificationEventService? _notifications;
 
-        public InstallmentService(AppDbContext context)
+        /// <param name="notifications">
+        /// Optional on purpose: recording an installment payment must not depend on the
+        /// notification platform being present or healthy.
+        /// </param>
+        public InstallmentService(AppDbContext context, INotificationEventService? notifications = null)
         {
             _context = context;
+            _notifications = notifications;
         }
 
         public async Task<InstallmentScheduleDto> GetScheduleAsync(int bookingId)
@@ -107,6 +113,21 @@ namespace DAMS.Application.Services
             {
                 throw new InvalidOperationException(
                     "This booking was updated by another payment. No payment was recorded; reload and try again.");
+            }
+
+            // The payment is committed; the receipt notification is raised afterwards and its
+            // failure is absorbed here. Anything missed is picked up by the platform's
+            // reconciliation sweep.
+            if (_notifications != null)
+            {
+                try
+                {
+                    await _notifications.NotifyPaymentRecordedAsync(payment.Id);
+                }
+                catch (Exception)
+                {
+                    // Intentionally ignored.
+                }
             }
 
             return await GetScheduleAsync(bookingId);
