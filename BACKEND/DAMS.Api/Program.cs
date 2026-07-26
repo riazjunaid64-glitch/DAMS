@@ -5,7 +5,9 @@ using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using DAMS.Api;
 using DAMS.Api.Middleware;
+using DAMS.Application.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.RateLimiting;
@@ -47,8 +49,25 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             }));
+    // External lead providers push in bursts; the window is generous but bounded so a
+    // misbehaving integration cannot flood the pipeline.
+    options.AddPolicy("leadIntake", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? IPAddress.None.ToString(),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 120,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
+
+builder.Services.Configure<LeadAlertOptions>(builder.Configuration.GetSection(LeadAlertOptions.SectionName));
+// "Due today", "overdue" and "inactive" all depend on the current instant; taking it from
+// an injected clock keeps those rules deterministic under test.
+builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
@@ -74,27 +93,30 @@ builder.Services.AddScoped<IBookingService, BookingService>();
 builder.Services.AddScoped<IInstallmentService, InstallmentService>();
 builder.Services.AddScoped<IBookingRequestService, BookingRequestService>();
 builder.Services.AddScoped<IEmployeeService, EmployeeService>();
+builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
+builder.Services.AddScoped<ILeadUserContextResolver, LeadUserContextResolver>();
+builder.Services.AddScoped<ILeadNotificationService, LeadNotificationService>();
+builder.Services.AddScoped<ILeadService, LeadService>();
+builder.Services.AddScoped<ILeadCommunicationService, LeadCommunicationService>();
+builder.Services.AddScoped<ILeadFollowUpService, LeadFollowUpService>();
+builder.Services.AddScoped<ILeadSiteVisitService, LeadSiteVisitService>();
+builder.Services.AddScoped<ILeadDocumentService, LeadDocumentService>();
+builder.Services.AddScoped<ILeadConfigurationService, LeadConfigurationService>();
+builder.Services.AddScoped<ILeadReportingService, LeadReportingService>();
+builder.Services.AddScoped<ILeadAlertService, LeadAlertService>();
+builder.Services.AddHostedService<LeadAlertBackgroundService>();
+builder.Services.AddScoped<ILeadDocumentStorage>(sp =>
+    new PrivateLeadDocumentStorage(ResolvePrivateStoragePath(
+        sp, "LeadDocuments:StoragePath", Path.Combine("App_Data", "lead-documents"))));
 builder.Services.AddScoped<IFileStorageService>(sp =>
 {
     var env = sp.GetRequiredService<IWebHostEnvironment>();
     return new LocalFileStorageService(env.WebRootPath);
 });
 builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
-{
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    var configuredPath = sp.GetRequiredService<IConfiguration>()["FinanceAttachments:StoragePath"];
-    var storagePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
-        ? Path.Combine(env.ContentRootPath, "App_Data", "finance-attachments")
-        : Path.IsPathRooted(configuredPath)
-            ? configuredPath
-            : Path.Combine(env.ContentRootPath, configuredPath));
-    var webRoot = Path.GetFullPath(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"));
-    if (storagePath.Equals(webRoot, StringComparison.OrdinalIgnoreCase)
-        || storagePath.StartsWith(webRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-        throw new InvalidOperationException("Finance attachment storage must be outside wwwroot.");
-    return new PrivateFinanceAttachmentStorage(storagePath);
-});
+    new PrivateFinanceAttachmentStorage(ResolvePrivateStoragePath(
+        sp, "FinanceAttachments:StoragePath", Path.Combine("App_Data", "finance-attachments"))));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -182,3 +204,23 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+// Private documents (finance evidence, lead paperwork) are served only through authorised
+// endpoints, so their storage must never sit anywhere the static-file middleware can reach.
+static string ResolvePrivateStoragePath(IServiceProvider sp, string configurationKey, string defaultRelativePath)
+{
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    var configuredPath = sp.GetRequiredService<IConfiguration>()[configurationKey];
+    var storagePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
+        ? Path.Combine(env.ContentRootPath, defaultRelativePath)
+        : Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.Combine(env.ContentRootPath, configuredPath));
+
+    var webRoot = Path.GetFullPath(env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"));
+    if (storagePath.Equals(webRoot, StringComparison.OrdinalIgnoreCase)
+        || storagePath.StartsWith(webRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException($"Private storage for '{configurationKey}' must be outside wwwroot.");
+
+    return storagePath;
+}

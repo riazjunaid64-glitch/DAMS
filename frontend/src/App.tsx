@@ -27,6 +27,9 @@ const ProjectsPage = lazy(() => import("./pages/ProjectsPage.tsx"));
 const UnitDetailPage = lazy(() => import("./pages/UnitDetailPage.tsx"));
 const MyProjectsPage = lazy(() => import("./pages/MyProjectsPage.tsx"));
 const MyProjectDetailPage = lazy(() => import("./pages/MyProjectDetailPage.tsx"));
+const LeadsPage = lazy(() => import("./pages/LeadsPage.tsx"));
+const LeadDetailPage = lazy(() => import("./pages/LeadDetailPage.tsx"));
+const CrmSettingsPage = lazy(() => import("./pages/CrmSettingsPage.tsx"));
 
 export interface User {
   userId: string;
@@ -57,12 +60,17 @@ function App() {
     if (user?.role === "Admin") {
       return [
         ...NAV_LINKS,
+        { to: "/crm", label: "Lead CRM" },
         { to: "/bookings", label: "Requests" },
         { to: "/confirmed-bookings", label: "Bookings" },
         { to: "/customers", label: "Customers" },
         { to: "/employees", label: "Employees" },
         { to: "/finance", label: "Finance" },
       ];
+    }
+
+    if (user?.role === "Manager" || user?.role === "Employee") {
+      return [...NAV_LINKS, { to: "/crm", label: "Lead CRM" }];
     }
 
     if (user) {
@@ -258,6 +266,9 @@ function App() {
           <Route path="/employees" element={<EmployeesPage user={user} />} />
           <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
           <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
+          <Route path="/crm" element={<LeadsPage user={user} />} />
+          <Route path="/crm/leads/:id" element={<LeadDetailPage user={user} />} />
+          <Route path="/crm/settings" element={<CrmSettingsPage user={user} />} />
           </Routes>
         </Suspense>
       </main>

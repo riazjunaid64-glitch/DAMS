@@ -39,7 +39,13 @@ namespace DAMS.Domain.Entities
         // Set once the request is approved and converted into a Customer.
         public int? CustomerId { get; set; }
 
+        // Every website request is also a Lead. The request row stays as the customer-facing
+        // record of what was submitted; the Lead carries the sales workflow.
+        public int? LeadId { get; set; }
+
         public Unit Unit { get; set; } = null!;
+
+        public Lead? Lead { get; set; }
 
         public User? User { get; set; }
 

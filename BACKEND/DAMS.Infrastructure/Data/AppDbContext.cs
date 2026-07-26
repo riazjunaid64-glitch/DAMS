@@ -29,6 +29,19 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Expense> Expenses { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
+        public DbSet<Team> Teams { get; set; }
+        public DbSet<LeadSource> LeadSources { get; set; }
+        public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
+        public DbSet<Lead> Leads { get; set; }
+        public DbSet<LeadActivity> LeadActivities { get; set; }
+        public DbSet<LeadAssignmentHistory> LeadAssignmentHistories { get; set; }
+        public DbSet<LeadCommunication> LeadCommunications { get; set; }
+        public DbSet<LeadFollowUp> LeadFollowUps { get; set; }
+        public DbSet<LeadSiteVisit> LeadSiteVisits { get; set; }
+        public DbSet<LeadDocument> LeadDocuments { get; set; }
+        public DbSet<LeadComment> LeadComments { get; set; }
+        public DbSet<LeadCommentMention> LeadCommentMentions { get; set; }
+        public DbSet<LeadNotification> LeadNotifications { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -36,7 +49,11 @@ namespace DAMS.Infrastructure.Data
 
             modelBuilder.Entity<Role>().HasData(
                 new Role { RoleId = 1, Role_name = "Admin" },
-                new Role { RoleId = 2, Role_name = "Client" }
+                new Role { RoleId = 2, Role_name = "Client" },
+                // Lead management introduces internal staff logins. Manager and Employee are
+                // the two sales roles the lead workflow authorises against.
+                new Role { RoleId = 3, Role_name = "Manager" },
+                new Role { RoleId = 4, Role_name = "Employee" }
             );
 
             modelBuilder.Entity<Project>(entity =>
@@ -303,6 +320,34 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(e => e.Address).HasMaxLength(500);
                 entity.Property(e => e.Salary).HasColumnType("decimal(18,2)");
                 entity.Property(e => e.Status).HasConversion<int>();
+
+                // One login maps to at most one employee record, so resolving "who am I"
+                // from a token is unambiguous.
+                entity.HasIndex(e => e.UserId)
+                      .IsUnique()
+                      .HasFilter("[UserId] IS NOT NULL");
+                entity.HasIndex(e => e.TeamId);
+
+                entity.HasOne(e => e.User)
+                      .WithMany()
+                      .HasForeignKey(e => e.UserId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(e => e.Team)
+                      .WithMany(t => t.Members)
+                      .HasForeignKey(e => e.TeamId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<Team>(entity =>
+            {
+                entity.Property(t => t.Name).IsRequired().HasMaxLength(150);
+                entity.HasIndex(t => t.Name).IsUnique();
+
+                entity.HasOne(t => t.ManagerEmployee)
+                      .WithMany()
+                      .HasForeignKey(t => t.ManagerEmployeeId)
+                      .OnDelete(DeleteBehavior.NoAction);
             });
 
             modelBuilder.Entity<EmployeeAttendance>(entity =>
@@ -373,9 +418,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(br => br.RequestedAt);
                 entity.HasIndex(br => new { br.Status, br.RequestedAt });
                 entity.HasIndex(br => new { br.UserId, br.RequestedAt });
-                entity.HasIndex(br => new { br.UnitId, br.Status })
+                // A website enquiry is a lead, and several people may legitimately enquire
+                // about the same unit, so the old one-pending-request-per-unit rule is gone.
+                // Each request still maps to exactly one lead.
+                entity.HasIndex(br => br.LeadId)
                       .IsUnique()
-                      .HasFilter($"[Status] = {(int)BookingRequestStatus.Pending}");
+                      .HasFilter("[LeadId] IS NOT NULL");
+
+                entity.HasOne(br => br.Lead)
+                      .WithMany()
+                      .HasForeignKey(br => br.LeadId)
+                      .OnDelete(DeleteBehavior.NoAction);
 
                 entity.HasOne(br => br.Unit)
                       .WithMany()
@@ -459,6 +512,377 @@ namespace DAMS.Infrastructure.Data
                       .HasForeignKey<FinanceAttachment>(a => a.ExpenseId)
                       .OnDelete(DeleteBehavior.Cascade);
             });
+
+            ConfigureLeadManagement(modelBuilder);
         }
+
+        private static void ConfigureLeadManagement(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<LeadSource>(entity =>
+            {
+                entity.Property(s => s.Code).IsRequired().HasMaxLength(50);
+                entity.Property(s => s.Name).IsRequired().HasMaxLength(100);
+                entity.Property(s => s.CustomerSource).HasConversion<int>();
+                entity.HasIndex(s => s.Code).IsUnique();
+            });
+
+            modelBuilder.Entity<LeadClosureReason>(entity =>
+            {
+                entity.Property(r => r.Code).IsRequired().HasMaxLength(50);
+                entity.Property(r => r.Name).IsRequired().HasMaxLength(150);
+                entity.Property(r => r.Kind).HasConversion<int>();
+                entity.HasIndex(r => r.Code).IsUnique();
+            });
+
+            modelBuilder.Entity<Lead>(entity =>
+            {
+                entity.Property(l => l.LeadReference).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.FirstName).IsRequired().HasMaxLength(100);
+                entity.Property(l => l.LastName).HasMaxLength(100);
+                entity.Property(l => l.Phone).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.NormalizedPhone).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.WhatsappNumber).HasMaxLength(50);
+                entity.Property(l => l.NormalizedWhatsapp).HasMaxLength(50);
+                entity.Property(l => l.Email).HasMaxLength(200);
+                entity.Property(l => l.NormalizedEmail).HasMaxLength(200);
+                entity.Property(l => l.Address).HasMaxLength(500);
+                entity.Property(l => l.City).HasMaxLength(100);
+                entity.Property(l => l.PreferredContactTime).HasMaxLength(100);
+                entity.Property(l => l.SourceDetails).HasMaxLength(500);
+                entity.Property(l => l.CampaignName).HasMaxLength(200);
+                entity.Property(l => l.CampaignReference).HasMaxLength(200);
+                entity.Property(l => l.AdReference).HasMaxLength(200);
+                entity.Property(l => l.ExternalProvider).HasMaxLength(50);
+                entity.Property(l => l.ExternalLeadId).HasMaxLength(200);
+                entity.Property(l => l.ExternalFormReference).HasMaxLength(200);
+                entity.Property(l => l.IntegrationPayload).HasMaxLength(4000);
+                entity.Property(l => l.IntegrationError).HasMaxLength(1000);
+                entity.Property(l => l.PropertyType).HasMaxLength(100);
+                entity.Property(l => l.PreferredLocation).HasMaxLength(200);
+                entity.Property(l => l.Notes).HasMaxLength(2000);
+                entity.Property(l => l.LastActivitySummary).HasMaxLength(300);
+                entity.Property(l => l.NextActionSummary).HasMaxLength(300);
+                entity.Property(l => l.ClosureNotes).HasMaxLength(1000);
+                entity.Property(l => l.BudgetMin).HasColumnType("decimal(18,2)");
+                entity.Property(l => l.BudgetMax).HasColumnType("decimal(18,2)");
+                entity.Property(l => l.PreferredContactMethod).HasConversion<int>();
+                entity.Property(l => l.PurchaseIntent).HasConversion<int>();
+                entity.Property(l => l.AssignmentState).HasConversion<int>();
+                entity.Property(l => l.Stage).HasConversion<int>();
+                entity.Property(l => l.Qualification).HasConversion<int>();
+                entity.Property(l => l.IntegrationStatus).HasConversion<int>();
+                entity.Property(l => l.RowVersion).IsRowVersion();
+
+                entity.HasIndex(l => l.LeadReference).IsUnique();
+                // Duplicate detection and the "find my lead" lookups run on the normalised
+                // identifiers, never on the display values.
+                entity.HasIndex(l => l.NormalizedPhone);
+                entity.HasIndex(l => l.NormalizedWhatsapp);
+                entity.HasIndex(l => l.NormalizedEmail);
+                entity.HasIndex(l => l.Stage);
+                entity.HasIndex(l => l.CreatedAt);
+                entity.HasIndex(l => new { l.AssignedEmployeeId, l.Stage });
+                entity.HasIndex(l => new { l.AssignedTeamId, l.Stage });
+                entity.HasIndex(l => new { l.Stage, l.CreatedAt });
+                entity.HasIndex(l => l.NextActionAt);
+                entity.HasIndex(l => l.LastActivityAt);
+                entity.HasIndex(l => l.LeadSourceId);
+                // The same external submission must never produce two leads, whatever the
+                // provider does with retries.
+                entity.HasIndex(l => new { l.ExternalProvider, l.ExternalLeadId })
+                      .IsUnique()
+                      .HasFilter("[ExternalProvider] IS NOT NULL AND [ExternalLeadId] IS NOT NULL");
+                // One booking can only ever be the conversion target of one lead.
+                entity.HasIndex(l => l.ConvertedBookingId)
+                      .IsUnique()
+                      .HasFilter("[ConvertedBookingId] IS NOT NULL");
+
+                entity.HasOne(l => l.Source)
+                      .WithMany()
+                      .HasForeignKey(l => l.LeadSourceId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(l => l.ClosureReason)
+                      .WithMany()
+                      .HasForeignKey(l => l.ClosureReasonId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(l => l.AssignedEmployee)
+                      .WithMany()
+                      .HasForeignKey(l => l.AssignedEmployeeId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(l => l.AssignedTeam)
+                      .WithMany()
+                      .HasForeignKey(l => l.AssignedTeamId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(l => l.InterestedProject)
+                      .WithMany()
+                      .HasForeignKey(l => l.InterestedProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(l => l.InterestedUnit)
+                      .WithMany()
+                      .HasForeignKey(l => l.InterestedUnitId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(l => l.ConvertedCustomer)
+                      .WithMany()
+                      .HasForeignKey(l => l.ConvertedCustomerId)
+                      .OnDelete(DeleteBehavior.NoAction);
+                entity.HasOne(l => l.ConvertedBooking)
+                      .WithMany()
+                      .HasForeignKey(l => l.ConvertedBookingId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadActivity>(entity =>
+            {
+                entity.Property(a => a.Summary).IsRequired().HasMaxLength(300);
+                entity.Property(a => a.Notes).HasMaxLength(2000);
+                entity.Property(a => a.PreviousValue).HasMaxLength(300);
+                entity.Property(a => a.NewValue).HasMaxLength(300);
+                entity.Property(a => a.PerformedByName).HasMaxLength(200);
+                entity.Property(a => a.Type).HasConversion<int>();
+                entity.Property(a => a.Channel).HasConversion<int>();
+
+                entity.HasIndex(a => new { a.LeadId, a.OccurredAt });
+                entity.HasIndex(a => a.Type);
+
+                entity.HasOne(a => a.Lead)
+                      .WithMany(l => l.Activities)
+                      .HasForeignKey(a => a.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<LeadAssignmentHistory>(entity =>
+            {
+                entity.Property(h => h.Reason).HasMaxLength(500);
+                entity.Property(h => h.AssignedByName).HasMaxLength(200);
+                entity.HasIndex(h => new { h.LeadId, h.AssignedAt });
+
+                entity.HasOne(h => h.Lead)
+                      .WithMany(l => l.AssignmentHistory)
+                      .HasForeignKey(h => h.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<LeadCommunication>(entity =>
+            {
+                entity.Property(c => c.Summary).IsRequired().HasMaxLength(2000);
+                entity.Property(c => c.CustomerResponse).HasMaxLength(2000);
+                entity.Property(c => c.NextAction).HasMaxLength(500);
+                entity.Property(c => c.ExternalProvider).HasMaxLength(50);
+                entity.Property(c => c.ExternalMessageId).HasMaxLength(200);
+                entity.Property(c => c.Channel).HasConversion<int>();
+                entity.Property(c => c.Direction).HasConversion<int>();
+
+                entity.HasIndex(c => new { c.LeadId, c.OccurredAt });
+                // Replaying the same inbound provider message must not duplicate history.
+                entity.HasIndex(c => new { c.ExternalProvider, c.ExternalMessageId })
+                      .IsUnique()
+                      .HasFilter("[ExternalProvider] IS NOT NULL AND [ExternalMessageId] IS NOT NULL");
+
+                entity.HasOne(c => c.Lead)
+                      .WithMany(l => l.Communications)
+                      .HasForeignKey(c => c.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(c => c.Employee)
+                      .WithMany()
+                      .HasForeignKey(c => c.EmployeeId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LeadFollowUp>(entity =>
+            {
+                entity.Property(f => f.Title).IsRequired().HasMaxLength(200);
+                entity.Property(f => f.Notes).HasMaxLength(1000);
+                entity.Property(f => f.Outcome).HasMaxLength(1000);
+                entity.Property(f => f.Type).HasConversion<int>();
+                entity.Property(f => f.Status).HasConversion<int>();
+                entity.Property(f => f.Priority).HasConversion<int>();
+
+                entity.HasIndex(f => new { f.AssignedEmployeeId, f.Status, f.DueAt });
+                entity.HasIndex(f => new { f.LeadId, f.Status });
+                entity.HasIndex(f => new { f.Status, f.DueAt });
+
+                entity.HasOne(f => f.Lead)
+                      .WithMany(l => l.FollowUps)
+                      .HasForeignKey(f => f.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(f => f.AssignedEmployee)
+                      .WithMany()
+                      .HasForeignKey(f => f.AssignedEmployeeId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LeadSiteVisit>(entity =>
+            {
+                entity.Property(v => v.MeetingLocation).IsRequired().HasMaxLength(300);
+                entity.Property(v => v.CustomerAttendees).HasMaxLength(500);
+                entity.Property(v => v.InternalAttendees).HasMaxLength(500);
+                entity.Property(v => v.Notes).HasMaxLength(1000);
+                entity.Property(v => v.OutcomeNotes).HasMaxLength(1000);
+                entity.Property(v => v.CustomerFeedback).HasMaxLength(1000);
+                entity.Property(v => v.NextAction).HasMaxLength(500);
+                entity.Property(v => v.CancellationReason).HasMaxLength(500);
+                entity.Property(v => v.Status).HasConversion<int>();
+                entity.Property(v => v.Outcome).HasConversion<int>();
+
+                entity.HasIndex(v => new { v.LeadId, v.ScheduledAt });
+                entity.HasIndex(v => new { v.AssignedEmployeeId, v.Status, v.ScheduledAt });
+                entity.HasIndex(v => new { v.Status, v.ScheduledAt });
+
+                entity.HasOne(v => v.Lead)
+                      .WithMany(l => l.SiteVisits)
+                      .HasForeignKey(v => v.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(v => v.AssignedEmployee)
+                      .WithMany()
+                      .HasForeignKey(v => v.AssignedEmployeeId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(v => v.Project)
+                      .WithMany()
+                      .HasForeignKey(v => v.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(v => v.Unit)
+                      .WithMany()
+                      .HasForeignKey(v => v.UnitId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<LeadDocument>(entity =>
+            {
+                entity.Property(d => d.StoredFileName).IsRequired().HasMaxLength(100);
+                entity.Property(d => d.OriginalFileName).IsRequired().HasMaxLength(180);
+                entity.Property(d => d.ContentType).IsRequired().HasMaxLength(150);
+                entity.Property(d => d.Description).HasMaxLength(500);
+                entity.Property(d => d.UploadedByName).HasMaxLength(200);
+                entity.Property(d => d.Category).HasConversion<int>();
+
+                entity.HasIndex(d => new { d.LeadId, d.UploadedAt });
+                entity.HasIndex(d => d.StoredFileName).IsUnique();
+
+                entity.HasOne(d => d.Lead)
+                      .WithMany(l => l.Documents)
+                      .HasForeignKey(d => d.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(d => d.Communication)
+                      .WithMany(c => c.Attachments)
+                      .HasForeignKey(d => d.CommunicationId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadComment>(entity =>
+            {
+                entity.Property(c => c.Body).IsRequired().HasMaxLength(4000);
+                entity.Property(c => c.AuthorName).HasMaxLength(200);
+                entity.HasIndex(c => new { c.LeadId, c.CreatedAt });
+
+                entity.HasOne(c => c.Lead)
+                      .WithMany(l => l.Comments)
+                      .HasForeignKey(c => c.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(c => c.ParentComment)
+                      .WithMany()
+                      .HasForeignKey(c => c.ParentCommentId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadCommentMention>(entity =>
+            {
+                entity.HasIndex(m => new { m.LeadCommentId, m.MentionedUserId }).IsUnique();
+                entity.HasIndex(m => m.MentionedUserId);
+
+                entity.HasOne(m => m.LeadComment)
+                      .WithMany(c => c.Mentions)
+                      .HasForeignKey(m => m.LeadCommentId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(m => m.MentionedUser)
+                      .WithMany()
+                      .HasForeignKey(m => m.MentionedUserId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadNotification>(entity =>
+            {
+                entity.Property(n => n.Title).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.Body).HasMaxLength(1000);
+                entity.Property(n => n.DedupKey).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.Type).HasConversion<int>();
+
+                // The database, not the application, is what guarantees a repeating scan
+                // cannot spam the same person with the same alert.
+                entity.HasIndex(n => n.DedupKey).IsUnique();
+                entity.HasIndex(n => new { n.RecipientUserId, n.IsRead, n.CreatedAt });
+                entity.HasIndex(n => n.LeadId);
+
+                entity.HasOne(n => n.Lead)
+                      .WithMany()
+                      .HasForeignKey(n => n.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(n => n.Recipient)
+                      .WithMany()
+                      .HasForeignKey(n => n.RecipientUserId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            SeedLeadConfiguration(modelBuilder);
+        }
+
+        // Fixed timestamp: HasData must be deterministic or every `migrations add` produces
+        // a spurious update for these rows.
+        private static readonly DateTime SeedDate = new(2026, 7, 26, 0, 0, 0, DateTimeKind.Utc);
+
+        private static void SeedLeadConfiguration(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<LeadSource>().HasData(
+                NewSource(1, "manual", "Manual Entry", 1, CustomerSource.Other),
+                NewSource(2, "walk_in", "Office Walk-in", 2, CustomerSource.WalkIn),
+                NewSource(3, "phone", "Phone Call", 3, CustomerSource.Phone),
+                NewSource(4, "referral", "Referral", 4, CustomerSource.Referral),
+                NewSource(5, "website", "Website Inquiry", 5, CustomerSource.Website),
+                NewSource(6, "facebook", "Facebook", 6, CustomerSource.Other),
+                NewSource(7, "instagram", "Instagram", 7, CustomerSource.Other),
+                NewSource(8, "whatsapp", "WhatsApp", 8, CustomerSource.Other),
+                NewSource(9, "property_portal", "Property Portal", 9, CustomerSource.Other),
+                NewSource(10, "broker", "Broker / Agent", 10, CustomerSource.Referral),
+                NewSource(11, "campaign", "Marketing Campaign", 11, CustomerSource.Other),
+                NewSource(12, "exhibition", "Exhibition / Event", 12, CustomerSource.Other),
+                NewSource(13, "other", "Other", 13, CustomerSource.Other));
+
+            modelBuilder.Entity<LeadClosureReason>().HasData(
+                NewReason(1, "budget_issue", "Budget issue", 1, LeadClosureReasonKind.Both),
+                NewReason(2, "not_interested", "Not interested", 2, LeadClosureReasonKind.Lost),
+                NewReason(3, "purchased_elsewhere", "Purchased elsewhere", 3, LeadClosureReasonKind.Lost),
+                NewReason(4, "location_unsuitable", "Location unsuitable", 4, LeadClosureReasonKind.Lost),
+                NewReason(5, "payment_plan_unsuitable", "Payment plan unsuitable", 5, LeadClosureReasonKind.Both),
+                NewReason(6, "unable_to_contact", "Unable to contact", 6, LeadClosureReasonKind.Both),
+                NewReason(7, "invalid_information", "Invalid information", 7, LeadClosureReasonKind.Lost),
+                NewReason(8, "duplicate", "Duplicate", 8, LeadClosureReasonKind.Lost),
+                NewReason(9, "delayed_decision", "Delayed decision", 9, LeadClosureReasonKind.Dormant),
+                NewReason(10, "other", "Other", 10, LeadClosureReasonKind.Both));
+        }
+
+        private static LeadSource NewSource(int id, string code, string name, int order, CustomerSource customerSource) =>
+            new()
+            {
+                Id = id,
+                Code = code,
+                Name = name,
+                DisplayOrder = order,
+                IsActive = true,
+                IsSystem = true,
+                CustomerSource = customerSource,
+                CreatedAt = SeedDate
+            };
+
+        private static LeadClosureReason NewReason(int id, string code, string name, int order, LeadClosureReasonKind kind) =>
+            new()
+            {
+                Id = id,
+                Code = code,
+                Name = name,
+                DisplayOrder = order,
+                IsActive = true,
+                IsSystem = true,
+                Kind = kind,
+                CreatedAt = SeedDate
+            };
     }
 }

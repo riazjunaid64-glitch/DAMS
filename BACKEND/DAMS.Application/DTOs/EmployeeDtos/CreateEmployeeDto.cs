@@ -33,5 +33,13 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public DateTime JoinDate { get; set; }
 
         public EmployeeStatus Status { get; set; } = EmployeeStatus.Active;
+
+        /// <summary>
+        /// Login account this employee works under. Required before they can own leads —
+        /// ownership is recorded against the employee but authorised on the user.
+        /// </summary>
+        public int? UserId { get; set; }
+
+        public int? TeamId { get; set; }
     }
 }

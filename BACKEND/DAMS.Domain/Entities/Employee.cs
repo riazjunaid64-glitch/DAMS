@@ -8,6 +8,13 @@ namespace DAMS.Domain.Entities
 
         public string FullName { get; set; } = string.Empty;
 
+        // Optional link to a login account. Lead ownership is recorded against the
+        // Employee, but authorisation happens on the logged-in User, so the two must be
+        // connected before an employee can work their own leads.
+        public int? UserId { get; set; }
+
+        public int? TeamId { get; set; }
+
         public string JobTitle { get; set; } = string.Empty;
 
         public string Department { get; set; } = string.Empty;
@@ -27,6 +34,10 @@ namespace DAMS.Domain.Entities
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
         public DateTime? UpdatedAt { get; set; }
+
+        public User? User { get; set; }
+
+        public Team? Team { get; set; }
 
         public ICollection<EmployeeAttendance> Attendances { get; set; } = new List<EmployeeAttendance>();
 

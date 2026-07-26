@@ -111,7 +111,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.message || "Unable to submit booking request. Please try again.");
+        setError(data.message || "Unable to submit your property inquiry. Please try again.");
         return;
       }
 
@@ -145,10 +145,10 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
             </div>
 
             <h3 className="mb-2 text-xl font-semibold text-[var(--text-heading)]">
-              Request Submitted Successfully
+              Property Inquiry Submitted
             </h3>
             <p className="mb-6 text-sm text-[var(--text-muted)] leading-relaxed">
-              Your booking request for <span className="font-medium text-[var(--text-secondary)]">{unit.unitNumber}</span> has been received and is now under review. Our team will contact you shortly.
+              Your inquiry about <span className="font-medium text-[var(--text-secondary)]">{unit.unitNumber}</span> has been received. A sales team member will contact you; this inquiry does not reserve or hold the unit.
             </p>
 
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4 mb-6">
@@ -204,7 +204,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
               <div className="mb-1 inline-flex items-center gap-2 rounded-full bg-indigo-500/[0.08] px-2.5 py-0.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">
-                  Booking Request
+                  Property Inquiry
                 </span>
               </div>
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
@@ -222,7 +222,7 @@ export default function BookingRequestModal({ unit, project, onClose, onSuccess 
             </button>
           </div>
           <p className="mt-1.5 text-sm text-[var(--text-muted)]">
-            Fill in your details to submit a booking request for this unit.
+            Ask our sales team about this unit. Submitting does not reserve the property.
           </p>
         </div>
 

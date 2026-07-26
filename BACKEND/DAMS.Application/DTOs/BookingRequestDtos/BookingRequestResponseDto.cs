@@ -46,6 +46,9 @@ namespace DAMS.Application.DTOs.BookingRequestDtos
 
         public string? RejectionReason { get; set; }
 
+        /// <summary>The lead this website enquiry feeds. Null only for un-backfilled history.</summary>
+        public int? LeadId { get; set; }
+
         public DateTime CreatedAt { get; set; }
     }
 }

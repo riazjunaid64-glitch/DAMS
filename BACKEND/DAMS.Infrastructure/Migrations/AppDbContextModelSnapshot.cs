@@ -217,7 +217,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[Status] <> 4");
 
-                    b.ToTable("Bookings");
+                    b.ToTable("Bookings", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.BookingRequest", b =>
@@ -253,6 +253,9 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("LeadId")
+                        .HasColumnType("int");
 
                     b.Property<string>("Notes")
                         .HasMaxLength(1000)
@@ -292,6 +295,10 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("CustomerId");
 
+                    b.HasIndex("LeadId")
+                        .IsUnique()
+                        .HasFilter("[LeadId] IS NOT NULL");
+
                     b.HasIndex("RequestedAt");
 
                     b.HasIndex("ReviewedByUserId");
@@ -304,13 +311,9 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "RequestedAt");
 
-                    b.HasIndex("UnitId", "Status")
-                        .IsUnique()
-                        .HasFilter("[Status] = 0");
-
                     b.HasIndex("UserId", "RequestedAt");
 
-                    b.ToTable("BookingRequests");
+                    b.ToTable("BookingRequests", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
@@ -402,7 +405,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Customers");
+                    b.ToTable("Customers", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
@@ -453,12 +456,24 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
+                    b.Property<int?>("TeamId")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
 
-                    b.ToTable("Employees");
+                    b.HasIndex("TeamId");
+
+                    b.HasIndex("UserId")
+                        .IsUnique()
+                        .HasFilter("[UserId] IS NOT NULL");
+
+                    b.ToTable("Employees", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeAttendance", b =>
@@ -496,7 +511,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "Date")
                         .IsUnique();
 
-                    b.ToTable("EmployeeAttendances");
+                    b.ToTable("EmployeeAttendances", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeSalary", b =>
@@ -553,7 +568,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("EmployeeId", "PayYear", "PayMonth")
                         .IsUnique();
 
-                    b.ToTable("EmployeeSalaries");
+                    b.ToTable("EmployeeSalaries", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmployeeTask", b =>
@@ -603,7 +618,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("EmployeeTasks");
+                    b.ToTable("EmployeeTasks", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Expense", b =>
@@ -650,7 +665,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("Expenses");
+                    b.ToTable("Expenses", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAttachment", b =>
@@ -698,7 +713,7 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[ManualRevenueId] IS NOT NULL");
 
-                    b.ToTable("FinanceAttachments", t =>
+                    b.ToTable("FinanceAttachments", null, t =>
                         {
                             t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)");
                         });
@@ -744,7 +759,1151 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "DueDate");
 
-                    b.ToTable("Installments");
+                    b.ToTable("Installments", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Lead", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AdReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("AssignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("AssignedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("AssignedEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("AssignedTeamId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("AssignmentState")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("BudgetMax")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("BudgetMin")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("CampaignName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CampaignReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("City")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("ClosedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ClosureNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("ClosureReasonId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ConvertedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ConvertedBookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ConvertedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ConvertedCustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalFormReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalLeadId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalProvider")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime?>("ExternalSubmittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("FirstContactAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("IntegrationError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("IntegrationPayload")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<int>("IntegrationStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("InterestedProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("InterestedUnitId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("LastActivityAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LastActivitySummary")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("LastContactAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LastName")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("LeadReference")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int>("LeadSourceId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("NextActionAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("NextActionSummary")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("NormalizedEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NormalizedPhone")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("NormalizedWhatsapp")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int>("PreferredContactMethod")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PreferredContactTime")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("PreferredLocation")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PropertyType")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("PurchaseIntent")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Qualification")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReactivateOn")
+                        .HasColumnType("datetime2");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SourceDetails")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("Stage")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("WhatsappNumber")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClosureReasonId");
+
+                    b.HasIndex("ConvertedBookingId")
+                        .IsUnique()
+                        .HasFilter("[ConvertedBookingId] IS NOT NULL");
+
+                    b.HasIndex("ConvertedCustomerId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("InterestedProjectId");
+
+                    b.HasIndex("InterestedUnitId");
+
+                    b.HasIndex("LastActivityAt");
+
+                    b.HasIndex("LeadReference")
+                        .IsUnique();
+
+                    b.HasIndex("LeadSourceId");
+
+                    b.HasIndex("NextActionAt");
+
+                    b.HasIndex("NormalizedEmail");
+
+                    b.HasIndex("NormalizedPhone");
+
+                    b.HasIndex("NormalizedWhatsapp");
+
+                    b.HasIndex("Stage");
+
+                    b.HasIndex("AssignedEmployeeId", "Stage");
+
+                    b.HasIndex("AssignedTeamId", "Stage");
+
+                    b.HasIndex("ExternalProvider", "ExternalLeadId")
+                        .IsUnique()
+                        .HasFilter("[ExternalProvider] IS NOT NULL AND [ExternalLeadId] IS NOT NULL");
+
+                    b.HasIndex("Stage", "CreatedAt");
+
+                    b.ToTable("Leads", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadActivity", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("Channel")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommentId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommunicationId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("DocumentId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("FollowUpId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsSystemGenerated")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NewValue")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PerformedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("PerformedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PreviousValue")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int?>("SiteVisitId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Type");
+
+                    b.HasIndex("LeadId", "OccurredAt");
+
+                    b.ToTable("LeadActivities", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadAssignmentHistory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("AssignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AssignedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("AssignedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("AssignedEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("AssignedTeamId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PreviousEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PreviousTeamId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LeadId", "AssignedAt");
+
+                    b.ToTable("LeadAssignmentHistories", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadClosureReason", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("LeadClosureReasons", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Code = "budget_issue",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 2,
+                            Name = "Budget issue"
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Code = "not_interested",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 0,
+                            Name = "Not interested"
+                        },
+                        new
+                        {
+                            Id = 3,
+                            Code = "purchased_elsewhere",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 0,
+                            Name = "Purchased elsewhere"
+                        },
+                        new
+                        {
+                            Id = 4,
+                            Code = "location_unsuitable",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 0,
+                            Name = "Location unsuitable"
+                        },
+                        new
+                        {
+                            Id = 5,
+                            Code = "payment_plan_unsuitable",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 2,
+                            Name = "Payment plan unsuitable"
+                        },
+                        new
+                        {
+                            Id = 6,
+                            Code = "unable_to_contact",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 2,
+                            Name = "Unable to contact"
+                        },
+                        new
+                        {
+                            Id = 7,
+                            Code = "invalid_information",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 0,
+                            Name = "Invalid information"
+                        },
+                        new
+                        {
+                            Id = 8,
+                            Code = "duplicate",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 0,
+                            Name = "Duplicate"
+                        },
+                        new
+                        {
+                            Id = 9,
+                            Code = "delayed_decision",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 9,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 1,
+                            Name = "Delayed decision"
+                        },
+                        new
+                        {
+                            Id = 10,
+                            Code = "other",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 10,
+                            IsActive = true,
+                            IsSystem = true,
+                            Kind = 2,
+                            Name = "Other"
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadComment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AuthorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("AuthorUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsDecisionRecord")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsManagerReviewRequest")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ParentCommentId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentCommentId");
+
+                    b.HasIndex("LeadId", "CreatedAt");
+
+                    b.ToTable("LeadComments", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadCommentMention", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("LeadCommentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("MentionedUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MentionedUserId");
+
+                    b.HasIndex("LeadCommentId", "MentionedUserId")
+                        .IsUnique();
+
+                    b.ToTable("LeadCommentMentions", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadCommunication", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Channel")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CustomerResponse")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("Direction")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("EmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ExternalMessageId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalProvider")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NextAction")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("NextActionAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("RecordedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.HasIndex("ExternalProvider", "ExternalMessageId")
+                        .IsUnique()
+                        .HasFilter("[ExternalProvider] IS NOT NULL AND [ExternalMessageId] IS NOT NULL");
+
+                    b.HasIndex("LeadId", "OccurredAt");
+
+                    b.ToTable("LeadCommunications", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadDocument", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Category")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommunicationId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(180)
+                        .HasColumnType("nvarchar(180)");
+
+                    b.Property<string>("StoredFileName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UploadedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("UploadedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CommunicationId");
+
+                    b.HasIndex("StoredFileName")
+                        .IsUnique();
+
+                    b.HasIndex("LeadId", "UploadedAt");
+
+                    b.ToTable("LeadDocuments", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AssignedEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CompletedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("DueAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("Outcome")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RemindAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LeadId", "Status");
+
+                    b.HasIndex("Status", "DueAt");
+
+                    b.HasIndex("AssignedEmployeeId", "Status", "DueAt");
+
+                    b.ToTable("LeadFollowUps", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadNotification", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Body")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DedupKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<bool>("IsEscalation")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsRead")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReadAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RecipientUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DedupKey")
+                        .IsUnique();
+
+                    b.HasIndex("LeadId");
+
+                    b.HasIndex("RecipientUserId", "IsRead", "CreatedAt");
+
+                    b.ToTable("LeadNotifications", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadSiteVisit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("AssignedEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CustomerAttendees")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("CustomerFeedback")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("InternalAttendees")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("MeetingLocation")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("NextAction")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime?>("OriginalScheduledAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("Outcome")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OutcomeNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("RemindAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RescheduleCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ScheduledAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("UnitId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("UnitId");
+
+                    b.HasIndex("LeadId", "ScheduledAt");
+
+                    b.HasIndex("Status", "ScheduledAt");
+
+                    b.HasIndex("AssignedEmployeeId", "Status", "ScheduledAt");
+
+                    b.ToTable("LeadSiteVisits", (string)null);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadSource", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CustomerSource")
+                        .HasColumnType("int");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("LeadSources", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Code = "manual",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Manual Entry"
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Code = "walk_in",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 1,
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Office Walk-in"
+                        },
+                        new
+                        {
+                            Id = 3,
+                            Code = "phone",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 2,
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Phone Call"
+                        },
+                        new
+                        {
+                            Id = 4,
+                            Code = "referral",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 3,
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Referral"
+                        },
+                        new
+                        {
+                            Id = 5,
+                            Code = "website",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 0,
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Website Inquiry"
+                        },
+                        new
+                        {
+                            Id = 6,
+                            Code = "facebook",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Facebook"
+                        },
+                        new
+                        {
+                            Id = 7,
+                            Code = "instagram",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Instagram"
+                        },
+                        new
+                        {
+                            Id = 8,
+                            Code = "whatsapp",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "WhatsApp"
+                        },
+                        new
+                        {
+                            Id = 9,
+                            Code = "property_portal",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 9,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Property Portal"
+                        },
+                        new
+                        {
+                            Id = 10,
+                            Code = "broker",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 3,
+                            DisplayOrder = 10,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Broker / Agent"
+                        },
+                        new
+                        {
+                            Id = 11,
+                            Code = "campaign",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 11,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Marketing Campaign"
+                        },
+                        new
+                        {
+                            Id = 12,
+                            Code = "exhibition",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 12,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Exhibition / Event"
+                        },
+                        new
+                        {
+                            Id = 13,
+                            Code = "other",
+                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CustomerSource = 4,
+                            DisplayOrder = 13,
+                            IsActive = true,
+                            IsSystem = true,
+                            Name = "Other"
+                        });
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
@@ -791,7 +1950,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RevenueType");
 
-                    b.ToTable("ManualRevenues");
+                    b.ToTable("ManualRevenues", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -904,7 +2063,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ProjectName")
                         .IsUnique();
 
-                    b.ToTable("Projects");
+                    b.ToTable("Projects", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ProjectMedia", b =>
@@ -976,7 +2135,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "IsCover");
 
-                    b.ToTable("ProjectMedias");
+                    b.ToTable("ProjectMedias", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
@@ -993,7 +2152,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("RoleId");
 
-                    b.ToTable("Roles");
+                    b.ToTable("Roles", (string)null);
 
                     b.HasData(
                         new
@@ -1005,7 +2164,52 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             RoleId = 2,
                             Role_name = "Client"
+                        },
+                        new
+                        {
+                            RoleId = 3,
+                            Role_name = "Manager"
+                        },
+                        new
+                        {
+                            RoleId = 4,
+                            Role_name = "Employee"
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("ManagerEmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ManagerEmployeeId");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("Teams", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -1054,7 +2258,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("ProjectId", "FloorNumber", "UnitNumber");
 
-                    b.ToTable("Units");
+                    b.ToTable("Units", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.UnitMedia", b =>
@@ -1126,7 +2330,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("UnitId", "IsCover");
 
-                    b.ToTable("UnitMedias");
+                    b.ToTable("UnitMedias", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -1162,7 +2366,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("RoleId");
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
@@ -1198,6 +2402,11 @@ namespace DAMS.Infrastructure.Migrations
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.NoAction);
 
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany()
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
                     b.HasOne("DAMS.Domain.Entities.User", "ReviewedBy")
                         .WithMany()
                         .HasForeignKey("ReviewedByUserId")
@@ -1216,6 +2425,8 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Navigation("Customer");
 
+                    b.Navigation("Lead");
+
                     b.Navigation("ReviewedBy");
 
                     b.Navigation("Unit");
@@ -1229,6 +2440,23 @@ namespace DAMS.Infrastructure.Migrations
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Team", "Team")
+                        .WithMany("Members")
+                        .HasForeignKey("TeamId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Team");
 
                     b.Navigation("User");
                 });
@@ -1325,6 +2553,232 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Booking");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Lead", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Employee", "AssignedEmployee")
+                        .WithMany()
+                        .HasForeignKey("AssignedEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Team", "AssignedTeam")
+                        .WithMany()
+                        .HasForeignKey("AssignedTeamId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.LeadClosureReason", "ClosureReason")
+                        .WithMany()
+                        .HasForeignKey("ClosureReasonId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Booking", "ConvertedBooking")
+                        .WithMany()
+                        .HasForeignKey("ConvertedBookingId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "ConvertedCustomer")
+                        .WithMany()
+                        .HasForeignKey("ConvertedCustomerId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "InterestedProject")
+                        .WithMany()
+                        .HasForeignKey("InterestedProjectId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "InterestedUnit")
+                        .WithMany()
+                        .HasForeignKey("InterestedUnitId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.LeadSource", "Source")
+                        .WithMany()
+                        .HasForeignKey("LeadSourceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AssignedEmployee");
+
+                    b.Navigation("AssignedTeam");
+
+                    b.Navigation("ClosureReason");
+
+                    b.Navigation("ConvertedBooking");
+
+                    b.Navigation("ConvertedCustomer");
+
+                    b.Navigation("InterestedProject");
+
+                    b.Navigation("InterestedUnit");
+
+                    b.Navigation("Source");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadActivity", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("Activities")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Lead");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadAssignmentHistory", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("AssignmentHistory")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Lead");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadComment", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("Comments")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.LeadComment", "ParentComment")
+                        .WithMany()
+                        .HasForeignKey("ParentCommentId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Lead");
+
+                    b.Navigation("ParentComment");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadCommentMention", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.LeadComment", "LeadComment")
+                        .WithMany("Mentions")
+                        .HasForeignKey("LeadCommentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.User", "MentionedUser")
+                        .WithMany()
+                        .HasForeignKey("MentionedUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("LeadComment");
+
+                    b.Navigation("MentionedUser");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadCommunication", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Employee", "Employee")
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("Communications")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Employee");
+
+                    b.Navigation("Lead");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadDocument", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.LeadCommunication", "Communication")
+                        .WithMany("Attachments")
+                        .HasForeignKey("CommunicationId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("Documents")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Communication");
+
+                    b.Navigation("Lead");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadFollowUp", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Employee", "AssignedEmployee")
+                        .WithMany()
+                        .HasForeignKey("AssignedEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("FollowUps")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AssignedEmployee");
+
+                    b.Navigation("Lead");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadNotification", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany()
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.User", "Recipient")
+                        .WithMany()
+                        .HasForeignKey("RecipientUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Lead");
+
+                    b.Navigation("Recipient");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadSiteVisit", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Employee", "AssignedEmployee")
+                        .WithMany()
+                        .HasForeignKey("AssignedEmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany("SiteVisits")
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.Unit", "Unit")
+                        .WithMany()
+                        .HasForeignKey("UnitId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("AssignedEmployee");
+
+                    b.Navigation("Lead");
+
+                    b.Navigation("Project");
+
+                    b.Navigation("Unit");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Project", "Project")
@@ -1362,6 +2816,16 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Employee", "ManagerEmployee")
+                        .WithMany()
+                        .HasForeignKey("ManagerEmployeeId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("ManagerEmployee");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -1428,6 +2892,33 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Payments");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Lead", b =>
+                {
+                    b.Navigation("Activities");
+
+                    b.Navigation("AssignmentHistory");
+
+                    b.Navigation("Comments");
+
+                    b.Navigation("Communications");
+
+                    b.Navigation("Documents");
+
+                    b.Navigation("FollowUps");
+
+                    b.Navigation("SiteVisits");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadComment", b =>
+                {
+                    b.Navigation("Mentions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LeadCommunication", b =>
+                {
+                    b.Navigation("Attachments");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
                 {
                     b.Navigation("Attachment");
@@ -1438,6 +2929,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("MediaFiles");
 
                     b.Navigation("Units");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
+                {
+                    b.Navigation("Members");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>

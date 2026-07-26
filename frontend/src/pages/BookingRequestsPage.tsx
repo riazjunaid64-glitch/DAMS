@@ -22,12 +22,13 @@ interface BookingRequest {
   cnic: string;
   address: string;
   notes: string | null;
-  status: "Pending" | "Approved" | "Rejected";
+  status: "Pending" | "Approved" | "Rejected" | "Cancelled";
   requestedAt: string;
   reviewedAt: string | null;
   reviewedByUserId: number | null;
   reviewedByName: string | null;
   rejectionReason: string | null;
+  leadId: number | null;
   createdAt: string;
 }
 
@@ -43,6 +44,7 @@ interface Stats {
   pending: number;
   approved: number;
   rejected: number;
+  cancelled: number;
   total: number;
 }
 
@@ -52,6 +54,7 @@ const statusConfig = {
   Pending: { color: "text-amber-400 bg-amber-500/10 border-amber-500/20", label: "Pending Review" },
   Approved: { color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20", label: "Approved" },
   Rejected: { color: "text-rose-400 bg-rose-500/10 border-rose-500/20", label: "Rejected" },
+  Cancelled: { color: "text-slate-400 bg-slate-500/10 border-slate-500/20", label: "Withdrawn" },
 };
 
 const formatCurrency = formatPkr;
@@ -70,7 +73,7 @@ export default function BookingRequestsPage({ user }: Props) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeFilter, setActiveFilter] = useState<"all" | "Pending" | "Approved" | "Rejected">("all");
+  const [activeFilter, setActiveFilter] = useState<"all" | "Pending" | "Approved" | "Rejected" | "Cancelled">("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [dateFilter, setDateFilter] = useState("");
@@ -78,8 +81,6 @@ export default function BookingRequestsPage({ user }: Props) {
   const [totalPages, setTotalPages] = useState(1);
   const [selectedRequest, setSelectedRequest] = useState<BookingRequest | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
-  const [showRejectModal, setShowRejectModal] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -99,13 +100,13 @@ export default function BookingRequestsPage({ user }: Props) {
       params.append("pageSize", "15");
 
       const res = await api(`/api/BookingRequest?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to fetch booking requests");
+      if (!res.ok) throw new Error("Failed to fetch property inquiries");
 
       const data: BookingRequestList = await res.json();
       setRequests(data.items);
       setTotalPages(data.totalPages);
     } catch {
-      setError("Unable to load booking requests.");
+      setError("Unable to load property inquiries.");
     } finally {
       setLoading(false);
     }
@@ -125,42 +126,19 @@ export default function BookingRequestsPage({ user }: Props) {
     fetchRequests();
   }, [isAdmin, navigate, fetchStats, fetchRequests]);
 
-  const handleApprove = async (id: number) => {
+  const handleBackfill = async () => {
     setActionLoading(true);
     try {
-      const res = await api(`/api/BookingRequest/${id}/approve`, { method: "POST" });
+      const res = await api("/api/leads/maintenance/backfill-booking-requests", { method: "POST" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.message || "Failed to approve request");
+        alert(data.message || "Failed to connect historical inquiries");
         return;
       }
-      await Promise.all([fetchStats(), fetchRequests()]);
+      await fetchRequests();
       setSelectedRequest(null);
     } catch {
-      alert("Something went wrong");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleReject = async (id: number) => {
-    setActionLoading(true);
-    try {
-      const res = await api(`/api/BookingRequest/${id}/reject`, {
-        method: "POST",
-        body: JSON.stringify({ rejectionReason: rejectReason.trim() || null }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        alert(data.message || "Failed to reject request");
-        return;
-      }
-      await Promise.all([fetchStats(), fetchRequests()]);
-      setSelectedRequest(null);
-      setShowRejectModal(false);
-      setRejectReason("");
-    } catch {
-      alert("Something went wrong");
+      alert("Unable to connect historical inquiries.");
     } finally {
       setActionLoading(false);
     }
@@ -187,21 +165,22 @@ export default function BookingRequestsPage({ user }: Props) {
                 </span>
               </div>
               <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">
-                Booking Requests
+                Property Inquiries
               </h1>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
-                Review and manage customer booking requests
+                Review website inquiries and continue each one in the Lead CRM
               </p>
             </div>
           </div>
 
           {/* Stats Cards */}
           {stats && (
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
               {[
                 { filter: "Pending" as const, label: "Pending", value: stats.pending, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", activeBorder: "border-amber-400/60", icon: <path d="M12 8v4l2.5 2.5"/>, circle: true },
                 { filter: "Approved" as const, label: "Approved", value: stats.approved, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", activeBorder: "border-emerald-400/60", icon: <path d="M20 6 9 17l-5-5"/>, circle: false },
                 { filter: "Rejected" as const, label: "Rejected", value: stats.rejected, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", activeBorder: "border-rose-400/60", icon: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>, circle: false },
+                { filter: "Cancelled" as const, label: "Withdrawn", value: stats.cancelled, color: "text-slate-400", bg: "bg-slate-500/10", border: "border-slate-500/20", activeBorder: "border-slate-400/60", icon: <path d="M6 12h12"/>, circle: false },
                 { filter: "all" as const, label: "Total", value: stats.total, color: "text-[var(--accent)]", bg: "bg-[var(--accent-glow)]", border: "border-[var(--accent-glow-strong)]", activeBorder: "border-[var(--accent)]", icon: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>, circle: false },
               ].map((stat) => (
                 <button
@@ -255,6 +234,7 @@ export default function BookingRequestsPage({ user }: Props) {
             <option value="Pending">Pending</option>
             <option value="Approved">Approved</option>
             <option value="Rejected">Rejected</option>
+            <option value="Cancelled">Withdrawn</option>
           </select>
           <div className="relative">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -301,10 +281,10 @@ export default function BookingRequestsPage({ user }: Props) {
                 <line x1="3" y1="10" x2="21" y2="10"/>
               </svg>
             </div>
-            <h3 className="text-lg font-semibold text-[var(--text-heading)]">No Booking Requests</h3>
+            <h3 className="text-lg font-semibold text-[var(--text-heading)]">No Property Inquiries</h3>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
               {requests.length === 0 && activeFilter === "all"
-                ? "No booking requests have been submitted yet."
+                ? "No property inquiries have been submitted yet."
                 : "Try adjusting your search, status, or date filter."}
             </p>
           </div>
@@ -418,7 +398,7 @@ export default function BookingRequestsPage({ user }: Props) {
                     </span>
                   </div>
                   <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                    Booking Request Details
+                    Property Inquiry Details
                   </h3>
                 </div>
                 <button
@@ -524,7 +504,7 @@ export default function BookingRequestsPage({ user }: Props) {
                     <div className="flex items-center gap-3 text-sm">
                       <div className={`h-2 w-2 rounded-full ${selectedRequest.status === "Approved" ? "bg-emerald-400" : "bg-rose-400"}`} />
                       <span className="text-[var(--text-muted)]">
-                        {selectedRequest.status === "Approved" ? "Approved" : "Rejected"}:
+                        {selectedRequest.status === "Approved" ? "Approved" : selectedRequest.status === "Cancelled" ? "Withdrawn" : "Rejected"}:
                       </span>
                       <span className="text-[var(--text-primary)]">
                         {new Date(selectedRequest.reviewedAt).toLocaleString()}
@@ -547,18 +527,9 @@ export default function BookingRequestsPage({ user }: Props) {
             {/* Footer Actions */}
             {selectedRequest.status === "Pending" && (
               <div className="sticky bottom-0 z-10 flex items-center justify-between border-t border-[var(--border)] px-6 py-4 bg-[var(--surface-glass)]">
+                <p className="max-w-sm text-xs text-[var(--text-muted)]">This inquiry does not reserve the unit. Work, close, or convert it from the Lead CRM so the full timeline is retained.</p>
                 <Button
-                  variant="danger"
-                  onClick={() => setShowRejectModal(true)}
-                  disabled={actionLoading}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-                  </svg>
-                  Reject
-                </Button>
-                <Button
-                  onClick={() => handleApprove(selectedRequest.id)}
+                  onClick={() => selectedRequest.leadId ? navigate(`/crm/leads/${selectedRequest.leadId}`) : void handleBackfill()}
                   disabled={actionLoading}
                 >
                   {actionLoading ? (
@@ -566,7 +537,7 @@ export default function BookingRequestsPage({ user }: Props) {
                       <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M21 12a9 9 0 11-6.219-8.56"/>
                       </svg>
-                      Processing...
+                      Connecting...
                     </>
                   ) : (
                     <>
@@ -574,7 +545,7 @@ export default function BookingRequestsPage({ user }: Props) {
                         <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
                         <polyline points="22 4 12 14.01 9 11.01"/>
                       </svg>
-                      Approve Booking
+                      {selectedRequest.leadId ? "Open Connected Lead" : "Connect Historical Lead"}
                     </>
                   )}
                 </Button>
@@ -584,59 +555,6 @@ export default function BookingRequestsPage({ user }: Props) {
         </div>
       )}
 
-      {/* Reject Reason Modal */}
-      {showRejectModal && selectedRequest && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
-            onClick={() => { setShowRejectModal(false); setRejectReason(""); }}
-          />
-          <div className="relative z-10 w-[440px] max-w-[92vw] animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
-            <div className="p-6">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-rose-500/10 border border-rose-500/20">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-rose-400">
-                  <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-                </svg>
-              </div>
-              <h3 className="text-center text-lg font-semibold text-[var(--text-heading)] mb-2">
-                Reject Booking Request
-              </h3>
-              <p className="text-center text-sm text-[var(--text-muted)] mb-4">
-                Are you sure you want to reject this booking request? The unit will become available again.
-              </p>
-              <div className="mb-4">
-                <label className="text-sm font-medium text-[var(--text-secondary)] mb-2 block">
-                  Reason for rejection (optional)
-                </label>
-                <textarea
-                  value={rejectReason}
-                  onChange={(e) => setRejectReason(e.target.value)}
-                  placeholder="Enter a reason for rejecting this request..."
-                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] min-h-[100px] resize-none transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-                />
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="ghost"
-                  className="flex-1"
-                  onClick={() => { setShowRejectModal(false); setRejectReason(""); }}
-                  disabled={actionLoading}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  className="flex-1"
-                  onClick={() => handleReject(selectedRequest.id)}
-                  disabled={actionLoading}
-                >
-                  {actionLoading ? "Rejecting..." : "Reject Request"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

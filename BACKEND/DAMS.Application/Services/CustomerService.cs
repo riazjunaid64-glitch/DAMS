@@ -134,7 +134,7 @@ namespace DAMS.Application.Services
             return Map(customer, bookingsCount);
         }
 
-        public async Task<int> FindOrCreateCustomerAsync(
+        public async Task<CustomerResolution> FindOrCreateCustomerAsync(
             string fullName,
             string phone,
             string? cnic,
@@ -190,7 +190,7 @@ namespace DAMS.Application.Services
                     existing.UpdatedAt = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
                 }
-                return existing.Id;
+                return new CustomerResolution(existing.Id, WasCreated: false);
             }
 
             var customer = new Customer
@@ -216,7 +216,7 @@ namespace DAMS.Application.Services
             _context.Customers.Add(customer);
             await _context.SaveChangesAsync();
 
-            return customer.Id;
+            return new CustomerResolution(customer.Id, WasCreated: true);
         }
 
         // "0300-1234567", "0300 1234567" and "03001234567" must all match the same

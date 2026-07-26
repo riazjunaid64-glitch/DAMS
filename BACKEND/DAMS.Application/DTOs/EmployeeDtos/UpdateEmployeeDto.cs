@@ -12,5 +12,11 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public string? Address { get; set; }
         public decimal? Salary { get; set; }
         public EmployeeStatus? Status { get; set; }
+
+        /// <summary>Login account link. Send -1 to clear it.</summary>
+        public int? UserId { get; set; }
+
+        /// <summary>Team membership. Send -1 to clear it.</summary>
+        public int? TeamId { get; set; }
     }
 }

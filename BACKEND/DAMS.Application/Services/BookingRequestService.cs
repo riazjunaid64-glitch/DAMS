@@ -1,27 +1,29 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingRequestDtos;
+using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Data.SqlClient;
 
 namespace DAMS.Application.Services
 {
+    /// <summary>
+    /// The website enquiry form. Since lead management, a submitted request is an enquiry —
+    /// not a held unit and not a confirmed booking. Each request is backed by a Lead that
+    /// carries the sales workflow; the request row remains the customer-facing record of
+    /// what they submitted, so existing "My requests" screens keep working unchanged.
+    /// </summary>
     public class BookingRequestService : IBookingRequestService
     {
         private readonly AppDbContext _context;
-        private readonly ICustomerService _customerService;
-        private readonly IBookingService _bookingService;
+        private readonly ILeadService _leadService;
 
-        public BookingRequestService(
-            AppDbContext context,
-            ICustomerService customerService,
-            IBookingService bookingService)
+        public BookingRequestService(AppDbContext context, ILeadService leadService)
         {
             _context = context;
-            _customerService = customerService;
-            _bookingService = bookingService;
+            _leadService = leadService;
         }
 
         public async Task<BookingRequestResponseDto> CreateBookingRequestAsync(CreateBookingRequestDto dto, int? userId)
@@ -33,14 +35,23 @@ namespace DAMS.Application.Services
             if (unit == null)
                 throw new InvalidOperationException("Unit not found.");
 
-            if (unit.Status != UnitStatus.Available)
-                throw new InvalidOperationException("This unit is not available for booking requests.");
+            // A unit that is already sold or on a payment plan cannot take new enquiries;
+            // an available unit can take as many as it likes — every enquirer is a lead.
+            if (unit.Status is not (UnitStatus.Available or UnitStatus.PendingReview))
+                throw new InvalidOperationException("This unit is no longer available for enquiries.");
 
-            var existingPending = await _context.BookingRequests
-                .AnyAsync(br => br.UnitId == dto.UnitId && br.Status == BookingRequestStatus.Pending);
+            // Different people may all enquire about the same unit, but the same signed-in
+            // person submitting the same unit twice is a double-click, not a second enquiry.
+            if (userId.HasValue)
+            {
+                var alreadyPending = await _context.BookingRequests.AnyAsync(
+                    br => br.UnitId == dto.UnitId
+                          && br.UserId == userId.Value
+                          && br.Status == BookingRequestStatus.Pending);
 
-            if (existingPending)
-                throw new InvalidOperationException("This unit already has a pending booking request.");
+                if (alreadyPending)
+                    throw new InvalidOperationException("You already have a pending request for this unit.");
+            }
 
             var bookingRequest = new BookingRequest
             {
@@ -56,19 +67,16 @@ namespace DAMS.Application.Services
                 RequestedAt = DateTime.UtcNow
             };
 
-            _context.BookingRequests.Add(bookingRequest);
-
-            unit.Status = UnitStatus.PendingReview;
-            unit.UpdatedAt = DateTime.UtcNow;
-
-            try
+            await RunInTransactionAsync(async () =>
             {
+                // The lead needs the request id for its external reference, so the request is
+                // written first and the two are linked inside the same transaction.
+                _context.BookingRequests.Add(bookingRequest);
                 await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateException ex) when (IsPendingRequestCollision(ex))
-            {
-                throw new InvalidOperationException("This unit already has a pending booking request.");
-            }
+
+                await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, actor: null);
+                await _context.SaveChangesAsync();
+            });
 
             return await MapToResponseAsync(bookingRequest.Id)
                 ?? throw new InvalidOperationException("Created booking request could not be loaded.");
@@ -77,12 +85,6 @@ namespace DAMS.Application.Services
         public async Task<BookingRequestResponseDto?> GetBookingRequestByIdAsync(int id)
         {
             return await MapToResponseAsync(id);
-        }
-
-        private static bool IsPendingRequestCollision(DbUpdateException ex)
-        {
-            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
-                   && sql.Message.Contains("IX_BookingRequests_UnitId_Status", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task<BookingRequestListDto> GetBookingRequestsAsync(BookingRequestFilterDto filter)
@@ -130,31 +132,7 @@ namespace DAMS.Application.Services
             var items = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(br => new BookingRequestResponseDto
-                {
-                    Id = br.Id,
-                    UnitId = br.UnitId,
-                    UnitNumber = br.Unit.UnitNumber,
-                    UnitType = br.Unit.UnitType,
-                    UnitPrice = br.Unit.Price,
-                    ProjectId = br.Unit.ProjectId,
-                    ProjectName = br.Unit.Project.ProjectName,
-                    ProjectLocation = br.Unit.Project.Location,
-                    UserId = br.UserId,
-                    FullName = br.FullName,
-                    Phone = br.Phone,
-                    Email = br.Email,
-                    CNIC = br.CNIC,
-                    Address = br.Address,
-                    Notes = br.Notes,
-                    Status = br.Status,
-                    RequestedAt = br.RequestedAt,
-                    ReviewedAt = br.ReviewedAt,
-                    ReviewedByUserId = br.ReviewedByUserId,
-                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
-                    RejectionReason = br.RejectionReason,
-                    CreatedAt = br.CreatedAt
-                })
+                .Select(Projection)
                 .ToListAsync();
 
             return new BookingRequestListDto
@@ -173,31 +151,7 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .Where(br => br.UserId == userId)
                 .OrderByDescending(br => br.RequestedAt)
-                .Select(br => new BookingRequestResponseDto
-                {
-                    Id = br.Id,
-                    UnitId = br.UnitId,
-                    UnitNumber = br.Unit.UnitNumber,
-                    UnitType = br.Unit.UnitType,
-                    UnitPrice = br.Unit.Price,
-                    ProjectId = br.Unit.ProjectId,
-                    ProjectName = br.Unit.Project.ProjectName,
-                    ProjectLocation = br.Unit.Project.Location,
-                    UserId = br.UserId,
-                    FullName = br.FullName,
-                    Phone = br.Phone,
-                    Email = br.Email,
-                    CNIC = br.CNIC,
-                    Address = br.Address,
-                    Notes = br.Notes,
-                    Status = br.Status,
-                    RequestedAt = br.RequestedAt,
-                    ReviewedAt = br.ReviewedAt,
-                    ReviewedByUserId = br.ReviewedByUserId,
-                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
-                    RejectionReason = br.RejectionReason,
-                    CreatedAt = br.CreatedAt
-                })
+                .Select(Projection)
                 .ToListAsync();
         }
 
@@ -213,29 +167,45 @@ namespace DAMS.Application.Services
             if (bookingRequest.Status != BookingRequestStatus.Pending)
                 throw new InvalidOperationException("Only pending booking requests can be approved.");
 
-            // Find or create the business customer from the request contact details.
-            var customerId = await _customerService.FindOrCreateCustomerAsync(
-                bookingRequest.FullName,
-                bookingRequest.Phone,
-                bookingRequest.CNIC,
-                bookingRequest.Email,
-                bookingRequest.Address,
-                CustomerSource.Website,
-                "Created from website booking request.",
-                adminUserId,
-                linkUserId: bookingRequest.UserId);
+            var adminContext = new LeadUserContext
+            {
+                UserId = adminUserId,
+                Role = LeadRoles.Admin,
+                DisplayName = await _context.Users
+                    .Where(u => u.UserId == adminUserId)
+                    .Select(u => u.FullName)
+                    .FirstOrDefaultAsync()
+            };
 
-            bookingRequest.Status = BookingRequestStatus.Approved;
-            bookingRequest.ReviewedAt = DateTime.UtcNow;
-            bookingRequest.ReviewedByUserId = adminUserId;
-            bookingRequest.CustomerId = customerId;
-            bookingRequest.UpdatedAt = DateTime.UtcNow;
+            await RunInTransactionAsync(async () =>
+            {
+                // Requests submitted before lead management have no lead yet.
+                var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext);
+                await _context.SaveChangesAsync();
 
-            // Creates the Booking (Awaiting Booking Amount) and moves the unit to Reserved.
-            await _bookingService.CreateBookingForApprovedRequestAsync(bookingRequest, customerId, adminUserId);
+                // Approval is the conversion: it is what creates the customer and booking,
+                // records who did it, and marks the lead Won. Nothing else may set Won.
+                var conversion = await _leadService.ConvertAsync(leadId, new ConvertLeadDto
+                {
+                    UnitId = bookingRequest.UnitId,
+                    CNIC = bookingRequest.CNIC,
+                    Notes = $"Approved from website booking request #{bookingRequest.Id}."
+                }, adminContext);
 
-            // Persist approval fields in case booking creation did not flush them.
-            await _context.SaveChangesAsync();
+                var request = await _context.BookingRequests.FirstAsync(br => br.Id == bookingRequestId);
+                request.Status = BookingRequestStatus.Approved;
+                request.ReviewedAt = DateTime.UtcNow;
+                request.ReviewedByUserId = adminUserId;
+                request.CustomerId = conversion.CustomerId;
+                request.LeadId = leadId;
+                request.UpdatedAt = DateTime.UtcNow;
+
+                var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == conversion.BookingId);
+                if (booking != null)
+                    booking.BookingRequestId = request.Id;
+
+                await _context.SaveChangesAsync();
+            });
 
             return await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Approved booking request could not be loaded.");
@@ -244,7 +214,6 @@ namespace DAMS.Application.Services
         public async Task<BookingRequestResponseDto> RejectBookingRequestAsync(int bookingRequestId, int adminUserId, string? rejectionReason)
         {
             var bookingRequest = await _context.BookingRequests
-                .Include(br => br.Unit)
                 .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
 
             if (bookingRequest == null)
@@ -259,8 +228,16 @@ namespace DAMS.Application.Services
             bookingRequest.RejectionReason = rejectionReason?.Trim();
             bookingRequest.UpdatedAt = DateTime.UtcNow;
 
-            bookingRequest.Unit.Status = UnitStatus.Available;
-            bookingRequest.Unit.UpdatedAt = DateTime.UtcNow;
+            if (bookingRequest.LeadId.HasValue)
+            {
+                await _leadService.CloseFromSystemAsync(
+                    bookingRequest.LeadId.Value,
+                    dormant: false,
+                    reasonCode: "other",
+                    summary: $"Website booking request #{bookingRequest.Id} rejected.",
+                    notes: rejectionReason?.Trim(),
+                    actingUserId: adminUserId);
+            }
 
             await _context.SaveChangesAsync();
 
@@ -271,7 +248,6 @@ namespace DAMS.Application.Services
         public async Task<BookingRequestResponseDto> CancelBookingRequestAsync(int bookingRequestId, int userId)
         {
             var bookingRequest = await _context.BookingRequests
-                .Include(br => br.Unit)
                 .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
 
             if (bookingRequest == null)
@@ -287,11 +263,17 @@ namespace DAMS.Application.Services
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
 
-            // Release the unit back to the market.
-            if (bookingRequest.Unit.Status == UnitStatus.PendingReview)
+            // Withdrawn, not lost — the person may come back, so the lead goes dormant with
+            // its whole history intact.
+            if (bookingRequest.LeadId.HasValue)
             {
-                bookingRequest.Unit.Status = UnitStatus.Available;
-                bookingRequest.Unit.UpdatedAt = DateTime.UtcNow;
+                await _leadService.CloseFromSystemAsync(
+                    bookingRequest.LeadId.Value,
+                    dormant: true,
+                    reasonCode: "delayed_decision",
+                    summary: $"Website booking request #{bookingRequest.Id} withdrawn by the customer.",
+                    notes: null,
+                    actingUserId: null);
             }
 
             await _context.SaveChangesAsync();
@@ -325,36 +307,57 @@ namespace DAMS.Application.Services
             return result;
         }
 
+        private async Task RunInTransactionAsync(Func<Task> action)
+        {
+            if (_context.Database.CurrentTransaction != null)
+            {
+                await action();
+                return;
+            }
+
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await action();
+                await transaction.CommitAsync();
+            });
+        }
+
+        private static readonly System.Linq.Expressions.Expression<Func<BookingRequest, BookingRequestResponseDto>> Projection =
+            br => new BookingRequestResponseDto
+            {
+                Id = br.Id,
+                UnitId = br.UnitId,
+                UnitNumber = br.Unit.UnitNumber,
+                UnitType = br.Unit.UnitType,
+                UnitPrice = br.Unit.Price,
+                ProjectId = br.Unit.ProjectId,
+                ProjectName = br.Unit.Project.ProjectName,
+                ProjectLocation = br.Unit.Project.Location,
+                UserId = br.UserId,
+                FullName = br.FullName,
+                Phone = br.Phone,
+                Email = br.Email,
+                CNIC = br.CNIC,
+                Address = br.Address,
+                Notes = br.Notes,
+                Status = br.Status,
+                RequestedAt = br.RequestedAt,
+                ReviewedAt = br.ReviewedAt,
+                ReviewedByUserId = br.ReviewedByUserId,
+                ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
+                RejectionReason = br.RejectionReason,
+                LeadId = br.LeadId,
+                CreatedAt = br.CreatedAt
+            };
+
         private async Task<BookingRequestResponseDto?> MapToResponseAsync(int id)
         {
             return await _context.BookingRequests
                 .AsNoTracking()
                 .Where(br => br.Id == id)
-                .Select(br => new BookingRequestResponseDto
-                {
-                    Id = br.Id,
-                    UnitId = br.UnitId,
-                    UnitNumber = br.Unit.UnitNumber,
-                    UnitType = br.Unit.UnitType,
-                    UnitPrice = br.Unit.Price,
-                    ProjectId = br.Unit.ProjectId,
-                    ProjectName = br.Unit.Project.ProjectName,
-                    ProjectLocation = br.Unit.Project.Location,
-                    UserId = br.UserId,
-                    FullName = br.FullName,
-                    Phone = br.Phone,
-                    Email = br.Email,
-                    CNIC = br.CNIC,
-                    Address = br.Address,
-                    Notes = br.Notes,
-                    Status = br.Status,
-                    RequestedAt = br.RequestedAt,
-                    ReviewedAt = br.ReviewedAt,
-                    ReviewedByUserId = br.ReviewedByUserId,
-                    ReviewedByName = br.ReviewedBy != null ? br.ReviewedBy.FullName : null,
-                    RejectionReason = br.RejectionReason,
-                    CreatedAt = br.CreatedAt
-                })
+                .Select(Projection)
                 .FirstOrDefaultAsync();
         }
     }

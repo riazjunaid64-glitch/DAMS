@@ -14,6 +14,8 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public decimal Salary { get; set; }
         public DateTime JoinDate { get; set; }
         public EmployeeStatus Status { get; set; }
+        public int? UserId { get; set; }
+        public int? TeamId { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
     }
