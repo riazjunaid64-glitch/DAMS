@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.DTOs.NotificationDtos;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -22,17 +23,17 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(1, first.FirstContactOverdue);
         Assert.True(first.EscalationsRaised > 0);
 
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.SalesUserId && n.Type == LeadNotificationType.FirstContactOverdue));
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.FirstContactOverdue));
+        Assert.True(await h.Db.Notifications.AnyAsync(
             n => n.RecipientUserId == h.ManagerUserId && n.IsEscalation));
 
-        var countAfterFirst = await h.Db.LeadNotifications.CountAsync();
+        var countAfterFirst = await h.Db.Notifications.CountAsync();
 
         // Repeat scans must not re-notify anybody.
         var second = await h.Alerts.RunScanAsync();
         Assert.Equal(0, second.NotificationsCreated);
-        Assert.Equal(countAfterFirst, await h.Db.LeadNotifications.CountAsync());
+        Assert.Equal(countAfterFirst, await h.Db.Notifications.CountAsync());
     }
 
     [Fact]
@@ -62,8 +63,8 @@ public sealed class LeadAlertAndReportingTests
         await SetFollowUpDueAsync(h, followUp.Id, DateTime.UtcNow.AddHours(-3));
         var overdueScan = await h.Alerts.RunScanAsync();
         Assert.Equal(1, overdueScan.FollowUpsOverdue);
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.SalesUserId && n.Type == LeadNotificationType.FollowUpOverdue));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.FollowUpOverdue));
         Assert.Equal(LeadFollowUpStatus.Pending,
             (await h.Db.LeadFollowUps.AsNoTracking().FirstAsync(f => f.Id == followUp.Id)).Status);
 
@@ -74,8 +75,8 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(LeadFollowUpStatus.Missed,
             (await h.Db.LeadFollowUps.AsNoTracking().FirstAsync(f => f.Id == followUp.Id)).Status);
         Assert.Contains(await h.TimelineAsync(leadId), a => a.Type == LeadActivityType.FollowUpMissed);
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.IsEscalation && n.RecipientUserId == h.ManagerUserId));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.IsEscalation && n.RecipientUserId == h.ManagerUserId));
 
         // And it is only written off once.
         var repeat = await h.Alerts.RunScanAsync();
@@ -91,14 +92,14 @@ public sealed class LeadAlertAndReportingTests
 
         var first = await h.Alerts.RunScanAsync();
         Assert.Equal(1, first.InactiveLeads);
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.Type == LeadNotificationType.LeadInactive));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.Type == NotificationType.LeadInactive));
 
-        var notificationCount = await h.Db.LeadNotifications.CountAsync();
+        var notificationCount = await h.Db.Notifications.CountAsync();
         await SetLastActivityAsync(h, leadId, DateTime.UtcNow.AddDays(-30));
         await h.Alerts.RunScanAsync();
 
-        Assert.Equal(notificationCount, await h.Db.LeadNotifications.CountAsync());
+        Assert.Equal(notificationCount, await h.Db.Notifications.CountAsync());
     }
 
     [Fact]
@@ -134,8 +135,8 @@ public sealed class LeadAlertAndReportingTests
         h.Clock.Set(slot.AddHours(-2));
         var today = await h.Alerts.RunScanAsync();
         Assert.Equal(1, today.SiteVisitsToday);
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.SalesUserId && n.Type == LeadNotificationType.SiteVisitToday));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.SiteVisitReminder));
 
         // Ten hours after the slot, with no outcome recorded.
         h.Clock.Set(slot.AddHours(10));
@@ -147,6 +148,10 @@ public sealed class LeadAlertAndReportingTests
         Assert.Contains(await h.TimelineAsync(leadId), a => a.Type == LeadActivityType.SiteVisitMissed);
     }
 
+    /// <summary>
+    /// Lead alerts are read through the central notification inbox after the migration, and
+    /// the isolation guarantee is unchanged: one user cannot touch another's row.
+    /// </summary>
     [Fact]
     public async Task NotificationsCanBeReadAndCleared()
     {
@@ -154,21 +159,24 @@ public sealed class LeadAlertAndReportingTests
         var leadId = await h.CreateLeadAsync();
         await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
 
-        var mine = await h.Notifications.GetMyNotificationsAsync(h.Sales, unreadOnly: true, take: 50);
-        Assert.NotEmpty(mine);
-        Assert.Equal(mine.Count, await h.Notifications.GetUnreadCountAsync(h.Sales));
+        var sales = h.Notify(h.Sales);
 
-        await h.Notifications.MarkReadAsync(mine[0].Id, h.Sales);
-        Assert.Equal(mine.Count - 1, await h.Notifications.GetUnreadCountAsync(h.Sales));
+        var mine = await h.Inbox.GetAsync(sales, new NotificationFilterDto { UnreadOnly = true, PageSize = 50 });
+        Assert.NotEmpty(mine.Items);
+        Assert.Equal(mine.Items.Count, await h.Inbox.GetUnreadCountAsync(sales));
 
-        await h.Notifications.MarkAllReadAsync(h.Sales);
-        Assert.Equal(0, await h.Notifications.GetUnreadCountAsync(h.Sales));
+        await h.Inbox.MarkReadAsync(mine.Items[0].Id, sales);
+        Assert.Equal(mine.Items.Count - 1, await h.Inbox.GetUnreadCountAsync(sales));
 
-        // Somebody else's notification cannot be touched.
-        var adminNotification = await h.Db.LeadNotifications.AsNoTracking()
+        await h.Inbox.MarkAllReadAsync(sales, category: null);
+        Assert.Equal(0, await h.Inbox.GetUnreadCountAsync(sales));
+
+        // Somebody else's notification cannot be touched, and is reported as missing rather
+        // than forbidden so ids cannot be probed.
+        var adminNotification = await h.Db.Notifications.AsNoTracking()
             .FirstAsync(n => n.RecipientUserId == h.AdminUserId);
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Notifications.MarkReadAsync(adminNotification.Id, h.Sales));
+        await Assert.ThrowsAsync<LeadNotFoundException>(() =>
+            h.Inbox.MarkReadAsync(adminNotification.Id, sales));
     }
 
     // ── Reporting ───────────────────────────────────────────────────────────────

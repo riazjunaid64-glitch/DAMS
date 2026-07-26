@@ -24,8 +24,8 @@ public sealed class LeadAssignmentAndPipelineTests
         Assert.Equal(LeadStage.FirstContactPending, lead.Stage);
         Assert.NotNull(lead.AssignedAt);
 
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.RecipientUserId == h.SalesUserId && n.Type == LeadNotificationType.LeadAssigned));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.LeadAssigned));
 
         var history = await h.Leads.GetAssignmentHistoryAsync(leadId, h.Admin);
         Assert.Single(history);
@@ -393,8 +393,8 @@ public sealed class LeadAssignmentAndPipelineTests
         }, h.Sales);
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.RecipientUserId == h.ManagerUserId && n.Type == LeadNotificationType.MentionedInComment));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.RecipientUserId == h.ManagerUserId && n.Type == NotificationType.UserMentioned));
     }
 
     [Fact]

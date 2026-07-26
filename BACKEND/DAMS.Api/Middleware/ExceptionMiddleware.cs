@@ -27,6 +27,16 @@ public class ExceptionMiddleware
         }
         catch (Exception ex)
         {
+            // A streamed response (the notification event stream) has already sent its
+            // headers, so there is no status code left to set and no body shape to honour.
+            // Log it and let the connection end rather than throwing a second, more confusing
+            // exception on top of the first.
+            if (context.Response.HasStarted)
+            {
+                _logger.LogWarning(ex, "An error occurred after the response had started; the connection was closed.");
+                return;
+            }
+
             // Access decisions are expected outcomes, not faults: log them quietly and answer
             // with the right status instead of a 500.
             if (ex is LeadAuthorizationException or LeadNotFoundException)

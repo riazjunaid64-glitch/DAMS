@@ -5,6 +5,8 @@ import AuthModal from "./components/AuthModal.tsx";
 import SiteFooter from "./components/SiteFooter.tsx";
 import SiteLogo from "./components/SiteLogo.tsx";
 import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
+import NotificationBell from "./features/notifications/NotificationBell.tsx";
+import { detachPushOnLogout } from "./features/notifications/push.ts";
 import Button from "./lib/Button.tsx";
 
 const AboutPage = lazy(() => import("./pages/AboutPage.tsx"));
@@ -30,6 +32,8 @@ const MyProjectDetailPage = lazy(() => import("./pages/MyProjectDetailPage.tsx")
 const LeadsPage = lazy(() => import("./pages/LeadsPage.tsx"));
 const LeadDetailPage = lazy(() => import("./pages/LeadDetailPage.tsx"));
 const CrmSettingsPage = lazy(() => import("./pages/CrmSettingsPage.tsx"));
+const NotificationsPage = lazy(() => import("./pages/NotificationsPage.tsx"));
+const NotificationAdminPage = lazy(() => import("./pages/NotificationAdminPage.tsx"));
 
 export interface User {
   userId: string;
@@ -66,6 +70,7 @@ function App() {
         { to: "/customers", label: "Customers" },
         { to: "/employees", label: "Employees" },
         { to: "/finance", label: "Finance" },
+        { to: "/notifications/settings", label: "Notifications" },
       ];
     }
 
@@ -102,7 +107,11 @@ function App() {
     });
   }, []);
 
-  const logout = () => {
+  const logout = async () => {
+    // Detach this browser's push subscription first, while the session is still valid.
+    // On a shared computer that is what stops the next person from receiving the previous
+    // user's notifications.
+    await detachPushOnLogout();
     void api("/api/Auth/logout", { method: "POST" }, false);
     setAccessToken(null);
     setUser(null);
@@ -160,7 +169,7 @@ function App() {
                   </div>
                   <span className="text-sm font-medium text-[var(--nav-text-muted)]">{displayName}</span>
                 </div>
-                <Button variant="ghost" size="sm" className="nav-btn-ghost" onClick={logout}>
+                <Button variant="ghost" size="sm" className="nav-btn-ghost" onClick={() => void logout()}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
                   </svg>
@@ -169,7 +178,10 @@ function App() {
             )}
           </div>
 
-          {/* Mobile Toggle */}
+          {/* The bell is mounted once, outside the responsive containers: two instances
+              would open two live streams and poll twice for the same person. */}
+          <div className="flex items-center gap-2">
+            {user && <NotificationBell signedIn />}
           <button
             type="button"
             className="site-nav__menu-btn inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/15 bg-white/10 text-[var(--nav-text)] transition hover:bg-white/15 sm:hidden"
@@ -186,6 +198,7 @@ function App() {
               </svg>
             )}
           </button>
+          </div>
         </div>
 
         {/* Mobile Menu */}
@@ -229,7 +242,7 @@ function App() {
                         </div>
                         <span className="text-sm font-medium text-[var(--nav-text)]">{displayName}</span>
                       </div>
-                      <Button variant="ghost" className="nav-btn-ghost" onClick={logout}>
+                      <Button variant="ghost" className="nav-btn-ghost" onClick={() => void logout()}>
                         Logout
                       </Button>
                     </div>
@@ -269,6 +282,8 @@ function App() {
           <Route path="/crm" element={<LeadsPage user={user} />} />
           <Route path="/crm/leads/:id" element={<LeadDetailPage user={user} />} />
           <Route path="/crm/settings" element={<CrmSettingsPage user={user} />} />
+          <Route path="/notifications" element={<NotificationsPage user={user} />} />
+          <Route path="/notifications/settings" element={<NotificationAdminPage user={user} />} />
           </Routes>
         </Suspense>
       </main>

@@ -285,20 +285,20 @@ namespace DAMS.Application.Services
             var name = FullName(lead);
             await _notifications.QueueForSupervisorsAsync(
                 lead,
-                LeadNotificationType.NewLeadReceived,
+                NotificationType.LeadCreated,
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
-                await NotifyOwnerAsync(lead, LeadNotificationType.LeadAssigned,
+                await NotifyOwnerAsync(lead, NotificationType.LeadAssigned,
                     $"Lead assigned: {name}", "This lead is now yours to work.", "assigned",
                     cancellationToken);
         }
 
         private async Task NotifyOwnerAsync(
-            Lead lead, LeadNotificationType type, string title, string? body, string suffix,
+            Lead lead, NotificationType type, string title, string? body, string suffix,
             CancellationToken cancellationToken, bool isEscalation = false)
         {
             if (lead.AssignedEmployeeId == null)
@@ -383,7 +383,7 @@ namespace DAMS.Application.Services
                     a.NewValue = trail;
                 });
 
-            await NotifyOwnerAsync(lead, LeadNotificationType.NewLeadReceived,
+            await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
                 $"Repeat enquiry: {FullName(lead)}",
                 $"A new enquiry arrived through {source.Name} for a lead you own.",
                 $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}", cancellationToken);
@@ -829,7 +829,7 @@ namespace DAMS.Application.Services
             if (lead.AssignedEmployeeId.HasValue)
             {
                 await NotifyOwnerAsync(lead,
-                    isReassignment ? LeadNotificationType.LeadReassigned : LeadNotificationType.LeadAssigned,
+                    isReassignment ? NotificationType.LeadReassigned : NotificationType.LeadAssigned,
                     $"Lead assigned: {name}",
                     LeadContactNormalizer.Clean(dto.Reason) ?? "This lead is now yours to work.",
                     $"assign:{DateTime.UtcNow:yyyyMMddHHmmss}", cancellationToken);
@@ -838,7 +838,7 @@ namespace DAMS.Application.Services
             if (isReassignment)
             {
                 await _notifications.QueueForSupervisorsAsync(lead,
-                    LeadNotificationType.LeadReassigned,
+                    NotificationType.LeadReassigned,
                     $"Lead ownership changed: {name}",
                     LeadContactNormalizer.Clean(dto.Reason),
                     $"reassign:{DateTime.UtcNow:yyyyMMddHHmmss}",
@@ -900,7 +900,7 @@ namespace DAMS.Application.Services
             // Managers only need telling about the stages where money is close.
             if (dto.Stage is LeadStage.Negotiation or LeadStage.BookingPending or LeadStage.DocumentsInProgress)
             {
-                await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.StageChanged,
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadStageChanged,
                     $"{FullName(lead)} moved to {dto.Stage}",
                     LeadContactNormalizer.Clean(dto.Notes),
                     $"stage:{dto.Stage}", cancellationToken: cancellationToken);
@@ -992,7 +992,7 @@ namespace DAMS.Application.Services
                 LeadTimeline.Record(_context, lead, LeadActivityType.SystemAlert,
                     $"{cancelled} open follow-up(s) and visit(s) cancelled with the lead.", ctx);
 
-            await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.LeadClosed,
+            await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadClosed,
                 $"{FullName(lead)} marked {lead.Stage}",
                 $"Reason: {reason.Name}.",
                 $"closed:{lead.Stage}", cancellationToken: cancellationToken);
@@ -1039,7 +1039,7 @@ namespace DAMS.Application.Services
                     a.NewValue = dto.Stage.ToString();
                 });
 
-            await NotifyOwnerAsync(lead, LeadNotificationType.LeadAssigned,
+            await NotifyOwnerAsync(lead, NotificationType.LeadAssigned,
                 $"Lead reopened: {FullName(lead)}", dto.Reason.Trim(),
                 $"reopen:{DateTime.UtcNow:yyyyMMddHHmmss}", cancellationToken);
 
@@ -1180,12 +1180,12 @@ namespace DAMS.Application.Services
                         a.CustomerId = customerId;
                     });
 
-                await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.LeadConverted,
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadConverted,
                     $"Lead won: {FullName(lead)}",
                     $"Booking {booking.BookingReference} created.",
                     $"converted:{booking.Id}", cancellationToken: cancellationToken);
 
-                await NotifyOwnerAsync(lead, LeadNotificationType.LeadConverted,
+                await NotifyOwnerAsync(lead, NotificationType.LeadConverted,
                     $"Lead won: {FullName(lead)}",
                     $"Booking {booking.BookingReference} created.",
                     $"converted:{booking.Id}", cancellationToken);
@@ -1459,7 +1459,7 @@ namespace DAMS.Application.Services
                     a.NewValue = reason?.Name;
                 });
 
-            await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.LeadClosed,
+            await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadClosed,
                 $"{FullName(lead)} marked {lead.Stage}", summary,
                 $"closed:{lead.Stage}", cancellationToken: cancellationToken);
         }

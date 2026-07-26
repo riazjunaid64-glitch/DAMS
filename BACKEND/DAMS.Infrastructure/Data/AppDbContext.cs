@@ -42,7 +42,18 @@ namespace DAMS.Infrastructure.Data
         public DbSet<LeadDocument> LeadDocuments { get; set; }
         public DbSet<LeadComment> LeadComments { get; set; }
         public DbSet<LeadCommentMention> LeadCommentMentions { get; set; }
-        public DbSet<LeadNotification> LeadNotifications { get; set; }
+
+        // Central notification platform. Every module writes these; no module owns them.
+        public DbSet<Notification> Notifications { get; set; }
+        public DbSet<NotificationDelivery> NotificationDeliveries { get; set; }
+        public DbSet<NotificationTemplate> NotificationTemplates { get; set; }
+        public DbSet<NotificationRule> NotificationRules { get; set; }
+        public DbSet<NotificationPreference> NotificationPreferences { get; set; }
+        public DbSet<PushSubscription> PushSubscriptions { get; set; }
+        public DbSet<NotificationSetting> NotificationSettings { get; set; }
+        public DbSet<NotificationJob> NotificationJobs { get; set; }
+        public DbSet<EmailSuppression> EmailSuppressions { get; set; }
+        public DbSet<NotificationAuditEntry> NotificationAuditEntries { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -512,6 +523,7 @@ namespace DAMS.Infrastructure.Data
             });
 
             ConfigureLeadManagement(modelBuilder);
+            ConfigureNotifications(modelBuilder);
         }
 
         private static void ConfigureLeadManagement(ModelBuilder modelBuilder)
@@ -812,30 +824,180 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.NoAction);
             });
 
-            modelBuilder.Entity<LeadNotification>(entity =>
+            SeedLeadConfiguration(modelBuilder);
+        }
+
+        /// <summary>
+        /// The central notification platform. Two database-level guarantees carry most of the
+        /// reliability story: <c>Notifications.DedupKey</c> is unique, so the same business
+        /// event can never produce two notifications for one person; and
+        /// <c>(NotificationId, Channel)</c> is unique, so retrying a failed email can never
+        /// re-send a push that already worked.
+        /// </summary>
+        private static void ConfigureNotifications(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Notification>(entity =>
             {
                 entity.Property(n => n.Title).IsRequired().HasMaxLength(200);
-                entity.Property(n => n.Body).HasMaxLength(1000);
+                entity.Property(n => n.Message).IsRequired().HasMaxLength(2000);
+                entity.Property(n => n.DeepLink).HasMaxLength(500);
                 entity.Property(n => n.DedupKey).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.DataJson).HasMaxLength(4000);
+                entity.Property(n => n.RecipientEmail).HasMaxLength(200);
+                entity.Property(n => n.RecipientName).HasMaxLength(200);
+                entity.Property(n => n.Category).HasConversion<int>();
                 entity.Property(n => n.Type).HasConversion<int>();
+                entity.Property(n => n.Priority).HasConversion<int>();
+                entity.Property(n => n.Module).HasConversion<int>();
+                entity.Property(n => n.EntityType).HasConversion<int>();
+                entity.Property(n => n.Channels).HasConversion<int>();
 
-                // The database, not the application, is what guarantees a repeating scan
-                // cannot spam the same person with the same alert.
                 entity.HasIndex(n => n.DedupKey).IsUnique();
+                // The inbox always reads "mine, newest first", optionally unread or by category.
                 entity.HasIndex(n => new { n.RecipientUserId, n.IsRead, n.CreatedAt });
-                entity.HasIndex(n => n.LeadId);
+                entity.HasIndex(n => new { n.RecipientUserId, n.Category, n.CreatedAt });
+                entity.HasIndex(n => new { n.EntityType, n.EntityId });
+                entity.HasIndex(n => n.NotificationJobId);
+                entity.HasIndex(n => n.CreatedAt);
 
-                entity.HasOne(n => n.Lead)
-                      .WithMany()
-                      .HasForeignKey(n => n.LeadId)
-                      .OnDelete(DeleteBehavior.Cascade);
                 entity.HasOne(n => n.Recipient)
                       .WithMany()
                       .HasForeignKey(n => n.RecipientUserId)
-                      .OnDelete(DeleteBehavior.NoAction);
+                      // Notification and delivery history is an audit record and must survive
+                      // account deletion. The nullable recipient id is cleared instead.
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                entity.HasOne(n => n.Job)
+                      .WithMany()
+                      .HasForeignKey(n => n.NotificationJobId)
+                      .OnDelete(DeleteBehavior.SetNull);
             });
 
-            SeedLeadConfiguration(modelBuilder);
+            modelBuilder.Entity<NotificationDelivery>(entity =>
+            {
+                entity.Property(d => d.Channel).HasConversion<int>();
+                entity.Property(d => d.Status).HasConversion<int>();
+                entity.Property(d => d.Target).HasMaxLength(300);
+                entity.Property(d => d.ProviderReference).HasMaxLength(200);
+                entity.Property(d => d.FailureReason).HasMaxLength(1000);
+                entity.Property(d => d.LockedBy).HasMaxLength(100);
+                entity.Property(d => d.RowVersion).IsRowVersion();
+
+                entity.HasIndex(d => new { d.NotificationId, d.Channel }).IsUnique();
+                // The worker's claim query: "anything due, not locked, in a runnable state".
+                entity.HasIndex(d => new { d.Status, d.AvailableAt });
+                entity.HasIndex(d => d.LockedUntil);
+
+                entity.HasOne(d => d.Notification)
+                      .WithMany(n => n.Deliveries)
+                      .HasForeignKey(d => d.NotificationId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<NotificationTemplate>(entity =>
+            {
+                entity.Property(t => t.Name).IsRequired().HasMaxLength(150);
+                entity.Property(t => t.Subject).IsRequired().HasMaxLength(300);
+                entity.Property(t => t.Heading).HasMaxLength(300);
+                entity.Property(t => t.Body).IsRequired().HasMaxLength(8000);
+                entity.Property(t => t.ActionText).HasMaxLength(80);
+                entity.Property(t => t.ActionUrl).HasMaxLength(500);
+                entity.Property(t => t.Footer).HasMaxLength(2000);
+                entity.Property(t => t.IconUrl).HasMaxLength(500);
+                entity.Property(t => t.BadgeUrl).HasMaxLength(500);
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.Channel).HasConversion<int>();
+                entity.Property(t => t.Category).HasConversion<int>();
+
+                entity.HasIndex(t => new { t.Type, t.Channel }).IsUnique();
+            });
+
+            modelBuilder.Entity<NotificationRule>(entity =>
+            {
+                entity.Property(r => r.Type).HasConversion<int>();
+                entity.Property(r => r.Priority).HasConversion<int>();
+                entity.HasIndex(r => r.Type).IsUnique();
+            });
+
+            modelBuilder.Entity<NotificationPreference>(entity =>
+            {
+                entity.Property(p => p.Category).HasConversion<int>();
+                entity.HasIndex(p => new { p.UserId, p.Category }).IsUnique();
+
+                entity.HasOne(p => p.User)
+                      .WithMany()
+                      .HasForeignKey(p => p.UserId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<PushSubscription>(entity =>
+            {
+                entity.Property(s => s.Endpoint).IsRequired().HasMaxLength(400);
+                entity.Property(s => s.P256dh).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.Auth).IsRequired().HasMaxLength(100);
+                entity.Property(s => s.DeviceLabel).HasMaxLength(150);
+                entity.Property(s => s.DeactivationReason).HasMaxLength(300);
+
+                // One endpoint belongs to exactly one login at a time: re-registering the same
+                // browser after a different user signs in moves it, so a shared computer never
+                // delivers the previous user's notifications.
+                entity.HasIndex(s => s.Endpoint).IsUnique();
+                entity.HasIndex(s => new { s.UserId, s.IsActive });
+
+                entity.HasOne(s => s.User)
+                      .WithMany()
+                      .HasForeignKey(s => s.UserId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<NotificationSetting>(entity =>
+            {
+                entity.Property(s => s.Key).IsRequired().HasMaxLength(100);
+                entity.Property(s => s.Value).HasMaxLength(2000);
+                entity.HasIndex(s => s.Key).IsUnique();
+            });
+
+            modelBuilder.Entity<NotificationJob>(entity =>
+            {
+                entity.Property(j => j.Title).IsRequired().HasMaxLength(200);
+                entity.Property(j => j.Message).IsRequired().HasMaxLength(2000);
+                entity.Property(j => j.ActionText).HasMaxLength(80);
+                entity.Property(j => j.ActionUrl).HasMaxLength(500);
+                entity.Property(j => j.AudienceJson).HasMaxLength(4000);
+                entity.Property(j => j.FailureReason).HasMaxLength(1000);
+                entity.Property(j => j.RequestKey).HasMaxLength(100);
+                entity.Property(j => j.LockedBy).HasMaxLength(100);
+                entity.Property(j => j.Status).HasConversion<int>();
+                entity.Property(j => j.Type).HasConversion<int>();
+                entity.Property(j => j.Category).HasConversion<int>();
+                entity.Property(j => j.Priority).HasConversion<int>();
+                entity.Property(j => j.Channels).HasConversion<int>();
+                entity.Property(j => j.AudienceType).HasConversion<int>();
+                entity.Property(j => j.RowVersion).IsRowVersion();
+
+                entity.HasIndex(j => new { j.Status, j.ScheduledAt });
+                // A double-clicked Send arrives twice with one token; the database keeps one.
+                entity.HasIndex(j => j.RequestKey)
+                      .IsUnique()
+                      .HasFilter("[RequestKey] IS NOT NULL");
+            });
+
+            modelBuilder.Entity<EmailSuppression>(entity =>
+            {
+                entity.Property(s => s.Email).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.Reason).IsRequired().HasMaxLength(300);
+                entity.HasIndex(s => s.Email).IsUnique();
+            });
+
+            modelBuilder.Entity<NotificationAuditEntry>(entity =>
+            {
+                entity.Property(a => a.Area).IsRequired().HasMaxLength(50);
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(100);
+                entity.Property(a => a.Details).HasMaxLength(2000);
+                entity.Property(a => a.PerformedByName).HasMaxLength(200);
+                entity.HasIndex(a => a.OccurredAt);
+                entity.HasIndex(a => new { a.Area, a.OccurredAt });
+            });
         }
 
         // Fixed timestamp: HasData must be deterministic or every `migrations add` produces

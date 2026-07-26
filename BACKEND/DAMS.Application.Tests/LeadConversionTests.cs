@@ -246,8 +246,8 @@ public sealed class LeadConversionTests
         await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
 
         Assert.False(await h.Db.LeadFollowUps.AnyAsync(f => f.LeadId == leadId && f.Status == LeadFollowUpStatus.Pending));
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.Type == LeadNotificationType.LeadConverted));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.Type == NotificationType.LeadConverted));
     }
 
     [Fact]

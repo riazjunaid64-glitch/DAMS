@@ -59,25 +59,21 @@ namespace DAMS.Application.Interfaces
         Task DeleteAsync(int documentId, LeadUserContext ctx, CancellationToken cancellationToken = default);
     }
 
+    /// <summary>
+    /// The lead module's doorway into the central notification platform. Reading a lead
+    /// alert happens through the shared notification inbox, so this is write-only.
+    /// </summary>
     public interface ILeadNotificationService
     {
         /// <summary>
         /// Queues a notification unless an identical one already exists. Returns true when a
         /// new row was added. Never saves — the caller's SaveChanges commits it with the
-        /// rest of the operation.
+        /// rest of the operation, so a lead alert and the change that caused it are atomic.
         /// </summary>
-        Task<bool> QueueAsync(int leadId, int recipientUserId, LeadNotificationType type, string title, string? body, string dedupKey, bool isEscalation = false, CancellationToken cancellationToken = default);
+        Task<bool> QueueAsync(int leadId, int recipientUserId, NotificationType type, string title, string? body, string dedupKey, bool isEscalation = false, CancellationToken cancellationToken = default);
 
         /// <summary>Notifies every admin and the owning manager(s) for a lead.</summary>
-        Task<int> QueueForSupervisorsAsync(Lead lead, LeadNotificationType type, string title, string? body, string dedupKeySuffix, bool isEscalation = false, CancellationToken cancellationToken = default);
-
-        Task<List<LeadNotificationDto>> GetMyNotificationsAsync(LeadUserContext ctx, bool unreadOnly, int take, CancellationToken cancellationToken = default);
-
-        Task<int> GetUnreadCountAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task MarkReadAsync(int notificationId, LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task MarkAllReadAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
+        Task<int> QueueForSupervisorsAsync(Lead lead, NotificationType type, string title, string? body, string dedupKeySuffix, bool isEscalation = false, CancellationToken cancellationToken = default);
     }
 
     /// <summary>Time-based alerts and escalations. Safe to run repeatedly.</summary>

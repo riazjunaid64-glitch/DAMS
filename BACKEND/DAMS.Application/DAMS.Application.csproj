@@ -16,4 +16,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- The web-push wire format is internal to the sender but has to be verifiable against
+         the standards; the tests decrypt what it produces. -->
+    <InternalsVisibleTo Include="DAMS.Application.Tests" />
+  </ItemGroup>
+
 </Project>

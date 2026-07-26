@@ -209,14 +209,14 @@ namespace DAMS.Application.Services
             var leadName = LeadService.FullName(lead);
             foreach (var userId in mentionedUserIds.Where(id => id != ctx.UserId))
             {
-                await _notifications.QueueAsync(lead.Id, userId, LeadNotificationType.MentionedInComment,
+                await _notifications.QueueAsync(lead.Id, userId, NotificationType.UserMentioned,
                     $"You were mentioned on {leadName}", comment.Body,
                     $"mention:{comment.Id}:{userId}", cancellationToken: cancellationToken);
             }
 
             if (dto.IsManagerReviewRequest)
             {
-                await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.ManagerAttentionRequired,
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.ManagerAttentionRequired,
                     $"Review requested on {leadName}", comment.Body,
                     $"review:{comment.Id}", cancellationToken: cancellationToken);
             }

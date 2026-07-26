@@ -1,7 +1,10 @@
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Notifications;
 using DAMS.Application.Interfaces;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -61,10 +64,64 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             }));
+    // Notification settings, templates, test sends and subscription writes are cheap to
+    // call and expensive to abuse; bound them per signed-in user rather than per IP so one
+    // shared office address cannot lock everybody out.
+    options.AddPolicy("notificationWrite", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: NotificationPartitionKey(httpContext),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 60,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
+    // Mass sending is the one operation where an accident is expensive and irreversible.
+    options.AddPolicy("notificationSend", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: NotificationPartitionKey(httpContext),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(5),
+                PermitLimit = 10,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
 builder.Services.Configure<LeadAlertOptions>(builder.Configuration.GetSection(LeadAlertOptions.SectionName));
+builder.Services.AddOptions<NotificationOptions>()
+    .Bind(builder.Configuration.GetSection(NotificationOptions.SectionName))
+    .Validate(o => o.DeliveryIntervalSeconds >= 0 && o.ScheduleIntervalSeconds >= 0,
+        "Notification worker intervals cannot be negative.")
+    .Validate(o => o.DeliveryBatchSize is >= 1 and <= 1000 && o.JobBatchSize is >= 1 and <= 100,
+        "Notification batch sizes are outside the supported range.")
+    .Validate(o => o.LeaseMinutes is >= 1 and <= 60,
+        "Notification lease duration must be between 1 and 60 minutes.")
+    .Validate(o => o.MaxAttempts is >= 1 and <= 20
+                   && o.BaseRetryDelaySeconds is >= 1 and <= 3600
+                   && o.MaxRetryDelayMinutes is >= 1 and <= 1440,
+        "Notification retry settings are outside the supported range.")
+    .Validate(o => o.MaxBroadcastRecipients is >= 1 and <= 100000
+                   && o.LargeAudienceThreshold >= 1
+                   && o.LargeAudienceThreshold <= o.MaxBroadcastRecipients,
+        "Notification audience limits are invalid.")
+    .Validate(o => o.InboxRetentionDays >= 0
+                   && o.PushFailureThreshold is >= 1 and <= 20
+                   && o.MaxPushSubscriptionsPerUser is >= 1 and <= 20
+                   && o.StreamHeartbeatSeconds is >= 5 and <= 300,
+        "Notification retention, push, or stream settings are outside the supported range.")
+    .Validate(o => o.LeaseMinutes * 60 >= o.MaxPushSubscriptionsPerUser * 20 + 30,
+        "The notification lease must exceed the worst-case sequential push-send time.")
+    .Validate(o => o.AllowedPushEndpointHosts is { Length: > 0 }
+                   && o.AllowedPushEndpointHosts.All(IsValidPushHostPattern),
+        "Allowed push endpoint hosts must be plain DNS names or dot-prefixed DNS suffixes.")
+    .ValidateOnStart();
+// The delivery processor and the push sender need the plain options object, not the
+// IOptions wrapper, because they are also constructed directly in tests.
+builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<NotificationOptions>>().Value);
 // "Due today", "overdue" and "inactive" all depend on the current instant; taking it from
 // an injected clock keeps those rules deterministic under test.
 builder.Services.AddSingleton(TimeProvider.System);
@@ -106,6 +163,32 @@ builder.Services.AddScoped<ILeadConfigurationService, LeadConfigurationService>(
 builder.Services.AddScoped<ILeadReportingService, LeadReportingService>();
 builder.Services.AddScoped<ILeadAlertService, LeadAlertService>();
 builder.Services.AddHostedService<LeadAlertBackgroundService>();
+
+// ── Notification platform ────────────────────────────────────────────────────────
+// Business modules depend only on INotificationDispatcher and INotificationEventService.
+// Channels are registered as a collection, so adding WhatsApp, SMS or mobile push later is
+// one more INotificationChannelSender and one more enum value — no module changes shape.
+builder.Services.AddSingleton<INotificationRealtimeBroker, NotificationRealtimeBroker>();
+builder.Services.AddSingleton<IWebPushSender>(_ => new WebPushClient());
+builder.Services.AddScoped<NotificationSettingsStore>();
+builder.Services.AddScoped<NotificationRenderer>();
+builder.Services.AddScoped<NotificationReceiptAttachmentBuilder>();
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+builder.Services.AddScoped<INotificationDispatcher, NotificationDispatcher>();
+builder.Services.AddScoped<INotificationInboxService, NotificationInboxService>();
+builder.Services.AddScoped<INotificationPreferenceService, NotificationPreferenceService>();
+builder.Services.AddScoped<PushSubscriptionService>();
+builder.Services.AddScoped<IPushSubscriptionService>(sp => sp.GetRequiredService<PushSubscriptionService>());
+builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipientResolver>();
+builder.Services.AddScoped<INotificationConfigurationService, NotificationConfigurationService>();
+builder.Services.AddScoped<INotificationAdminService, NotificationAdminService>();
+builder.Services.AddScoped<INotificationEventService, NotificationEventService>();
+builder.Services.AddScoped<INotificationDeliveryProcessor, NotificationDeliveryProcessor>();
+builder.Services.AddScoped<INotificationUserContextResolver, NotificationUserContextResolver>();
+builder.Services.AddScoped<INotificationChannelSender, InAppChannelSender>();
+builder.Services.AddScoped<INotificationChannelSender, EmailChannelSender>();
+builder.Services.AddScoped<INotificationChannelSender, WebPushChannelSender>();
+builder.Services.AddHostedService<NotificationBackgroundService>();
 builder.Services.AddScoped<ILeadDocumentStorage>(sp =>
     new PrivateLeadDocumentStorage(ResolvePrivateStoragePath(
         sp, "LeadDocuments:StoragePath", Path.Combine("App_Data", "lead-documents"))));
@@ -162,8 +245,6 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
-app.UseRateLimiter();
-
 app.Use(async (context, next) =>
 {
     context.Response.OnStarting(static state =>
@@ -200,10 +281,32 @@ app.UseStaticFiles(new StaticFileOptions
 
 app.UseCors("AllowFrontend");
 app.UseAuthentication();
+// User-partitioned notification limits must run after authentication; otherwise every
+// employee behind the same office NAT shares one anonymous IP bucket.
+app.UseRateLimiter();
 app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+// Signed-in callers are limited per account; anonymous ones fall back to their address so an
+// unauthenticated flood is still bounded.
+static string NotificationPartitionKey(HttpContext context) =>
+    context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+    ?? context.Connection.RemoteIpAddress?.ToString()
+    ?? IPAddress.None.ToString();
+
+static bool IsValidPushHostPattern(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return false;
+
+    var host = value[0] == '.' ? value[1..] : value;
+    return Uri.CheckHostName(host) == UriHostNameType.Dns
+           && !value.Contains('/')
+           && !value.Contains(':')
+           && !value.Contains('*');
+}
 
 // Private documents (finance evidence, lead paperwork) are served only through authorised
 // endpoints, so their storage must never sit anywhere the static-file middleware can reach.

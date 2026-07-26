@@ -35,8 +35,8 @@ public sealed class LeadIntakeAndDuplicateTests
 
         var lead = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
 
-        var alerts = await h.Db.LeadNotifications
-            .Where(n => n.LeadId == lead.Lead!.Id && n.Type == LeadNotificationType.NewLeadReceived)
+        var alerts = await h.Db.Notifications
+            .Where(n => n.EntityType == NotificationEntityType.Lead && n.EntityId == lead.Lead!.Id && n.Type == NotificationType.LeadCreated)
             .ToListAsync();
 
         Assert.Contains(alerts, n => n.RecipientUserId == h.AdminUserId);

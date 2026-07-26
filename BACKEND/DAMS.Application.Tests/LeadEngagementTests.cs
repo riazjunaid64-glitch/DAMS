@@ -128,8 +128,8 @@ public sealed class LeadEngagementTests
             IsManagerReviewRequest = true
         }, h.Sales);
 
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.Type == LeadNotificationType.ManagerAttentionRequired));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.Type == NotificationType.ManagerAttentionRequired));
 
         var comments = await h.Communications.GetCommentsAsync(leadId, h.Manager);
         Assert.Single(comments);
@@ -379,8 +379,8 @@ public sealed class LeadEngagementTests
 
         await h.SiteVisits.MarkMissedAsync(visit.Id, new CloseSiteVisitDto { Reason = "Customer did not turn up." }, h.Sales);
 
-        Assert.True(await h.Db.LeadNotifications.AnyAsync(
-            n => n.LeadId == leadId && n.Type == LeadNotificationType.SiteVisitMissed && n.IsEscalation));
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId && n.Type == NotificationType.SiteVisitMissed && n.IsEscalation));
         Assert.Contains(await h.TimelineAsync(leadId), a => a.Type == LeadActivityType.SiteVisitMissed);
     }
 

@@ -344,24 +344,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public DateTime UploadedAt { get; set; }
     }
 
-    public class LeadNotificationDto
-    {
-        public int Id { get; set; }
-
-        public int LeadId { get; set; }
-
-        public string LeadReference { get; set; } = string.Empty;
-
-        public LeadNotificationType Type { get; set; }
-
-        public string Title { get; set; } = string.Empty;
-
-        public string? Body { get; set; }
-
-        public bool IsRead { get; set; }
-
-        public bool IsEscalation { get; set; }
-
-        public DateTime CreatedAt { get; set; }
-    }
+    // Lead alerts are read through the central notification inbox (/api/notifications),
+    // filtered by category, so there is no lead-only notification DTO any more.
 }

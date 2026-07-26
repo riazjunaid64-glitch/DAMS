@@ -9,16 +9,11 @@ namespace DAMS.Api.Controllers
     public class LeadDashboardController : LeadControllerBase
     {
         private readonly ILeadReportingService _reporting;
-        private readonly ILeadNotificationService _notifications;
 
-        public LeadDashboardController(
-            ILeadUserContextResolver resolver,
-            ILeadReportingService reporting,
-            ILeadNotificationService notifications)
+        public LeadDashboardController(ILeadUserContextResolver resolver, ILeadReportingService reporting)
             : base(resolver)
         {
             _reporting = reporting;
-            _notifications = notifications;
         }
 
         /// <summary>The signed-in employee's own workload.</summary>
@@ -39,21 +34,8 @@ namespace DAMS.Api.Controllers
             [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
             RunAsync(ctx => _reporting.GetAdminDashboardAsync(ctx, from, to, cancellationToken), cancellationToken);
 
-        [HttpGet("notifications")]
-        public Task<IActionResult> GetNotifications(
-            [FromQuery] bool unreadOnly = false, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
-            RunAsync(ctx => _notifications.GetMyNotificationsAsync(ctx, unreadOnly, take, cancellationToken), cancellationToken);
-
-        [HttpGet("notifications/unread-count")]
-        public Task<IActionResult> GetUnreadCount(CancellationToken cancellationToken) =>
-            RunAsync(async ctx => new { count = await _notifications.GetUnreadCountAsync(ctx, cancellationToken) }, cancellationToken);
-
-        [HttpPost("notifications/{id:int}/read")]
-        public Task<IActionResult> MarkRead(int id, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _notifications.MarkReadAsync(id, ctx, cancellationToken), cancellationToken);
-
-        [HttpPost("notifications/read-all")]
-        public Task<IActionResult> MarkAllRead(CancellationToken cancellationToken) =>
-            RunAsync(ctx => _notifications.MarkAllReadAsync(ctx, cancellationToken), cancellationToken);
+        // Lead alerts now live in the central notification inbox: /api/notifications, with
+        // the lead categories available as filters. There is no lead-only inbox to keep in
+        // step with it.
     }
 }

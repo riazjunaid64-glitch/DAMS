@@ -13,11 +13,38 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly ICustomerService _customerService;
+        private readonly INotificationEventService? _notifications;
 
-        public BookingService(AppDbContext context, ICustomerService customerService)
+        /// <param name="notifications">
+        /// Optional on purpose: booking and payment work must be able to run without the
+        /// notification platform present. Every call into it happens after the money is
+        /// committed and is wrapped so a notification problem cannot undo a payment.
+        /// </param>
+        public BookingService(AppDbContext context, ICustomerService customerService, INotificationEventService? notifications = null)
         {
             _context = context;
             _customerService = customerService;
+            _notifications = notifications;
+        }
+
+        /// <summary>
+        /// Raises a business notification after the fact. Deliberately swallowing: the
+        /// notification platform has its own reconciliation sweep for anything missed here,
+        /// and nothing it does may turn a successful payment into a failed request.
+        /// </summary>
+        private async Task NotifyQuietlyAsync(Func<INotificationEventService, Task> action)
+        {
+            if (_notifications == null)
+                return;
+
+            try
+            {
+                await action(_notifications);
+            }
+            catch (Exception)
+            {
+                // Intentionally ignored — see the reconciliation sweep.
+            }
         }
 
         public async Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId)
@@ -132,6 +159,10 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
 
+            // Set inside the transaction, notified after it: the receipt notification must
+            // never be part of what makes the booking succeed or fail.
+            int? applicationPaymentId = null;
+
             await RunInTransactionAsync(async () =>
             {
                 await PersistNewBookingAsync(booking, unit);
@@ -166,8 +197,12 @@ namespace DAMS.Application.Services
                     }
 
                     await SaveWithUniqueReceiptNumberAsync(payment);
+                    applicationPaymentId = payment.Id;
                 }
             });
+
+            if (applicationPaymentId.HasValue)
+                await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(applicationPaymentId.Value));
 
             return await GetResponseAsync(booking.Id);
         }
@@ -280,6 +315,9 @@ namespace DAMS.Application.Services
             booking.Unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.BookingCancelled, reason, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }
@@ -408,6 +446,9 @@ namespace DAMS.Application.Services
                     "This booking was updated by another payment. No payment was recorded; reload and try again.");
             }
 
+            // The money is committed. Everything below is best-effort.
+            await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(payment.Id));
+
             return await GetResponseAsync(booking.Id);
         }
 
@@ -428,6 +469,9 @@ namespace DAMS.Application.Services
             booking.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.PossessionGiven, null, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }
@@ -462,6 +506,9 @@ namespace DAMS.Application.Services
             booking.Unit.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                booking.Id, NotificationType.SaleCompleted, null, adminUserId));
 
             return await GetResponseAsync(booking.Id);
         }

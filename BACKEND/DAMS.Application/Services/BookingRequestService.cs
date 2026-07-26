@@ -20,11 +20,32 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly ILeadService _leadService;
+        private readonly INotificationEventService? _notifications;
 
-        public BookingRequestService(AppDbContext context, ILeadService leadService)
+        /// <param name="notifications">
+        /// Optional: an enquiry must be accepted whether or not the notification platform is
+        /// available, so every call into it happens after the request is committed.
+        /// </param>
+        public BookingRequestService(AppDbContext context, ILeadService leadService, INotificationEventService? notifications = null)
         {
             _context = context;
             _leadService = leadService;
+            _notifications = notifications;
+        }
+
+        private async Task NotifyQuietlyAsync(Func<INotificationEventService, Task> action)
+        {
+            if (_notifications == null)
+                return;
+
+            try
+            {
+                await action(_notifications);
+            }
+            catch (Exception)
+            {
+                // A notification problem must never fail an enquiry or a review decision.
+            }
         }
 
         public async Task<BookingRequestResponseDto> CreateBookingRequestAsync(CreateBookingRequestDto dto, int? userId)
@@ -78,6 +99,8 @@ namespace DAMS.Application.Services
                 await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, actor: null);
                 await _context.SaveChangesAsync();
             });
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingRequestReceivedAsync(bookingRequest.Id));
 
             return await MapToResponseAsync(bookingRequest.Id)
                 ?? throw new InvalidOperationException("Created booking request could not be loaded.");
@@ -214,8 +237,20 @@ namespace DAMS.Application.Services
                 await _context.SaveChangesAsync();
             });
 
-            return await MapToResponseAsync(bookingRequestId)
+            var approved = await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Approved booking request could not be loaded.");
+
+            var newBookingId = await _context.Bookings
+                .AsNoTracking()
+                .Where(b => b.BookingRequestId == bookingRequestId)
+                .Select(b => (int?)b.Id)
+                .FirstOrDefaultAsync();
+
+            if (newBookingId.HasValue)
+                await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
+                    newBookingId.Value, NotificationType.BookingApproved, null, adminUserId));
+
+            return approved;
         }
 
         public async Task<BookingRequestResponseDto> RejectBookingRequestAsync(int bookingRequestId, int adminUserId, string? rejectionReason)
@@ -247,6 +282,8 @@ namespace DAMS.Application.Services
             }
 
             await _context.SaveChangesAsync();
+
+            await NotifyQuietlyAsync(n => n.NotifyBookingRequestRejectedAsync(bookingRequestId, rejectionReason, adminUserId));
 
             return await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Rejected booking request could not be loaded.");

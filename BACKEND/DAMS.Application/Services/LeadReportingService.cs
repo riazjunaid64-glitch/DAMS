@@ -112,8 +112,13 @@ namespace DAMS.Application.Services
                 LeadsWithoutRecentActivity = await open.CountAsync(
                     l => (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < inactiveCutoff, cancellationToken),
                 Conversions = await mine.CountAsync(l => l.Stage == LeadStage.Won, cancellationToken),
-                UnreadNotifications = await _context.LeadNotifications
-                    .CountAsync(n => n.RecipientUserId == ctx.UserId && !n.IsRead, cancellationToken),
+                // Lead alerts live in the central notification store now; the dashboard counts
+                // the lead-related categories rather than a lead-only table.
+                UnreadNotifications = await _context.Notifications
+                    .CountAsync(n => n.RecipientUserId == ctx.UserId
+                                     && !n.IsRead
+                                     && !n.IsArchived
+                                     && n.Module == NotificationModule.Leads, cancellationToken),
                 ByStage = BuildStageCounts(await LoadFactsAsync(open, cancellationToken), now)
             };
 

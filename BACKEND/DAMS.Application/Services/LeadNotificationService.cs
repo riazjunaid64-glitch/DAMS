@@ -1,5 +1,4 @@
 using DAMS.Application.Common;
-using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -8,19 +7,33 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
 {
+    /// <summary>
+    /// The lead module's doorway into the central notification platform.
+    ///
+    /// The lead CRM's alert rules — who hears about an overdue follow-up, when a manager is
+    /// escalated to, how a repeating scan avoids nagging — are unchanged and still live in the
+    /// lead services. What changed is where the resulting notification goes: one row in the
+    /// central store, with delivery, preferences, templates and history handled by the
+    /// platform, instead of a lead-only table that only ever appeared in-app.
+    ///
+    /// This deliberately keeps the same shape the lead services already call, so the CRM's
+    /// behaviour is preserved rather than reimplemented.
+    /// </summary>
     public class LeadNotificationService : ILeadNotificationService
     {
         private readonly AppDbContext _context;
+        private readonly INotificationDispatcher _dispatcher;
 
-        public LeadNotificationService(AppDbContext context)
+        public LeadNotificationService(AppDbContext context, INotificationDispatcher dispatcher)
         {
             _context = context;
+            _dispatcher = dispatcher;
         }
 
         public async Task<bool> QueueAsync(
             int leadId,
             int recipientUserId,
-            LeadNotificationType type,
+            NotificationType type,
             string title,
             string? body,
             string dedupKey,
@@ -30,36 +43,30 @@ namespace DAMS.Application.Services
             if (recipientUserId <= 0)
                 return false;
 
-            var key = Normalize(dedupKey);
+            var lead = await DescribeAsync(leadId, cancellationToken);
 
-            // Two guards: rows already tracked but not yet saved (several alerts raised in
-            // one operation) and rows already committed by an earlier scan.
-            var pending = _context.ChangeTracker.Entries<LeadNotification>()
-                .Any(e => e.State == EntityState.Added && e.Entity.DedupKey == key);
-            if (pending)
-                return false;
-
-            if (await _context.LeadNotifications.AnyAsync(n => n.DedupKey == key, cancellationToken))
-                return false;
-
-            _context.LeadNotifications.Add(new LeadNotification
+            return await _dispatcher.QueueAsync(new NotificationRequest
             {
-                LeadId = leadId,
-                RecipientUserId = recipientUserId,
                 Type = type,
+                RecipientUserId = recipientUserId,
+                DedupKey = dedupKey,
                 Title = LeadContactNormalizer.Limit(title, 200),
-                Body = LeadContactNormalizer.LimitOrNull(body, 1000),
-                DedupKey = key,
+                Message = LeadContactNormalizer.LimitOrNull(body, 2000) ?? string.Empty,
+                EntityType = NotificationEntityType.Lead,
+                EntityId = leadId,
                 IsEscalation = isEscalation,
-                CreatedAt = DateTime.UtcNow
-            });
-
-            return true;
+                Data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["leadName"] = lead.Name,
+                    ["leadReference"] = lead.Reference,
+                    ["employeeName"] = await EmployeeNameAsync(recipientUserId, cancellationToken)
+                }
+            }, cancellationToken);
         }
 
         public async Task<int> QueueForSupervisorsAsync(
             Lead lead,
-            LeadNotificationType type,
+            NotificationType type,
             string title,
             string? body,
             string dedupKeySuffix,
@@ -84,6 +91,8 @@ namespace DAMS.Application.Services
         private List<int>? _adminUserIds;
         private readonly Dictionary<int, List<int>> _teamSupervisors = new();
         private readonly Dictionary<int, int?> _employeeTeams = new();
+        private readonly Dictionary<int, (string Name, string Reference)> _leads = new();
+        private readonly Dictionary<int, string?> _employeeNames = new();
 
         /// <summary>
         /// Everyone who should be told about a lead's problems: every admin, plus the
@@ -147,83 +156,40 @@ namespace DAMS.Application.Services
             return distinct;
         }
 
-        public async Task<List<LeadNotificationDto>> GetMyNotificationsAsync(
-            LeadUserContext ctx, bool unreadOnly, int take, CancellationToken cancellationToken = default)
+        /// <summary>Lead name and reference, so an email or push template can name the record
+        /// without the lead services having to know what a template variable is.</summary>
+        private async Task<(string Name, string Reference)> DescribeAsync(int leadId, CancellationToken cancellationToken)
         {
-            LeadAccess.EnsureStaff(ctx);
+            if (_leads.TryGetValue(leadId, out var cached))
+                return cached;
 
-            var query = _context.LeadNotifications
+            var lead = await _context.Leads
                 .AsNoTracking()
-                .Where(n => n.RecipientUserId == ctx.UserId);
+                .Where(l => l.Id == leadId)
+                .Select(l => new { l.FirstName, l.LastName, l.LeadReference })
+                .FirstOrDefaultAsync(cancellationToken);
 
-            if (unreadOnly)
-                query = query.Where(n => !n.IsRead);
+            var described = lead == null
+                ? (string.Empty, string.Empty)
+                : ($"{lead.FirstName} {lead.LastName}".Trim(), lead.LeadReference);
 
-            return await query
-                .OrderByDescending(n => n.CreatedAt)
-                .ThenByDescending(n => n.Id)
-                .Take(Math.Clamp(take, 1, 200))
-                .Select(n => new LeadNotificationDto
-                {
-                    Id = n.Id,
-                    LeadId = n.LeadId,
-                    LeadReference = n.Lead.LeadReference,
-                    Type = n.Type,
-                    Title = n.Title,
-                    Body = n.Body,
-                    IsRead = n.IsRead,
-                    IsEscalation = n.IsEscalation,
-                    CreatedAt = n.CreatedAt
-                })
-                .ToListAsync(cancellationToken);
+            _leads[leadId] = described;
+            return described;
         }
 
-        public async Task<int> GetUnreadCountAsync(LeadUserContext ctx, CancellationToken cancellationToken = default)
+        private async Task<string?> EmployeeNameAsync(int userId, CancellationToken cancellationToken)
         {
-            LeadAccess.EnsureStaff(ctx);
-            return await _context.LeadNotifications
-                .CountAsync(n => n.RecipientUserId == ctx.UserId && !n.IsRead, cancellationToken);
+            if (_employeeNames.TryGetValue(userId, out var cached))
+                return cached;
+
+            var name = await _context.Employees
+                .AsNoTracking()
+                .Where(e => e.UserId == userId)
+                .Select(e => e.FullName)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            _employeeNames[userId] = name;
+            return name;
         }
-
-        public async Task MarkReadAsync(int notificationId, LeadUserContext ctx, CancellationToken cancellationToken = default)
-        {
-            LeadAccess.EnsureStaff(ctx);
-
-            var notification = await _context.LeadNotifications
-                .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken);
-
-            if (notification == null)
-                throw new InvalidOperationException("Notification not found.");
-
-            if (notification.IsRead)
-                return;
-
-            notification.IsRead = true;
-            notification.ReadAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        public async Task MarkAllReadAsync(LeadUserContext ctx, CancellationToken cancellationToken = default)
-        {
-            LeadAccess.EnsureStaff(ctx);
-
-            var unread = await _context.LeadNotifications
-                .Where(n => n.RecipientUserId == ctx.UserId && !n.IsRead)
-                .ToListAsync(cancellationToken);
-
-            if (unread.Count == 0)
-                return;
-
-            var now = DateTime.UtcNow;
-            foreach (var notification in unread)
-            {
-                notification.IsRead = true;
-                notification.ReadAt = now;
-            }
-
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        private static string Normalize(string key) => LeadContactNormalizer.Limit(key, 200);
     }
 }

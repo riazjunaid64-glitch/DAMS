@@ -75,7 +75,7 @@ namespace DAMS.Application.Services
                 var ownerUserId = await OwnerUserIdAsync(lead, cancellationToken);
                 if (ownerUserId.HasValue &&
                     await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
-                        LeadNotificationType.FirstContactOverdue,
+                        NotificationType.FirstContactOverdue,
                         $"First contact overdue: {name}",
                         $"Assigned {lead.AssignedAt:yyyy-MM-dd HH:mm} UTC with no contact recorded yet.",
                         $"FirstContactOverdue:{lead.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
@@ -83,7 +83,7 @@ namespace DAMS.Application.Services
 
                 // The manager only hears about it once — the dedup key has no time bucket.
                 var escalated = await _notifications.QueueForSupervisorsAsync(lead,
-                    LeadNotificationType.ManagerAttentionRequired,
+                    NotificationType.ManagerAttentionRequired,
                     $"No first contact on {name}",
                     $"{_options.FirstResponseHours}h have passed since assignment with no contact recorded.",
                     "first-contact", isEscalation: true, cancellationToken: cancellationToken);
@@ -130,7 +130,7 @@ namespace DAMS.Application.Services
                         });
 
                     var escalated = await _notifications.QueueForSupervisorsAsync(lead,
-                        LeadNotificationType.ManagerAttentionRequired,
+                        NotificationType.ManagerAttentionRequired,
                         $"Follow-up missed on {name}",
                         $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
                         $"followup-missed:{followUp.Id}", isEscalation: true, cancellationToken: cancellationToken);
@@ -145,7 +145,7 @@ namespace DAMS.Application.Services
 
                     if (ownerUserId.HasValue &&
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
-                            LeadNotificationType.FollowUpOverdue,
+                            NotificationType.FollowUpOverdue,
                             $"Follow-up overdue: {name}",
                             $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
                             $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
@@ -157,7 +157,7 @@ namespace DAMS.Application.Services
 
                     if (ownerUserId.HasValue &&
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
-                            LeadNotificationType.FollowUpDue,
+                            NotificationType.FollowUpDue,
                             $"Follow-up due: {name}",
                             $"{followUp.Title} is due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
                             $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
@@ -189,14 +189,14 @@ namespace DAMS.Application.Services
 
                 // Bucketed by day: a lead that stays quiet nudges once a day, not every scan.
                 if (ownerUserId.HasValue &&
-                    await _notifications.QueueAsync(lead.Id, ownerUserId.Value, LeadNotificationType.LeadInactive,
+                    await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.LeadInactive,
                         $"No activity on {name}",
                         $"Nothing has been recorded since {since:yyyy-MM-dd}.",
                         $"LeadInactive:{lead.Id}:{ownerUserId.Value}:{bucket}", cancellationToken: cancellationToken))
                     result.NotificationsCreated++;
 
                 var escalated = await _notifications.QueueForSupervisorsAsync(lead,
-                    LeadNotificationType.ManagerAttentionRequired,
+                    NotificationType.ManagerAttentionRequired,
                     $"{name} has gone quiet",
                     $"No activity since {since:yyyy-MM-dd}.",
                     $"inactive:{bucket}", isEscalation: true, cancellationToken: cancellationToken);
@@ -239,7 +239,7 @@ namespace DAMS.Application.Services
                         a => a.SiteVisitId = visit.Id);
 
                     var escalated = await _notifications.QueueForSupervisorsAsync(lead,
-                        LeadNotificationType.SiteVisitMissed,
+                        NotificationType.SiteVisitMissed,
                         $"Site visit missed: {name}",
                         $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC with no outcome recorded.",
                         $"visit-missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
@@ -253,7 +253,7 @@ namespace DAMS.Application.Services
                     result.SiteVisitsToday++;
 
                     if (ownerUserId.HasValue &&
-                        await _notifications.QueueAsync(lead.Id, ownerUserId.Value, LeadNotificationType.SiteVisitToday,
+                        await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit today: {name}",
                             $"{visit.ScheduledAt:HH:mm} UTC at {visit.MeetingLocation}.",
                             $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}", cancellationToken: cancellationToken))

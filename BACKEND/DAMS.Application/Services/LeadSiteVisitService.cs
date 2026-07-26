@@ -85,7 +85,7 @@ namespace DAMS.Application.Services
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
 
             activity.SiteVisitId = visit.Id;
-            await NotifyEmployeeAsync(lead, employeeId, ctx, LeadNotificationType.TaskAssigned,
+            await NotifyEmployeeAsync(lead, employeeId, ctx, NotificationType.SiteVisitScheduled,
                 $"Site visit booked for {LeadService.FullName(lead)}",
                 $"{dto.ScheduledAt:yyyy-MM-dd HH:mm} UTC at {visit.MeetingLocation}.",
                 $"visit:{visit.Id}", cancellationToken);
@@ -226,7 +226,7 @@ namespace DAMS.Application.Services
 
             if (status == LeadSiteVisitStatus.Missed)
             {
-                await _notifications.QueueForSupervisorsAsync(lead, LeadNotificationType.SiteVisitMissed,
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.SiteVisitMissed,
                     $"Site visit missed: {LeadService.FullName(lead)}", visit.CancellationReason,
                     $"missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
             }
@@ -310,7 +310,7 @@ namespace DAMS.Application.Services
         }
 
         private async Task NotifyEmployeeAsync(
-            Lead lead, int employeeId, LeadUserContext ctx, LeadNotificationType type,
+            Lead lead, int employeeId, LeadUserContext ctx, NotificationType type,
             string title, string? body, string suffix, CancellationToken cancellationToken)
         {
             var userId = await _context.Employees

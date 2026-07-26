@@ -74,7 +74,7 @@ namespace DAMS.Application.Services
             var ownerUserId = await GetEmployeeUserIdAsync(employeeId, cancellationToken);
             if (ownerUserId.HasValue && ownerUserId != ctx.UserId)
             {
-                await _notifications.QueueAsync(lead.Id, ownerUserId.Value, LeadNotificationType.TaskAssigned,
+                await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.FollowUpAssigned,
                     $"New {dto.Type} on {LeadService.FullName(lead)}",
                     $"{followUp.Title} — due {dto.DueAt:yyyy-MM-dd HH:mm} UTC.",
                     $"task:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken);

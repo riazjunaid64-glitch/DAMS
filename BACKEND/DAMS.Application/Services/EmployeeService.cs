@@ -11,10 +11,16 @@ namespace DAMS.Application.Services
     public class EmployeeService : IEmployeeService
     {
         private readonly AppDbContext _context;
+        private readonly INotificationEventService? _notifications;
 
-        public EmployeeService(AppDbContext context)
+        /// <param name="notifications">
+        /// Optional: employee administration must work with or without the notification
+        /// platform, so it is only ever called after the change is committed.
+        /// </param>
+        public EmployeeService(AppDbContext context, INotificationEventService? notifications = null)
         {
             _context = context;
+            _notifications = notifications;
         }
 
         // ─── Employee CRUD ───────────────────────────────────────────────────────
@@ -246,6 +252,19 @@ namespace DAMS.Application.Services
 
             _context.EmployeeTasks.Add(task);
             await _context.SaveChangesAsync();
+
+            if (_notifications != null)
+            {
+                try
+                {
+                    await _notifications.NotifyEmployeeTaskAssignedAsync(task.Id, null);
+                }
+                catch (Exception)
+                {
+                    // The task is assigned either way; telling them about it is best-effort.
+                }
+            }
+
             return await MapTaskAsync(task.Id);
         }
 

@@ -2,6 +2,7 @@ using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Notifications;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -24,6 +25,9 @@ internal sealed class LeadTestHarness : IAsyncDisposable
     public AppDbContext Db { get; }
     public LeadService Leads { get; }
     public LeadNotificationService Notifications { get; }
+    public NotificationDispatcher Dispatcher { get; }
+    public NotificationInboxService Inbox { get; }
+    public NotificationRealtimeBroker Realtime { get; }
     public LeadCommunicationService Communications { get; }
     public LeadFollowUpService FollowUps { get; }
     public LeadSiteVisitService SiteVisits { get; }
@@ -67,7 +71,10 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         var alertOptions = Options.Create(options);
         Clock = new FakeClock(DateTime.UtcNow);
 
-        Notifications = new LeadNotificationService(db);
+        Realtime = new NotificationRealtimeBroker();
+        Dispatcher = new NotificationDispatcher(db, new NotificationSettingsStore(db), Realtime, Clock);
+        Inbox = new NotificationInboxService(db, Clock);
+        Notifications = new LeadNotificationService(db, Dispatcher);
         var customers = new CustomerService(db);
         var bookings = new BookingService(db, customers);
         Leads = new LeadService(db, customers, bookings, Notifications, alertOptions);
@@ -159,6 +166,15 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         OtherSales = Context(otherSales.UserId, LeadRoles.Employee, "Omar Sales", otherEmployee.Id);
         Client = Context(client.UserId, "Client", "Client Person");
     }
+
+    /// <summary>The same person, as the notification platform sees them.</summary>
+    public NotificationUserContext Notify(LeadUserContext ctx) => new()
+    {
+        UserId = ctx.UserId,
+        Role = ctx.Role,
+        DisplayName = ctx.DisplayName,
+        Email = $"user{ctx.UserId}@dams.test"
+    };
 
     private static LeadUserContext Context(
         int userId, string role, string name, int? employeeId = null, int? teamId = null, int[]? managedTeams = null) =>
