@@ -13,27 +13,38 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_BookingRequests_UnitId_Status",
-                table: "BookingRequests");
+            migrationBuilder.Sql("""
+                IF EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE name = N'IX_BookingRequests_UnitId_Status'
+                      AND object_id = OBJECT_ID(N'[dbo].[BookingRequests]')
+                )
+                BEGIN
+                    DROP INDEX [IX_BookingRequests_UnitId_Status] ON [dbo].[BookingRequests];
+                END
+                """);
 
-            migrationBuilder.AddColumn<int>(
-                name: "TeamId",
-                table: "Employees",
-                type: "int",
-                nullable: true);
+            migrationBuilder.Sql("""
+                IF COL_LENGTH(N'[dbo].[Employees]', N'TeamId') IS NULL
+                BEGIN
+                    ALTER TABLE [dbo].[Employees] ADD [TeamId] int NULL;
+                END
+                """);
 
-            migrationBuilder.AddColumn<int>(
-                name: "UserId",
-                table: "Employees",
-                type: "int",
-                nullable: true);
+            migrationBuilder.Sql("""
+                IF COL_LENGTH(N'[dbo].[Employees]', N'UserId') IS NULL
+                BEGIN
+                    ALTER TABLE [dbo].[Employees] ADD [UserId] int NULL;
+                END
+                """);
 
-            migrationBuilder.AddColumn<int>(
-                name: "LeadId",
-                table: "BookingRequests",
-                type: "int",
-                nullable: true);
+            migrationBuilder.Sql("""
+                IF COL_LENGTH(N'[dbo].[BookingRequests]', N'LeadId') IS NULL
+                BEGIN
+                    ALTER TABLE [dbo].[BookingRequests] ADD [LeadId] int NULL;
+                END
+                """);
 
             migrationBuilder.CreateTable(
                 name: "LeadClosureReasons",
@@ -594,31 +605,53 @@ namespace DAMS.Infrastructure.Migrations
                     { 13, "other", new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc), 4, 13, true, true, "Other", null }
                 });
 
-            migrationBuilder.InsertData(
-                table: "Roles",
-                columns: new[] { "RoleId", "Role_name" },
-                values: new object[,]
-                {
-                    { 3, "Manager" },
-                    { 4, "Employee" }
-                });
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (SELECT 1 FROM [dbo].[Roles] WHERE [RoleId] = 3)
+                BEGIN
+                    INSERT INTO [dbo].[Roles] ([RoleId], [Role_name]) VALUES (3, N'Manager');
+                END
 
-            migrationBuilder.CreateIndex(
-                name: "IX_Employees_TeamId",
-                table: "Employees",
-                column: "TeamId");
+                IF NOT EXISTS (SELECT 1 FROM [dbo].[Roles] WHERE [RoleId] = 4)
+                BEGIN
+                    INSERT INTO [dbo].[Roles] ([RoleId], [Role_name]) VALUES (4, N'Employee');
+                END
+                """);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_Employees_UserId",
-                table: "Employees",
-                column: "UserId",
-                unique: true,
-                filter: "[UserId] IS NOT NULL");
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE name = N'IX_Employees_TeamId'
+                      AND object_id = OBJECT_ID(N'[dbo].[Employees]')
+                )
+                BEGIN
+                    CREATE INDEX [IX_Employees_TeamId] ON [dbo].[Employees] ([TeamId]);
+                END
+                """);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_BookingRequests_LeadId",
-                table: "BookingRequests",
-                column: "LeadId");
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE name = N'IX_Employees_UserId'
+                      AND object_id = OBJECT_ID(N'[dbo].[Employees]')
+                )
+                BEGIN
+                    CREATE UNIQUE INDEX [IX_Employees_UserId] ON [dbo].[Employees] ([UserId]) WHERE [UserId] IS NOT NULL;
+                END
+                """);
+
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.indexes
+                    WHERE name = N'IX_BookingRequests_LeadId'
+                      AND object_id = OBJECT_ID(N'[dbo].[BookingRequests]')
+                )
+                BEGIN
+                    CREATE INDEX [IX_BookingRequests_LeadId] ON [dbo].[BookingRequests] ([LeadId]);
+                END
+                """);
 
             migrationBuilder.CreateIndex(
                 name: "IX_LeadActivities_LeadId_OccurredAt",
@@ -874,28 +907,29 @@ namespace DAMS.Infrastructure.Migrations
                 column: "Name",
                 unique: true);
 
-            migrationBuilder.AddForeignKey(
-                name: "FK_BookingRequests_Leads_LeadId",
-                table: "BookingRequests",
-                column: "LeadId",
-                principalTable: "Leads",
-                principalColumn: "Id");
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_BookingRequests_Leads_LeadId')
+                BEGIN
+                    ALTER TABLE [dbo].[BookingRequests] ADD CONSTRAINT [FK_BookingRequests_Leads_LeadId]
+                        FOREIGN KEY ([LeadId]) REFERENCES [dbo].[Leads] ([Id]);
+                END
+                """);
 
-            migrationBuilder.AddForeignKey(
-                name: "FK_Employees_Teams_TeamId",
-                table: "Employees",
-                column: "TeamId",
-                principalTable: "Teams",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.SetNull);
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_Employees_Teams_TeamId')
+                BEGIN
+                    ALTER TABLE [dbo].[Employees] ADD CONSTRAINT [FK_Employees_Teams_TeamId]
+                        FOREIGN KEY ([TeamId]) REFERENCES [dbo].[Teams] ([Id]) ON DELETE SET NULL;
+                END
+                """);
 
-            migrationBuilder.AddForeignKey(
-                name: "FK_Employees_Users_UserId",
-                table: "Employees",
-                column: "UserId",
-                principalTable: "Users",
-                principalColumn: "UserId",
-                onDelete: ReferentialAction.SetNull);
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_Employees_Users_UserId')
+                BEGIN
+                    ALTER TABLE [dbo].[Employees] ADD CONSTRAINT [FK_Employees_Users_UserId]
+                        FOREIGN KEY ([UserId]) REFERENCES [dbo].[Users] ([UserId]) ON DELETE SET NULL;
+                END
+                """);
 
             // Units held at PendingReview by the old enquiry flow are released back to the
             // market: a website enquiry now creates a lead instead of reserving stock.

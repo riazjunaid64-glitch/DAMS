@@ -1,5 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
+using DAMS.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DAMS.Api
@@ -48,6 +50,14 @@ namespace DAMS.Api
             }
             catch (OperationCanceledException)
             {
+                return;
+            }
+
+            if (!await NotificationSchemaExistsAsync(stoppingToken))
+            {
+                _logger.LogWarning(
+                    "Notification background processing is paused because the notification database tables are missing. " +
+                    "Apply the notification migration before enabling queued email and browser push delivery.");
                 return;
             }
 
@@ -156,6 +166,47 @@ namespace DAMS.Api
             catch (Exception ex)
             {
                 _logger.LogError(ex, "The notification reconciliation sweep failed. It will run again shortly.");
+            }
+        }
+
+        private async Task<bool> NotificationSchemaExistsAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var connection = db.Database.GetDbConnection();
+
+                await db.Database.OpenConnectionAsync(stoppingToken);
+                try
+                {
+                    await using var command = connection.CreateCommand();
+                    command.CommandText = """
+                        SELECT CASE WHEN
+                            OBJECT_ID(N'[dbo].[NotificationJobs]', N'U') IS NOT NULL AND
+                            OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
+                            OBJECT_ID(N'[dbo].[NotificationDeliveries]', N'U') IS NOT NULL
+                        THEN 1 ELSE 0 END
+                        """;
+
+                    var result = await command.ExecuteScalarAsync(stoppingToken);
+                    return Convert.ToInt32(result) == 1;
+                }
+                finally
+                {
+                    await db.Database.CloseConnectionAsync();
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Notification background processing is paused because the notification schema check failed.");
+                return false;
             }
         }
 
