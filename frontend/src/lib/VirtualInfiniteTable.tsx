@@ -45,9 +45,14 @@ export default function VirtualInfiniteTable<T>({
   height = 560,
   resetKey,
 }: Props<T>) {
+  "use no memo";
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const template = columns.map((c) => c.width).join(" ");
 
+  // TanStack Virtual intentionally exposes mutable imperative methods; this
+  // component opts out of compiler memoization with the directive above.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,

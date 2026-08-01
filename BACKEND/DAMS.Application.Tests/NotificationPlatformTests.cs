@@ -507,7 +507,7 @@ public sealed class NotificationPlatformTests
                     new NotificationReceiptAttachmentBuilder(h.Bookings, h.Settings,
                         Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationReceiptAttachmentBuilder>.Instance))
             },
-            h.Dispatcher, h.Recipients, h.Options, h.Clock,
+            h.Dispatcher, h.Recipients, h.Options, h.Clock, h.Eligibility,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<NotificationDeliveryProcessor>.Instance);
 
         await h.Processor.ProcessDueDeliveriesAsync(20);

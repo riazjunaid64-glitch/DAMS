@@ -26,6 +26,7 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
     public LeadTestHarness.FakeClock Clock { get; }
 
     public NotificationSettingsStore Settings { get; }
+    public NotificationEligibilityPolicy Eligibility { get; }
     public NotificationDispatcher Dispatcher { get; }
     public NotificationInboxService Inbox { get; }
     public NotificationPreferenceService Preferences { get; }
@@ -77,10 +78,12 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
         Clock = new LeadTestHarness.FakeClock(DateTime.UtcNow);
 
         Settings = new NotificationSettingsStore(db);
+        Eligibility = new NotificationEligibilityPolicy(db);
         Realtime = new NotificationRealtimeBroker();
-        Dispatcher = new NotificationDispatcher(db, Settings, Realtime, Clock);
-        Inbox = new NotificationInboxService(db, Clock);
-        Preferences = new NotificationPreferenceService(db, Settings);
+        Dispatcher = new NotificationDispatcher(db, Settings, Realtime, Clock, Eligibility,
+            NullLogger<NotificationDispatcher>.Instance);
+        Inbox = new NotificationInboxService(db, Clock, Eligibility);
+        Preferences = new NotificationPreferenceService(db, Settings, Eligibility);
         Renderer = new NotificationRenderer(db, Settings);
 
         Email = new FakeEmailSender();
@@ -90,7 +93,7 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
         Push = new PushSubscriptionService(db, Settings, PushSender, options);
         Recipients = new NotificationRecipientResolver(db);
         Configuration = new NotificationConfigurationService(db, Settings, Renderer, Email);
-        Admin = new NotificationAdminService(db, Recipients, options, Clock);
+        Admin = new NotificationAdminService(db, Recipients, options, Clock, Eligibility);
 
         var customers = new CustomerService(db);
         Events = new NotificationEventService(db, Dispatcher, Settings, Clock,
@@ -108,7 +111,7 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
             new WebPushChannelSender(db, Settings, Renderer, PushSender, Push, options)
         };
 
-        Processor = new NotificationDeliveryProcessor(db, senders, Dispatcher, Recipients, options, Clock,
+        Processor = new NotificationDeliveryProcessor(db, senders, Dispatcher, Recipients, options, Clock, Eligibility,
             NullLogger<NotificationDeliveryProcessor>.Instance);
     }
 

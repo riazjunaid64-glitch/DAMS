@@ -172,6 +172,7 @@ builder.Services.AddHostedService<LeadAlertBackgroundService>();
 builder.Services.AddSingleton<INotificationRealtimeBroker, NotificationRealtimeBroker>();
 builder.Services.AddSingleton<IWebPushSender>(_ => new WebPushClient());
 builder.Services.AddScoped<NotificationSettingsStore>();
+builder.Services.AddScoped<NotificationEligibilityPolicy>();
 builder.Services.AddScoped<NotificationRenderer>();
 builder.Services.AddScoped<NotificationReceiptAttachmentBuilder>();
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();

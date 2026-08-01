@@ -24,17 +24,20 @@ namespace DAMS.Application.Services.Notifications
         private readonly INotificationRecipientResolver _recipients;
         private readonly NotificationOptions _options;
         private readonly TimeProvider _clock;
+        private readonly NotificationEligibilityPolicy _eligibility;
 
         public NotificationAdminService(
             AppDbContext context,
             INotificationRecipientResolver recipients,
             NotificationOptions options,
-            TimeProvider clock)
+            TimeProvider clock,
+            NotificationEligibilityPolicy eligibility)
         {
             _context = context;
             _recipients = recipients;
             _options = options;
             _clock = clock;
+            _eligibility = eligibility;
         }
 
         // ── Audience preview ────────────────────────────────────────────────────────
@@ -44,6 +47,7 @@ namespace DAMS.Application.Services.Notifications
         {
             var selection = ToSelection(dto.Audience);
             var targets = await _recipients.ResolveTargetsAsync(dto.Audience.Type, selection, cancellationToken);
+            targets = await _eligibility.FilterEligibleTargetsAsync(dto.Type, targets, cancellationToken);
             if (!dto.SendEmail)
                 targets = targets.Where(t => t.UserId.HasValue).ToList();
 

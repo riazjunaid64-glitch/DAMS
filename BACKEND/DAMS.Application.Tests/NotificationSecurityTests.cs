@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.NotificationDtos;
 using DAMS.Application.Services.Notifications;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -69,17 +70,16 @@ public sealed class NotificationSecurityTests
 
         // A booking notification that names the first customer's booking, delivered — through
         // a mistake or a tampered row — to somebody else.
-        await h.Dispatcher.DispatchAsync(new NotificationRequest
+        var created = await h.Dispatcher.DispatchAsync(new NotificationRequest
         {
-            Type = NotificationType.BookingApproved,
-            RecipientUserId = h.SecondCustomerUserId,
-            DedupKey = "cross-tenant-booking",
-            Title = "Booking approved",
-            Message = "Details",
-            EntityType = NotificationEntityType.Booking,
-            EntityId = h.BookingId,
-            DeepLink = $"/my-projects/{h.BookingId}"
+            Type = NotificationType.BookingApproved, RecipientUserId = h.SecondCustomerUserId,
+            DedupKey = "rejected-cross-tenant-booking", Title = "Booking approved", Message = "Details",
+            EntityType = NotificationEntityType.Booking, EntityId = h.BookingId
         });
+        Assert.False(created);
+
+        await SeedLegacyAsync(h, NotificationType.BookingApproved, h.SecondCustomerUserId,
+            NotificationEntityType.Booking, h.BookingId, $"/my-projects/{h.BookingId}");
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
         var result = await h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx);
@@ -95,22 +95,97 @@ public sealed class NotificationSecurityTests
         await using var h = await NotificationTestHarness.CreateAsync();
         var lead = await SeedLeadAsync(h);
 
-        await h.Dispatcher.DispatchAsync(new NotificationRequest
+        Assert.False(await h.Dispatcher.DispatchAsync(new NotificationRequest
         {
-            Type = NotificationType.LeadAssigned,
-            RecipientUserId = h.CustomerUserId,
-            DedupKey = "lead-to-customer",
-            Title = "Lead assigned",
-            Message = "Internal",
-            EntityType = NotificationEntityType.Lead,
-            EntityId = lead
-        });
+            Type = NotificationType.LeadAssigned, RecipientUserId = h.CustomerUserId,
+            DedupKey = "lead-to-customer", Title = "Lead assigned", Message = "Internal",
+            EntityType = NotificationEntityType.Lead, EntityId = lead
+        }));
+        await SeedLegacyAsync(h, NotificationType.LeadAssigned, h.CustomerUserId,
+            NotificationEntityType.Lead, lead, $"/crm/leads/{lead}");
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
-        var result = await h.Inbox.OpenAsync(notification.Id, h.CustomerCtx);
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.OpenAsync(notification.Id, h.CustomerCtx));
+        Assert.Empty((await h.Inbox.GetAsync(h.CustomerCtx, new NotificationFilterDto())).Items);
+    }
 
-        Assert.False(result.Allowed);
-        Assert.Null(result.DeepLink);
+    [Fact]
+    public async Task ACustomerCannotOpenAStaffRouteFromAnAnnouncement()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        Assert.True(await h.Dispatcher.DispatchAsync(new NotificationRequest
+        {
+            Type = NotificationType.AdminAnnouncement,
+            RecipientUserId = h.CustomerUserId,
+            DedupKey = "customer-staff-route",
+            Title = "Internal route",
+            Message = "Details",
+            EntityType = NotificationEntityType.Announcement,
+            DeepLink = "/crm"
+        }));
+
+        var notification = await h.Db.Notifications.AsNoTracking().SingleAsync();
+        var opened = await h.Inbox.OpenAsync(notification.Id, h.CustomerCtx);
+
+        Assert.False(opened.Allowed);
+        Assert.Null(opened.DeepLink);
+    }
+
+    [Fact]
+    public async Task AnEmployeeCannotOpenTheAdminCrmSettingsRouteFromAnAnnouncement()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        Assert.True(await h.Dispatcher.DispatchAsync(new NotificationRequest
+        {
+            Type = NotificationType.AdminAnnouncement,
+            RecipientUserId = h.SalesUserId,
+            DedupKey = "employee-admin-route",
+            Title = "Internal route",
+            Message = "Details",
+            EntityType = NotificationEntityType.Announcement,
+            DeepLink = "/crm/settings"
+        }));
+
+        var notification = await h.Db.Notifications.AsNoTracking().SingleAsync();
+        var opened = await h.Inbox.OpenAsync(notification.Id, h.SalesCtx);
+
+        Assert.False(opened.Allowed);
+        Assert.Null(opened.DeepLink);
+    }
+
+    [Fact]
+    public async Task ACustomerCannotOpenAnUnrelatedProjectFromALegacyNotification()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        await SeedLegacyAsync(h, NotificationType.ProjectUpdated, h.SecondCustomerUserId,
+            NotificationEntityType.Project, h.ProjectId, $"/projects/{h.ProjectId}");
+
+        var notification = await h.Db.Notifications.AsNoTracking().SingleAsync();
+        var opened = await h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx);
+
+        Assert.False(opened.Allowed);
+        Assert.Null(opened.DeepLink);
+    }
+
+    [Fact]
+    public async Task AnAccountNotificationCannotReferenceAnotherUsersAccount()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+
+        var created = await h.Dispatcher.DispatchAsync(new NotificationRequest
+        {
+            Type = NotificationType.AccountSecurity,
+            RecipientUserId = h.CustomerUserId,
+            DedupKey = "wrong-account-resource",
+            Title = "Account notice",
+            Message = "Details",
+            EntityType = NotificationEntityType.Account,
+            EntityId = h.SecondCustomerUserId,
+            DeepLink = "/notifications"
+        });
+
+        Assert.False(created);
+        Assert.Empty(await h.NotificationsAsync());
     }
 
     [Fact]
@@ -119,7 +194,7 @@ public sealed class NotificationSecurityTests
         await using var h = await NotificationTestHarness.CreateAsync();
         var lead = await SeedLeadAsync(h);
 
-        await h.Dispatcher.DispatchAsync(new NotificationRequest
+        Assert.False(await h.Dispatcher.DispatchAsync(new NotificationRequest
         {
             Type = NotificationType.LeadAssigned,
             RecipientUserId = h.OtherSalesUserId,
@@ -128,7 +203,9 @@ public sealed class NotificationSecurityTests
             Message = "Internal",
             EntityType = NotificationEntityType.Lead,
             EntityId = lead
-        });
+        }));
+        await SeedLegacyAsync(h, NotificationType.LeadAssigned, h.OtherSalesUserId,
+            NotificationEntityType.Lead, lead, $"/crm/leads/{lead}");
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
 
@@ -161,16 +238,14 @@ public sealed class NotificationSecurityTests
     {
         await using var h = await NotificationTestHarness.CreateAsync();
 
-        await h.Dispatcher.DispatchAsync(new NotificationRequest
+        Assert.False(await h.Dispatcher.DispatchAsync(new NotificationRequest
         {
-            Type = NotificationType.ProjectUpdated,
-            RecipientUserId = h.CustomerUserId,
-            DedupKey = "missing-project",
-            Title = "Project update",
-            Message = "Details",
-            EntityType = NotificationEntityType.Project,
-            EntityId = 99_999
-        });
+            Type = NotificationType.ProjectUpdated, RecipientUserId = h.CustomerUserId,
+            DedupKey = "missing-project", Title = "Project update", Message = "Details",
+            EntityType = NotificationEntityType.Project, EntityId = 99_999
+        }));
+        await SeedLegacyAsync(h, NotificationType.ProjectUpdated, h.CustomerUserId,
+            NotificationEntityType.Project, 99_999, "/projects/99999");
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
         var result = await h.Inbox.OpenAsync(notification.Id, h.CustomerCtx);
@@ -246,6 +321,7 @@ public sealed class NotificationSecurityTests
             Values =
             {
                 ["email.smtp.password"] = "super-secret-value",
+                ["email.smtp.username"] = "notification-test-user",
                 ["email.smtp.host"] = "smtp.test"
             }
         }, h.AdminCtx);
@@ -266,6 +342,32 @@ public sealed class NotificationSecurityTests
         var stored = await h.Db.NotificationSettings.AsNoTracking()
             .FirstAsync(s => s.Key == "email.smtp.password");
         Assert.Equal("super-secret-value", stored.Value);
+    }
+
+    private static async Task SeedLegacyAsync(
+        NotificationTestHarness h,
+        NotificationType type,
+        int recipientUserId,
+        NotificationEntityType entityType,
+        int entityId,
+        string deepLink)
+    {
+        var definition = NotificationCatalog.GetRequired(type);
+        h.Db.Notifications.Add(new Notification
+        {
+            Type = type,
+            Category = definition.Category,
+            Module = definition.Module,
+            Priority = definition.Priority,
+            RecipientUserId = recipientUserId,
+            EntityType = entityType,
+            EntityId = entityId,
+            Title = "Legacy notification",
+            Message = "Legacy or externally corrupted row",
+            DeepLink = deepLink,
+            DedupKey = $"legacy:{type}:{recipientUserId}:{entityId}:{Guid.NewGuid()}"
+        });
+        await h.Db.SaveChangesAsync();
     }
 
     [Fact]

@@ -92,6 +92,10 @@ namespace DAMS.Api.Controllers
 
         // ── Preferences ─────────────────────────────────────────────────────────────
 
+        [HttpGet("capabilities")]
+        public Task<IActionResult> GetCapabilities(CancellationToken cancellationToken) =>
+            RunAsync(ctx => _preferences.GetCapabilitiesAsync(ctx, cancellationToken), cancellationToken);
+
         [HttpGet("preferences")]
         public Task<IActionResult> GetPreferences(CancellationToken cancellationToken) =>
             RunAsync(ctx => _preferences.GetAsync(ctx, cancellationToken), cancellationToken);

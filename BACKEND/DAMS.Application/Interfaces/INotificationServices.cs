@@ -64,6 +64,8 @@ namespace DAMS.Application.Interfaces
     /// <summary>Per-user channel preferences, enforced server-side.</summary>
     public interface INotificationPreferenceService
     {
+        Task<NotificationCapabilitiesDto> GetCapabilitiesAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default);
+
         Task<List<NotificationPreferenceDto>> GetAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<List<NotificationPreferenceDto>> UpdateAsync(NotificationUserContext ctx, UpdateNotificationPreferencesDto dto, CancellationToken cancellationToken = default);
