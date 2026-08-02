@@ -241,9 +241,11 @@ function App() {
 
           {/* The bell: its own grid column at every breakpoint (see .site-nav__bell in
               index.css), mounted once so it never opens two live streams for one person. */}
+          {/* Keyed by role as well as account: the categories and empty-state wording come
+              from the role, so a role change while signed in has to rebuild them. */}
           {user && (
             <div className="site-nav__bell">
-              <NotificationBell key={user.userId} accountKey={user.userId} />
+              <NotificationBell key={`${user.userId}:${user.role}`} accountKey={`${user.userId}:${user.role}`} />
             </div>
           )}
         </div>

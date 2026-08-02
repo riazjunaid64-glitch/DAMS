@@ -152,6 +152,53 @@ public sealed class NotificationRoleEligibilityTests
     }
 
     [Fact]
+    public async Task AnAdminIsNotEligibleForEmployeeWorkTheyDoNotHold()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var lead = await NotificationSecurityTests.SeedLeadAsync(h);
+
+        // The lead is Sana's. An admin supervises it but is not its assignee, was not
+        // mentioned on it and holds none of its follow-up work.
+        Assert.False(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.LeadAssigned, NotificationEntityType.Lead, lead));
+        Assert.False(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.UserMentioned, NotificationEntityType.Lead, lead));
+        Assert.False(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.FollowUpAssigned, NotificationEntityType.Lead, lead));
+        Assert.False(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.SiteVisitReminder, NotificationEntityType.Lead, lead));
+
+        // Supervisory events about the same lead are still theirs to receive.
+        Assert.True(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.ManagerAttentionRequired, NotificationEntityType.Lead, lead));
+        Assert.True(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.LeadStageChanged, NotificationEntityType.Lead, lead));
+    }
+
+    [Fact]
+    public async Task AnAdminIsNotEligibleForATaskAssignedToSomebodyElse()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var employee = await h.Db.Employees.AsNoTracking().FirstAsync(e => e.UserId == h.SalesUserId);
+
+        var task = new EmployeeTask
+        {
+            EmployeeId = employee.Id,
+            ProjectId = h.ProjectId,
+            Title = "Prepare handover pack",
+            Status = EmployeeTaskStatus.Pending,
+            CreatedAt = DateTime.UtcNow
+        };
+        h.Db.EmployeeTasks.Add(task);
+        await h.Db.SaveChangesAsync();
+
+        Assert.False(await h.Eligibility.CanReceiveAsync(
+            h.AdminUserId, NotificationType.EmployeeTaskAssigned, NotificationEntityType.EmployeeTask, task.Id));
+        Assert.True(await h.Eligibility.CanReceiveAsync(
+            h.SalesUserId, NotificationType.EmployeeTaskAssigned, NotificationEntityType.EmployeeTask, task.Id));
+    }
+
+    [Fact]
     public async Task ACurrentRoleChangeImmediatelyHidesOldRoleNotifications()
     {
         await using var h = await NotificationTestHarness.CreateAsync();

@@ -68,6 +68,38 @@ namespace DAMS.Application.Services.Notifications
         // are deliberately absent: an admin only sees those through delivery/audit history.
         private static readonly HashSet<NotificationType> AdminTypes = new(ManagerTypes);
 
+        // Addressed to one person because of a relationship they hold with the record. Every
+        // role — admins included — must still hold that relationship, so a producer that picks
+        // the wrong recipient cannot hand somebody else's assignment to a supervisor.
+        private static readonly HashSet<NotificationType> OwnerAddressedLeadTypes = new()
+        {
+            NotificationType.LeadAssigned,
+            NotificationType.LeadInactive,
+            NotificationType.FirstContactDue,
+            NotificationType.FirstContactOverdue,
+            NotificationType.FollowUpAssigned,
+            NotificationType.FollowUpDue,
+            NotificationType.FollowUpOverdue,
+            NotificationType.SiteVisitScheduled,
+            NotificationType.SiteVisitUpdated,
+            NotificationType.SiteVisitReminder,
+            NotificationType.UserMentioned
+        };
+
+        // Raised about a lead's progress rather than to its owner, so supervisors hear about
+        // leads they do not personally work: every admin, and a manager's own teams.
+        private static readonly NotificationType[] SupervisoryLeadTypes =
+        {
+            NotificationType.LeadCreated,
+            NotificationType.LeadReassigned,
+            NotificationType.LeadStageChanged,
+            NotificationType.LeadConverted,
+            NotificationType.LeadClosed,
+            NotificationType.FollowUpMissed,
+            NotificationType.SiteVisitMissed,
+            NotificationType.ManagerAttentionRequired
+        };
+
         private static readonly CategoryDescriptor[] Categories =
         {
             new(NotificationCategory.PaymentsAndReceipts, "Payments and receipts", "Payment confirmations and official receipts."),
@@ -150,6 +182,157 @@ namespace DAMS.Application.Services.Notifications
             }
 
             return query.Where(Expression.Lambda<Func<Notification, bool>>(body, notification));
+        }
+
+        /// <summary>
+        /// Resolves once what the reader currently owns, so the inbox filter below is a single
+        /// query rather than a per-row eligibility call.
+        /// </summary>
+        public async Task<ResourceScope> BuildResourceScopeAsync(
+            int userId, string? role, CancellationToken cancellationToken = default)
+        {
+            var normalized = NormalizeRole(role);
+            if (normalized is null or "Client")
+                return new ResourceScope(userId, normalized, 0, Array.Empty<int>());
+
+            var employee = await _context.Employees.AsNoTracking()
+                .Where(e => e.UserId == userId && e.Status == EmployeeStatus.Active)
+                .Select(e => new { e.Id, e.TeamId })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (employee == null)
+                return new ResourceScope(userId, normalized, 0, Array.Empty<int>());
+
+            var teamIds = await _context.Teams.AsNoTracking()
+                .Where(t => t.IsActive && t.ManagerEmployeeId == employee.Id)
+                .Select(t => t.Id)
+                .ToListAsync(cancellationToken);
+            if (employee.TeamId.HasValue)
+                teamIds.Add(employee.TeamId.Value);
+
+            return new ResourceScope(userId, normalized, employee.Id, teamIds.Distinct().ToArray());
+        }
+
+        /// <summary>
+        /// The read-side twin of <see cref="ResourceMatchesAsync"/>: same ownership rules, in a
+        /// form the database can answer for a whole page at once. Without it a row that was
+        /// misrouted or corrupted still shows its title and message in a listing, because
+        /// ownership was only ever re-checked when the notification was opened.
+        ///
+        /// It judges committed state only. The creation-time check keeps its change-tracker
+        /// fast paths for work that has not been saved yet; nothing is readable at that point.
+        ///
+        /// It withholds a row when the record it names exists and belongs to somebody else —
+        /// not when the record has simply gone. A message about a deleted record still says
+        /// what happened, and opening it explains that the record is no longer there.
+        /// </summary>
+        public IQueryable<Notification> ApplyResourceScope(IQueryable<Notification> query, ResourceScope scope) =>
+            scope.Role switch
+            {
+                "Client" => query.Where(CustomerResourceFilter(scope.UserId)),
+                LeadRoles.Admin or LeadRoles.Manager or LeadRoles.Employee => query.Where(StaffResourceFilter(scope)),
+                _ => query.Where(_ => false)
+            };
+
+        private Expression<Func<Notification, bool>> CustomerResourceFilter(int userId) => n =>
+            (n.Type == NotificationType.AdminAnnouncement
+             && (n.EntityType == NotificationEntityType.None || n.EntityType == NotificationEntityType.Announcement))
+            || (n.Type == NotificationType.AccountSecurity
+                && (n.EntityType == NotificationEntityType.None
+                    || n.EntityType == NotificationEntityType.Announcement
+                    || (n.EntityType == NotificationEntityType.Account
+                        && (n.EntityId == null || n.EntityId <= 0 || n.EntityId == userId))))
+            || (n.Type == NotificationType.ProjectUpdated
+                && (n.EntityType == NotificationEntityType.Announcement
+                    || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0
+                        && (!_context.Projects.Any(p => p.Id == n.EntityId)
+                            || _context.Bookings.Any(b => b.Customer.UserId == userId
+                                && b.Customer.Status == CustomerStatus.Active
+                                && b.Status != BookingStatus.Cancelled
+                                && b.Unit.ProjectId == n.EntityId)))))
+            || (n.Type == NotificationType.PaymentReceipt
+                && n.EntityType == NotificationEntityType.Payment && n.EntityId > 0
+                && (!_context.Payments.Any(p => p.Id == n.EntityId)
+                    || _context.Payments.Any(p => p.Id == n.EntityId && p.Booking.Customer.UserId == userId)))
+            || ((n.Type == NotificationType.BookingRequestReceived || n.Type == NotificationType.BookingRejected)
+                && n.EntityType == NotificationEntityType.BookingRequest && n.EntityId > 0
+                && (!_context.BookingRequests.Any(r => r.Id == n.EntityId)
+                    || _context.BookingRequests.Any(r => r.Id == n.EntityId && r.UserId == userId)))
+            || ((n.Type == NotificationType.BookingApproved || n.Type == NotificationType.BookingRejected
+                 || n.Type == NotificationType.BookingCancelled || n.Type == NotificationType.PossessionGiven
+                 || n.Type == NotificationType.SaleCompleted)
+                && n.EntityType == NotificationEntityType.Booking && n.EntityId > 0
+                && (!_context.Bookings.Any(b => b.Id == n.EntityId)
+                    || _context.Bookings.Any(b => b.Id == n.EntityId && b.Customer.UserId == userId)))
+            || ((n.Type == NotificationType.InstallmentDue || n.Type == NotificationType.InstallmentOverdue)
+                && n.EntityType == NotificationEntityType.Installment && n.EntityId > 0
+                && (!_context.Installments.Any(i => i.Id == n.EntityId)
+                    || _context.Installments.Any(i => i.Id == n.EntityId && i.Booking.Customer.UserId == userId)));
+
+        private Expression<Func<Notification, bool>> StaffResourceFilter(ResourceScope scope)
+        {
+            var userId = scope.UserId;
+            var employeeId = scope.EmployeeId;
+            var teamIds = scope.ManagedTeamIds;
+            var isAdmin = scope.Role == LeadRoles.Admin;
+            var isManager = scope.Role == LeadRoles.Manager;
+            var supervisory = SupervisoryLeadTypes;
+
+            return n =>
+                (n.Type == NotificationType.AdminAnnouncement
+                 && (n.EntityType == NotificationEntityType.None || n.EntityType == NotificationEntityType.Announcement))
+                || (n.Type == NotificationType.AccountSecurity
+                    && (n.EntityType == NotificationEntityType.None
+                        || n.EntityType == NotificationEntityType.Announcement
+                        || (n.EntityType == NotificationEntityType.Account
+                            && (n.EntityId == null || n.EntityId <= 0 || n.EntityId == userId))))
+                || (n.Type == NotificationType.ProjectUpdated
+                    && (n.EntityType == NotificationEntityType.Announcement
+                        || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0
+                            && (!_context.Projects.Any(p => p.Id == n.EntityId)
+                                || isAdmin
+                                || _context.EmployeeTasks.Any(t => t.ProjectId == n.EntityId
+                                    && t.Employee.Status == EmployeeStatus.Active
+                                    && (t.Employee.UserId == userId
+                                        || (isManager && t.Employee.Team != null
+                                            && t.Employee.Team.ManagerEmployee != null
+                                            && t.Employee.Team.ManagerEmployee.UserId == userId)))))))
+                || (n.Type == NotificationType.EmployeeTaskAssigned
+                    && n.EntityType == NotificationEntityType.EmployeeTask && n.EntityId > 0
+                    && (!_context.EmployeeTasks.Any(t => t.Id == n.EntityId)
+                        || _context.EmployeeTasks.Any(t => t.Id == n.EntityId
+                            && t.Employee.UserId == userId
+                            && t.Employee.Status == EmployeeStatus.Active)))
+                || (n.EntityType == NotificationEntityType.Lead && n.EntityId > 0
+                    && (!_context.Leads.Any(l => l.Id == n.EntityId)
+                        || (n.Type == NotificationType.UserMentioned
+                         && _context.LeadCommentMentions.Any(m => m.MentionedUserId == userId
+                             && m.LeadComment.LeadId == n.EntityId))
+                        || ((n.Type == NotificationType.FollowUpAssigned
+                             || n.Type == NotificationType.FollowUpDue
+                             || n.Type == NotificationType.FollowUpOverdue)
+                            && _context.LeadFollowUps.Any(f => f.LeadId == n.EntityId
+                                && f.AssignedEmployeeId == employeeId))
+                        || ((n.Type == NotificationType.SiteVisitScheduled
+                             || n.Type == NotificationType.SiteVisitUpdated
+                             || n.Type == NotificationType.SiteVisitReminder)
+                            && _context.LeadSiteVisits.Any(v => v.LeadId == n.EntityId
+                                && v.AssignedEmployeeId == employeeId))
+                        || ((n.Type == NotificationType.LeadAssigned
+                             || n.Type == NotificationType.LeadInactive
+                             || n.Type == NotificationType.FirstContactDue
+                             || n.Type == NotificationType.FirstContactOverdue)
+                            && _context.Leads.Any(l => l.Id == n.EntityId && l.AssignedEmployeeId == employeeId))
+                        || (supervisory.Contains(n.Type)
+                            && (isAdmin
+                                || (isManager && _context.Leads.Any(l => l.Id == n.EntityId
+                                    && (l.AssignedEmployeeId == employeeId
+                                        || (l.AssignedTeamId != null && teamIds.Contains(l.AssignedTeamId.Value))
+                                        || (l.AssignedEmployee != null && l.AssignedEmployee.TeamId != null
+                                            && teamIds.Contains(l.AssignedEmployee.TeamId.Value))
+                                        || l.AssignmentState == LeadAssignmentState.Unassigned)))
+                                || (!isAdmin && !isManager && _context.Leads.Any(l => l.Id == n.EntityId
+                                    && l.AssignedEmployeeId == employeeId))))));
         }
 
         public async Task<bool> CanReceiveAsync(
@@ -343,14 +526,12 @@ namespace DAMS.Application.Services.Notifications
 
             if (type == NotificationType.EmployeeTaskAssigned)
             {
-                if (entityType != NotificationEntityType.EmployeeTask || entityId is not > 0)
-                    return false;
-                if (string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
-                    return await _context.EmployeeTasks.AnyAsync(t => t.Id == entityId.Value, cancellationToken);
-
-                return await _context.EmployeeTasks.AnyAsync(t =>
-                    t.Id == entityId.Value && t.Employee.UserId == recipient.UserId
-                    && t.Employee.Status == EmployeeStatus.Active, cancellationToken);
+                // "Assigned to you" means exactly that for every role: an admin hears about a
+                // task through the employee module, not through the assignee's own message.
+                return entityType == NotificationEntityType.EmployeeTask && entityId is > 0
+                       && await _context.EmployeeTasks.AnyAsync(t =>
+                           t.Id == entityId.Value && t.Employee.UserId == recipient.UserId
+                           && t.Employee.Status == EmployeeStatus.Active, cancellationToken);
             }
 
             if (NotificationCatalog.GetRequired(type).Module == NotificationModule.Leads)
@@ -369,22 +550,8 @@ namespace DAMS.Application.Services.Notifications
             if (entityType != NotificationEntityType.Lead || entityId is not > 0)
                 return false;
 
-            var trackedLead = _context.ChangeTracker.Entries<Lead>()
-                .Where(entry => entry.State != EntityState.Deleted && entry.Entity.Id == entityId.Value)
-                .Select(entry => entry.Entity)
-                .FirstOrDefault();
-
-            if (string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
-                return trackedLead != null
-                       || await _context.Leads.AnyAsync(l => l.Id == entityId.Value, cancellationToken);
-
-            var employee = await _context.Employees.AsNoTracking()
-                .Where(e => e.UserId == recipient.UserId && e.Status == EmployeeStatus.Active)
-                .Select(e => new { e.Id, e.TeamId })
-                .FirstOrDefaultAsync(cancellationToken);
-            if (employee == null)
-                return false;
-
+            // A mention names a login, so an admin who has no employee record still qualifies
+            // for one they were actually named in — and for no other.
             if (type == NotificationType.UserMentioned)
             {
                 if (_context.ChangeTracker.Entries<LeadCommentMention>().Any(entry =>
@@ -396,6 +563,23 @@ namespace DAMS.Application.Services.Notifications
                 return await _context.LeadCommentMentions.AnyAsync(m =>
                     m.MentionedUserId == recipient.UserId && m.LeadComment.LeadId == entityId.Value, cancellationToken);
             }
+
+            var trackedLead = _context.ChangeTracker.Entries<Lead>()
+                .Where(entry => entry.State != EntityState.Deleted && entry.Entity.Id == entityId.Value)
+                .Select(entry => entry.Entity)
+                .FirstOrDefault();
+
+            var isAdmin = string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase);
+            if (isAdmin && !OwnerAddressedLeadTypes.Contains(type))
+                return trackedLead != null
+                       || await _context.Leads.AnyAsync(l => l.Id == entityId.Value, cancellationToken);
+
+            var employee = await _context.Employees.AsNoTracking()
+                .Where(e => e.UserId == recipient.UserId && e.Status == EmployeeStatus.Active)
+                .Select(e => new { e.Id, e.TeamId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (employee == null)
+                return false;
 
             if (type is NotificationType.FollowUpAssigned or NotificationType.FollowUpDue or NotificationType.FollowUpOverdue)
             {
@@ -421,7 +605,8 @@ namespace DAMS.Application.Services.Notifications
                     v.LeadId == entityId.Value && v.AssignedEmployeeId == employee.Id, cancellationToken);
             }
 
-            if (string.Equals(recipient.Role, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase))
+            if (!OwnerAddressedLeadTypes.Contains(type)
+                && string.Equals(recipient.Role, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase))
             {
                 var managedTeams = await _context.Teams.AsNoTracking()
                     .Where(t => t.IsActive && t.ManagerEmployeeId == employee.Id)
@@ -558,6 +743,14 @@ namespace DAMS.Application.Services.Notifications
         }
 
         private sealed record RecipientSnapshot(int UserId, string Role, bool HasRequiredAccount);
+
+        /// <summary>What a reader owns right now. <see cref="EmployeeId"/> is 0 when there is
+        /// no active employee record, which matches nothing.</summary>
+        public sealed record ResourceScope(
+            int UserId,
+            string? Role,
+            int EmployeeId,
+            IReadOnlyList<int> ManagedTeamIds);
 
         public sealed record CategoryDescriptor(
             NotificationCategory Category,
