@@ -745,6 +745,10 @@ namespace DAMS.Application.Services.Notifications
             if ((username == null) != (password == null))
                 throw new InvalidOperationException("SMTP username and password must either both be set or both be empty.");
 
+            var useTls = !bool.TryParse(Value(NotificationSettingKeys.EmailSmtpUseSsl), out var tls) || tls;
+            if (!useTls && username != null)
+                throw new InvalidOperationException(SmtpEmailSender.PlaintextCredentialsError);
+
             if (!enabled)
                 return;
 

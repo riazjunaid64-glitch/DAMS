@@ -19,6 +19,7 @@ namespace DAMS.Application.Services.Notifications
         private readonly TimeProvider _clock;
         private readonly NotificationEligibilityPolicy _eligibility;
         private bool? _schemaAvailable;
+        private (int UserId, NotificationEligibilityPolicy.ResourceScope Scope)? _scope;
 
         public NotificationInboxService(
             AppDbContext context,
@@ -46,7 +47,7 @@ namespace DAMS.Application.Services.Notifications
                 };
             }
 
-            var query = Mine(ctx);
+            var query = await MineAsync(ctx, cancellationToken);
 
             if (filter.Category.HasValue)
                 query = query.Where(n => n.Category == filter.Category.Value);
@@ -80,7 +81,7 @@ namespace DAMS.Application.Services.Notifications
             {
                 Items = items,
                 TotalCount = totalCount,
-                UnreadCount = await UnreadQuery(ctx).CountAsync(cancellationToken),
+                UnreadCount = await (await UnreadQueryAsync(ctx, cancellationToken)).CountAsync(cancellationToken),
                 Page = page,
                 PageSize = pageSize
             };
@@ -92,14 +93,14 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 return new NotificationSummaryDto();
 
-            var unread = UnreadQuery(ctx);
+            var unread = await UnreadQueryAsync(ctx, cancellationToken);
 
             var byCategory = await unread
                 .GroupBy(n => n.Category)
                 .Select(g => new { Category = g.Key, Count = g.Count() })
                 .ToListAsync(cancellationToken);
 
-            var recent = await Mine(ctx)
+            var recent = await (await MineAsync(ctx, cancellationToken))
                 .Where(n => !n.IsArchived)
                 .OrderByDescending(n => n.CreatedAt)
                 .ThenByDescending(n => n.Id)
@@ -117,7 +118,7 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> GetUnreadCountAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default) =>
             await SchemaExistsAsync(cancellationToken)
-                ? await UnreadQuery(ctx).CountAsync(cancellationToken)
+                ? await (await UnreadQueryAsync(ctx, cancellationToken)).CountAsync(cancellationToken)
                 : 0;
 
         public async Task<NotificationDto> MarkReadAsync(
@@ -126,7 +127,7 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 throw new LeadNotFoundException("Notification not found.");
 
-            var notification = await VisibleTracked(ctx)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
                 .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 // Deliberately indistinguishable from "does not exist": probing ids must not
                 // reveal that somebody else has a notification with that number.
@@ -151,7 +152,7 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 return 0;
 
-            var query = VisibleTracked(ctx).Where(n => !n.IsRead);
+            var query = (await VisibleTrackedAsync(ctx, cancellationToken)).Where(n => !n.IsRead);
 
             if (category.HasValue)
                 query = query.Where(n => n.Category == category.Value);
@@ -177,7 +178,7 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 return;
 
-            var notification = await VisibleTracked(ctx)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
                 .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
 
@@ -202,7 +203,7 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 throw new LeadNotFoundException("Notification not found.");
 
-            var notification = await VisibleTracked(ctx)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
                 .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
 
@@ -538,28 +539,37 @@ namespace DAMS.Application.Services.Notifications
             return null;
         }
 
-        private IQueryable<Notification> Mine(NotificationUserContext ctx)
+        private async Task<IQueryable<Notification>> MineAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            await ScopedAsync(_context.Notifications.AsNoTracking(), ctx, cancellationToken);
+
+        private async Task<IQueryable<Notification>> VisibleTrackedAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            await ScopedAsync(_context.Notifications, ctx, cancellationToken);
+
+        /// <summary>
+        /// Ownership, expiry, the role's type/category matrix and — so a misrouted or corrupted
+        /// row never shows its wording in a listing, a bell or a count — the reader's current
+        /// ownership of the record each notification points at.
+        /// </summary>
+        private async Task<IQueryable<Notification>> ScopedAsync(
+            IQueryable<Notification> source, NotificationUserContext ctx, CancellationToken cancellationToken)
         {
             var now = _clock.GetUtcNow().UtcDateTime;
-            var owned = _context.Notifications
-                .AsNoTracking()
-                .Where(n => n.RecipientUserId == ctx.UserId
-                            && (n.ExpiresAt == null || n.ExpiresAt > now));
+            var owned = source.Where(n => n.RecipientUserId == ctx.UserId
+                                          && (n.ExpiresAt == null || n.ExpiresAt > now));
 
-            return _eligibility.ApplyRoleScope(owned, ctx.Role);
+            // Keyed by account, not just cached: one instance answers several calls per
+            // request, and must never reuse what a different reader owns.
+            if (_scope?.UserId != ctx.UserId)
+                _scope = (ctx.UserId, await _eligibility.BuildResourceScopeAsync(ctx.UserId, ctx.Role, cancellationToken));
+
+            return _eligibility.ApplyResourceScope(_eligibility.ApplyRoleScope(owned, ctx.Role), _scope.Value.Scope);
         }
 
-        private IQueryable<Notification> VisibleTracked(NotificationUserContext ctx)
-        {
-            var now = _clock.GetUtcNow().UtcDateTime;
-            var owned = _context.Notifications.Where(n =>
-                n.RecipientUserId == ctx.UserId
-                && (n.ExpiresAt == null || n.ExpiresAt > now));
-            return _eligibility.ApplyRoleScope(owned, ctx.Role);
-        }
-
-        private IQueryable<Notification> UnreadQuery(NotificationUserContext ctx) =>
-            Mine(ctx).Where(n => !n.IsRead && !n.IsArchived);
+        private async Task<IQueryable<Notification>> UnreadQueryAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            (await MineAsync(ctx, cancellationToken)).Where(n => !n.IsRead && !n.IsArchived);
 
         private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
         {

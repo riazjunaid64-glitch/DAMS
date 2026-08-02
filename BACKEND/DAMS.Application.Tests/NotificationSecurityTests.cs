@@ -82,11 +82,9 @@ public sealed class NotificationSecurityTests
             NotificationEntityType.Booking, h.BookingId, $"/my-projects/{h.BookingId}");
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
-        var result = await h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx);
 
-        Assert.False(result.Allowed);
-        Assert.Null(result.DeepLink);
-        Assert.Contains("permission", result.Message);
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx));
+        Assert.Empty((await h.Inbox.GetAsync(h.SecondCustomerCtx, new NotificationFilterDto())).Items);
     }
 
     [Fact]
@@ -161,10 +159,9 @@ public sealed class NotificationSecurityTests
             NotificationEntityType.Project, h.ProjectId, $"/projects/{h.ProjectId}");
 
         var notification = await h.Db.Notifications.AsNoTracking().SingleAsync();
-        var opened = await h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx);
 
-        Assert.False(opened.Allowed);
-        Assert.Null(opened.DeepLink);
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.OpenAsync(notification.Id, h.SecondCustomerCtx));
+        Assert.Empty((await h.Inbox.GetAsync(h.SecondCustomerCtx, new NotificationFilterDto())).Items);
     }
 
     [Fact]
@@ -209,9 +206,9 @@ public sealed class NotificationSecurityTests
 
         var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
 
-        // Omar is not on the owning team and does not own the lead.
-        var denied = await h.Inbox.OpenAsync(notification.Id, h.OtherSalesCtx);
-        Assert.False(denied.Allowed);
+        // Omar is not on the owning team and does not own the lead, so the row is not his to
+        // open — and not his to see either.
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.OpenAsync(notification.Id, h.OtherSalesCtx));
 
         // The manager of the owning team may open it.
         await h.Dispatcher.DispatchAsync(new NotificationRequest
@@ -231,6 +228,50 @@ public sealed class NotificationSecurityTests
 
         Assert.True(allowed.Allowed);
         Assert.Equal($"/crm/leads/{lead}", allowed.DeepLink);
+    }
+
+    [Fact]
+    public async Task AWrongResourceRowNeverReachesTheInboxBellOrCounts()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var lead = await SeedLeadAsync(h);
+
+        // Same role, same allowed type — only the lead belongs to somebody else. Omar can
+        // never see this wording, not merely be refused when he clicks it.
+        await SeedLegacyAsync(h, NotificationType.LeadAssigned, h.OtherSalesUserId,
+            NotificationEntityType.Lead, lead, $"/crm/leads/{lead}");
+
+        var inbox = await h.Inbox.GetAsync(h.OtherSalesCtx, new NotificationFilterDto());
+        var summary = await h.Inbox.GetSummaryAsync(h.OtherSalesCtx, 12);
+
+        Assert.Empty(inbox.Items);
+        Assert.Equal(0, inbox.TotalCount);
+        Assert.Equal(0, inbox.UnreadCount);
+        Assert.Empty(summary.Recent);
+        Assert.Equal(0, summary.UnreadCount);
+        Assert.Empty(summary.UnreadByCategory);
+        Assert.Equal(0, await h.Inbox.GetUnreadCountAsync(h.OtherSalesCtx));
+
+        // The owner still sees their own.
+        await SeedLegacyAsync(h, NotificationType.LeadAssigned, h.SalesUserId,
+            NotificationEntityType.Lead, lead, $"/crm/leads/{lead}");
+        Assert.Single((await h.Inbox.GetAsync(h.SalesCtx, new NotificationFilterDto())).Items);
+    }
+
+    [Fact]
+    public async Task AWrongResourceRowCannotBeMarkedReadOrArchivedEither()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var lead = await SeedLeadAsync(h);
+        await SeedLegacyAsync(h, NotificationType.LeadAssigned, h.OtherSalesUserId,
+            NotificationEntityType.Lead, lead, $"/crm/leads/{lead}");
+
+        var notification = await h.Db.Notifications.AsNoTracking().FirstAsync();
+
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.MarkReadAsync(notification.Id, h.OtherSalesCtx));
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.OpenAsync(notification.Id, h.OtherSalesCtx));
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Inbox.ArchiveAsync(notification.Id, h.OtherSalesCtx));
+        Assert.Equal(0, await h.Inbox.MarkAllReadAsync(h.OtherSalesCtx, category: null));
     }
 
     [Fact]
@@ -342,6 +383,48 @@ public sealed class NotificationSecurityTests
         var stored = await h.Db.NotificationSettings.AsNoTracking()
             .FirstAsync(s => s.Key == "email.smtp.password");
         Assert.Equal("super-secret-value", stored.Value);
+    }
+
+    [Fact]
+    public async Task SmtpCredentialsCannotBeConfiguredWithoutTls()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+
+        var rejected = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Configuration.UpdateSettingsAsync(new UpdateNotificationSettingsDto
+            {
+                Values =
+                {
+                    ["email.smtp.host"] = "smtp.test",
+                    ["email.smtp.useSsl"] = "false",
+                    ["email.smtp.username"] = "relay-user",
+                    ["email.smtp.password"] = "relay-password"
+                }
+            }, h.AdminCtx));
+        Assert.Contains("unencrypted", rejected.Message);
+
+        // A local relay that needs no credentials is still allowed to run in the clear.
+        await h.Configuration.UpdateSettingsAsync(new UpdateNotificationSettingsDto
+        {
+            Values = { ["email.smtp.host"] = "smtp.test", ["email.smtp.useSsl"] = "false" }
+        }, h.AdminCtx);
+
+        // Nor can TLS be switched off underneath credentials that are already stored.
+        await h.Configuration.UpdateSettingsAsync(new UpdateNotificationSettingsDto
+        {
+            Values =
+            {
+                ["email.smtp.useSsl"] = "true",
+                ["email.smtp.username"] = "relay-user",
+                ["email.smtp.password"] = "relay-password"
+            }
+        }, h.AdminCtx);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Configuration.UpdateSettingsAsync(new UpdateNotificationSettingsDto
+            {
+                Values = { ["email.smtp.useSsl"] = "false" }
+            }, h.AdminCtx));
     }
 
     private static async Task SeedLegacyAsync(

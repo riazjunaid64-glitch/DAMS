@@ -71,10 +71,11 @@ export default function NotificationsPage({ user }: { user: User | null }) {
         ))}
       </div>
 
+      {/* Both tabs render the role's categories, so a role change has to rebuild them. */}
       {tab === "inbox" ? (
-        <InboxTab key={user.userId} />
+        <InboxTab key={`${user.userId}:${user.role}`} />
       ) : (
-        <PreferencesTab key={user.userId} />
+        <PreferencesTab key={`${user.userId}:${user.role}`} />
       )}
     </Shell>
   );

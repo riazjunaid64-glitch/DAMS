@@ -10,6 +10,34 @@ namespace DAMS.Application.Tests;
 
 public sealed class NotificationProductionHardeningTests
 {
+    /// <summary>
+    /// Every other test runs on the in-memory provider, which answers anything by evaluating
+    /// it in C#. The inbox's ownership filter is a large expression tree that production has
+    /// to run as SQL, so it is compiled against the real provider here — no connection is
+    /// opened, and a clause SQL Server cannot express fails this rather than production.
+    /// </summary>
+    [Theory]
+    [InlineData("Client")]
+    [InlineData(LeadRoles.Admin)]
+    [InlineData(LeadRoles.Manager)]
+    [InlineData(LeadRoles.Employee)]
+    public void TheInboxOwnershipFilterCompilesToSqlForEveryRole(string role)
+    {
+        using var db = new DAMS.Infrastructure.Data.AppDbContext(
+            new DbContextOptionsBuilder<DAMS.Infrastructure.Data.AppDbContext>()
+                .UseSqlServer("Server=unused;Database=unused;Trusted_Connection=True;")
+                .Options);
+
+        var policy = new NotificationEligibilityPolicy(db);
+        var scope = new NotificationEligibilityPolicy.ResourceScope(7, role, 3, new[] { 11, 12 });
+
+        var sql = policy
+            .ApplyResourceScope(policy.ApplyRoleScope(db.Notifications.AsNoTracking(), role), scope)
+            .ToQueryString();
+
+        Assert.Contains("SELECT", sql, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task PushRegistrationRejectsAHostOutsideTheServerAllowList()
     {

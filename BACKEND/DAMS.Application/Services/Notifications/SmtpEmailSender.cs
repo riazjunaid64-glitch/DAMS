@@ -30,7 +30,9 @@ namespace DAMS.Application.Services.Notifications
             var username = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpUsername, cancellationToken);
             var password = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpPassword, cancellationToken);
 
-            var configurationError = ValidateConfiguration(provider, host, senderAddress, username, password);
+            var useTls = await _settings.GetBoolAsync(NotificationSettingKeys.EmailSmtpUseSsl, true, cancellationToken);
+
+            var configurationError = ValidateConfiguration(provider, host, senderAddress, username, password, useTls);
             if (configurationError != null)
                 return Permanent(configurationError);
 
@@ -41,7 +43,6 @@ namespace DAMS.Application.Services.Notifications
             if (port is < 1 or > 65535)
                 return Permanent("The SMTP port must be between 1 and 65535.");
 
-            var useTls = await _settings.GetBoolAsync(NotificationSettingKeys.EmailSmtpUseSsl, true, cancellationToken);
             var senderName = await _settings.GetOrDefaultAsync(NotificationSettingKeys.EmailSenderName, "DAMS", cancellationToken);
             var replyTo = await _settings.GetAsync(NotificationSettingKeys.EmailReplyTo, cancellationToken);
             if (replyTo != null && !IsValidAddress(replyTo))
@@ -160,7 +161,7 @@ namespace DAMS.Application.Services.Notifications
         }
 
         private static string? ValidateConfiguration(
-            string provider, string? host, string? senderAddress, string? username, string? password)
+            string provider, string? host, string? senderAddress, string? username, string? password, bool useTls)
         {
             if (!provider.Equals("smtp", StringComparison.OrdinalIgnoreCase))
                 return "The configured email provider is not supported.";
@@ -170,8 +171,16 @@ namespace DAMS.Application.Services.Notifications
                 return "Email is not configured: set a valid sender address.";
             if ((username == null) != (password == null))
                 return "SMTP username and password must either both be set or both be empty.";
+            if (!useTls && username != null)
+                return PlaintextCredentialsError;
             return null;
         }
+
+        /// <summary>A relay that needs no credentials may run in the clear — a local catcher
+        /// during development is the case that matters. Sending a password over an unencrypted
+        /// connection is refused outright rather than left to a correct configuration.</summary>
+        public const string PlaintextCredentialsError =
+            "SMTP credentials cannot be sent over an unencrypted connection. Enable TLS, or clear the SMTP username and password.";
 
         public static bool IsValidHost(string? host)
         {
