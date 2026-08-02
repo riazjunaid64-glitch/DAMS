@@ -119,11 +119,11 @@ public sealed class LeadAlertMigrationTests
         Assert.NotEmpty(followUps.Items);
         Assert.All(followUps.Items, i => Assert.Equal(NotificationCategory.FollowUps, i.Category));
 
-        var payments = await h.Inbox.GetAsync(omar, new NotificationFilterDto
-        {
-            Category = NotificationCategory.PaymentsAndReceipts
-        });
-        Assert.Empty(payments.Items);
+        await Assert.ThrowsAsync<DAMS.Application.Common.LeadAuthorizationException>(() =>
+            h.Inbox.GetAsync(omar, new NotificationFilterDto
+            {
+                Category = NotificationCategory.PaymentsAndReceipts
+            }));
     }
 
     [Fact]

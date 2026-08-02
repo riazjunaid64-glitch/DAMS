@@ -146,9 +146,9 @@ const EMAIL_FIELDS: { key: string; label: string; hint?: string; type?: string }
   { key: "email.senderName", label: "Sender name" },
   { key: "email.senderAddress", label: "Sender email" },
   { key: "email.replyTo", label: "Reply-to email" },
-  { key: "email.smtp.host", label: "SMTP host" },
-  { key: "email.smtp.port", label: "SMTP port", type: "number" },
-  { key: "email.smtp.username", label: "SMTP username" },
+  { key: "email.smtp.host", label: "SMTP host", hint: "Host only, for example smtp.example.com. Do not include https:// or a port." },
+  { key: "email.smtp.port", label: "SMTP port", type: "number", hint: "Usually 587 for STARTTLS or 465 for implicit TLS." },
+  { key: "email.smtp.username", label: "SMTP username", hint: "Use dedicated SMTP credentials, not a personal account password." },
 ];
 
 /** Everything this screen may write. Must stay inside the server's own allow-list. */
@@ -345,7 +345,7 @@ function SettingsTab() {
               className={inputClass}
             />
           </Field>
-          <Field label="Use TLS">
+          <Field label="Use TLS" hint="Recommended. Port 465 uses implicit TLS; other ports require STARTTLS.">
             <select
               value={values["email.smtp.useSsl"] ?? "true"}
               onChange={(event) => set("email.smtp.useSsl", event.target.value)}

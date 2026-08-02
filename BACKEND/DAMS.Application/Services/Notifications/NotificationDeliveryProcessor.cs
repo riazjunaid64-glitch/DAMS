@@ -46,6 +46,7 @@ namespace DAMS.Application.Services.Notifications
         private readonly NotificationOptions _options;
         private readonly TimeProvider _clock;
         private readonly ILogger<NotificationDeliveryProcessor> _logger;
+        private readonly NotificationEligibilityPolicy _eligibility;
 
         public NotificationDeliveryProcessor(
             AppDbContext context,
@@ -54,6 +55,7 @@ namespace DAMS.Application.Services.Notifications
             INotificationRecipientResolver recipients,
             NotificationOptions options,
             TimeProvider clock,
+            NotificationEligibilityPolicy eligibility,
             ILogger<NotificationDeliveryProcessor> logger)
         {
             _context = context;
@@ -62,6 +64,7 @@ namespace DAMS.Application.Services.Notifications
             _recipients = recipients;
             _options = options;
             _clock = clock;
+            _eligibility = eligibility;
             _logger = logger;
         }
 
@@ -140,6 +143,16 @@ namespace DAMS.Application.Services.Notifications
             delivery.LastAttemptAt = now;
 
             var notification = delivery.Notification;
+
+            // Role changes, account deactivation, corrected contact addresses and relationship
+            // revocation take effect even after a row was queued.
+            if (!await _eligibility.CanDeliverAsync(notification, cancellationToken))
+            {
+                Finish(delivery, NotificationDeliveryStatus.Skipped,
+                    "The recipient is no longer eligible for this notification.", permanent: true, now);
+                await SaveAsync(cancellationToken);
+                return;
+            }
 
             // An expired notification is not worth a provider call — it would arrive telling
             // somebody about something that no longer matters.
@@ -354,14 +367,20 @@ namespace DAMS.Application.Services.Notifications
         {
             var selection = DeserializeAudience(job.AudienceJson);
             var recipients = await _recipients.ResolveTargetsAsync(job.AudienceType, selection, cancellationToken);
+            var resolvedCount = recipients.Count;
+            recipients = await _eligibility.FilterEligibleTargetsAsync(job.Type, recipients, cancellationToken);
+            if (recipients.Count != resolvedCount)
+            {
+                _logger.LogWarning(
+                    "Notification job {JobId} dropped {Count} recipient(s) that no longer satisfy role/account eligibility for {Type}.",
+                    job.Id, resolvedCount - recipients.Count, job.Type);
+            }
             if (!job.Channels.HasFlag(NotificationChannel.Email))
                 recipients = recipients.Where(r => r.UserId.HasValue).ToList();
 
             if (recipients.Count > _options.MaxBroadcastRecipients)
                 throw new InvalidOperationException(
                     $"The audience resolved to {recipients.Count} recipients, above the {_options.MaxBroadcastRecipients} limit.");
-
-            var created = 0;
 
             // Chunked so one save never holds thousands of rows, and so a crash part way
             // through keeps the recipients already written.
@@ -398,10 +417,10 @@ namespace DAMS.Application.Services.Notifications
                 }
 
                 await _context.SaveChangesAsync(cancellationToken);
-                created += chunk.Length;
             }
 
-            return created;
+            return await _context.Notifications.AsNoTracking()
+                .CountAsync(notification => notification.NotificationJobId == job.Id, cancellationToken);
         }
 
         private static string ContactKey(string email)

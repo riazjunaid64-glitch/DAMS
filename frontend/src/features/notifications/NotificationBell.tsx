@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CATEGORY_LABELS, relativeTime } from "./types.ts";
+import { notificationCategoryLabels } from "./capabilities.ts";
+import { relativeTime } from "./types.ts";
 import type { NotificationItem } from "./types.ts";
 import { useNotifications } from "./useNotifications.ts";
 
@@ -11,7 +12,7 @@ import { useNotifications } from "./useNotifications.ts";
  * on an outside click, and returns focus to the bell. Everything it shows is also reachable
  * from the full notifications page, so nothing here is the only route to a message.
  */
-export default function NotificationBell({ signedIn }: { signedIn: boolean }) {
+export default function NotificationBell({ accountKey }: { accountKey: string | null }) {
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -21,8 +22,10 @@ export default function NotificationBell({ signedIn }: { signedIn: boolean }) {
   const bellRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const { summary, loading, error, incoming, dismissIncoming, markEverythingRead, open: openOne } =
-    useNotifications(signedIn);
+  const { summary, capabilities, loading, error, incoming, dismissIncoming, markEverythingRead, open: openOne } =
+    useNotifications(accountKey);
+  const categoryLabels = notificationCategoryLabels(capabilities);
+  const signedIn = accountKey !== null;
 
   // A push click while DAMS is open arrives as a message from the service worker rather than
   // opening a second tab.
@@ -160,7 +163,7 @@ export default function NotificationBell({ signedIn }: { signedIn: boolean }) {
                 <div className="px-4 py-10 text-center">
                   <p className="text-sm font-medium text-[var(--text-heading)]">Nothing yet</p>
                   <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    Payment, booking, lead and follow-up updates will appear here.
+                    {capabilities?.emptyStateMessage ?? "Your available updates will appear here."}
                   </p>
                 </div>
               )}
@@ -192,7 +195,7 @@ export default function NotificationBell({ signedIn }: { signedIn: boolean }) {
                         </span>
                         <span className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
                           <span className="rounded-md bg-[var(--surface-glass)] px-1.5 py-0.5 font-medium">
-                            {CATEGORY_LABELS[item.category] ?? item.category}
+                            {categoryLabels.get(item.category) ?? item.category}
                           </span>
                           {(item.priority === "High" || item.priority === "Critical") && (
                             <span className="font-semibold text-[var(--accent-rose)]">{item.priority}</span>

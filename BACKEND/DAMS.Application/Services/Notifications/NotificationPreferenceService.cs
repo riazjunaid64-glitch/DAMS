@@ -17,29 +17,47 @@ namespace DAMS.Application.Services.Notifications
     {
         private readonly AppDbContext _context;
         private readonly NotificationSettingsStore _settings;
+        private readonly NotificationEligibilityPolicy _eligibility;
         private bool? _schemaAvailable;
 
-        public NotificationPreferenceService(AppDbContext context, NotificationSettingsStore settings)
+        public NotificationPreferenceService(
+            AppDbContext context,
+            NotificationSettingsStore settings,
+            NotificationEligibilityPolicy eligibility)
         {
             _context = context;
             _settings = settings;
+            _eligibility = eligibility;
         }
 
-        private static readonly (NotificationCategory Category, string Label, string Description)[] Descriptions =
+        public async Task<NotificationCapabilitiesDto> GetCapabilitiesAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
-            (NotificationCategory.PaymentsAndReceipts, "Payments and receipts", "Confirmation and official receipt whenever a payment is recorded."),
-            (NotificationCategory.BookingUpdates, "Booking updates", "Approvals, rejections, cancellations and possession."),
-            (NotificationCategory.InstallmentReminders, "Installment reminders", "Reminders before and after an installment falls due."),
-            (NotificationCategory.LeadAssignments, "Lead assignments", "Leads assigned to you or moved between owners."),
-            (NotificationCategory.FollowUps, "Follow-ups", "Follow-up work that is due or overdue."),
-            (NotificationCategory.SiteVisits, "Site visits", "Visits booked, changed or coming up."),
-            (NotificationCategory.Mentions, "Mentions", "Someone mentions you in an internal comment."),
-            (NotificationCategory.EmployeeTasks, "Employee tasks", "Tasks assigned to you."),
-            (NotificationCategory.ProjectUpdates, "Project updates", "Progress and news on projects you follow."),
-            (NotificationCategory.Announcements, "Announcements", "General messages from the DAMS team."),
-            (NotificationCategory.AccountAndSecurity, "Account and security", "Sign-in, password and account safety messages."),
-            (NotificationCategory.ManagerEscalations, "Escalations", "Team issues that need a supervisor's attention.")
-        };
+            var schemaExists = await SchemaExistsAsync(cancellationToken);
+            var emailOn = schemaExists && await _settings.GetBoolAsync(
+                NotificationSettingKeys.EmailEnabled, false, cancellationToken);
+            var pushOn = schemaExists && await _settings.GetBoolAsync(
+                NotificationSettingKeys.PushEnabled, false, cancellationToken);
+            var emailCategories = CategoriesSupporting(ctx.Role, NotificationChannel.Email);
+            var pushCategories = CategoriesSupporting(ctx.Role, NotificationChannel.WebPush);
+
+            return new NotificationCapabilitiesDto
+            {
+                Role = ctx.Role,
+                EmptyStateMessage = _eligibility.EmptyStateForRole(ctx.Role),
+                Categories = _eligibility.CategoriesForRole(ctx.Role)
+                    .Select(category => new NotificationCategoryCapabilityDto
+                    {
+                        Category = category.Category,
+                        Label = category.Label,
+                        Description = category.Description,
+                        IsMandatory = NotificationCatalog.IsMandatoryCategory(category.Category),
+                        EmailAvailable = emailOn && emailCategories.Contains(category.Category),
+                        PushAvailable = pushOn && pushCategories.Contains(category.Category)
+                    })
+                    .ToList()
+            };
+        }
 
         public async Task<List<NotificationPreferenceDto>> GetAsync(
             NotificationUserContext ctx, CancellationToken cancellationToken = default)
@@ -52,16 +70,9 @@ namespace DAMS.Application.Services.Notifications
                     .ToDictionaryAsync(p => p.Category, cancellationToken)
                 : new Dictionary<NotificationCategory, NotificationPreference>();
 
-            var emailOn = schemaExists && await _settings.GetBoolAsync(NotificationSettingKeys.EmailEnabled, false, cancellationToken);
-            var pushOn = schemaExists && await _settings.GetBoolAsync(NotificationSettingKeys.PushEnabled, false, cancellationToken);
+            var capabilities = await GetCapabilitiesAsync(ctx, cancellationToken);
 
-            // A category is only offered when at least one notification in it can actually
-            // reach this person on that channel.
-            var emailCategories = CategoriesSupporting(NotificationChannel.Email);
-            var pushCategories = CategoriesSupporting(NotificationChannel.WebPush);
-
-            return Descriptions
-                .Where(d => ctx.IsStaff || IsCustomerFacing(d.Category))
+            return capabilities.Categories
                 .Select(d =>
                 {
                     var mandatory = NotificationCatalog.IsMandatoryCategory(d.Category);
@@ -75,8 +86,8 @@ namespace DAMS.Application.Services.Notifications
                         IsMandatory = mandatory,
                         EmailEnabled = mandatory || (row?.EmailEnabled ?? true),
                         PushEnabled = mandatory || (row?.PushEnabled ?? true),
-                        EmailAvailable = emailOn && emailCategories.Contains(d.Category),
-                        PushAvailable = pushOn && pushCategories.Contains(d.Category)
+                        EmailAvailable = d.EmailAvailable,
+                        PushAvailable = d.PushAvailable
                     };
                 })
                 .ToList();
@@ -94,6 +105,9 @@ namespace DAMS.Application.Services.Notifications
 
             foreach (var item in dto.Items.DistinctBy(i => i.Category))
             {
+                if (!_eligibility.CanRoleUseCategory(ctx.Role, item.Category))
+                    throw new LeadAuthorizationException("That notification category is not available for your account.");
+
                 // Silently ignoring a mandatory category is the right answer: the interface
                 // never offers it, and a crafted request must not be able to switch off a
                 // receipt or a security message.
@@ -123,21 +137,11 @@ namespace DAMS.Application.Services.Notifications
             return await GetAsync(ctx, cancellationToken);
         }
 
-        private static HashSet<NotificationCategory> CategoriesSupporting(NotificationChannel channel) =>
+        private HashSet<NotificationCategory> CategoriesSupporting(string role, NotificationChannel channel) =>
             NotificationCatalog.All
-                .Where(d => d.DefaultChannels.HasFlag(channel))
+                .Where(d => _eligibility.CanRoleReceive(role, d.Type) && d.DefaultChannels.HasFlag(channel))
                 .Select(d => d.Category)
                 .ToHashSet();
-
-        /// <summary>Categories a customer can meaningfully receive. Internal CRM traffic is
-        /// never offered to them, so their preference screen cannot hint at its existence.</summary>
-        private static bool IsCustomerFacing(NotificationCategory category) =>
-            category is NotificationCategory.PaymentsAndReceipts
-                     or NotificationCategory.BookingUpdates
-                     or NotificationCategory.InstallmentReminders
-                     or NotificationCategory.ProjectUpdates
-                     or NotificationCategory.Announcements
-                     or NotificationCategory.AccountAndSecurity;
 
         private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
         {

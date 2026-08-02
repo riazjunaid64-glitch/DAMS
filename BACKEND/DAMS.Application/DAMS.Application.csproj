@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
   </ItemGroup>
 

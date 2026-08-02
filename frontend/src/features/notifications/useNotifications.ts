@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api/api.ts";
-import { fetchSummary, markAllRead, markRead, openNotification } from "./notificationApi.ts";
-import type { NotificationCategory, NotificationItem, NotificationSummary } from "./types.ts";
+import { fetchCapabilities, fetchSummary, markAllRead, markRead, openNotification } from "./notificationApi.ts";
+import { markSummaryCategoryRead, markSummaryItemRead } from "./summaryState.ts";
+import type {
+  NotificationCapabilities,
+  NotificationCategory,
+  NotificationItem,
+  NotificationSummary,
+} from "./types.ts";
 
 interface UseNotificationsResult {
   summary: NotificationSummary;
+  capabilities: NotificationCapabilities | null;
   loading: boolean;
   error: string | null;
   /** The newest notification since the last one that was acknowledged, for the toast. */
@@ -27,19 +34,20 @@ const EMPTY: NotificationSummary = { unreadCount: 0, unreadByCategory: {}, recen
  * are re-read through the normal authorised endpoint, so a live connection can never show
  * more than the inbox itself would.
  */
-export function useNotifications(enabled: boolean): UseNotificationsResult {
+export function useNotifications(accountKey: string | null): UseNotificationsResult {
   const [summary, setSummary] = useState<NotificationSummary>(EMPTY);
+  const [capabilities, setCapabilities] = useState<NotificationCapabilities | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
   const [incoming, setIncoming] = useState<NotificationItem | null>(null);
 
   // Guards against a stale response overwriting a newer one after a fast sequence of events.
   const requestId = useRef(0);
   const lastSeenId = useRef<number | null>(null);
-  const firstLoad = useRef(true);
 
   const refresh = useCallback(async () => {
-    if (!enabled) return;
+    if (!accountKey) return;
 
     const id = ++requestId.current;
     try {
@@ -47,7 +55,7 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
       if (id !== requestId.current) return;
 
       setSummary(next);
-      setError(null);
+      setNotificationError(null);
 
       const newest = next.recent.find((item) => !item.isRead);
       if (newest && lastSeenId.current !== null && newest.id > lastSeenId.current) {
@@ -55,31 +63,75 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
       }
       // On the very first load there is nothing "new" — everything is history.
       lastSeenId.current = next.recent.length > 0 ? Math.max(...next.recent.map((n) => n.id)) : 0;
-      firstLoad.current = false;
     } catch (err) {
       if (id !== requestId.current) return;
-      setError(err instanceof Error ? err.message : "Notifications could not be loaded.");
+      setNotificationError(err instanceof Error ? err.message : "Notifications could not be loaded.");
     }
-  }, [enabled]);
+  }, [accountKey]);
 
   // Initial load.
   useEffect(() => {
-    if (!enabled) {
-      setSummary(EMPTY);
-      setIncoming(null);
-      lastSeenId.current = null;
-      firstLoad.current = true;
+    requestId.current += 1;
+    setSummary(EMPTY);
+    setCapabilities(null);
+    setIncoming(null);
+    setNotificationError(null);
+    setCapabilitiesError(null);
+    lastSeenId.current = null;
+
+    if (!accountKey) {
+      setLoading(false);
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
-    void refresh().finally(() => setLoading(false));
-  }, [enabled, refresh]);
+    const id = ++requestId.current;
+    void Promise.allSettled([fetchSummary(12), fetchCapabilities()])
+      .then(([summaryResult, capabilitiesResult]) => {
+        if (cancelled) return;
+
+        if (capabilitiesResult.status === "fulfilled") {
+          setCapabilities(capabilitiesResult.value);
+          setCapabilitiesError(null);
+        } else {
+          setCapabilitiesError(
+            capabilitiesResult.reason instanceof Error
+              ? capabilitiesResult.reason.message
+              : "Notification capabilities could not be loaded."
+          );
+        }
+
+        // A live refresh may have completed while this initial request was in flight.
+        if (id !== requestId.current) return;
+        if (summaryResult.status === "fulfilled") {
+          setSummary(summaryResult.value);
+          setNotificationError(null);
+          lastSeenId.current = summaryResult.value.recent.length > 0
+            ? Math.max(...summaryResult.value.recent.map((item) => item.id))
+            : 0;
+        } else {
+          setNotificationError(
+            summaryResult.reason instanceof Error
+              ? summaryResult.reason.message
+              : "Notifications could not be loaded."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      requestId.current += 1;
+    };
+  }, [accountKey]);
 
   // Live stream, with reconnection. A failure here is never surfaced as an error: the poll
   // below keeps the inbox correct, just less promptly.
   useEffect(() => {
-    if (!enabled) return;
+    if (!accountKey) return;
 
     let cancelled = false;
     let attempt = 0;
@@ -136,11 +188,11 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
       cancelled = true;
       controller.abort();
     };
-  }, [enabled, refresh]);
+  }, [accountKey, refresh]);
 
   // Safety net: a slow poll while the tab is visible, plus a refresh when it regains focus.
   useEffect(() => {
-    if (!enabled) return;
+    if (!accountKey) return;
 
     const tick = () => {
       if (document.visibilityState === "visible") void refresh();
@@ -155,16 +207,12 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
       document.removeEventListener("visibilitychange", tick);
       window.removeEventListener("focus", tick);
     };
-  }, [enabled, refresh]);
+  }, [accountKey, refresh]);
 
   const markOneRead = useCallback(
     async (id: number) => {
       // Optimistic: the badge should never lag behind the click.
-      setSummary((current) => ({
-        ...current,
-        unreadCount: Math.max(0, current.unreadCount - (current.recent.find((n) => n.id === id && !n.isRead) ? 1 : 0)),
-        recent: current.recent.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
-      }));
+      setSummary((current) => markSummaryItemRead(current, id));
 
       try {
         await markRead(id);
@@ -177,11 +225,7 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
 
   const markEverythingRead = useCallback(
     async (category?: NotificationCategory | null) => {
-      setSummary((current) => ({
-        ...current,
-        unreadCount: category ? current.unreadCount : 0,
-        recent: current.recent.map((n) => (!category || n.category === category ? { ...n, isRead: true } : n)),
-      }));
+      setSummary((current) => markSummaryCategoryRead(current, category));
 
       try {
         await markAllRead(category ?? null);
@@ -203,8 +247,9 @@ export function useNotifications(enabled: boolean): UseNotificationsResult {
 
   return {
     summary,
+    capabilities,
     loading,
-    error,
+    error: notificationError ?? capabilitiesError,
     incoming,
     dismissIncoming: () => setIncoming(null),
     refresh,

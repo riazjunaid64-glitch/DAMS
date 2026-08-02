@@ -36,14 +36,15 @@ namespace DAMS.Application.Common
 
         public static IReadOnlyCollection<NotificationDefinition> All => Definitions.Values;
 
-        public static NotificationDefinition Get(NotificationType type) =>
-            Definitions.TryGetValue(type, out var definition)
+        public static bool TryGet(NotificationType type, out NotificationDefinition definition) =>
+            Definitions.TryGetValue(type, out definition!);
+
+        public static NotificationDefinition GetRequired(NotificationType type) =>
+            TryGet(type, out var definition)
                 ? definition
-                // An event added in code before its catalog entry still notifies in-app
-                // rather than vanishing silently.
-                : new NotificationDefinition(type, NotificationCategory.Announcements, NotificationModule.System,
-                    NotificationPriority.Normal, NotificationChannel.InApp, false, type.ToString(),
-                    "{{title}}", "{{message}}", "Open DAMS", Array.Empty<string>());
+                : throw new InvalidOperationException($"Notification type '{type}' is not registered in the catalog.");
+
+        public static NotificationDefinition Get(NotificationType type) => GetRequired(type);
 
         public static NotificationCategory CategoryOf(NotificationType type) => Get(type).Category;
 

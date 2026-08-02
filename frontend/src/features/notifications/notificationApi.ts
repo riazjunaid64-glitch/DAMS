@@ -6,6 +6,7 @@ import type {
   DeliveryPage,
   DeliveryRow,
   JobRow,
+  NotificationCapabilities,
   NotificationCategory,
   NotificationPage,
   NotificationSettings,
@@ -43,6 +44,10 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 
 export function fetchSummary(take = 10) {
   return notificationRequest<NotificationSummary>(`/api/notifications/summary?take=${take}`);
+}
+
+export function fetchCapabilities() {
+  return notificationRequest<NotificationCapabilities>("/api/notifications/capabilities");
 }
 
 export function fetchNotifications(params: {

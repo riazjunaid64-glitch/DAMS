@@ -72,8 +72,10 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         Clock = new FakeClock(DateTime.UtcNow);
 
         Realtime = new NotificationRealtimeBroker();
-        Dispatcher = new NotificationDispatcher(db, new NotificationSettingsStore(db), Realtime, Clock);
-        Inbox = new NotificationInboxService(db, Clock);
+        var eligibility = new NotificationEligibilityPolicy(db);
+        Dispatcher = new NotificationDispatcher(db, new NotificationSettingsStore(db), Realtime, Clock, eligibility,
+            NullLogger<NotificationDispatcher>.Instance);
+        Inbox = new NotificationInboxService(db, Clock, eligibility);
         Notifications = new LeadNotificationService(db, Dispatcher);
         var customers = new CustomerService(db);
         var bookings = new BookingService(db, customers);

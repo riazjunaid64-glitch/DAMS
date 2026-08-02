@@ -705,6 +705,9 @@ namespace DAMS.Application.Services.Notifications
             if (_schemaAvailable.HasValue)
                 return _schemaAvailable.Value;
 
+            if (!_context.Database.IsRelational())
+                return (_schemaAvailable = true).Value;
+
             try
             {
                 var connection = _context.Database.GetDbConnection();

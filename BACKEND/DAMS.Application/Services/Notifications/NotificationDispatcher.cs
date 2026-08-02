@@ -6,6 +6,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services.Notifications
 {
@@ -24,6 +25,8 @@ namespace DAMS.Application.Services.Notifications
         private readonly NotificationSettingsStore _settings;
         private readonly INotificationRealtimeBroker _realtime;
         private readonly TimeProvider _clock;
+        private readonly NotificationEligibilityPolicy _eligibility;
+        private readonly ILogger<NotificationDispatcher> _logger;
 
         private Dictionary<NotificationType, NotificationRule>? _rules;
         private Dictionary<(int UserId, NotificationCategory Category), NotificationPreference>? _preferences;
@@ -38,7 +41,9 @@ namespace DAMS.Application.Services.Notifications
             AppDbContext context,
             NotificationSettingsStore settings,
             INotificationRealtimeBroker realtime,
-            TimeProvider clock)
+            TimeProvider clock,
+            NotificationEligibilityPolicy eligibility,
+            ILogger<NotificationDispatcher> logger)
         {
             _context = context;
             _settings = settings;
@@ -46,6 +51,8 @@ namespace DAMS.Application.Services.Notifications
             // The same clock the delivery worker reads, so "due now" means the same instant on
             // both sides and a notification is never queued a fraction ahead of its sweep.
             _clock = clock;
+            _eligibility = eligibility;
+            _logger = logger;
 
             // Live updates are only ever announced after the write that produced them has
             // actually been committed, and the announcement carries no content — the client
@@ -64,6 +71,18 @@ namespace DAMS.Application.Services.Notifications
 
             if (!await NotificationSchemaExistsAsync(cancellationToken))
                 return false;
+
+            // This is the creation-time security boundary. Producers resolve recipients from
+            // business relationships, and the central policy independently verifies that the
+            // current database role and related record permit this event.
+            if (!await _eligibility.CanQueueAsync(request, cancellationToken))
+            {
+                _logger.LogWarning(
+                    "Rejected notification recipient. Type {Type}, user {RecipientUserId}, contact-only {ContactOnly}, entity {EntityType}/{EntityId}.",
+                    request.Type, request.RecipientUserId, request.RecipientUserId == null,
+                    request.EntityType, request.EntityId);
+                return false;
+            }
 
             var key = LeadContactNormalizer.Limit(request.DedupKey, 200);
 
@@ -122,7 +141,7 @@ namespace DAMS.Application.Services.Notifications
         /// </summary>
         private async Task<Notification?> BuildAsync(NotificationRequest request, string dedupKey, CancellationToken cancellationToken)
         {
-            var definition = NotificationCatalog.Get(request.Type);
+            var definition = NotificationCatalog.GetRequired(request.Type);
             var rule = await GetRuleAsync(request.Type, cancellationToken);
 
             if (rule is { IsEnabled: false } && !definition.IsMandatory)
@@ -305,6 +324,9 @@ namespace DAMS.Application.Services.Notifications
         {
             if (_schemaAvailable.HasValue)
                 return _schemaAvailable.Value;
+
+            if (!_context.Database.IsRelational())
+                return (_schemaAvailable = true).Value;
 
             var connection = _context.Database.GetDbConnection();
             await _context.Database.OpenConnectionAsync(cancellationToken);

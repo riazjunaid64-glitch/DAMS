@@ -220,6 +220,28 @@ public sealed class NotificationPaymentReceiptTests
     }
 
     [Fact]
+    public async Task AContactOnlyReceiptIsNotSentToAnAddressThatNoLongerOwnsThePayment()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        await h.EnableChannelsAsync();
+
+        var booking = await CreateBookingForAsync(h, h.LoginlessCustomerId, h.SecondUnitId, "BK-000099");
+        await h.Bookings.RecordBookingAmountPaymentAsync(booking,
+            new RecordBookingAmountPaymentDto { Amount = 100_000m, PaymentMethod = PaymentMethod.Cash }, h.AdminUserId);
+
+        var customer = await h.Db.Customers.SingleAsync(item => item.Id == h.LoginlessCustomerId);
+        customer.Email = "corrected@dams.test";
+        await h.Db.SaveChangesAsync();
+
+        await h.Processor.ProcessDueDeliveriesAsync(20);
+
+        Assert.Empty(h.Email.Sent);
+        var delivery = Assert.Single(await h.DeliveriesForAsync(NotificationChannel.Email));
+        Assert.Equal(NotificationDeliveryStatus.Skipped, delivery.Status);
+        Assert.True(delivery.IsPermanentFailure);
+    }
+
+    [Fact]
     public async Task ACustomerWithNoAddressIsRecordedAsUnavailableRatherThanRetriedForever()
     {
         await using var h = await NotificationTestHarness.CreateAsync();
