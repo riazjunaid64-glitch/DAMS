@@ -30,6 +30,31 @@ public sealed class NotificationBroadcastTests
     }
 
     [Fact]
+    public async Task AValidBroadcastActionLinkCanBeOpenedByItsRecipient()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var job = await h.Admin.ComposeAsync(new ComposeNotificationDto
+        {
+            Title = "Project news",
+            Message = "New photos are available.",
+            ActionUrl = $"/projects/{h.ProjectId}",
+            Audience = new NotificationAudienceDto
+            {
+                Type = NotificationAudienceType.SelectedUsers,
+                UserIds = { h.CustomerUserId }
+            }
+        }, h.AdminCtx);
+
+        await h.Processor.ProcessScheduledJobsAsync(10);
+        var notification = await h.Db.Notifications.AsNoTracking()
+            .SingleAsync(item => item.NotificationJobId == job.Id);
+
+        var opened = await h.Inbox.OpenAsync(notification.Id, h.CustomerCtx);
+        Assert.True(opened.Allowed);
+        Assert.Equal($"/projects/{h.ProjectId}", opened.DeepLink);
+    }
+
+    [Fact]
     public async Task AMessageToSelectedUsersReachesExactlyThem()
     {
         await using var h = await NotificationTestHarness.CreateAsync();

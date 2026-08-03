@@ -9,9 +9,18 @@ type Account = { id:number; name:string; type:number; accountHolderName:string; 
 type Transaction = { kind:string; recordId:number; date:string; label:string; reference:string|null; projectName:string; amount:number };
 type Overview = { activeAccounts:number; inactiveAccounts:number; totalBalance:number; holderBalances:{accountHolderName:string;accountCount:number;currentBalance:number}[] };
 type Form = { id:number|null; name:string; type:string; accountHolderName:string; openingBalance:string; bankOrWalletName:string; description:string; concurrencyToken:string };
+type TransactionWithBalance = { t:Transaction; balance:number };
 const types = ["Cash", "Bank", "Mobile Wallet", "Other"];
 const emptyForm = ():Form => ({ id:null, name:"", type:"1", accountHolderName:"", openingBalance:"0", bankOrWalletName:"", description:"", concurrencyToken:"" });
 const money = (n:number) => `Rs ${n.toLocaleString("en-PK", { maximumFractionDigits:2 })}`;
+
+function withRunningBalances(transactions: Transaction[], openingBalance: number): TransactionWithBalance[] {
+  let balance = openingBalance;
+  return transactions.map((transaction) => {
+    balance += transaction.amount;
+    return { t: transaction, balance };
+  });
+}
 
 export default function FinanceAccountsPage({ user }:{user:User|null}) {
   const navigate = useNavigate();
@@ -39,8 +48,7 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
 function DetailModal({account,transactions,close}:{account:Account;transactions:Transaction[];close:()=>void}){
   const fullHistory = transactions.length >= account.transactionCount;
   const orderedAsc = [...transactions].sort((a,b)=> a.date===b.date ? a.recordId-b.recordId : (a.date<b.date?-1:1));
-  let running = account.openingBalance;
-  const rows = orderedAsc.map(t=>{ running += t.amount; return { t, balance: running }; });
+  const rows = withRunningBalances(orderedAsc, account.openingBalance);
   return <Modal title={account.name} close={close}>
     <p className="mb-3 text-sm text-[var(--text-muted)]">{types[account.type-1] ?? "—"} · {account.accountHolderName}{account.bankOrWalletName?` · ${account.bankOrWalletName}`:""}{account.isActive?"":" · Inactive"}</p>
     <div className="mb-4 grid grid-cols-2 gap-3"><Stat label="Opening balance" value={money(account.openingBalance)}/><Stat label="Current balance" value={money(account.currentBalance)}/><Stat label="Revenue received" value={money(account.revenueReceived)}/><Stat label="Expenses paid" value={money(account.expensesPaid)}/></div>

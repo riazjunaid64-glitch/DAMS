@@ -11,6 +11,11 @@ namespace DAMS.Application.Services.Notifications
             bool includePush = false,
             bool includeJobs = false)
         {
+            // Unit/integration harnesses use EF's in-memory provider, where EnsureCreated
+            // already establishes the model and relational metadata APIs do not exist.
+            if (!context.Database.IsRelational())
+                return true;
+
             var connection = context.Database.GetDbConnection();
             await context.Database.OpenConnectionAsync(cancellationToken);
             try
@@ -21,6 +26,7 @@ namespace DAMS.Application.Services.Notifications
                         OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
                         OBJECT_ID(N'[dbo].[NotificationDeliveries]', N'U') IS NOT NULL AND
                         OBJECT_ID(N'[dbo].[NotificationRules]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[NotificationPreferences]', N'U') IS NOT NULL AND
                         OBJECT_ID(N'[dbo].[NotificationSettings]', N'U') IS NOT NULL
                         {(includePush ? "AND OBJECT_ID(N'[dbo].[PushSubscriptions]', N'U') IS NOT NULL" : string.Empty)}
                         {(includeJobs ? "AND OBJECT_ID(N'[dbo].[NotificationJobs]', N'U') IS NOT NULL" : string.Empty)}

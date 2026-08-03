@@ -64,6 +64,21 @@ export interface NotificationSummary {
   recent: NotificationItem[];
 }
 
+export interface NotificationCategoryCapability {
+  category: NotificationCategory;
+  label: string;
+  description: string;
+  isMandatory: boolean;
+  emailAvailable: boolean;
+  pushAvailable: boolean;
+}
+
+export interface NotificationCapabilities {
+  role: string;
+  emptyStateMessage: string;
+  categories: NotificationCategoryCapability[];
+}
+
 export interface OpenResult {
   allowed: boolean;
   deepLink: string | null;

@@ -75,6 +75,30 @@ namespace DAMS.Application.DTOs.NotificationDtos
         public List<NotificationDto> Recent { get; set; } = new();
     }
 
+    public class NotificationCapabilitiesDto
+    {
+        public string Role { get; set; } = string.Empty;
+
+        public string EmptyStateMessage { get; set; } = string.Empty;
+
+        public List<NotificationCategoryCapabilityDto> Categories { get; set; } = new();
+    }
+
+    public class NotificationCategoryCapabilityDto
+    {
+        public NotificationCategory Category { get; set; }
+
+        public string Label { get; set; } = string.Empty;
+
+        public string Description { get; set; } = string.Empty;
+
+        public bool IsMandatory { get; set; }
+
+        public bool EmailAvailable { get; set; }
+
+        public bool PushAvailable { get; set; }
+    }
+
     /// <summary>What the client needs to decide whether to offer the push opt-in.</summary>
     public class PushConfigDto
     {

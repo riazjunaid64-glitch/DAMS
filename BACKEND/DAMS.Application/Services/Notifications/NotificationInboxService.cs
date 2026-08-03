@@ -17,19 +17,27 @@ namespace DAMS.Application.Services.Notifications
     {
         private readonly AppDbContext _context;
         private readonly TimeProvider _clock;
+        private readonly NotificationEligibilityPolicy _eligibility;
         private bool? _schemaAvailable;
+        private (int UserId, NotificationEligibilityPolicy.ResourceScope Scope)? _scope;
 
-        public NotificationInboxService(AppDbContext context, TimeProvider clock)
+        public NotificationInboxService(
+            AppDbContext context,
+            TimeProvider clock,
+            NotificationEligibilityPolicy eligibility)
         {
             _context = context;
             // Expiry is judged against the same clock the delivery worker uses, so a
             // notification never lingers in an inbox after it has stopped being sendable.
             _clock = clock;
+            _eligibility = eligibility;
         }
 
         public async Task<NotificationPageDto> GetAsync(
             NotificationUserContext ctx, NotificationFilterDto filter, CancellationToken cancellationToken = default)
         {
+            _eligibility.EnsureCategoryAllowed(ctx, filter.Category);
+
             if (!await SchemaExistsAsync(cancellationToken))
             {
                 return new NotificationPageDto
@@ -39,7 +47,7 @@ namespace DAMS.Application.Services.Notifications
                 };
             }
 
-            var query = Mine(ctx);
+            var query = await MineAsync(ctx, cancellationToken);
 
             if (filter.Category.HasValue)
                 query = query.Where(n => n.Category == filter.Category.Value);
@@ -73,7 +81,7 @@ namespace DAMS.Application.Services.Notifications
             {
                 Items = items,
                 TotalCount = totalCount,
-                UnreadCount = await UnreadQuery(ctx).CountAsync(cancellationToken),
+                UnreadCount = await (await UnreadQueryAsync(ctx, cancellationToken)).CountAsync(cancellationToken),
                 Page = page,
                 PageSize = pageSize
             };
@@ -85,14 +93,14 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 return new NotificationSummaryDto();
 
-            var unread = UnreadQuery(ctx);
+            var unread = await UnreadQueryAsync(ctx, cancellationToken);
 
             var byCategory = await unread
                 .GroupBy(n => n.Category)
                 .Select(g => new { Category = g.Key, Count = g.Count() })
                 .ToListAsync(cancellationToken);
 
-            var recent = await Mine(ctx)
+            var recent = await (await MineAsync(ctx, cancellationToken))
                 .Where(n => !n.IsArchived)
                 .OrderByDescending(n => n.CreatedAt)
                 .ThenByDescending(n => n.Id)
@@ -110,7 +118,7 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<int> GetUnreadCountAsync(NotificationUserContext ctx, CancellationToken cancellationToken = default) =>
             await SchemaExistsAsync(cancellationToken)
-                ? await UnreadQuery(ctx).CountAsync(cancellationToken)
+                ? await (await UnreadQueryAsync(ctx, cancellationToken)).CountAsync(cancellationToken)
                 : 0;
 
         public async Task<NotificationDto> MarkReadAsync(
@@ -119,8 +127,8 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 throw new LeadNotFoundException("Notification not found.");
 
-            var notification = await _context.Notifications
-                .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
+                .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 // Deliberately indistinguishable from "does not exist": probing ids must not
                 // reveal that somebody else has a notification with that number.
                 ?? throw new LeadNotFoundException("Notification not found.");
@@ -139,11 +147,12 @@ namespace DAMS.Application.Services.Notifications
         public async Task<int> MarkAllReadAsync(
             NotificationUserContext ctx, NotificationCategory? category, CancellationToken cancellationToken = default)
         {
+            _eligibility.EnsureCategoryAllowed(ctx, category);
+
             if (!await SchemaExistsAsync(cancellationToken))
                 return 0;
 
-            var query = _context.Notifications
-                .Where(n => n.RecipientUserId == ctx.UserId && !n.IsRead);
+            var query = (await VisibleTrackedAsync(ctx, cancellationToken)).Where(n => !n.IsRead);
 
             if (category.HasValue)
                 query = query.Where(n => n.Category == category.Value);
@@ -169,8 +178,8 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 return;
 
-            var notification = await _context.Notifications
-                .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
+                .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
 
             if (notification.IsArchived)
@@ -194,8 +203,8 @@ namespace DAMS.Application.Services.Notifications
             if (!await SchemaExistsAsync(cancellationToken))
                 throw new LeadNotFoundException("Notification not found.");
 
-            var notification = await _context.Notifications
-                .FirstOrDefaultAsync(n => n.Id == notificationId && n.RecipientUserId == ctx.UserId, cancellationToken)
+            var notification = await (await VisibleTrackedAsync(ctx, cancellationToken))
+                .FirstOrDefaultAsync(n => n.Id == notificationId, cancellationToken)
                 ?? throw new LeadNotFoundException("Notification not found.");
 
             if (!notification.IsRead)
@@ -208,13 +217,42 @@ namespace DAMS.Application.Services.Notifications
 
             var dto = Map(notification);
 
-            if (notification.EntityType == NotificationEntityType.None || notification.EntityId is null or <= 0)
+            if (notification.EntityType is NotificationEntityType.None or NotificationEntityType.Announcement)
+            {
+                var routeAccess = notification.Type is NotificationType.AdminAnnouncement
+                    or NotificationType.ProjectUpdated or NotificationType.AccountSecurity
+                    ? await CheckAnnouncementAccessAsync(notification.DeepLink, ctx, cancellationToken)
+                    : (false, "You no longer have permission to open this record.");
+                var safeLink = NotificationLink.Sanitize(notification.DeepLink);
+                return new NotificationOpenResult
+                {
+                    Allowed = routeAccess.Item1,
+                    DeepLink = routeAccess.Item1 ? safeLink : null,
+                    Message = routeAccess.Item2,
+                    Notification = dto
+                };
+            }
+
+            if (notification.EntityType == NotificationEntityType.Account
+                && notification.EntityId is null or <= 0)
+            {
+                var routeAccess = await CheckAnnouncementAccessAsync(notification.DeepLink, ctx, cancellationToken);
+                return new NotificationOpenResult
+                {
+                    Allowed = routeAccess.Allowed,
+                    DeepLink = routeAccess.Allowed ? NotificationLink.Sanitize(notification.DeepLink) : null,
+                    Message = routeAccess.Message,
+                    Notification = dto
+                };
+            }
+
+            if (notification.EntityId is null or <= 0)
             {
                 return new NotificationOpenResult
                 {
-                    Allowed = true,
-                    DeepLink = notification.DeepLink,
-                    Message = "Opened.",
+                    Allowed = false,
+                    DeepLink = null,
+                    Message = "The record this notification refers to is no longer available.",
                     Notification = dto
                 };
             }
@@ -224,7 +262,7 @@ namespace DAMS.Application.Services.Notifications
             return new NotificationOpenResult
             {
                 Allowed = access.Allowed,
-                DeepLink = access.Allowed ? notification.DeepLink : null,
+                DeepLink = access.Allowed ? NotificationLink.Sanitize(notification.DeepLink) : null,
                 Message = access.Message,
                 Notification = dto
             };
@@ -239,13 +277,21 @@ namespace DAMS.Application.Services.Notifications
 
             switch (notification.EntityType)
             {
+                case NotificationEntityType.Announcement:
+                    return await CheckAnnouncementAccessAsync(notification.DeepLink, ctx, cancellationToken);
+
+                case NotificationEntityType.Account:
+                    return id == ctx.UserId
+                        ? await CheckAnnouncementAccessAsync(notification.DeepLink, ctx, cancellationToken)
+                        : (false, denied);
+
                 case NotificationEntityType.Lead:
                 case NotificationEntityType.LeadFollowUp:
                 case NotificationEntityType.LeadSiteVisit:
                 case NotificationEntityType.LeadComment:
                 {
                     // The link always lands on the lead workspace, so the lead is what has to
-                    // be reachable — resolved through the lead module's own scope rules.
+                    // be reachable, resolved through the lead module's own scope rules.
                     var leadId = notification.EntityType == NotificationEntityType.Lead
                         ? id
                         : await ResolveLeadIdAsync(notification, cancellationToken);
@@ -339,9 +385,14 @@ namespace DAMS.Application.Services.Notifications
                 }
 
                 case NotificationEntityType.Project:
-                    return await _context.Projects.AsNoTracking().AnyAsync(p => p.Id == id, cancellationToken)
+                {
+                    if (!await _context.Projects.AsNoTracking().AnyAsync(p => p.Id == id, cancellationToken))
+                        return (false, gone);
+
+                    return await _eligibility.CanReceiveAsync(notification, cancellationToken)
                         ? (true, "Opened.")
-                        : (false, gone);
+                        : (false, denied);
+                }
 
                 case NotificationEntityType.Unit:
                     return await _context.Units.AsNoTracking().AnyAsync(u => u.Id == id, cancellationToken)
@@ -349,8 +400,72 @@ namespace DAMS.Application.Services.Notifications
                         : (false, gone);
 
                 default:
-                    return (true, "Opened.");
+                    return (false, denied);
             }
+        }
+
+        private async Task<(bool Allowed, string Message)> CheckAnnouncementAccessAsync(
+            string? deepLink, NotificationUserContext ctx, CancellationToken cancellationToken)
+        {
+            const string denied = "You no longer have permission to open this record.";
+            var safe = NotificationLink.Sanitize(deepLink);
+            if (safe == null)
+                return (true, "Opened.");
+
+            var path = safe.Split('?', '#')[0].TrimEnd('/');
+            if (path.Length == 0)
+                path = "/";
+
+            if (path is "/" or "/notifications" or "/projects" or "/about" or "/contact" or "/application-form"
+                || TryRouteId(path, "/projects/", out _)
+                || TryRouteId(path, "/units/", out _))
+                return (true, "Opened.");
+
+            if (path == "/my-projects")
+                return string.Equals(ctx.Role, "Client", StringComparison.OrdinalIgnoreCase)
+                    ? (true, "Opened.")
+                    : (false, denied);
+
+            if (TryRouteId(path, "/my-projects/", out var bookingId))
+            {
+                var ownsBooking = string.Equals(ctx.Role, "Client", StringComparison.OrdinalIgnoreCase)
+                    && await _context.Bookings.AsNoTracking().AnyAsync(booking =>
+                        booking.Id == bookingId && booking.Customer.UserId == ctx.UserId, cancellationToken);
+                return ownsBooking ? (true, "Opened.") : (false, denied);
+            }
+
+            if (path == "/crm")
+                return ctx.IsStaff ? (true, "Opened.") : (false, denied);
+
+            if (path == "/crm/settings")
+                return ctx.IsAdmin ? (true, "Opened.") : (false, denied);
+
+            if (TryRouteId(path, "/crm/leads/", out var leadId))
+            {
+                if (!ctx.IsStaff)
+                    return (false, denied);
+
+                var leadCtx = await BuildLeadContextAsync(ctx, cancellationToken);
+                var visible = await LeadAccess.Scope(_context.Leads.AsNoTracking(), leadCtx)
+                    .AnyAsync(lead => lead.Id == leadId, cancellationToken);
+                return visible ? (true, "Opened.") : (false, denied);
+            }
+
+            var adminRoute = path == "/bookings"
+                             || path.StartsWith("/confirmed-bookings", StringComparison.OrdinalIgnoreCase)
+                             || path.StartsWith("/customers", StringComparison.OrdinalIgnoreCase)
+                             || path.StartsWith("/employees", StringComparison.OrdinalIgnoreCase)
+                             || path.StartsWith("/finance", StringComparison.OrdinalIgnoreCase)
+                             || path == "/notifications/settings";
+            return adminRoute && ctx.IsAdmin ? (true, "Opened.") : (false, denied);
+        }
+
+        private static bool TryRouteId(string path, string prefix, out int id)
+        {
+            id = 0;
+            return path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                   && int.TryParse(path[prefix.Length..], out id)
+                   && id > 0;
         }
 
         private async Task<int?> ResolveLeadIdAsync(Notification notification, CancellationToken cancellationToken)
@@ -424,17 +539,37 @@ namespace DAMS.Application.Services.Notifications
             return null;
         }
 
-        private IQueryable<Notification> Mine(NotificationUserContext ctx)
+        private async Task<IQueryable<Notification>> MineAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            await ScopedAsync(_context.Notifications.AsNoTracking(), ctx, cancellationToken);
+
+        private async Task<IQueryable<Notification>> VisibleTrackedAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            await ScopedAsync(_context.Notifications, ctx, cancellationToken);
+
+        /// <summary>
+        /// Ownership, expiry, the role's type/category matrix and — so a misrouted or corrupted
+        /// row never shows its wording in a listing, a bell or a count — the reader's current
+        /// ownership of the record each notification points at.
+        /// </summary>
+        private async Task<IQueryable<Notification>> ScopedAsync(
+            IQueryable<Notification> source, NotificationUserContext ctx, CancellationToken cancellationToken)
         {
             var now = _clock.GetUtcNow().UtcDateTime;
-            return _context.Notifications
-                .AsNoTracking()
-                .Where(n => n.RecipientUserId == ctx.UserId
-                            && (n.ExpiresAt == null || n.ExpiresAt > now));
+            var owned = source.Where(n => n.RecipientUserId == ctx.UserId
+                                          && (n.ExpiresAt == null || n.ExpiresAt > now));
+
+            // Keyed by account, not just cached: one instance answers several calls per
+            // request, and must never reuse what a different reader owns.
+            if (_scope?.UserId != ctx.UserId)
+                _scope = (ctx.UserId, await _eligibility.BuildResourceScopeAsync(ctx.UserId, ctx.Role, cancellationToken));
+
+            return _eligibility.ApplyResourceScope(_eligibility.ApplyRoleScope(owned, ctx.Role), _scope.Value.Scope);
         }
 
-        private IQueryable<Notification> UnreadQuery(NotificationUserContext ctx) =>
-            Mine(ctx).Where(n => !n.IsRead && !n.IsArchived);
+        private async Task<IQueryable<Notification>> UnreadQueryAsync(
+            NotificationUserContext ctx, CancellationToken cancellationToken) =>
+            (await MineAsync(ctx, cancellationToken)).Where(n => !n.IsRead && !n.IsArchived);
 
         private async Task<bool> SchemaExistsAsync(CancellationToken cancellationToken)
         {

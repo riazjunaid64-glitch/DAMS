@@ -72,6 +72,20 @@ namespace DAMS.Application.Services.Notifications
         {
             NotificationAccess.EnsureAdmin(ctx);
 
+            var effective = (await _settings.AllAsync(cancellationToken))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in dto.Values)
+            {
+                if (!NotificationSettingKeys.Writable.Contains(pair.Key))
+                    throw new InvalidOperationException($"'{pair.Key}' is not a notification setting that can be changed.");
+                if (NotificationSettingKeys.IsSecret(pair.Key) && pair.Value == SecretPlaceholder)
+                    continue;
+
+                Validate(pair.Key, pair.Value);
+                effective[pair.Key] = string.IsNullOrWhiteSpace(pair.Value) ? null : pair.Value.Trim();
+            }
+            ValidateEmailConfiguration(effective);
+
             var changed = new List<string>();
 
             foreach (var pair in dto.Values)
@@ -191,14 +205,27 @@ namespace DAMS.Application.Services.Notifications
         private async Task<NotificationStatusDto> BuildStatusAsync(CancellationToken cancellationToken)
         {
             var emailEnabled = await _settings.GetBoolAsync(NotificationSettingKeys.EmailEnabled, false, cancellationToken);
+            var provider = await _settings.GetOrDefaultAsync(NotificationSettingKeys.EmailProvider, "smtp", cancellationToken);
             var host = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpHost, cancellationToken);
             var senderAddress = await _settings.GetAsync(NotificationSettingKeys.EmailSenderAddress, cancellationToken);
+            var replyTo = await _settings.GetAsync(NotificationSettingKeys.EmailReplyTo, cancellationToken);
+            var username = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpUsername, cancellationToken);
+            var password = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpPassword, cancellationToken);
+            var port = await _settings.GetIntAsync(NotificationSettingKeys.EmailSmtpPort, 587, cancellationToken);
 
             string? emailIssue = null;
-            if (string.IsNullOrWhiteSpace(host))
-                emailIssue = "No SMTP host is configured.";
+            if (!provider.Equals("smtp", StringComparison.OrdinalIgnoreCase))
+                emailIssue = "The selected email provider is not supported.";
+            else if (!SmtpEmailSender.IsValidHost(host))
+                emailIssue = "The SMTP host is missing or not valid.";
+            else if (port is < 1 or > 65535)
+                emailIssue = "The SMTP port is not valid.";
             else if (!SmtpEmailSender.IsValidAddress(senderAddress))
                 emailIssue = "The sender address is missing or not valid.";
+            else if (replyTo != null && !SmtpEmailSender.IsValidAddress(replyTo))
+                emailIssue = "The reply-to address is not valid.";
+            else if ((username == null) != (password == null))
+                emailIssue = "SMTP username and password must both be set, or both be empty.";
 
             var pushEnabled = await _settings.GetBoolAsync(NotificationSettingKeys.PushEnabled, false, cancellationToken);
             var publicKey = await _settings.GetAsync(NotificationSettingKeys.PushVapidPublicKey, cancellationToken);
@@ -657,6 +684,24 @@ namespace DAMS.Application.Services.Notifications
                         throw new InvalidOperationException("The SMTP port must be between 1 and 65535.");
                     break;
 
+                case NotificationSettingKeys.EmailProvider:
+                    if (!value.Trim().Equals("smtp", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("Only the SMTP email provider is currently supported.");
+                    break;
+
+                case NotificationSettingKeys.EmailSmtpHost:
+                    if (!SmtpEmailSender.IsValidHost(value))
+                        throw new InvalidOperationException("Enter an SMTP host without a URL scheme, port or path.");
+                    break;
+
+                case NotificationSettingKeys.EmailEnabled:
+                case NotificationSettingKeys.EmailSmtpUseSsl:
+                case NotificationSettingKeys.EmailAttachReceipt:
+                case NotificationSettingKeys.PushEnabled:
+                    if (!bool.TryParse(value, out _))
+                        throw new InvalidOperationException($"'{key}' must be true or false.");
+                    break;
+
                 case NotificationSettingKeys.PublicBaseUrl:
                     if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
                         || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
@@ -686,6 +731,33 @@ namespace DAMS.Application.Services.Notifications
                     NotificationTemplateRenderer.Validate(value, NotificationCatalog.CommonVariables, key);
                     break;
             }
+        }
+
+        private static void ValidateEmailConfiguration(IReadOnlyDictionary<string, string?> values)
+        {
+            string? Value(string key) => values.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+                ? value.Trim()
+                : null;
+
+            var enabled = bool.TryParse(Value(NotificationSettingKeys.EmailEnabled), out var parsed) && parsed;
+            var username = Value(NotificationSettingKeys.EmailSmtpUsername);
+            var password = Value(NotificationSettingKeys.EmailSmtpPassword);
+            if ((username == null) != (password == null))
+                throw new InvalidOperationException("SMTP username and password must either both be set or both be empty.");
+
+            var useTls = !bool.TryParse(Value(NotificationSettingKeys.EmailSmtpUseSsl), out var tls) || tls;
+            if (!useTls && username != null)
+                throw new InvalidOperationException(SmtpEmailSender.PlaintextCredentialsError);
+
+            if (!enabled)
+                return;
+
+            if (!string.Equals(Value(NotificationSettingKeys.EmailProvider) ?? "smtp", "smtp", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Only the SMTP email provider is currently supported.");
+            if (!SmtpEmailSender.IsValidHost(Value(NotificationSettingKeys.EmailSmtpHost)))
+                throw new InvalidOperationException("A valid SMTP host is required when email is enabled.");
+            if (!SmtpEmailSender.IsValidAddress(Value(NotificationSettingKeys.EmailSenderAddress)))
+                throw new InvalidOperationException("A valid sender address is required when email is enabled.");
         }
 
         /// <summary>Images may only come from DAMS itself or an https host — never from a

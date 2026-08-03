@@ -5,14 +5,21 @@ import Button from "../lib/Button.tsx";
 import PushEnableCard from "../features/notifications/PushEnableCard.tsx";
 import {
   archiveNotification,
+  fetchCapabilities,
   fetchNotifications,
   fetchPreferences,
   markAllRead,
   openNotification,
   savePreferences,
 } from "../features/notifications/notificationApi.ts";
-import { CATEGORY_LABELS, formatDateTime, relativeTime } from "../features/notifications/types.ts";
-import type { NotificationCategory, NotificationItem, PreferenceRow } from "../features/notifications/types.ts";
+import { notificationCategoryIsAllowed, notificationCategoryLabels } from "../features/notifications/capabilities.ts";
+import { formatDateTime, relativeTime } from "../features/notifications/types.ts";
+import type {
+  NotificationCapabilities,
+  NotificationCategory,
+  NotificationItem,
+  PreferenceRow,
+} from "../features/notifications/types.ts";
 
 type Tab = "inbox" | "preferences";
 
@@ -64,7 +71,12 @@ export default function NotificationsPage({ user }: { user: User | null }) {
         ))}
       </div>
 
-      {tab === "inbox" ? <InboxTab /> : <PreferencesTab />}
+      {/* Both tabs render the role's categories, so a role change has to rebuild them. */}
+      {tab === "inbox" ? (
+        <InboxTab key={`${user.userId}:${user.role}`} />
+      ) : (
+        <PreferencesTab key={`${user.userId}:${user.role}`} />
+      )}
     </Shell>
   );
 }
@@ -100,6 +112,42 @@ function InboxTab() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [capabilities, setCapabilities] = useState<NotificationCapabilities | null>(null);
+  const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
+
+  const loadCapabilities = useCallback(async () => {
+    try {
+      setCapabilities(await fetchCapabilities());
+      setCapabilitiesError(null);
+    } catch (err) {
+      setCapabilitiesError(err instanceof Error ? err.message : "Notification filters could not be loaded.");
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void fetchCapabilities()
+      .then((result) => {
+        if (active) {
+          setCapabilities(result);
+          setCapabilitiesError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (active) {
+          setCapabilitiesError(err instanceof Error ? err.message : "Notification filters could not be loaded.");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (category && capabilities && !notificationCategoryIsAllowed(capabilities, category)) {
+      setCategory(null);
+    }
+  }, [capabilities, category]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,10 +175,7 @@ function InboxTab() {
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  const categories = useMemo(
-    () => Object.entries(CATEGORY_LABELS) as [NotificationCategory, string][],
-    []
-  );
+  const categoryLabels = useMemo(() => notificationCategoryLabels(capabilities), [capabilities]);
 
   const onOpen = useCallback(
     async (item: NotificationItem) => {
@@ -206,9 +251,9 @@ function InboxTab() {
           <FilterChip active={category === null} onClick={() => setCategory(null)}>
             All
           </FilterChip>
-          {categories.map(([value, label]) => (
-            <FilterChip key={value} active={category === value} onClick={() => setCategory(value)}>
-              {label}
+          {capabilities?.categories.map((item) => (
+            <FilterChip key={item.category} active={category === item.category} onClick={() => setCategory(item.category)}>
+              {item.label}
             </FilterChip>
           ))}
         </div>
@@ -218,6 +263,15 @@ function InboxTab() {
             {error}
             <button type="button" onClick={() => void load()} className="ml-2 font-semibold underline">
               Try again
+            </button>
+          </div>
+        )}
+
+        {capabilitiesError && (
+          <div role="alert" className="mx-4 mb-4 rounded-lg border border-[var(--accent-rose)]/30 bg-[var(--accent-rose-glow)] px-3 py-2 text-sm text-[var(--accent-rose)]">
+            {capabilitiesError}
+            <button type="button" onClick={() => void loadCapabilities()} className="ml-2 font-semibold underline">
+              Retry filters
             </button>
           </div>
         )}
@@ -238,7 +292,7 @@ function InboxTab() {
             message={
               unreadOnly
                 ? "You have read everything in this view."
-                : "Payment receipts, booking decisions, lead assignments and reminders will appear here."
+                : capabilities?.emptyStateMessage ?? "Your available updates will appear here."
             }
           />
         )}
@@ -270,7 +324,7 @@ function InboxTab() {
                   <p className="mt-1 text-sm text-[var(--text-secondary)]">{item.message}</p>
                   <p className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
                     <span className="rounded-md bg-[var(--surface-glass)] px-1.5 py-0.5 font-medium">
-                      {CATEGORY_LABELS[item.category] ?? item.category}
+                      {categoryLabels.get(item.category) ?? item.category}
                     </span>
                     {(item.priority === "High" || item.priority === "Critical") && (
                       <span className="font-semibold text-[var(--accent-rose)]">{item.priority} priority</span>

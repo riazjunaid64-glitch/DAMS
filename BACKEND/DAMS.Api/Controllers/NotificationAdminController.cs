@@ -191,6 +191,7 @@ namespace DAMS.Api.Controllers
             try
             {
                 var ctx = await _resolver.ResolveAsync(User, cancellationToken);
+                NotificationAccess.EnsureAdmin(ctx);
                 return Ok(await action(ctx));
             }
             catch (LeadNotFoundException ex)
@@ -216,6 +217,7 @@ namespace DAMS.Api.Controllers
             try
             {
                 var ctx = await _resolver.ResolveAsync(User, cancellationToken);
+                NotificationAccess.EnsureAdmin(ctx);
                 await action(ctx);
                 return NoContent();
             }

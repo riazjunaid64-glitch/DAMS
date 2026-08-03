@@ -46,6 +46,16 @@ const NAV_LINKS = [
   { to: "/contact", label: "Contact" },
 ];
 
+const AUTH_SESSION_EVENT = "dams-auth-session";
+
+function publishAuthSession(type: "login" | "logout") {
+  try {
+    localStorage.setItem(AUTH_SESSION_EVENT, JSON.stringify({ type, at: Date.now() }));
+  } catch {
+    // Session changes still apply in this tab when storage is unavailable.
+  }
+}
+
 function App() {
   const [modal, setModal] = useState<null | "login" | "signup">(null);
   const [user, setUser] = useState<User | null>(null);
@@ -103,6 +113,36 @@ function App() {
     });
   }, []);
 
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== AUTH_SESSION_EVENT || !event.newValue) return;
+
+      let payload: { type?: string };
+      try {
+        payload = JSON.parse(event.newValue) as { type?: string };
+      } catch {
+        return;
+      }
+      if (payload.type === "logout") {
+        setAccessToken(null);
+        setUser(null);
+        return;
+      }
+
+      if (payload.type === "login") {
+        void refreshAccessToken().then((ok) => {
+          if (!ok) return;
+          void api("/api/Auth/profile").then(async (res) => {
+            if (res.ok) setUser(await res.json());
+          });
+        });
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const logout = async () => {
     // Detach this browser's push subscription first, while the session is still valid.
     // On a shared computer that is what stops the next person from receiving the previous
@@ -111,6 +151,7 @@ function App() {
     void api("/api/Auth/logout", { method: "POST" }, false);
     setAccessToken(null);
     setUser(null);
+    publishAuthSession("logout");
   };
 
   return (
@@ -165,9 +206,10 @@ function App() {
           mode={modal}
           onClose={() => {
             setModal(null);
-            fetchProfile();
           }}
-          onSuccess={() => {}}
+          onSuccess={() => {
+            void fetchProfile().then(() => publishAuthSession("login"));
+          }}
         />
       )}
     </ProjectsProvider>

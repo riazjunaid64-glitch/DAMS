@@ -1,16 +1,15 @@
-using System.Net;
-using System.Net.Mail;
-using System.Net.Mime;
+using System.Net.Sockets;
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
 
 namespace DAMS.Application.Services.Notifications
 {
     /// <summary>
-    /// SMTP transport for transactional mail. Everything it needs comes from the admin
-    /// settings store, so swapping provider (or host) is a settings change, and a different
-    /// transport altogether is a different <see cref="IEmailSender"/> — no workflow, template
-    /// or notification record changes either way.
+    /// Provider-neutral SMTP transport. Workflows depend only on <see cref="IEmailSender"/>;
+    /// provider host, port, TLS and credentials remain runtime settings.
     /// </summary>
     public sealed class SmtpEmailSender : IEmailSender
     {
@@ -25,144 +24,186 @@ namespace DAMS.Application.Services.Notifications
 
         public async Task<EmailSendResult> SendAsync(EmailMessage message, CancellationToken cancellationToken = default)
         {
+            var provider = await _settings.GetOrDefaultAsync(NotificationSettingKeys.EmailProvider, "smtp", cancellationToken);
             var host = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpHost, cancellationToken);
             var senderAddress = await _settings.GetAsync(NotificationSettingKeys.EmailSenderAddress, cancellationToken);
-
-            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(senderAddress))
-            {
-                return new EmailSendResult
-                {
-                    Success = false,
-                    // A missing configuration is not something a retry can fix; it needs an
-                    // admin, and it should show up as such in delivery history.
-                    IsPermanent = true,
-                    Error = "Email is not configured: set the SMTP host and the sender address."
-                };
-            }
-
-            if (!IsValidAddress(message.To))
-                return new EmailSendResult { Success = false, IsPermanent = true, IsHardBounce = true, Error = "The recipient address is not valid." };
-
-            var port = await _settings.GetIntAsync(NotificationSettingKeys.EmailSmtpPort, 587, cancellationToken);
-            var useSsl = await _settings.GetBoolAsync(NotificationSettingKeys.EmailSmtpUseSsl, true, cancellationToken);
             var username = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpUsername, cancellationToken);
             var password = await _settings.GetAsync(NotificationSettingKeys.EmailSmtpPassword, cancellationToken);
+
+            var useTls = await _settings.GetBoolAsync(NotificationSettingKeys.EmailSmtpUseSsl, true, cancellationToken);
+
+            var configurationError = ValidateConfiguration(provider, host, senderAddress, username, password, useTls);
+            if (configurationError != null)
+                return Permanent(configurationError);
+
+            if (!IsValidAddress(message.To))
+                return Permanent("The recipient address is not valid.", hardBounce: true);
+
+            var port = await _settings.GetIntAsync(NotificationSettingKeys.EmailSmtpPort, 587, cancellationToken);
+            if (port is < 1 or > 65535)
+                return Permanent("The SMTP port must be between 1 and 65535.");
+
             var senderName = await _settings.GetOrDefaultAsync(NotificationSettingKeys.EmailSenderName, "DAMS", cancellationToken);
             var replyTo = await _settings.GetAsync(NotificationSettingKeys.EmailReplyTo, cancellationToken);
+            if (replyTo != null && !IsValidAddress(replyTo))
+                return Permanent("The reply-to address is not valid.");
 
-            using var mail = new MailMessage
-            {
-                From = new MailAddress(senderAddress, senderName),
-                Subject = Sanitize(message.Subject),
-                Body = message.TextBody,
-                IsBodyHtml = false
-            };
-
-            mail.To.Add(new MailAddress(message.To, string.IsNullOrWhiteSpace(message.ToName) ? message.To : message.ToName));
-
-            if (!string.IsNullOrWhiteSpace(replyTo) && IsValidAddress(replyTo))
-                mail.ReplyToList.Add(new MailAddress(replyTo));
-
-            // Both bodies are offered; a client that cannot render HTML still gets a readable
-            // message rather than markup.
-            var htmlView = AlternateView.CreateAlternateViewFromString(message.HtmlBody, null, MediaTypeNames.Text.Html);
-            mail.AlternateViews.Add(htmlView);
-
-            var streams = new List<Stream>();
             try
             {
-                foreach (var attachment in message.Attachments)
+                var mail = BuildMessage(message, senderAddress!, senderName, replyTo);
+                using var client = new SmtpClient { Timeout = 30_000 };
+
+                // Port 465 is implicit TLS. Other TLS ports use mandatory STARTTLS rather
+                // than opportunistic encryption, so a downgrade cannot silently send plain.
+                var socketOptions = !useTls
+                    ? SecureSocketOptions.None
+                    : port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
+
+                await client.ConnectAsync(host!, port, socketOptions, cancellationToken);
+                if (username != null)
+                    await client.AuthenticateAsync(username, password!, cancellationToken);
+
+                await client.SendAsync(mail, cancellationToken);
+
+                // The provider has accepted the message. A broken QUIT/disconnect handshake
+                // must not turn that success into a retry and send the same email twice.
+                try
                 {
-                    var stream = new MemoryStream(attachment.Content);
-                    streams.Add(stream);
-                    mail.Attachments.Add(new Attachment(stream, attachment.FileName, attachment.ContentType));
+                    await client.DisconnectAsync(true, CancellationToken.None);
                 }
-
-                using var client = new SmtpClient(host, port)
+                catch
                 {
-                    EnableSsl = useSsl,
-                    DeliveryMethod = SmtpDeliveryMethod.Network,
-                    Timeout = 30_000
-                };
-
-                if (!string.IsNullOrWhiteSpace(username))
-                {
-                    client.UseDefaultCredentials = false;
-                    client.Credentials = new NetworkCredential(username, password ?? string.Empty);
+                    // Disposal closes the socket; acceptance remains the authoritative result.
                 }
-
-                await client.SendMailAsync(mail, cancellationToken);
 
                 return new EmailSendResult
                 {
                     Success = true,
-                    // SMTP acceptance is not proof of delivery, so the caller records this as
-                    // "sent", never as "delivered".
-                    ProviderReference = mail.Headers["Message-ID"]
+                    // SMTP acceptance is not proof of final delivery.
+                    ProviderReference = mail.MessageId
                 };
             }
-            catch (SmtpFailedRecipientException ex)
+            catch (SmtpCommandException ex)
             {
-                var permanent = IsPermanentStatus(ex.StatusCode);
+                var permanent = (int)ex.StatusCode >= 500;
+                var recipientRejected = ex.ErrorCode == SmtpErrorCode.RecipientNotAccepted;
                 return new EmailSendResult
                 {
                     Success = false,
                     IsPermanent = permanent,
-                    IsHardBounce = permanent,
-                    Error = $"The address was rejected ({ex.StatusCode}): {ex.Message}"
+                    IsHardBounce = permanent && recipientRejected,
+                    Error = $"The SMTP server rejected the message ({(int)ex.StatusCode}, {ex.ErrorCode})."
                 };
             }
-            catch (SmtpException ex)
+            catch (MailKit.Security.AuthenticationException)
             {
-                var permanent = IsPermanentStatus(ex.StatusCode);
-                return new EmailSendResult
-                {
-                    Success = false,
-                    IsPermanent = permanent,
-                    Error = $"SMTP error ({ex.StatusCode}): {ex.Message}"
-                };
+                return Permanent("SMTP authentication failed. Check the dedicated SMTP username and password.");
+            }
+            catch (SslHandshakeException)
+            {
+                return Permanent("The SMTP TLS handshake failed. Check the host, port, TLS mode and server certificate.");
+            }
+            catch (SmtpProtocolException)
+            {
+                return Transient("The SMTP server returned an invalid or incomplete response.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-                // Network problems, DNS, TLS: worth another attempt later.
-                return new EmailSendResult { Success = false, Error = ex.Message };
+                return Transient("The SMTP connection timed out.");
             }
-            finally
+            catch (SocketException)
             {
-                foreach (var stream in streams)
-                    await stream.DisposeAsync();
+                return Transient("The SMTP server could not be reached. Check DNS, firewall and provider availability.");
+            }
+            catch (IOException)
+            {
+                return Transient("The SMTP connection ended before the message was accepted.");
+            }
+            catch (FormatException)
+            {
+                return Permanent("An email header or attachment content type is not valid.");
+            }
+            catch (ArgumentException)
+            {
+                return Permanent("An email header, SMTP setting or attachment is not valid.");
             }
         }
 
-        /// <summary>5xx-equivalent SMTP conditions: the message will never be accepted as-is.</summary>
-        private static bool IsPermanentStatus(SmtpStatusCode code) => code is
-            SmtpStatusCode.MailboxNameNotAllowed or
-            SmtpStatusCode.MailboxUnavailable or
-            SmtpStatusCode.UserNotLocalWillForward or
-            SmtpStatusCode.UserNotLocalTryAlternatePath or
-            SmtpStatusCode.ExceededStorageAllocation or
-            SmtpStatusCode.ClientNotPermitted or
-            SmtpStatusCode.MustIssueStartTlsFirst or
-            SmtpStatusCode.CommandNotImplemented or
-            SmtpStatusCode.CommandParameterNotImplemented or
-            SmtpStatusCode.SyntaxError;
+        private static MimeMessage BuildMessage(
+            EmailMessage message, string senderAddress, string senderName, string? replyTo)
+        {
+            var mail = new MimeMessage
+            {
+                Subject = Sanitize(message.Subject)
+            };
+            mail.From.Add(new MailboxAddress(Sanitize(senderName), senderAddress));
+            mail.To.Add(new MailboxAddress(Sanitize(message.ToName ?? string.Empty), message.To));
+            if (replyTo != null)
+                mail.ReplyTo.Add(MailboxAddress.Parse(replyTo));
+
+            var body = new BodyBuilder
+            {
+                TextBody = message.TextBody,
+                HtmlBody = message.HtmlBody
+            };
+            foreach (var attachment in message.Attachments)
+            {
+                var fileName = Sanitize(Path.GetFileName(attachment.FileName));
+                body.Attachments.Add(fileName, attachment.Content, ContentType.Parse(attachment.ContentType));
+            }
+
+            mail.Body = body.ToMessageBody();
+            return mail;
+        }
+
+        private static string? ValidateConfiguration(
+            string provider, string? host, string? senderAddress, string? username, string? password, bool useTls)
+        {
+            if (!provider.Equals("smtp", StringComparison.OrdinalIgnoreCase))
+                return "The configured email provider is not supported.";
+            if (!IsValidHost(host))
+                return "Email is not configured: set a valid SMTP host without a URL scheme or path.";
+            if (!IsValidAddress(senderAddress))
+                return "Email is not configured: set a valid sender address.";
+            if ((username == null) != (password == null))
+                return "SMTP username and password must either both be set or both be empty.";
+            if (!useTls && username != null)
+                return PlaintextCredentialsError;
+            return null;
+        }
+
+        /// <summary>A relay that needs no credentials may run in the clear — a local catcher
+        /// during development is the case that matters. Sending a password over an unencrypted
+        /// connection is refused outright rather than left to a correct configuration.</summary>
+        public const string PlaintextCredentialsError =
+            "SMTP credentials cannot be sent over an unencrypted connection. Enable TLS, or clear the SMTP username and password.";
+
+        public static bool IsValidHost(string? host)
+        {
+            if (string.IsNullOrWhiteSpace(host) || host.Length > 253 || host.Any(char.IsControl))
+                return false;
+
+            var trimmed = host.Trim();
+            return trimmed == host
+                   && !trimmed.Contains("://", StringComparison.Ordinal)
+                   && !trimmed.Contains('/')
+                   && Uri.CheckHostName(trimmed) != UriHostNameType.Unknown;
+        }
 
         public static bool IsValidAddress(string? address)
         {
             if (string.IsNullOrWhiteSpace(address) || address.Length > 200)
                 return false;
-
-            // A control character in an address is a header-injection attempt, not a typo.
             if (address.Any(char.IsControl) || address.Contains(',') || address.Contains(';'))
                 return false;
 
             try
             {
-                var parsed = new MailAddress(address.Trim());
+                var parsed = new System.Net.Mail.MailAddress(address.Trim());
                 return parsed.Address.Equals(address.Trim(), StringComparison.OrdinalIgnoreCase)
                        && parsed.Host.Contains('.');
             }
@@ -172,9 +213,23 @@ namespace DAMS.Application.Services.Notifications
             }
         }
 
-        /// <summary>A subject line may never contain a line break — that is how headers get forged.</summary>
-        private static string Sanitize(string subject) =>
+        private static EmailSendResult Permanent(string error, bool hardBounce = false) => new()
+        {
+            Success = false,
+            IsPermanent = true,
+            IsHardBounce = hardBounce,
+            Error = error
+        };
+
+        private static EmailSendResult Transient(string error) => new()
+        {
+            Success = false,
+            IsPermanent = false,
+            Error = error
+        };
+
+        private static string Sanitize(string value) =>
             LeadContactNormalizer.Limit(
-                new string(subject.Where(c => !char.IsControl(c)).ToArray()).Trim(), 300);
+                new string(value.Where(c => !char.IsControl(c)).ToArray()).Trim(), 300);
     }
 }
