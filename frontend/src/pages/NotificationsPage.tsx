@@ -62,7 +62,7 @@ export default function NotificationsPage({ user }: { user: User | null }) {
             onClick={() => setTab(item.id)}
             className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition ${
               tab === item.id
-                ? "bg-[var(--accent)] text-white shadow-sm"
+                ? "bg-[var(--accent)] text-[#1c1810] shadow-sm"
                 : "text-[var(--text-muted)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
             }`}
           >
@@ -84,7 +84,7 @@ export default function NotificationsPage({ user }: { user: User | null }) {
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-[70vh] bg-[var(--bg-secondary)]">
-      <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
         <header className="mb-5">
           <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Notifications</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
@@ -311,7 +311,7 @@ function InboxTab() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-sm font-semibold text-[var(--text-heading)]">{item.title}</h3>
                     {!item.isRead && (
-                      <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                      <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#1c1810]">
                         New
                       </span>
                     )}
@@ -517,7 +517,7 @@ function FilterChip({
       onClick={onClick}
       className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium transition ${
         active
-          ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+          ? "border-[var(--accent)] bg-[var(--accent)] text-[#1c1810]"
           : "border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--surface-glass-hover)]"
       }`}
     >

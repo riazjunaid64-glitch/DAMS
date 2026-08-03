@@ -88,7 +88,7 @@ export default function NotificationAdminPage({ user }: { user: User | null }) {
             onClick={() => setTab(item.id)}
             className={`whitespace-nowrap rounded-lg px-3.5 py-2 text-sm font-medium transition ${
               tab === item.id
-                ? "bg-[var(--accent)] text-white shadow-sm"
+                ? "bg-[var(--accent)] text-[#1c1810] shadow-sm"
                 : "text-[var(--text-muted)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
             }`}
           >
@@ -547,7 +547,7 @@ function TemplatesTab() {
                   onClick={() => setSelected(template)}
                   aria-current={active ? "true" : undefined}
                   className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                    active ? "bg-[var(--accent)] text-white" : "text-[var(--text-secondary)] hover:bg-[var(--surface-glass-hover)]"
+                    active ? "bg-[var(--accent)] text-[#1c1810]" : "text-[var(--text-secondary)] hover:bg-[var(--surface-glass-hover)]"
                   }`}
                 >
                   <span className="block font-medium">{template.name}</span>

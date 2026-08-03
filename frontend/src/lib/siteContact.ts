@@ -20,4 +20,12 @@ export const SITE_CONTACT = {
   mapsUrl: `https://www.google.com/maps/search/?api=1&query=${OFFICE.lat},${OFFICE.lng}`,
   mapsEmbedUrl: `https://maps.google.com/maps?q=${OFFICE.lat},${OFFICE.lng}&z=17&hl=en&output=embed`,
   hours: "Sun–Thu: 9am – 6pm",
+  // Social profiles — replace with the real handles when available.
+  social: {
+    linkedin: "https://www.thedeenassociates.com",
+    facebook: "https://www.thedeenassociates.com",
+    twitter: "https://www.thedeenassociates.com",
+    instagram: "https://www.thedeenassociates.com",
+    youtube: "https://www.thedeenassociates.com",
+  },
 } as const;

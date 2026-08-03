@@ -34,7 +34,7 @@ export default function DateRangeFilter({ value, onChange }: Props) {
             onClick={() => onChange(presetRange(p.id, value))}
             className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
               value.preset === p.id
-                ? "bg-[var(--accent)] text-white shadow-sm"
+                ? "bg-[var(--accent)] text-[#1c1810] shadow-sm"
                 : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             }`}
           >

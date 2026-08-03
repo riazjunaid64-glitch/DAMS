@@ -332,11 +332,11 @@ export default function CreateBookingPage({ user }: Props) {
         <SectionCard title="Applicant">
           <div className="flex gap-2">
             <button type="button" onClick={() => setCustomerMode("new")}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${customerMode === "new" ? "bg-[var(--accent)] text-white" : "border border-[var(--border)] text-[var(--text-secondary)]"}`}>
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${customerMode === "new" ? "bg-[var(--accent)] text-[#1c1810]" : "border border-[var(--border)] text-[var(--text-secondary)]"}`}>
               New customer
             </button>
             <button type="button" onClick={() => setCustomerMode("existing")}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${customerMode === "existing" ? "bg-[var(--accent)] text-white" : "border border-[var(--border)] text-[var(--text-secondary)]"}`}>
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${customerMode === "existing" ? "bg-[var(--accent)] text-[#1c1810]" : "border border-[var(--border)] text-[var(--text-secondary)]"}`}>
               Existing customer
             </button>
           </div>
