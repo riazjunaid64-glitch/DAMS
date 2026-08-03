@@ -126,7 +126,7 @@ export default function AppLayout({ user, mainNavLinks, displayName, displayInit
             {user ? (
               <>
                 <div className="app-topbar__bell">
-                  <NotificationBell signedIn />
+                  <NotificationBell key={`${user.userId}:${user.role}`} accountKey={`${user.userId}:${user.role}`} />
                 </div>
                 <span className="app-topbar__avatar" title={displayName}>{displayInitial}</span>
               </>
