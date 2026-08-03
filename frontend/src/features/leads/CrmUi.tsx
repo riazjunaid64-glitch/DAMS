@@ -75,7 +75,7 @@ export function CrmTabs({
           onClick={() => onChange(item.id)}
           className={`whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition ${
             active === item.id
-              ? "bg-[var(--accent)] text-white shadow-sm"
+              ? "bg-[var(--accent)] text-[#1c1810] shadow-sm"
               : "text-[var(--text-muted)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)]"
           }`}
         >

@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
-import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
 import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
+import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
+import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import {
   financeApiError,
@@ -292,6 +293,10 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [view, setView] = useState<View>("revenue");
 
+  const [chartData, setChartData] = useState<FinanceChartData | null>(null);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [chartTick, setChartTick] = useState(0);
+
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
   const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
     usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter);
@@ -350,10 +355,11 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, [projectId, fromDate, toDate, accountFilter]);
 
-  // After a create/edit/delete, refresh both the totals and the visible rows.
+  // After a create/edit/delete, refresh the totals, the visible rows, and the charts.
   const refreshAll = useCallback(async () => {
     await loadSummary();
     reload();
+    setChartTick((t) => t + 1);
   }, [loadSummary, reload]);
 
   useEffect(() => {
@@ -386,14 +392,47 @@ export default function FinanceDashboardPage({ user }: Props) {
     setToDate(r.to);
   }, []);
 
+  // Charts are derived from the same summary endpoint the KPI cards use — bucketed over
+  // the active date range and split per project — so they always match the totals and
+  // respond to every filter (period, project, account, and the From/To range).
+  useEffect(() => {
+    if (!isAdmin) return;
+    const controller = new AbortController();
+    setChartLoading(true);
+    fetchFinanceChartData(
+      {
+        projectId,
+        from: fromDate,
+        to: toDate,
+        account: accountFilter,
+        period: activePeriod as FinancePeriod,
+        projects: projects.map((p) => ({ id: p.id, projectName: p.projectName })),
+      },
+      controller.signal,
+    )
+      .then((data) => {
+        if (!controller.signal.aborted) {
+          setChartData(data);
+          setChartLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setChartData({ series: [], distribution: [] });
+          setChartLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [isAdmin, projectId, fromDate, toDate, accountFilter, activePeriod, projects, chartTick]);
+
   const summaryCards = useMemo(() => {
     const s = summary;
     return [
-      { label: "Total Revenue", value: s?.totalRevenue ?? 0, color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", view: "revenue" as View },
-      { label: "Total Expenses", value: s?.totalExpenses ?? 0, color: "text-rose-400", bg: "bg-rose-500/10", border: "border-rose-500/20", view: "expense" as View },
-      { label: "Net Profit", value: s?.netProfit ?? 0, color: (s?.netProfit ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20", view: "netProfit" as View },
-      { label: "Outstanding", value: s?.outstandingAmount ?? 0, color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", view: "outstanding" as View },
-      { label: "Overdue", value: s?.overdueAmount ?? 0, color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20", view: "overdue" as View },
+      { label: "Total Revenue", value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View },
+      { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "expense" as View },
+      { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
+      { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
+      { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
   }, [summary]);
 
@@ -401,7 +440,6 @@ export default function FinanceDashboardPage({ user }: Props) {
   // chips), keeping whatever project/period filters are already applied. No
   // page scroll — animating a smooth scroll while the table reloads/resizes
   // made the transition feel jerky.
-  const tableRef = useRef<HTMLDivElement>(null);
   const focusView = useCallback((target: View) => {
     setView(target);
   }, []);
@@ -623,9 +661,9 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
               const row = r as RevenueLine;
               return row.manualRevenueId != null ? (
-                <span className="inline-flex gap-2">
-                  <button onClick={() => editRevenue(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
-                  <button onClick={() => deleteRevenue(row.manualRevenueId!)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
+                <span className="inline-flex justify-end gap-2">
+                  <button type="button" onClick={() => editRevenue(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
+                  <button type="button" onClick={() => deleteRevenue(row.manualRevenueId!)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               ) : null;
             } },
@@ -647,9 +685,9 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
               const row = r as ExpenseLine;
               return (
-                <span className="inline-flex gap-2">
-                  <button onClick={() => editExpense(row)} className="text-xs font-semibold text-[var(--accent)] hover:underline">Edit</button>
-                  <button onClick={() => deleteExpense(row.id)} className="text-xs font-semibold text-rose-400 hover:underline">Delete</button>
+                <span className="inline-flex justify-end gap-2">
+                  <button type="button" onClick={() => editExpense(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
+                  <button type="button" onClick={() => deleteExpense(row.id)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               );
             } },
@@ -730,69 +768,43 @@ export default function FinanceDashboardPage({ user }: Props) {
   return (
     <>
       {/* Header */}
-      <div className="relative overflow-hidden border-b border-[var(--border)]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-8 sm:py-10">
-          <div>
-            {/* Filters */}
-            <div className="flex w-full flex-wrap items-end gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Period</label>
-                <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-1">
-                  {PERIODS.map((p) => (
-                    <button
-                      key={p.value}
-                      type="button"
-                      onClick={() => applyPeriod(p.value)}
-                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                        activePeriod === p.value
-                          ? "bg-[var(--bg-card)] text-[var(--accent)] shadow-sm"
-                          : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Project</label>
-                <select
-                  value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
-                  className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
+      <div className="fin-page fin-page--head py-6 sm:py-8">
+        <div>
+          <h1 className="mb-5 text-2xl font-bold text-[var(--text-heading)]">Finance Overview</h1>
+          {/* Filters: period pills on the left, project / account / date range on the right */}
+          <div className="fin-filters">
+            <div className="fin-periods">
+              {PERIODS.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => applyPeriod(p.value)}
+                  className={`fin-pill ${activePeriod === p.value ? "fin-pill--active" : ""}`}
                 >
-                  <option value="">All Projects</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>{p.projectName}</option>
-                  ))}
-                </select>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="fin-controls">
+              <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="fin-control" aria-label="Project">
+                <option value="">All Projects</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.projectName}</option>
+                ))}
+              </select>
+              <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
+                <option value="">All Accounts</option>
+                {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
+                <option value="unassigned">Unassigned</option>
+              </select>
+              <div className="fin-field">
+                <span className="fin-field__label">From</span>
+                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Account</label>
-                <select value={accountFilter} onChange={(e)=>setAccountFilter(e.target.value)} className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                  <option value="">All Accounts</option>
-                  {financeAccounts.map(a=><option key={a.id} value={a.id}>{a.name}{a.isActive?"":" (Inactive)"}</option>)}
-                  <option value="unassigned">Unassigned</option>
-                </select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">From</label>
-                <input
-                  type="date"
-                  value={fromDate}
-                  onChange={(e) => setFromDate(e.target.value)}
-                  className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">To</label>
-                <input
-                  type="date"
-                  value={toDate}
-                  onChange={(e) => setToDate(e.target.value)}
-                  className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
-                />
+              <div className="fin-field">
+                <span className="fin-field__label">To</span>
+                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
               {(fromDate || toDate) && (
                 <Button variant="ghost" size="sm" onClick={() => { setFromDate(""); setToDate(""); }}>
@@ -803,7 +815,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
 
           {/* Summary cards */}
-          <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
             {summaryCards.map((card) => {
               const active = view === card.view;
               return (
@@ -811,15 +823,15 @@ export default function FinanceDashboardPage({ user }: Props) {
                   key={card.label}
                   type="button"
                   onClick={() => focusView(card.view)}
-                  className={`cursor-pointer rounded-xl border bg-[var(--bg-card)] px-4 py-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${card.border} ${
+                  style={{ borderBottomColor: card.underline }}
+                  className={`group relative cursor-pointer overflow-hidden rounded-2xl border border-[var(--border)] border-b-[3px] bg-[var(--bg-card)] px-5 pb-5 pt-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--border-hover)] ${
                     active ? "ring-2 ring-[var(--accent)]" : ""
                   }`}
                 >
-                  <p className="text-xs text-[var(--text-muted)]">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {card.label}
-                    <span className="ml-1 opacity-50">›</span>
                   </p>
-                  <p className={`mt-1.5 text-lg font-bold sm:text-xl ${card.color}`}>
+                  <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${card.valueColor}`}>
                     {summaryLoading ? "…" : formatMoney(card.value)}
                   </p>
                 </button>
@@ -851,25 +863,24 @@ export default function FinanceDashboardPage({ user }: Props) {
               </div>
             </div>
           )}
-        </Container>
+        </div>
       </div>
 
       {/* Content */}
-      <Container className="py-8">
-        <div ref={tableRef} className="scroll-mt-4" />
+      <div className="fin-page py-8">
         {/* View title + actions */}
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-bold text-[var(--text-heading)]">{VIEW_TITLES[view]}</h2>
-            <p className="text-xs text-[var(--text-muted)]">Select a summary card above to switch views.</p>
+            <h2 className="text-xl font-bold text-[var(--text-heading)]">Transactions</h2>
+            <p className="text-xs text-[var(--text-muted)]">{VIEW_TITLES[view]} — select a card above to switch views.</p>
           </div>
-          <div className="flex gap-2">
-            <Link to="/finance/accounts"><Button size="sm" variant="ghost">Manage Accounts</Button></Link>
-            <Button size="sm" variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
+          <div className="flex flex-wrap gap-2.5">
+            <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+            <Button variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
             </Button>
-            <Button size="sm" onClick={() => { setRevenueForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
-              + Add Expense
+            <Button onClick={() => { setRevenueForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
+              − Add Expense
             </Button>
           </div>
         </div>
@@ -892,7 +903,10 @@ export default function FinanceDashboardPage({ user }: Props) {
           minWidth={minWidth}
           resetKey={`${view}|${projectId}|${fromDate}|${toDate}`}
         />
-      </Container>
+
+        {/* Charts — driven by the same filters as everything above */}
+        <FinanceCharts data={chartData} loading={chartLoading} formatMoney={formatMoney} />
+      </div>
 
       {/* Revenue modal */}
       {revenueForm && (
@@ -1025,6 +1039,13 @@ function FormInput({ label, value, onChange, type = "text" }: { label: string; v
       />
     </div>
   );
+}
+
+function IconPencil() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>;
+}
+function IconTrash() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>;
 }
 
 function FormSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (v: string) => void; children: ReactNode }) {

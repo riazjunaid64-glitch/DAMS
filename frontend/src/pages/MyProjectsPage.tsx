@@ -200,7 +200,7 @@ function JourneyStepper({ currentStep }: { currentStep: number }) {
         const dotClass = done
           ? "bg-emerald-500 border-emerald-500 text-white"
           : active
-          ? "bg-[var(--accent)] border-[var(--accent)] text-white ring-4 ring-[var(--accent-glow)]"
+          ? "bg-[var(--accent)] border-[var(--accent)] text-[#1c1810] ring-4 ring-[var(--accent-glow)]"
           : "bg-[var(--surface-glass)] border-[var(--border)] text-[var(--text-muted)]";
         const lineClass = i < currentStep ? "bg-emerald-500" : "bg-[var(--border)]";
         return (

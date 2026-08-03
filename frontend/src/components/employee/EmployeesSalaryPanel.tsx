@@ -463,7 +463,7 @@ export default function EmployeesSalaryPanel() {
             type="button"
             onClick={() => setView(id)}
             className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
-              view === id ? "bg-[var(--accent)] text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              view === id ? "bg-[var(--accent)] text-[#1c1810] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             }`}
           >
             {label}

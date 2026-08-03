@@ -106,7 +106,7 @@ export default function NotificationBell({ signedIn }: { signedIn: boolean }) {
             <path d="M13.73 21a2 2 0 0 1-3.46 0" />
           </svg>
           {unread > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-[1.15rem] items-center justify-center rounded-full bg-[var(--accent-warm)] px-1 text-[10px] font-bold leading-[1.15rem] text-[var(--accent)]">
+            <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-[1.15rem] items-center justify-center rounded-full bg-[var(--accent-warm)] px-1 text-[10px] font-bold leading-[1.15rem] text-[#1c1810]">
               {unread > 99 ? "99+" : unread}
             </span>
           )}

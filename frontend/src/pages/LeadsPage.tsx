@@ -150,8 +150,8 @@ function LeadsWorkspace({ user }: { user: User }) {
               />
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "list" ? "bg-[var(--accent)] text-white" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "list")}>List</button>
-              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "pipeline" ? "bg-[var(--accent)] text-white" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "pipeline")}>Pipeline</button>
+              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "list" ? "bg-[var(--accent)] text-[#1c1810]" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "list")}>List</button>
+              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "pipeline" ? "bg-[var(--accent)] text-[#1c1810]" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "pipeline")}>Pipeline</button>
             </div>
           </div>
 

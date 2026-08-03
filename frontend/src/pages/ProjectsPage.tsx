@@ -6,11 +6,8 @@ import ProjectCard from "../components/ProjectCard.tsx";
 import { useProjects } from "../contexts/projectsContextValue";
 import type { ProjectFromApi } from "../utils/parseProject.ts";
 import type { User } from "../App.tsx";
-import Button from "../lib/Button.tsx";
-import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import Pagination from "../lib/Pagination.tsx";
-import Section from "../lib/Section.tsx";
 
 type Props = {
   user: User | null;
@@ -200,33 +197,24 @@ export default function ProjectsPage({ user }: Props) {
   );
 
   return (
-    <>
-      <div className="relative overflow-hidden border-b border-white/[0.04]">
-        <div className="absolute inset-0 mesh-gradient-subtle" />
-        <Container className="relative py-4 sm:py-4">
-          <Section>
-            <div className="flex flex-wrap items-center justify-center gap-4">
-              <div className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-2">
-                <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
-                <span className="text-sm text-[var(--text-secondary)]">
-                  {projects.length} project{projects.length !== 1 ? "s" : ""}
-                </span>
-              </div>
-              {isAdmin && (
-                <Button onClick={openCreateModal}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                  New Project
-                </Button>
-              )}
-            </div>
-          </Section>
-        </Container>
+    <div className="dash-home dash-page">
+      <div className="proj-header">
+        <div className="proj-count-badge" aria-label={`${projects.length} projects`}>
+          <span className="proj-count-badge__num">{projects.length}</span>
+          <span className="proj-count-badge__label">project{projects.length !== 1 ? "s" : ""}</span>
+        </div>
+        {isAdmin && (
+          <button type="button" className="dash-btn-gold proj-header__action" onClick={openCreateModal}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New Project
+          </button>
+        )}
       </div>
 
-      <div className="projects-page py-12 sm:py-16">
-        <Container>
+      <div className="projects-page projects-page--dark">
+        <div>
           {projectsLoading && (
             <div className="projects-grid">
               {[...Array(6)].map((_, i) => (
@@ -280,7 +268,7 @@ export default function ProjectsPage({ user }: Props) {
               <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
             </>
           )}
-        </Container>
+        </div>
       </div>
 
       {isAdmin && showProjectModal && (
@@ -436,6 +424,6 @@ export default function ProjectsPage({ user }: Props) {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

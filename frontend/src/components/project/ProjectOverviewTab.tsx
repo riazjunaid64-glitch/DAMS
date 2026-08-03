@@ -273,7 +273,7 @@ export default function ProjectOverviewTab({ project, totalUnits, unitStats, gal
               const isDone = item.state === "Done";
               return (
                 <div key={item.label} className="relative z-10 flex items-center gap-4 sm:flex-col sm:items-center sm:gap-3">
-                  <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-full border transition-all duration-300 ${isCurrent ? "border-[var(--accent)] bg-[var(--accent)] text-white shadow-[var(--btn-primary-shadow)]" : isDone ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}>
+                  <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-full border transition-all duration-300 ${isCurrent ? "border-[var(--accent)] bg-[var(--accent)] text-[#1c1810] shadow-[var(--btn-primary-shadow)]" : isDone ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"}`}>
                     {item.icon}
                   </div>
                   <div className="sm:text-center">
