@@ -25,7 +25,10 @@ namespace DAMS.Api.Controllers
             try
             {
                 var adminUserId = GetUserId();
-                var result = await _customerService.CreateCustomerAsync(dto, adminUserId);
+                var result = await _customerService.CreateCustomerAsync(
+                    dto,
+                    adminUserId,
+                    User.FindFirstValue(ClaimTypes.Name));
                 return Ok(result);
             }
             catch (InvalidOperationException ex)

@@ -36,7 +36,9 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = Comp
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.MultipartBodyLengthLimit = FinanceAttachmentFileValidator.MaxRequestSize;
+    options.MultipartBodyLengthLimit = Math.Max(
+        FinanceAttachmentFileValidator.MaxRequestSize,
+        CustomerDocumentService.MaxRequestSize);
 });
 
 builder.Services.AddRateLimiter(options =>
@@ -145,6 +147,7 @@ builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IUnitService, UnitService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
+builder.Services.AddScoped<ICustomerDocumentService, CustomerDocumentService>();
 builder.Services.AddScoped<IMediaService, MediaService>();
 builder.Services.AddScoped<IBookingService, BookingService>();
 builder.Services.AddScoped<IInstallmentService, InstallmentService>();
@@ -202,6 +205,9 @@ builder.Services.AddScoped<IFileStorageService>(sp =>
 builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
     new PrivateFinanceAttachmentStorage(ResolvePrivateStoragePath(
         sp, "FinanceAttachments:StoragePath", Path.Combine("App_Data", "finance-attachments"))));
+builder.Services.AddScoped<ICustomerDocumentStorage>(sp =>
+    new PrivateCustomerDocumentStorage(ResolvePrivateStoragePath(
+        sp, "CustomerDocuments:StoragePath", Path.Combine("App_Data", "customer-documents"))));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

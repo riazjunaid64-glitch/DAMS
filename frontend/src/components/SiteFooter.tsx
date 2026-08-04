@@ -9,6 +9,8 @@ type SiteFooterProps = {
 };
 
 export default function SiteFooter(_props: SiteFooterProps) {
+  // The public footer intentionally keeps a compatible prop shape for AppLayout.
+  void _props;
   const openMap = () => window.open(SITE_CONTACT.mapsUrl, "_blank", "noopener,noreferrer");
 
   return (

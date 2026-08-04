@@ -5,6 +5,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
+using DAMS.Application.Common;
 
 namespace DAMS.Application.Services
 {
@@ -17,7 +18,10 @@ namespace DAMS.Application.Services
             _context = context;
         }
 
-        public async Task<CustomerResponseDto> CreateCustomerAsync(CreateCustomerDto dto, int? createdByUserId)
+        public async Task<CustomerResponseDto> CreateCustomerAsync(
+            CreateCustomerDto dto,
+            int? createdByUserId,
+            string? createdByName = null)
         {
             var customer = new Customer
             {
@@ -36,9 +40,15 @@ namespace DAMS.Application.Services
             };
 
             _context.Customers.Add(customer);
+            await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(
+                _context,
+                customer,
+                createdByUserId.HasValue
+                    ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
+                    : null);
             await _context.SaveChangesAsync();
 
-            return Map(customer, 0);
+            return Map(customer, 0, CustomerDocumentCompletion.Calculate(customer.DocumentRequirements));
         }
 
         public async Task<CustomerResponseDto?> GetCustomerByIdAsync(int id)
@@ -51,7 +61,11 @@ namespace DAMS.Application.Services
                 return null;
 
             var bookingsCount = await _context.Bookings.CountAsync(b => b.CustomerId == id);
-            return Map(customer, bookingsCount);
+            var requirements = await _context.CustomerDocumentRequirements
+                .AsNoTracking()
+                .Where(r => r.CustomerId == id)
+                .ToListAsync();
+            return Map(customer, bookingsCount, CustomerDocumentCompletion.Calculate(requirements));
         }
 
         public async Task<CustomerListDto> GetCustomersAsync(CustomerFilterDto filter)
@@ -103,6 +117,25 @@ namespace DAMS.Application.Services
                 })
                 .ToListAsync();
 
+            var customerIds = items.Select(i => i.Id).ToArray();
+            var requirementRows = customerIds.Length == 0
+                ? []
+                : await _context.CustomerDocumentRequirements.AsNoTracking()
+                    .Where(r => customerIds.Contains(r.CustomerId))
+                    .Select(r => new CustomerDocumentRequirement
+                    {
+                        CustomerId = r.CustomerId,
+                        IsRequired = r.IsRequired,
+                        Status = r.Status
+                    })
+                    .ToListAsync();
+            var summaries = requirementRows
+                .GroupBy(r => r.CustomerId)
+                .ToDictionary(g => g.Key, g => CustomerDocumentCompletion.Calculate(g));
+            foreach (var item in items)
+                item.DocumentSummary = summaries.GetValueOrDefault(item.Id)
+                    ?? CustomerDocumentCompletion.Calculate([]);
+
             return new CustomerListDto
             {
                 Items = items,
@@ -132,7 +165,10 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync();
 
             var bookingsCount = await _context.Bookings.CountAsync(b => b.CustomerId == id);
-            return Map(customer, bookingsCount);
+            var requirements = await _context.CustomerDocumentRequirements.AsNoTracking()
+                .Where(r => r.CustomerId == id)
+                .ToListAsync();
+            return Map(customer, bookingsCount, CustomerDocumentCompletion.Calculate(requirements));
         }
 
         public async Task<CustomerResolution> FindOrCreateCustomerAsync(
@@ -251,6 +287,7 @@ namespace DAMS.Application.Services
             };
 
             _context.Customers.Add(customer);
+            await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(_context, customer, null);
             await _context.SaveChangesAsync();
 
             return new CustomerResolution(customer.Id, WasCreated: true);
@@ -285,7 +322,10 @@ namespace DAMS.Application.Services
             return trimmed.StartsWith('+') ? "+" + digits : digits;
         }
 
-        private static CustomerResponseDto Map(Customer c, int bookingsCount)
+        private static CustomerResponseDto Map(
+            Customer c,
+            int bookingsCount,
+            DAMS.Application.DTOs.CustomerDocumentDtos.CustomerDocumentSummaryDto? documentSummary = null)
         {
             return new CustomerResponseDto
             {
@@ -303,7 +343,8 @@ namespace DAMS.Application.Services
                 Notes = c.Notes,
                 BookingsCount = bookingsCount,
                 CreatedAt = c.CreatedAt,
-                UpdatedAt = c.UpdatedAt
+                UpdatedAt = c.UpdatedAt,
+                DocumentSummary = documentSummary ?? CustomerDocumentCompletion.Calculate([])
             };
         }
     }

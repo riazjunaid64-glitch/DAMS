@@ -15,6 +15,7 @@ const EmployeeDetailPage = lazy(() => import("./pages/EmployeeDetailPage.tsx"));
 const BookingRequestsPage = lazy(() => import("./pages/BookingRequestsPage.tsx"));
 const CustomersPage = lazy(() => import("./pages/CustomersPage.tsx"));
 const CustomerDetailPage = lazy(() => import("./pages/CustomerDetailPage.tsx"));
+const CustomerDocumentCategoriesPage = lazy(() => import("./pages/CustomerDocumentCategoriesPage.tsx"));
 const ConfirmedBookingsPage = lazy(() => import("./pages/ConfirmedBookingsPage.tsx"));
 const CreateBookingPage = lazy(() => import("./pages/CreateBookingPage.tsx"));
 const ApplicationFormPage = lazy(() => import("./pages/ApplicationFormPage.tsx"));
@@ -74,6 +75,7 @@ function App() {
         { to: "/bookings", label: "Requests" },
         { to: "/confirmed-bookings", label: "Bookings" },
         { to: "/customers", label: "Customers" },
+        { to: "/customer-document-categories", label: "Document Setup" },
         { to: "/employees", label: "Employees" },
         { to: "/finance", label: "Finance" },
         { to: "/notifications/settings", label: "Notifications" },
@@ -187,6 +189,7 @@ function App() {
             <Route path="/receipt/:bookingId/:paymentId" element={<ReceiptPage user={user} />} />
             <Route path="/customers" element={<CustomersPage user={user} />} />
             <Route path="/customers/:id" element={<CustomerDetailPage user={user} />} />
+            <Route path="/customer-document-categories" element={<CustomerDocumentCategoriesPage user={user} />} />
             <Route path="/employees" element={<EmployeesPage user={user} />} />
             <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
             <Route path="/finance" element={<FinanceDashboardPage user={user} />} />

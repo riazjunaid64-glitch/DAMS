@@ -14,6 +14,10 @@ namespace DAMS.Infrastructure.Data
         public DbSet<User> Users { get; set; }
         public DbSet<Role> Roles { get; set; }
         public DbSet<Customer> Customers { get; set; }
+        public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
+        public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
+        public DbSet<CustomerDocumentVersion> CustomerDocumentVersions { get; set; }
+        public DbSet<CustomerDocumentAuditEntry> CustomerDocumentAuditEntries { get; set; }
         public DbSet<Project> Projects { get; set; }
         public DbSet<Unit> Units { get; set; }
         public DbSet<ProjectMedia> ProjectMedias { get; set; }
@@ -218,6 +222,114 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(c => c.User)
                       .WithMany()
                       .HasForeignKey(c => c.UserId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<CustomerDocumentCategory>(entity =>
+            {
+                entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
+                entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.Description).HasMaxLength(1000);
+                entity.Property(c => c.AllowedFileTypes).IsRequired().HasMaxLength(100);
+                entity.Property(c => c.CreatedByName).HasMaxLength(200);
+                entity.Property(c => c.RowVersion).IsRowVersion();
+
+                entity.HasIndex(c => c.Code).IsUnique();
+                entity.HasIndex(c => new { c.IsActive, c.DisplayOrder });
+                entity.HasIndex(c => c.AssignToNewCustomers);
+
+                var seededAt = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc);
+                entity.HasData(
+                    SeedDocumentCategory(1, "CNIC Front", "cnic_front", true, 10, seededAt),
+                    SeedDocumentCategory(2, "CNIC Back", "cnic_back", true, 20, seededAt),
+                    SeedDocumentCategory(3, "Customer Photograph", "customer_photo", true, 30, seededAt),
+                    SeedDocumentCategory(4, "Proof of Address", "proof_of_address", false, 40, seededAt),
+                    SeedDocumentCategory(5, "Passport", "passport", false, 50, seededAt),
+                    SeedDocumentCategory(6, "Next-of-Kin CNIC", "next_of_kin_cnic", false, 60, seededAt),
+                    SeedDocumentCategory(7, "Signature Specimen", "signature_specimen", false, 70, seededAt),
+                    SeedDocumentCategory(8, "Tax Document", "tax_document", false, 80, seededAt),
+                    SeedDocumentCategory(9, "Other", "other", false, 90, seededAt));
+            });
+
+            modelBuilder.Entity<CustomerDocumentRequirement>(entity =>
+            {
+                entity.Property(r => r.Name).IsRequired().HasMaxLength(150);
+                entity.Property(r => r.Description).HasMaxLength(1000);
+                entity.Property(r => r.AllowedFileTypes).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.Status).HasConversion<int>();
+                entity.Property(r => r.LastActionByName).HasMaxLength(200);
+                entity.Property(r => r.RowVersion).IsRowVersion();
+
+                entity.HasIndex(r => new { r.CustomerId, r.CategoryId })
+                      .IsUnique()
+                      .HasFilter("[CategoryId] IS NOT NULL");
+                entity.HasIndex(r => new { r.CustomerId, r.Name }, "IX_CustomerDocumentRequirements_CustomerId_CustomName")
+                      .IsUnique()
+                      .HasFilter("[CategoryId] IS NULL");
+                entity.HasIndex(r => new { r.CustomerId, r.Status });
+                entity.HasIndex(r => new { r.CustomerId, r.DisplayOrder });
+                entity.HasIndex(r => r.CategoryId);
+
+                entity.HasOne(r => r.Customer)
+                      .WithMany(c => c.DocumentRequirements)
+                      .HasForeignKey(r => r.CustomerId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.Category)
+                      .WithMany(c => c.Requirements)
+                      .HasForeignKey(r => r.CategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerDocumentVersion>(entity =>
+            {
+                entity.Property(v => v.StoredFileName).IsRequired().HasMaxLength(100);
+                entity.Property(v => v.OriginalFileName).IsRequired().HasMaxLength(255);
+                entity.Property(v => v.ContentType).IsRequired().HasMaxLength(100);
+                entity.Property(v => v.UploadedByName).HasMaxLength(200);
+                entity.Property(v => v.ReviewedByName).HasMaxLength(200);
+                entity.Property(v => v.ReviewReason).HasMaxLength(2000);
+                entity.Property(v => v.ReviewStatus).HasConversion<int>();
+                entity.Property(v => v.RowVersion).IsRowVersion();
+
+                entity.HasIndex(v => new { v.RequirementId, v.VersionNumber }).IsUnique();
+                entity.HasIndex(v => v.RequirementId, "IX_CustomerDocumentVersions_RequirementId_Current")
+                      .IsUnique()
+                      .HasFilter("[IsCurrent] = 1");
+                entity.HasIndex(v => v.UploadedAt);
+
+                entity.HasOne(v => v.Requirement)
+                      .WithMany(r => r.Versions)
+                      .HasForeignKey(v => v.RequirementId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerDocumentAuditEntry>(entity =>
+            {
+                entity.Property(a => a.Action).HasConversion<int>();
+                entity.Property(a => a.PreviousStatus).HasConversion<int?>();
+                entity.Property(a => a.NewStatus).HasConversion<int?>();
+                entity.Property(a => a.Notes).HasMaxLength(2000);
+                entity.Property(a => a.PerformedByName).HasMaxLength(200);
+
+                entity.HasIndex(a => new { a.CustomerId, a.OccurredAt });
+                entity.HasIndex(a => new { a.RequirementId, a.OccurredAt });
+                entity.HasIndex(a => a.CategoryId);
+
+                entity.HasOne(a => a.Customer)
+                      .WithMany()
+                      .HasForeignKey(a => a.CustomerId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Requirement)
+                      .WithMany(r => r.AuditEntries)
+                      .HasForeignKey(a => a.RequirementId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Category)
+                      .WithMany()
+                      .HasForeignKey(a => a.CategoryId)
+                      .OnDelete(DeleteBehavior.SetNull);
+                entity.HasOne(a => a.Version)
+                      .WithMany()
+                      .HasForeignKey(a => a.VersionId)
                       .OnDelete(DeleteBehavior.SetNull);
             });
 
@@ -552,6 +664,21 @@ namespace DAMS.Infrastructure.Data
             ConfigureLeadManagement(modelBuilder);
             ConfigureNotifications(modelBuilder);
         }
+
+        private static CustomerDocumentCategory SeedDocumentCategory(
+            int id, string name, string code, bool required, int order, DateTime createdAt) => new()
+        {
+            Id = id,
+            Name = name,
+            Code = code,
+            IsRequiredByDefault = required,
+            DisplayOrder = order,
+            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+            MaxFileSizeBytes = 10 * 1024 * 1024,
+            IsActive = true,
+            AssignToNewCustomers = true,
+            CreatedAt = createdAt
+        };
 
         private static void ConfigureLeadManagement(ModelBuilder modelBuilder)
         {
