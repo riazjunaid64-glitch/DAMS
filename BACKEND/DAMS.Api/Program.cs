@@ -23,6 +23,10 @@ using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+
 builder.Services.AddMemoryCache();
 
 builder.Services.AddResponseCompression(options =>
@@ -156,6 +160,9 @@ builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
+builder.Services.AddScoped<CommissionRebateService>();
+builder.Services.AddScoped<ICommissionRebateService>(sp => sp.GetRequiredService<CommissionRebateService>());
+builder.Services.AddScoped<ICommissionBookingLifecycle>(sp => sp.GetRequiredService<CommissionRebateService>());
 builder.Services.AddScoped<ILeadUserContextResolver, LeadUserContextResolver>();
 builder.Services.AddScoped<ILeadNotificationService, LeadNotificationService>();
 builder.Services.AddScoped<ILeadService, LeadService>();
@@ -208,6 +215,9 @@ builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
 builder.Services.AddScoped<ICustomerDocumentStorage>(sp =>
     new PrivateCustomerDocumentStorage(ResolvePrivateStoragePath(
         sp, "CustomerDocuments:StoragePath", Path.Combine("App_Data", "customer-documents"))));
+builder.Services.AddScoped<IFinancialEvidenceStorage>(sp =>
+    new PrivateFinancialEvidenceStorage(ResolvePrivateStoragePath(
+        sp, "CommissionRebates:EvidenceStoragePath", Path.Combine("App_Data", "commission-rebate-evidence"))));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

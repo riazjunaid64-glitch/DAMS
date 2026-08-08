@@ -34,6 +34,17 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
         public DbSet<FinanceAccount> FinanceAccounts { get; set; }
+        public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
+        public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
+        public DbSet<CommissionRule> CommissionRules { get; set; }
+        public DbSet<BookingCommission> BookingCommissions { get; set; }
+        public DbSet<CommissionPayout> CommissionPayouts { get; set; }
+        public DbSet<CommissionPayoutReversal> CommissionPayoutReversals { get; set; }
+        public DbSet<CustomerRebate> CustomerRebates { get; set; }
+        public DbSet<RebateDisbursement> RebateDisbursements { get; set; }
+        public DbSet<RebateDisbursementReversal> RebateDisbursementReversals { get; set; }
+        public DbSet<FinancialEvidence> FinancialEvidence { get; set; }
+        public DbSet<FinancialWorkflowAuditEntry> FinancialWorkflowAuditEntries { get; set; }
         public DbSet<Team> Teams { get; set; }
         public DbSet<LeadSource> LeadSources { get; set; }
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
@@ -661,8 +672,286 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Cascade);
             });
 
+            ConfigureCommissionAndRebates(modelBuilder);
             ConfigureLeadManagement(modelBuilder);
             ConfigureNotifications(modelBuilder);
+        }
+
+        private static void ConfigureCommissionAndRebates(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ThirdPartyPartner>(entity =>
+            {
+                entity.Property(p => p.Name).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.PartnerType).IsRequired().HasMaxLength(80);
+                entity.Property(p => p.ContactPerson).HasMaxLength(200);
+                entity.Property(p => p.Phone).HasMaxLength(50);
+                entity.Property(p => p.NormalizedPhone).HasMaxLength(50);
+                entity.Property(p => p.Email).HasMaxLength(200);
+                entity.Property(p => p.NormalizedEmail).HasMaxLength(200);
+                entity.Property(p => p.Address).HasMaxLength(500);
+                entity.Property(p => p.Cnic).HasMaxLength(50);
+                entity.Property(p => p.NormalizedCnic).HasMaxLength(50);
+                entity.Property(p => p.Ntn).HasMaxLength(80);
+                entity.Property(p => p.NormalizedNtn).HasMaxLength(80);
+                entity.Property(p => p.RegistrationNumber).HasMaxLength(100);
+                entity.Property(p => p.InternalCode).IsRequired().HasMaxLength(80);
+                entity.Property(p => p.BankName).HasMaxLength(150);
+                entity.Property(p => p.AccountTitle).HasMaxLength(150);
+                entity.Property(p => p.AccountNumber).HasMaxLength(100);
+                entity.Property(p => p.Iban).HasMaxLength(100);
+                entity.Property(p => p.Notes).HasMaxLength(2000);
+                entity.Property(p => p.CreatedByName).HasMaxLength(200);
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.HasIndex(p => p.InternalCode).IsUnique();
+                entity.HasIndex(p => p.NormalizedCnic).IsUnique().HasFilter("[NormalizedCnic] IS NOT NULL");
+                entity.HasIndex(p => p.NormalizedNtn).IsUnique().HasFilter("[NormalizedNtn] IS NOT NULL");
+                entity.HasIndex(p => p.NormalizedPhone);
+                entity.HasIndex(p => p.NormalizedEmail);
+                entity.HasIndex(p => new { p.IsActive, p.PartnerType });
+            });
+
+            modelBuilder.Entity<ThirdPartyAttribution>(entity =>
+            {
+                entity.Property(a => a.RelationshipType).IsRequired().HasMaxLength(100);
+                entity.Property(a => a.SourceDetails).HasMaxLength(1000);
+                entity.Property(a => a.Notes).HasMaxLength(2000);
+                entity.Property(a => a.AllocationPercent).HasColumnType("decimal(5,2)");
+                entity.Property(a => a.AssignedByName).HasMaxLength(200);
+                entity.Property(a => a.RowVersion).IsRowVersion();
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_ThirdPartyAttributions_ExactlyOneOwner",
+                        "([LeadId] IS NOT NULL AND [CustomerId] IS NULL AND [BookingId] IS NULL) OR " +
+                        "([LeadId] IS NULL AND [CustomerId] IS NOT NULL AND [BookingId] IS NULL) OR " +
+                        "([LeadId] IS NULL AND [CustomerId] IS NULL AND [BookingId] IS NOT NULL)");
+                    t.HasCheckConstraint("CK_ThirdPartyAttributions_Allocation", "[AllocationPercent] > 0 AND [AllocationPercent] <= 100");
+                });
+                entity.HasIndex(a => new { a.BookingId, a.PartnerId }).IsUnique().HasFilter("[BookingId] IS NOT NULL");
+                entity.HasIndex(a => new { a.CustomerId, a.PartnerId }).IsUnique().HasFilter("[CustomerId] IS NOT NULL");
+                entity.HasIndex(a => new { a.LeadId, a.PartnerId }).IsUnique().HasFilter("[LeadId] IS NOT NULL");
+                entity.HasIndex(a => a.BookingId, "IX_ThirdPartyAttributions_Booking_Primary")
+                    .IsUnique().HasFilter("[BookingId] IS NOT NULL AND [IsPrimary] = 1");
+                entity.HasOne(a => a.Partner).WithMany(p => p.Attributions).HasForeignKey(a => a.PartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Booking).WithMany(b => b.ThirdPartyAttributions).HasForeignKey(a => a.BookingId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Customer).WithMany().HasForeignKey(a => a.CustomerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Lead).WithMany().HasForeignKey(a => a.LeadId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CommissionRule>(entity =>
+            {
+                entity.Property(r => r.Name).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.Description).HasMaxLength(1000);
+                entity.Property(r => r.PartnerType).HasMaxLength(80);
+                entity.Property(r => r.UnitCategory).HasMaxLength(100);
+                entity.Property(r => r.BookingSource).HasConversion<int?>();
+                entity.Property(r => r.CalculationType).HasConversion<int>();
+                entity.Property(r => r.CalculationBasis).HasConversion<int>();
+                entity.Property(r => r.EarningCondition).HasConversion<int>();
+                entity.Property(r => r.PercentageRate).HasColumnType("decimal(9,6)");
+                entity.Property(r => r.FixedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.MinimumCommission).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.MaximumCommission).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.MinimumCollectionPercent).HasColumnType("decimal(5,2)");
+                entity.Property(r => r.EligibilityCondition).HasMaxLength(1000);
+                entity.Property(r => r.Notes).HasMaxLength(2000);
+                entity.Property(r => r.CreatedByName).HasMaxLength(200);
+                entity.Property(r => r.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_CommissionRules_Calculation",
+                    "([CalculationType] = 0 AND [PercentageRate] IS NOT NULL AND [PercentageRate] > 0 AND [FixedAmount] IS NULL) OR " +
+                    "([CalculationType] = 1 AND [FixedAmount] IS NOT NULL AND [FixedAmount] > 0 AND [PercentageRate] IS NULL)"));
+                entity.HasIndex(r => new { r.IsActive, r.EffectiveFrom, r.EffectiveTo, r.Priority });
+                entity.HasIndex(r => r.PartnerId);
+                entity.HasIndex(r => r.ProjectId);
+                entity.HasIndex(r => r.BookingId);
+                entity.HasOne(r => r.Partner).WithMany(p => p.CommissionRules).HasForeignKey(r => r.PartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.Project).WithMany().HasForeignKey(r => r.ProjectId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.Booking).WithMany(b => b.CommissionRules).HasForeignKey(r => r.BookingId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<BookingCommission>(entity =>
+            {
+                entity.Property(c => c.PartnerNameSnapshot).IsRequired().HasMaxLength(200);
+                entity.Property(c => c.PartnerTypeSnapshot).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.PartnerInternalCodeSnapshot).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.AllocationPercentSnapshot).HasColumnType("decimal(5,2)");
+                entity.Property(c => c.RuleNameSnapshot).HasMaxLength(200);
+                entity.Property(c => c.MinimumCommissionSnapshot).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.MaximumCommissionSnapshot).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.EligibilityConditionSnapshot).HasMaxLength(1000);
+                entity.Property(c => c.ManualReason).HasMaxLength(2000);
+                entity.Property(c => c.CalculationType).HasConversion<int>();
+                entity.Property(c => c.CalculationBasis).HasConversion<int>();
+                entity.Property(c => c.EarningCondition).HasConversion<int>();
+                entity.Property(c => c.Status).HasConversion<int>();
+                entity.Property(c => c.PercentageRate).HasColumnType("decimal(9,6)");
+                entity.Property(c => c.FixedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.BasisAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.CalculatedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.AdjustmentAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.FinalAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.ApprovedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.MinimumCollectionPercent).HasColumnType("decimal(5,2)");
+                entity.Property(c => c.AdjustmentReason).HasMaxLength(2000);
+                entity.Property(c => c.DecisionReason).HasMaxLength(2000);
+                entity.Property(c => c.CancellationOrReversalReason).HasMaxLength(2000);
+                entity.Property(c => c.CreatedByName).HasMaxLength(200);
+                entity.Property(c => c.SubmittedByName).HasMaxLength(200);
+                entity.Property(c => c.DecisionByName).HasMaxLength(200);
+                entity.Property(c => c.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_BookingCommissions_Amounts",
+                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0) AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100"));
+                entity.HasIndex(c => new { c.BookingId, c.PartnerId }).IsUnique();
+                entity.HasIndex(c => new { c.Status, c.CreatedAt });
+                entity.HasIndex(c => c.RuleId);
+                entity.HasOne(c => c.Booking).WithMany(b => b.Commissions).HasForeignKey(c => c.BookingId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(c => c.Partner).WithMany(p => p.Commissions).HasForeignKey(c => c.PartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(c => c.Attribution).WithMany(a => a.Commissions).HasForeignKey(c => c.AttributionId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(c => c.Rule).WithMany(r => r.Commissions).HasForeignKey(c => c.RuleId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CommissionPayout>(entity =>
+            {
+                entity.Property(p => p.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.PaymentMethod).HasConversion<int>();
+                entity.Property(p => p.PaymentReference).HasMaxLength(200);
+                entity.Property(p => p.DestinationBankNameSnapshot).HasMaxLength(150);
+                entity.Property(p => p.DestinationAccountTitleSnapshot).HasMaxLength(150);
+                entity.Property(p => p.DestinationAccountNumberSnapshot).HasMaxLength(100);
+                entity.Property(p => p.DestinationIbanSnapshot).HasMaxLength(100);
+                entity.Property(p => p.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(p => p.Notes).HasMaxLength(2000);
+                entity.Property(p => p.RecordedByName).HasMaxLength(200);
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_CommissionPayouts_Positive", "[Amount] > 0"));
+                entity.HasIndex(p => p.IdempotencyKey).IsUnique();
+                entity.HasIndex(p => new { p.CommissionId, p.PaymentDate });
+                entity.HasIndex(p => p.FinanceAccountId);
+                entity.HasOne(p => p.Commission).WithMany(c => c.Payouts).HasForeignKey(p => p.CommissionId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(p => p.FinanceAccount).WithMany(a => a.CommissionPayouts).HasForeignKey(p => p.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CommissionPayoutReversal>(entity =>
+            {
+                entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.Reason).IsRequired().HasMaxLength(2000);
+                entity.Property(r => r.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(r => r.ReversedByName).HasMaxLength(200);
+                entity.ToTable(t => t.HasCheckConstraint("CK_CommissionPayoutReversals_Positive", "[Amount] > 0"));
+                entity.HasIndex(r => r.IdempotencyKey).IsUnique();
+                entity.HasIndex(r => new { r.PayoutId, r.ReversedAt });
+                entity.HasOne(r => r.Payout).WithMany(p => p.Reversals).HasForeignKey(r => r.PayoutId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerRebate>(entity =>
+            {
+                entity.Property(r => r.CalculationType).HasConversion<int>();
+                entity.Property(r => r.CalculationBasis).HasConversion<int>();
+                entity.Property(r => r.Method).HasConversion<int>();
+                entity.Property(r => r.Status).HasConversion<int>();
+                entity.Property(r => r.PercentageRate).HasColumnType("decimal(9,6)");
+                entity.Property(r => r.FixedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.BasisAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.CalculatedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.AdjustmentAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.FinalAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.ApprovedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.Reason).IsRequired().HasMaxLength(2000);
+                entity.Property(r => r.AdjustmentReason).HasMaxLength(2000);
+                entity.Property(r => r.Notes).HasMaxLength(2000);
+                entity.Property(r => r.DecisionReason).HasMaxLength(2000);
+                entity.Property(r => r.CancellationOrReversalReason).HasMaxLength(2000);
+                entity.Property(r => r.CreatedByName).HasMaxLength(200);
+                entity.Property(r => r.SubmittedByName).HasMaxLength(200);
+                entity.Property(r => r.DecisionByName).HasMaxLength(200);
+                entity.Property(r => r.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_CustomerRebates_Amounts",
+                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0)"));
+                entity.HasIndex(r => r.BookingId).IsUnique();
+                entity.HasIndex(r => new { r.Status, r.CreatedAt });
+                entity.HasIndex(r => r.CustomerId);
+                entity.HasOne(r => r.Booking).WithMany(b => b.Rebates).HasForeignKey(r => r.BookingId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.Customer).WithMany().HasForeignKey(r => r.CustomerId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<RebateDisbursement>(entity =>
+            {
+                entity.Property(d => d.Method).HasConversion<int>();
+                entity.Property(d => d.PaymentMethod).HasConversion<int?>();
+                entity.Property(d => d.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(d => d.Reference).HasMaxLength(200);
+                entity.Property(d => d.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(d => d.Notes).HasMaxLength(2000);
+                entity.Property(d => d.RecordedByName).HasMaxLength(200);
+                entity.Property(d => d.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_RebateDisbursements_Positive", "[Amount] > 0"));
+                entity.HasIndex(d => d.IdempotencyKey).IsUnique();
+                entity.HasIndex(d => new { d.RebateId, d.AppliedAt });
+                entity.HasIndex(d => d.FinanceAccountId);
+                entity.HasIndex(d => d.InstallmentId);
+                entity.HasOne(d => d.Rebate).WithMany(r => r.Disbursements).HasForeignKey(d => d.RebateId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(d => d.FinanceAccount).WithMany(a => a.RebateDisbursements).HasForeignKey(d => d.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(d => d.Installment).WithMany().HasForeignKey(d => d.InstallmentId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<RebateDisbursementReversal>(entity =>
+            {
+                entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.Reason).IsRequired().HasMaxLength(2000);
+                entity.Property(r => r.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(r => r.ReversedByName).HasMaxLength(200);
+                entity.ToTable(t => t.HasCheckConstraint("CK_RebateDisbursementReversals_Positive", "[Amount] > 0"));
+                entity.HasIndex(r => r.IdempotencyKey).IsUnique();
+                entity.HasIndex(r => new { r.DisbursementId, r.ReversedAt });
+                entity.HasOne(r => r.Disbursement).WithMany(d => d.Reversals).HasForeignKey(r => r.DisbursementId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<FinancialEvidence>(entity =>
+            {
+                entity.Property(e => e.StoredFileName).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.OriginalFileName).IsRequired().HasMaxLength(180);
+                entity.Property(e => e.ContentType).IsRequired().HasMaxLength(150);
+                entity.Property(e => e.UploadedByName).HasMaxLength(200);
+                entity.ToTable(t => t.HasCheckConstraint("CK_FinancialEvidence_ExactlyOneOwner",
+                    "(CASE WHEN [CommissionId] IS NULL THEN 0 ELSE 1 END + " +
+                    "CASE WHEN [PayoutId] IS NULL THEN 0 ELSE 1 END + " +
+                    "CASE WHEN [RebateId] IS NULL THEN 0 ELSE 1 END + " +
+                    "CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END) = 1"));
+                entity.HasIndex(e => e.StoredFileName).IsUnique();
+                entity.HasIndex(e => e.CommissionId);
+                entity.HasIndex(e => e.PayoutId);
+                entity.HasIndex(e => e.RebateId);
+                entity.HasIndex(e => e.RebateDisbursementId);
+                entity.HasOne(e => e.Commission).WithMany(c => c.Evidence).HasForeignKey(e => e.CommissionId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.Payout).WithMany(p => p.Evidence).HasForeignKey(e => e.PayoutId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.Rebate).WithMany(r => r.Evidence).HasForeignKey(e => e.RebateId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.RebateDisbursement).WithMany(d => d.Evidence).HasForeignKey(e => e.RebateDisbursementId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<FinancialWorkflowAuditEntry>(entity =>
+            {
+                entity.Property(a => a.Action).HasConversion<int>();
+                entity.Property(a => a.PreviousCommissionStatus).HasConversion<int?>();
+                entity.Property(a => a.NewCommissionStatus).HasConversion<int?>();
+                entity.Property(a => a.PreviousRebateStatus).HasConversion<int?>();
+                entity.Property(a => a.NewRebateStatus).HasConversion<int?>();
+                entity.Property(a => a.PreviousAmount).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.NewAmount).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.Reason).HasMaxLength(2000);
+                entity.Property(a => a.PerformedByName).HasMaxLength(200);
+                entity.HasIndex(a => new { a.BookingId, a.OccurredAt });
+                entity.HasIndex(a => new { a.CommissionRuleId, a.OccurredAt });
+                entity.HasIndex(a => new { a.PartnerId, a.OccurredAt });
+                entity.HasIndex(a => new { a.CommissionId, a.OccurredAt });
+                entity.HasIndex(a => new { a.RebateId, a.OccurredAt });
+                entity.HasOne(a => a.Partner).WithMany().HasForeignKey(a => a.PartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Customer).WithMany().HasForeignKey(a => a.CustomerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Booking).WithMany().HasForeignKey(a => a.BookingId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.CommissionRule).WithMany().HasForeignKey(a => a.CommissionRuleId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Commission).WithMany().HasForeignKey(a => a.CommissionId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Payout).WithMany().HasForeignKey(a => a.PayoutId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.Rebate).WithMany().HasForeignKey(a => a.RebateId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.RebateDisbursement).WithMany().HasForeignKey(a => a.RebateDisbursementId).OnDelete(DeleteBehavior.Restrict);
+            });
         }
 
         private static CustomerDocumentCategory SeedDocumentCategory(

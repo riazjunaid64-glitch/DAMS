@@ -876,6 +876,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
           <div className="flex flex-wrap gap-2.5">
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+            <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
             <Button variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
             </Button>

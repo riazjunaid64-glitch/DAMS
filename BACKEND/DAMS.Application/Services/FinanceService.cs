@@ -35,8 +35,17 @@ namespace DAMS.Application.Services
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-            var totalExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+            var ordinaryExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+            var commissionPayouts = await CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var commissionReversals = await CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+            var rebatePayments = await CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(d => (decimal?)d.Amount) ?? 0m;
+            var rebateReversals = await CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+            var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals + rebatePayments - rebateReversals;
 
             // Outstanding/overdue are balance snapshots (not date-filtered); totals are the
             // sum of the same positive per-row balances shown in the paged tables. Materialise
@@ -48,15 +57,31 @@ namespace DAMS.Application.Services
             var overdueTotal = 0m;
             if (!accountFilterApplied)
             {
+                var bookingCredits = await GetNonCashRebateCreditsByBookingAsync(projectId);
                 var outstandingBalances = await OutstandingBookings(projectId)
-                    .Select(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                    .Select(b => new
+                    {
+                        b.Id,
+                        NetSalePrice = b.AgreedSalePrice - b.DiscountAmount,
+                        Paid = (decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
+                    })
                     .ToListAsync();
-                outstandingTotal = outstandingBalances.Where(v => v > 0).Sum();
+                outstandingTotal = outstandingBalances
+                    .Select(b => b.NetSalePrice - b.Paid - bookingCredits.GetValueOrDefault(b.Id))
+                    .Where(v => v > 0).Sum();
 
+                var installmentCredits = await GetRebateCreditsByInstallmentAsync(projectId);
                 var overdueBalances = await OverdueInstallments(projectId)
-                    .Select(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                    .Select(i => new
+                    {
+                        i.Id,
+                        i.Amount,
+                        Paid = (decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
+                    })
                     .ToListAsync();
-                overdueTotal = overdueBalances.Where(v => v > 0).Sum();
+                overdueTotal = overdueBalances
+                    .Select(i => i.Amount - i.Paid - installmentCredits.GetValueOrDefault(i.Id))
+                    .Where(v => v > 0).Sum();
             }
 
             // When a single account is selected, surface its running balance up to the end of
@@ -76,6 +101,14 @@ namespace DAMS.Application.Services
                         .SumAsync(r => (decimal?)r.Amount) ?? 0m;
                     var cumulativeExpenses = await ExpenseQuery(null, null, toExclusive, accountId, false)
                         .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+                    cumulativeExpenses += (await CommissionPayoutQuery(null, null, toExclusive, accountId, false)
+                        .SumAsync(p => (decimal?)p.Amount) ?? 0m)
+                        - (await CommissionReversalQuery(null, null, toExclusive, accountId, false)
+                            .SumAsync(r => (decimal?)r.Amount) ?? 0m)
+                        + (await CashRebateQuery(null, null, toExclusive, accountId, false)
+                            .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+                        - (await CashRebateReversalQuery(null, null, toExclusive, accountId, false)
+                            .SumAsync(r => (decimal?)r.Amount) ?? 0m);
                     accountOpeningBalance = opening.Value;
                     accountCurrentBalance = opening.Value + cumulativeRevenue - cumulativeExpenses;
                 }
@@ -231,8 +264,12 @@ namespace DAMS.Application.Services
         public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take)
         {
             var rows = await OutstandingBookings(projectId)
-                .Where(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0)
-                .OrderByDescending(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m))
+                .Where(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
+                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m) > 0)
+                .OrderByDescending(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
+                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m))
                 .ThenBy(b => b.Id)
                 .Skip(skip).Take(take + 1)
                 .Select(b => new OutstandingLineDto
@@ -246,6 +283,8 @@ namespace DAMS.Application.Services
                     AgreedSalePrice = b.AgreedSalePrice - b.DiscountAmount,
                     ReceivedAmount = (decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m,
                     OutstandingAmount = (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                        - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
+                            .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m)
                 })
                 .ToListAsync();
 
@@ -257,7 +296,9 @@ namespace DAMS.Application.Services
             // Fetch the page with Type as an enum, then format it in memory (enum.ToString
             // is not reliably translatable to SQL).
             var raw = await OverdueInstallments(projectId)
-                .Where(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0)
+                .Where(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    - (_context.RebateDisbursements.Where(d => d.InstallmentId == i.Id)
+                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m) > 0)
                 .OrderBy(i => i.DueDate)
                 .ThenBy(i => i.Id)
                 .Skip(skip).Take(take + 1)
@@ -272,7 +313,9 @@ namespace DAMS.Application.Services
                     i.Type,
                     i.DueDate,
                     i.Amount,
-                    PaidAmount = (decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
+                    PaidAmount = ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                        + (_context.RebateDisbursements.Where(d => d.InstallmentId == i.Id)
+                            .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m)
                 })
                 .ToListAsync();
 
@@ -343,7 +386,37 @@ namespace DAMS.Application.Services
                     Label = e.Category
                 });
 
-            var raw = await payments.Concat(manual).Concat(expenses)
+            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(p => new NetProfitRow
+                {
+                    SortId = p.Id, Date = p.PaymentDate, ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "expense", Amount = p.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Partner commission"
+                });
+            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new NetProfitRow
+                {
+                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "revenue", Amount = r.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Commission payout reversal"
+                });
+            var rebatePayments = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(d => new NetProfitRow
+                {
+                    SortId = d.Id, Date = d.AppliedAt, ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "expense", Amount = d.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Customer rebate"
+                });
+            var rebateReversals = CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new NetProfitRow
+                {
+                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "revenue", Amount = r.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Customer rebate reversal"
+                });
+
+            var raw = await payments.Concat(manual).Concat(expenses).Concat(commissionPayouts)
+                .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -398,6 +471,56 @@ namespace DAMS.Application.Services
             return q;
         }
 
+        private IQueryable<CommissionPayout> CommissionPayoutQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId, bool unassigned)
+        {
+            var q = _context.CommissionPayouts.AsNoTracking().AsQueryable();
+            if (projectId.HasValue) q = q.Where(p => p.Commission.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(p => p.PaymentDate >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(p => p.PaymentDate < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(p => p.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(_ => false);
+            return q;
+        }
+
+        private IQueryable<CommissionPayoutReversal> CommissionReversalQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId, bool unassigned)
+        {
+            var q = _context.CommissionPayoutReversals.AsNoTracking().AsQueryable();
+            if (projectId.HasValue) q = q.Where(r => r.Payout.Commission.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(r => r.ReversedAt >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(r => r.ReversedAt < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(r => r.Payout.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(_ => false);
+            return q;
+        }
+
+        private IQueryable<RebateDisbursement> CashRebateQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId, bool unassigned)
+        {
+            var q = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment);
+            if (projectId.HasValue) q = q.Where(d => d.Rebate.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(d => d.AppliedAt >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(d => d.AppliedAt < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(d => d.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(_ => false);
+            return q;
+        }
+
+        private IQueryable<RebateDisbursementReversal> CashRebateReversalQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId, bool unassigned)
+        {
+            var q = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.Method == CustomerRebateMethod.CashOrBankPayment);
+            if (projectId.HasValue) q = q.Where(r => r.Disbursement.Rebate.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(r => r.ReversedAt >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(r => r.ReversedAt < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(r => r.Disbursement.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(_ => false);
+            return q;
+        }
+
         private IQueryable<Booking> OutstandingBookings(int? projectId)
         {
             var q = _context.Bookings.AsNoTracking().Where(b => b.Status != BookingStatus.Cancelled);
@@ -414,6 +537,58 @@ namespace DAMS.Application.Services
                     && i.Booking.Status != BookingStatus.Cancelled);
             if (projectId.HasValue) q = q.Where(i => i.Booking.Unit.ProjectId == projectId.Value);
             return q;
+        }
+
+        private async Task<Dictionary<int, decimal>> GetNonCashRebateCreditsByBookingAsync(int? projectId)
+        {
+            var disbursements = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment);
+            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.Method != CustomerRebateMethod.CashOrBankPayment);
+            if (projectId.HasValue)
+            {
+                disbursements = disbursements.Where(d => d.Rebate.Booking.Unit.ProjectId == projectId.Value);
+                reversals = reversals.Where(r => r.Disbursement.Rebate.Booking.Unit.ProjectId == projectId.Value);
+            }
+
+            var gross = await disbursements
+                .GroupBy(d => d.Rebate.BookingId)
+                .Select(g => new { BookingId = g.Key, Amount = g.Sum(d => d.Amount) })
+                .ToDictionaryAsync(x => x.BookingId, x => x.Amount);
+            var reversed = await reversals
+                .GroupBy(r => r.Disbursement.Rebate.BookingId)
+                .Select(g => new { BookingId = g.Key, Amount = g.Sum(r => r.Amount) })
+                .ToDictionaryAsync(x => x.BookingId, x => x.Amount);
+
+            foreach (var item in reversed)
+                gross[item.Key] = gross.GetValueOrDefault(item.Key) - item.Value;
+            return gross;
+        }
+
+        private async Task<Dictionary<int, decimal>> GetRebateCreditsByInstallmentAsync(int? projectId)
+        {
+            var disbursements = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.InstallmentId != null);
+            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.InstallmentId != null);
+            if (projectId.HasValue)
+            {
+                disbursements = disbursements.Where(d => d.Rebate.Booking.Unit.ProjectId == projectId.Value);
+                reversals = reversals.Where(r => r.Disbursement.Rebate.Booking.Unit.ProjectId == projectId.Value);
+            }
+
+            var gross = await disbursements
+                .GroupBy(d => d.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => d.Amount) })
+                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
+            var reversed = await reversals
+                .GroupBy(r => r.Disbursement.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => r.Amount) })
+                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
+
+            foreach (var item in reversed)
+                gross[item.Key] = gross.GetValueOrDefault(item.Key) - item.Value;
+            return gross;
         }
 
         private static PagedResult<T> Page<T>(List<T> rows, int take) =>

@@ -69,8 +69,14 @@ namespace DAMS.Application.Services
             var alreadyPaid = await _context.Payments
                 .Where(p => p.InstallmentId == installmentId && p.Type == PaymentType.Installment)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            alreadyPaid += await ValidInstallmentCreditsAsync(installmentId);
 
             var remaining = installment.Amount - alreadyPaid;
+            var totalCollected = await _context.Payments.Where(p => p.BookingId == bookingId)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var rebateCredits = await ValidNonCashRebateCreditsAsync(bookingId);
+            var overallRemaining = Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - totalCollected - rebateCredits);
+            remaining = Math.Min(remaining, overallRemaining);
             if (dto.Amount > remaining)
                 throw new InvalidOperationException(
                     $"Payment exceeds the remaining installment balance. Remaining is {remaining:0.00}.");
@@ -162,7 +168,7 @@ namespace DAMS.Application.Services
 
         private async Task<Dictionary<int, decimal>> GetPaidByInstallmentAsync(int bookingId)
         {
-            return await _context.Payments
+            var paid = await _context.Payments
                 .AsNoTracking()
                 .Where(p => p.BookingId == bookingId
                             && p.InstallmentId != null
@@ -170,7 +176,40 @@ namespace DAMS.Application.Services
                 .GroupBy(p => p.InstallmentId!.Value)
                 .Select(g => new { InstallmentId = g.Key, Paid = g.Sum(p => p.Amount) })
                 .ToDictionaryAsync(x => x.InstallmentId, x => x.Paid);
+            var credits = await _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.Rebate.BookingId == bookingId && d.InstallmentId != null)
+                .GroupBy(d => d.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => d.Amount) })
+                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
+            var reversals = await _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.Rebate.BookingId == bookingId && r.Disbursement.InstallmentId != null)
+                .GroupBy(r => r.Disbursement.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => r.Amount) })
+                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
+            foreach (var credit in credits)
+                paid[credit.Key] = (paid.TryGetValue(credit.Key, out var amount) ? amount : 0m)
+                    + credit.Value - reversals.GetValueOrDefault(credit.Key);
+            foreach (var reversal in reversals.Where(r => !credits.ContainsKey(r.Key)))
+                paid[reversal.Key] = (paid.TryGetValue(reversal.Key, out var amount) ? amount : 0m) - reversal.Value;
+            return paid;
         }
+
+        private async Task<decimal> ValidInstallmentCreditsAsync(int installmentId) =>
+            (await _context.RebateDisbursements
+                .Where(d => d.InstallmentId == installmentId)
+                .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+            - (await _context.RebateDisbursementReversals
+                .Where(r => r.Disbursement.InstallmentId == installmentId)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+
+        private async Task<decimal> ValidNonCashRebateCreditsAsync(int bookingId) =>
+            (await _context.RebateDisbursements
+                .Where(d => d.Rebate.BookingId == bookingId && d.Method != CustomerRebateMethod.CashOrBankPayment)
+                .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+            - (await _context.RebateDisbursementReversals
+                .Where(r => r.Disbursement.Rebate.BookingId == bookingId
+                    && r.Disbursement.Method != CustomerRebateMethod.CashOrBankPayment)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m);
 
         // Globally unique sequential receipt number, e.g. RCP-000001.
         private async Task<string> GenerateReceiptNumberAsync()
@@ -366,7 +405,11 @@ namespace DAMS.Application.Services
                                && p.InstallmentId != null
                                && p.Type == PaymentType.Installment);
 
-            return !hasInstallmentPayments;
+            var hasRebateCredits = await _context.RebateDisbursements.AnyAsync(d =>
+                d.Rebate.BookingId == bookingId && d.InstallmentId != null
+                && d.Amount > (d.Reversals.Sum(r => (decimal?)r.Amount) ?? 0m));
+
+            return !hasInstallmentPayments && !hasRebateCredits;
         }
 
         private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate, Dictionary<int, decimal> paidByInstallment)
