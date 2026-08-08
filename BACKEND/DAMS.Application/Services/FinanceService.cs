@@ -47,41 +47,17 @@ namespace DAMS.Application.Services
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals + rebatePayments - rebateReversals;
 
-            // Outstanding/overdue are balance snapshots (not date-filtered); totals are the
-            // sum of the same positive per-row balances shown in the paged tables. Materialise
-            // the per-row balances (a small, bounded set — same projection the tables use) and
-            // sum the positive ones in memory; filtering a projected scalar in SQL does not
-            // translate.
+            // Outstanding/overdue are balance snapshots (not date-filtered). The summary and
+            // paged tables share these SQL projections so their totals always reconcile.
             var accountFilterApplied = accountId.HasValue || unassigned;
             var outstandingTotal = 0m;
             var overdueTotal = 0m;
             if (!accountFilterApplied)
             {
-                var bookingCredits = await GetNonCashRebateCreditsByBookingAsync(projectId);
-                var outstandingBalances = await OutstandingBookings(projectId)
-                    .Select(b => new
-                    {
-                        b.Id,
-                        NetSalePrice = b.AgreedSalePrice - b.DiscountAmount,
-                        Paid = (decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
-                    })
-                    .ToListAsync();
-                outstandingTotal = outstandingBalances
-                    .Select(b => b.NetSalePrice - b.Paid - bookingCredits.GetValueOrDefault(b.Id))
-                    .Where(v => v > 0).Sum();
-
-                var installmentCredits = await GetRebateCreditsByInstallmentAsync(projectId);
-                var overdueBalances = await OverdueInstallments(projectId)
-                    .Select(i => new
-                    {
-                        i.Id,
-                        i.Amount,
-                        Paid = (decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m
-                    })
-                    .ToListAsync();
-                overdueTotal = overdueBalances
-                    .Select(i => i.Amount - i.Paid - installmentCredits.GetValueOrDefault(i.Id))
-                    .Where(v => v > 0).Sum();
+                outstandingTotal = await OutstandingBalanceQuery(projectId)
+                    .SumAsync(x => (decimal?)x.OutstandingAmount) ?? 0m;
+                overdueTotal = await OverdueBalanceQuery(projectId)
+                    .SumAsync(x => (decimal?)x.OverdueAmount) ?? 0m;
             }
 
             // When a single account is selected, surface its running balance up to the end of
@@ -263,61 +239,31 @@ namespace DAMS.Application.Services
 
         public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take)
         {
-            var rows = await OutstandingBookings(projectId)
-                .Where(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                    - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
-                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m) > 0)
-                .OrderByDescending(b => (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                    - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
-                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m))
-                .ThenBy(b => b.Id)
-                .Skip(skip).Take(take + 1)
-                .Select(b => new OutstandingLineDto
+            var balances = OutstandingBalanceQuery(projectId)
+                .OrderByDescending(x => x.OutstandingAmount).ThenBy(x => x.SortId)
+                .Select(x => new OutstandingLineDto
                 {
-                    BookingReference = b.BookingReference,
-                    CustomerName = b.Customer.FullName,
-                    ProjectId = b.Unit.ProjectId,
-                    ProjectName = b.Unit.Project != null ? b.Unit.Project.ProjectName : "General",
-                    UnitNumber = b.Unit.UnitNumber,
-                    // Show the net (post-discount) price so the row ties out: price − received = outstanding.
-                    AgreedSalePrice = b.AgreedSalePrice - b.DiscountAmount,
-                    ReceivedAmount = (decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m,
-                    OutstandingAmount = (b.AgreedSalePrice - b.DiscountAmount) - ((decimal?)b.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                        - (b.Rebates.SelectMany(r => r.Disbursements).Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
-                            .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m)
-                })
-                .ToListAsync();
+                    BookingReference = x.BookingReference,
+                    CustomerName = x.CustomerName,
+                    ProjectId = x.ProjectId,
+                    ProjectName = x.ProjectName,
+                    UnitNumber = x.UnitNumber,
+                    AgreedSalePrice = x.NetSalePrice,
+                    ReceivedAmount = x.SettledAmount,
+                    OutstandingAmount = x.OutstandingAmount
+                });
 
-            return Page(rows, take);
+            return Page(await balances.Skip(skip).Take(take + 1).ToListAsync(), take);
         }
 
         public async Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take)
         {
             // Fetch the page with Type as an enum, then format it in memory (enum.ToString
             // is not reliably translatable to SQL).
-            var raw = await OverdueInstallments(projectId)
-                .Where(i => i.Amount - ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                    - (_context.RebateDisbursements.Where(d => d.InstallmentId == i.Id)
-                        .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m) > 0)
-                .OrderBy(i => i.DueDate)
-                .ThenBy(i => i.Id)
-                .Skip(skip).Take(take + 1)
-                .Select(i => new
-                {
-                    BookingReference = i.Booking.BookingReference,
-                    CustomerName = i.Booking.Customer.FullName,
-                    ProjectId = (int?)i.Booking.Unit.ProjectId,
-                    ProjectName = i.Booking.Unit.Project != null ? i.Booking.Unit.Project.ProjectName : "General",
-                    i.Booking.Unit.UnitNumber,
-                    i.SequenceNumber,
-                    i.Type,
-                    i.DueDate,
-                    i.Amount,
-                    PaidAmount = ((decimal?)i.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                        + (_context.RebateDisbursements.Where(d => d.InstallmentId == i.Id)
-                            .Sum(d => (decimal?)(d.Amount - (d.Reversals.Sum(x => (decimal?)x.Amount) ?? 0m))) ?? 0m)
-                })
-                .ToListAsync();
+            var balances = OverdueBalanceQuery(projectId)
+                .OrderBy(x => x.DueDate).ThenBy(x => x.SortId);
+
+            var raw = await balances.Skip(skip).Take(take + 1).ToListAsync();
 
             var items = raw.Take(take).Select(r => new OverdueLineDto
             {
@@ -331,7 +277,7 @@ namespace DAMS.Application.Services
                 DueDate = r.DueDate,
                 Amount = r.Amount,
                 PaidAmount = r.PaidAmount,
-                OverdueAmount = r.Amount - r.PaidAmount
+                OverdueAmount = r.OverdueAmount
             }).ToList();
 
             return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take };
@@ -539,60 +485,123 @@ namespace DAMS.Application.Services
             return q;
         }
 
-        private async Task<Dictionary<int, decimal>> GetNonCashRebateCreditsByBookingAsync(int? projectId)
+        private IQueryable<OutstandingBalanceRow> OutstandingBalanceQuery(int? projectId)
         {
-            var disbursements = _context.RebateDisbursements.AsNoTracking()
-                .Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment);
-            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
-                .Where(r => r.Disbursement.Method != CustomerRebateMethod.CashOrBankPayment);
-            if (projectId.HasValue)
-            {
-                disbursements = disbursements.Where(d => d.Rebate.Booking.Unit.ProjectId == projectId.Value);
-                reversals = reversals.Where(r => r.Disbursement.Rebate.Booking.Unit.ProjectId == projectId.Value);
-            }
-
-            var gross = await disbursements
+            var payments = _context.Payments.AsNoTracking()
+                .GroupBy(p => p.BookingId)
+                .Select(g => new { BookingId = g.Key, Amount = g.Sum(p => (decimal?)p.Amount) });
+            var credits = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || d.Method == CustomerRebateMethod.InstallmentAdjustment || d.Method == CustomerRebateMethod.CreditNote)
                 .GroupBy(d => d.Rebate.BookingId)
-                .Select(g => new { BookingId = g.Key, Amount = g.Sum(d => d.Amount) })
-                .ToDictionaryAsync(x => x.BookingId, x => x.Amount);
-            var reversed = await reversals
+                .Select(g => new { BookingId = g.Key, Amount = g.Sum(d => (decimal?)d.Amount) });
+            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                    || r.Disbursement.Method == CustomerRebateMethod.CreditNote)
                 .GroupBy(r => r.Disbursement.Rebate.BookingId)
-                .Select(g => new { BookingId = g.Key, Amount = g.Sum(r => r.Amount) })
-                .ToDictionaryAsync(x => x.BookingId, x => x.Amount);
+                .Select(g => new { BookingId = g.Key, Amount = g.Sum(r => (decimal?)r.Amount) });
 
-            foreach (var item in reversed)
-                gross[item.Key] = gross.GetValueOrDefault(item.Key) - item.Value;
-            return gross;
+            return
+                from booking in OutstandingBookings(projectId)
+                join payment in payments on booking.Id equals payment.BookingId into paymentGroup
+                from payment in paymentGroup.DefaultIfEmpty()
+                join credit in credits on booking.Id equals credit.BookingId into creditGroup
+                from credit in creditGroup.DefaultIfEmpty()
+                join reversal in reversals on booking.Id equals reversal.BookingId into reversalGroup
+                from reversal in reversalGroup.DefaultIfEmpty()
+                let netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount
+                let settled = (payment.Amount ?? 0m) + (credit.Amount ?? 0m) - (reversal.Amount ?? 0m)
+                let outstanding = netSalePrice - settled
+                where outstanding > 0m
+                select new OutstandingBalanceRow
+                {
+                    SortId = booking.Id,
+                    BookingReference = booking.BookingReference,
+                    CustomerName = booking.Customer.FullName,
+                    ProjectId = booking.Unit.ProjectId,
+                    ProjectName = booking.Unit.Project != null ? booking.Unit.Project.ProjectName : "General",
+                    UnitNumber = booking.Unit.UnitNumber,
+                    NetSalePrice = netSalePrice,
+                    SettledAmount = settled,
+                    OutstandingAmount = outstanding
+                };
         }
 
-        private async Task<Dictionary<int, decimal>> GetRebateCreditsByInstallmentAsync(int? projectId)
+        private IQueryable<OverdueBalanceRow> OverdueBalanceQuery(int? projectId)
         {
-            var disbursements = _context.RebateDisbursements.AsNoTracking()
-                .Where(d => d.InstallmentId != null);
-            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
-                .Where(r => r.Disbursement.InstallmentId != null);
-            if (projectId.HasValue)
-            {
-                disbursements = disbursements.Where(d => d.Rebate.Booking.Unit.ProjectId == projectId.Value);
-                reversals = reversals.Where(r => r.Disbursement.Rebate.Booking.Unit.ProjectId == projectId.Value);
-            }
-
-            var gross = await disbursements
+            var payments = _context.Payments.AsNoTracking()
+                .Where(p => p.InstallmentId != null)
+                .GroupBy(p => p.InstallmentId!.Value)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(p => (decimal?)p.Amount) });
+            var credits = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => d.InstallmentId != null)
                 .GroupBy(d => d.InstallmentId!.Value)
-                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => d.Amount) })
-                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
-            var reversed = await reversals
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => (decimal?)d.Amount) });
+            var reversals = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => r.Disbursement.InstallmentId != null)
                 .GroupBy(r => r.Disbursement.InstallmentId!.Value)
-                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => r.Amount) })
-                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => (decimal?)r.Amount) });
 
-            foreach (var item in reversed)
-                gross[item.Key] = gross.GetValueOrDefault(item.Key) - item.Value;
-            return gross;
+            return
+                from installment in OverdueInstallments(projectId)
+                join payment in payments on installment.Id equals payment.InstallmentId into paymentGroup
+                from payment in paymentGroup.DefaultIfEmpty()
+                join credit in credits on installment.Id equals credit.InstallmentId into creditGroup
+                from credit in creditGroup.DefaultIfEmpty()
+                join reversal in reversals on installment.Id equals reversal.InstallmentId into reversalGroup
+                from reversal in reversalGroup.DefaultIfEmpty()
+                let settled = (payment.Amount ?? 0m) + (credit.Amount ?? 0m) - (reversal.Amount ?? 0m)
+                let overdue = installment.Amount - settled
+                where overdue > 0m
+                select new OverdueBalanceRow
+                {
+                    SortId = installment.Id,
+                    BookingReference = installment.Booking.BookingReference,
+                    CustomerName = installment.Booking.Customer.FullName,
+                    ProjectId = installment.Booking.Unit.ProjectId,
+                    ProjectName = installment.Booking.Unit.Project != null ? installment.Booking.Unit.Project.ProjectName : "General",
+                    UnitNumber = installment.Booking.Unit.UnitNumber,
+                    SequenceNumber = installment.SequenceNumber,
+                    Type = installment.Type,
+                    DueDate = installment.DueDate,
+                    Amount = installment.Amount,
+                    PaidAmount = settled,
+                    OverdueAmount = overdue
+                };
         }
 
         private static PagedResult<T> Page<T>(List<T> rows, int take) =>
             new() { Items = rows.Take(take).ToList(), HasMore = rows.Count > take };
+
+        private sealed class OutstandingBalanceRow
+        {
+            public int SortId { get; set; }
+            public string BookingReference { get; set; } = string.Empty;
+            public string CustomerName { get; set; } = string.Empty;
+            public int? ProjectId { get; set; }
+            public string ProjectName { get; set; } = string.Empty;
+            public string UnitNumber { get; set; } = string.Empty;
+            public decimal NetSalePrice { get; set; }
+            public decimal SettledAmount { get; set; }
+            public decimal OutstandingAmount { get; set; }
+        }
+
+        private sealed class OverdueBalanceRow
+        {
+            public int SortId { get; set; }
+            public string BookingReference { get; set; } = string.Empty;
+            public string CustomerName { get; set; } = string.Empty;
+            public int? ProjectId { get; set; }
+            public string ProjectName { get; set; } = string.Empty;
+            public string UnitNumber { get; set; } = string.Empty;
+            public int SequenceNumber { get; set; }
+            public InstallmentType Type { get; set; }
+            public DateTime DueDate { get; set; }
+            public decimal Amount { get; set; }
+            public decimal PaidAmount { get; set; }
+            public decimal OverdueAmount { get; set; }
+        }
 
         // Shapes used only inside SQL UNION ALL projections.
         private sealed class RevenueRow

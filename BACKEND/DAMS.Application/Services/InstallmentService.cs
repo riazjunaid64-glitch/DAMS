@@ -204,11 +204,14 @@ namespace DAMS.Application.Services
 
         private async Task<decimal> ValidNonCashRebateCreditsAsync(int bookingId) =>
             (await _context.RebateDisbursements
-                .Where(d => d.Rebate.BookingId == bookingId && d.Method != CustomerRebateMethod.CashOrBankPayment)
+                .Where(d => d.Rebate.BookingId == bookingId && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || d.Method == CustomerRebateMethod.InstallmentAdjustment || d.Method == CustomerRebateMethod.CreditNote))
                 .SumAsync(d => (decimal?)d.Amount) ?? 0m)
             - (await _context.RebateDisbursementReversals
                 .Where(r => r.Disbursement.Rebate.BookingId == bookingId
-                    && r.Disbursement.Method != CustomerRebateMethod.CashOrBankPayment)
+                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m);
 
         // Globally unique sequential receipt number, e.g. RCP-000001.

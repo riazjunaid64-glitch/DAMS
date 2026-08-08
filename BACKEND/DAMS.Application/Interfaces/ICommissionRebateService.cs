@@ -29,10 +29,10 @@ namespace DAMS.Application.Interfaces
             CancellationToken cancellationToken = default);
         Task<CommissionRuleDto> UpdateRuleAsync(int id, SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
-        Task<List<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status, int? partnerId,
-            int? projectId, CancellationToken cancellationToken = default);
-        Task<List<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
-            CancellationToken cancellationToken = default);
+        Task<PagedResult<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status, int? partnerId,
+            int? projectId, int skip, int take, CancellationToken cancellationToken = default);
+        Task<PagedResult<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
+            int skip, int take, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> GetBookingWorkspaceAsync(int bookingId,
             CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId, CreateBookingCommissionDto dto,

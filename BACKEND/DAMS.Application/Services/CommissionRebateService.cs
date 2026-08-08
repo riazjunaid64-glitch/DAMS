@@ -7,6 +7,8 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DAMS.Application.Services
 {
@@ -15,13 +17,15 @@ namespace DAMS.Application.Services
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _financeAccounts;
         private readonly IFinancialEvidenceStorage _storage;
+        private readonly ILogger<CommissionRebateService> _logger;
 
         public CommissionRebateService(AppDbContext context, IFinanceAccountService financeAccounts,
-            IFinancialEvidenceStorage storage)
+            IFinancialEvidenceStorage storage, ILogger<CommissionRebateService>? logger = null)
         {
             _context = context;
             _financeAccounts = financeAccounts;
             _storage = storage;
+            _logger = logger ?? NullLogger<CommissionRebateService>.Instance;
         }
 
         public async Task<CommissionRebateSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default)
@@ -37,23 +41,16 @@ namespace DAMS.Application.Services
                     .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
                 - (await _context.CommissionPayoutReversals.AsNoTracking()
                     .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var payableRows = await _context.BookingCommissions.AsNoTracking()
+            var payableBase = await _context.BookingCommissions.AsNoTracking()
                 .Where(c => payableStatuses.Contains(c.Status))
-                .Select(c => new { c.Id, Amount = c.ApprovedAmount ?? c.FinalAmount })
-                .ToListAsync(cancellationToken);
+                .SumAsync(c => (decimal?)(c.ApprovedAmount ?? c.FinalAmount), cancellationToken) ?? 0m;
             var payablePayouts = await _context.CommissionPayouts.AsNoTracking()
                 .Where(p => payableStatuses.Contains(p.Commission.Status))
-                .GroupBy(p => p.CommissionId)
-                .Select(g => new { CommissionId = g.Key, Amount = g.Sum(p => p.Amount) })
-                .ToDictionaryAsync(x => x.CommissionId, x => x.Amount, cancellationToken);
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var payableReversals = await _context.CommissionPayoutReversals.AsNoTracking()
                 .Where(r => payableStatuses.Contains(r.Payout.Commission.Status))
-                .GroupBy(r => r.Payout.CommissionId)
-                .Select(g => new { CommissionId = g.Key, Amount = g.Sum(r => r.Amount) })
-                .ToDictionaryAsync(x => x.CommissionId, x => x.Amount, cancellationToken);
-            var payableCommission = payableRows
-                .Sum(c => Math.Max(0m, c.Amount - payablePayouts.GetValueOrDefault(c.Id)
-                    + payableReversals.GetValueOrDefault(c.Id)));
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+            var payableCommission = Math.Max(0m, payableBase - payablePayouts + payableReversals);
             var approvedRebates = await _context.CustomerRebates.AsNoTracking()
                 .Where(r => r.Status == CustomerRebateStatus.Approved || r.Status == CustomerRebateStatus.PartiallyApplied
                     || r.Status == CustomerRebateStatus.Applied || r.Status == CustomerRebateStatus.Paid)
@@ -90,6 +87,7 @@ namespace DAMS.Application.Services
         }
 
         private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
+        private static decimal Rate(decimal value) => Math.Round(value, 6, MidpointRounding.AwayFromZero);
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         private static string Required(string? value, string label, int max)
         {

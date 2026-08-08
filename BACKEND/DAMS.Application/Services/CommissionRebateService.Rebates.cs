@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CommissionRebateDtos;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -8,16 +9,25 @@ namespace DAMS.Application.Services
 {
     public sealed partial class CommissionRebateService
     {
-        public async Task<List<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
-            CancellationToken cancellationToken = default)
+        public async Task<PagedResult<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
+            int skip, int take, CancellationToken cancellationToken = default)
         {
+            skip = Math.Max(0, skip);
+            take = Math.Clamp(take, 1, 100);
             var query = _context.CustomerRebates.AsNoTracking().Include(r => r.Booking).ThenInclude(b => b.Unit)
                 .Include(r => r.Customer).Include(r => r.Disbursements).ThenInclude(d => d.FinanceAccount)
-                .Include(r => r.Disbursements).ThenInclude(d => d.Reversals).Include(r => r.Evidence).AsSplitQuery().AsQueryable();
+                .Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
+                .Include(r => r.Disbursements).ThenInclude(d => d.Evidence)
+                .Include(r => r.Evidence).AsSplitQuery().AsQueryable();
             if (status.HasValue) query = query.Where(r => r.Status == status.Value);
             if (projectId.HasValue) query = query.Where(r => r.Booking.Unit.ProjectId == projectId.Value);
-            var rows = await query.OrderByDescending(r => r.CreatedAt).Take(500).ToListAsync(cancellationToken);
-            return rows.Select(r => MapRebate(r)).ToList();
+            var rows = await query.OrderByDescending(r => r.CreatedAt).ThenByDescending(r => r.Id)
+                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            return new PagedResult<CustomerRebateDto>
+            {
+                Items = rows.Take(take).Select(r => MapRebate(r)).ToList(),
+                HasMore = rows.Count > take
+            };
         }
 
         public async Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
@@ -37,7 +47,7 @@ namespace DAMS.Application.Services
             {
                 if (dto.PercentageRate is not (> 0m and <= 100m) || dto.FixedAmount.HasValue)
                     throw new InvalidOperationException("Percentage rebate requires a rate between 0 and 100 and no fixed amount.");
-                calculated = Calculate(dto.CalculationType, basis, dto.PercentageRate, null);
+                calculated = Calculate(dto.CalculationType, basis, Rate(dto.PercentageRate.Value), null);
             }
             else
             {
@@ -54,7 +64,8 @@ namespace DAMS.Application.Services
             var rebate = new CustomerRebate
             {
                 BookingId = bookingId, CustomerId = booking.CustomerId, CalculationType = dto.CalculationType,
-                PercentageRate = dto.PercentageRate, FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null,
+                PercentageRate = dto.PercentageRate.HasValue ? Rate(dto.PercentageRate.Value) : null,
+                FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null,
                 CalculationBasis = dto.CalculationBasis, BasisAmount = basis, CalculatedAmount = calculated,
                 AdjustmentAmount = adjustment, AdjustmentReason = adjustmentReason, FinalAmount = final,
                 Reason = reason, Method = dto.Method, Status = CustomerRebateStatus.Draft,
@@ -125,15 +136,34 @@ namespace DAMS.Application.Services
             SerializableAsync(async () =>
             {
                 ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.AppliedAt);
+                ValidateRebateMethod(dto);
+                var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
+                var appliedAt = dto.AppliedAt.Date;
+                var reference = Limited(dto.Reference, "Reference", 200);
+                var notes = Limited(dto.Notes, "Notes", 2000);
+                if ((dto.Method == CustomerRebateMethod.CreditNote
+                        || (dto.Method == CustomerRebateMethod.CashOrBankPayment && dto.PaymentMethod != PaymentMethod.Cash))
+                    && reference == null)
+                    throw new InvalidOperationException("A reference is required for this rebate method.");
                 var existing = await _context.RebateDisbursements.AsNoTracking().Include(d => d.Rebate)
-                    .SingleOrDefaultAsync(d => d.IdempotencyKey == dto.IdempotencyKey, cancellationToken);
+                    .SingleOrDefaultAsync(d => d.IdempotencyKey == idempotencyKey, cancellationToken);
                 if (existing != null)
                 {
                     if (existing.RebateId != rebateId || existing.Amount != Money(dto.Amount) || existing.Method != dto.Method
-                        || existing.Rebate.BookingId != bookingId)
+                        || existing.Rebate.BookingId != bookingId || existing.AppliedAt != appliedAt
+                        || existing.FinanceAccountId != dto.FinanceAccountId || existing.InstallmentId != dto.InstallmentId
+                        || existing.PaymentMethod != dto.PaymentMethod || existing.Reference != reference || existing.Notes != notes)
                         throw new InvalidOperationException("This idempotency key was already used for a different rebate disbursement.");
                     return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
                 }
+                if (reference != null && (dto.FinanceAccountId.HasValue
+                        ? await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == dto.FinanceAccountId
+                                && p.PaymentReference == reference, cancellationToken)
+                            || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
+                                && d.Reference == reference, cancellationToken)
+                        : await _context.RebateDisbursements.AnyAsync(d => d.RebateId == rebateId
+                            && d.Reference == reference, cancellationToken)))
+                    throw new InvalidOperationException("This reference is already recorded for the selected account or rebate.");
                 var rebate = await _context.CustomerRebates.Include(r => r.Booking).ThenInclude(b => b.Payments)
                     .Include(r => r.Booking).ThenInclude(b => b.Installments)
                     .Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
@@ -143,7 +173,6 @@ namespace DAMS.Application.Services
                 if (rebate.Status is not (CustomerRebateStatus.Approved or CustomerRebateStatus.PartiallyApplied))
                     throw new InvalidOperationException("Only approved or partially-applied rebates can be disbursed.");
                 if (dto.Method != rebate.Method) throw new InvalidOperationException("Disbursement method must match the approved rebate method.");
-                ValidateRebateMethod(dto);
                 if (dto.FinanceAccountId.HasValue)
                     await _financeAccounts.EnsureSelectableAsync(dto.FinanceAccountId.Value, cancellationToken: cancellationToken);
                 var amount = Money(dto.Amount); var outstanding = Money((rebate.ApprovedAmount ?? rebate.FinalAmount) - NetDisbursed(rebate));
@@ -157,7 +186,7 @@ namespace DAMS.Application.Services
                     var remaining = Money(installment.Amount - paid - credits);
                     if (amount > remaining) throw new InvalidOperationException($"Adjustment exceeds the installment balance of {remaining:0.00}.");
                 }
-                else if (dto.Method == CustomerRebateMethod.OutstandingBalanceReduction)
+                else if (dto.Method is CustomerRebateMethod.OutstandingBalanceReduction or CustomerRebateMethod.CreditNote)
                 {
                     var collected = rebate.Booking.Payments.Sum(p => p.Amount);
                     var credits = await ValidBookingRebateCreditsAsync(bookingId, cancellationToken);
@@ -167,14 +196,14 @@ namespace DAMS.Application.Services
                 var disbursement = new RebateDisbursement
                 {
                     RebateId = rebate.Id, FinanceAccountId = dto.FinanceAccountId, InstallmentId = dto.InstallmentId,
-                    Method = dto.Method, Amount = amount, AppliedAt = dto.AppliedAt, PaymentMethod = dto.PaymentMethod,
-                    Reference = Limited(dto.Reference, "Reference", 200), IdempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80),
-                    Notes = Limited(dto.Notes, "Notes", 2000), RecordedByUserId = actor.UserId,
+                    Method = dto.Method, Amount = amount, AppliedAt = appliedAt, PaymentMethod = dto.PaymentMethod,
+                    Reference = reference, IdempotencyKey = idempotencyKey,
+                    Notes = notes, RecordedByUserId = actor.UserId,
                     RecordedByName = actor.DisplayName, RecordedAt = DateTime.UtcNow
                 };
                 _context.RebateDisbursements.Add(disbursement);
                 if (dto.InstallmentId.HasValue)
-                    await RefreshInstallmentStatusAsync(dto.InstallmentId.Value, amount, dto.AppliedAt, cancellationToken);
+                    await RefreshInstallmentStatusAsync(dto.InstallmentId.Value, amount, appliedAt, cancellationToken);
                 rebate.Status = amount == outstanding
                     ? (dto.Method == CustomerRebateMethod.CashOrBankPayment ? CustomerRebateStatus.Paid : CustomerRebateStatus.Applied)
                     : CustomerRebateStatus.PartiallyApplied;
@@ -192,13 +221,16 @@ namespace DAMS.Application.Services
             CancellationToken cancellationToken = default) => SerializableAsync(async () =>
         {
             ValidateReversal(dto);
+            var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
+            var reason = Required(dto.Reason, "Reversal reason", 2000);
             var existing = await _context.RebateDisbursementReversals.AsNoTracking()
                 .Include(r => r.Disbursement).ThenInclude(d => d.Rebate)
-                .SingleOrDefaultAsync(r => r.IdempotencyKey == dto.IdempotencyKey, cancellationToken);
+                .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
             if (existing != null)
             {
                 if (existing.DisbursementId != disbursementId || existing.Amount != Money(dto.Amount)
-                    || existing.Disbursement.RebateId != rebateId || existing.Disbursement.Rebate.BookingId != bookingId)
+                    || existing.Disbursement.RebateId != rebateId || existing.Disbursement.Rebate.BookingId != bookingId
+                    || existing.Reason != reason)
                     throw new InvalidOperationException("This idempotency key was already used for a different reversal.");
                 return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
             }
@@ -211,8 +243,8 @@ namespace DAMS.Application.Services
             if (amount > available) throw new InvalidOperationException($"Reversal exceeds the disbursement balance of {available:0.00}.");
             _context.RebateDisbursementReversals.Add(new RebateDisbursementReversal
             {
-                DisbursementId = disbursement.Id, Amount = amount, Reason = Required(dto.Reason, "Reversal reason", 2000),
-                IdempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80), ReversedByUserId = actor.UserId,
+                DisbursementId = disbursement.Id, Amount = amount, Reason = reason,
+                IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
                 ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
             });
             if (disbursement.InstallmentId.HasValue)
@@ -234,6 +266,8 @@ namespace DAMS.Application.Services
 
         private static void ValidateRebateMethod(RecordRebateDisbursementDto dto)
         {
+            if (!Enum.IsDefined(dto.Method))
+                throw new InvalidOperationException("Select a valid rebate method.");
             if (dto.Method == CustomerRebateMethod.CashOrBankPayment)
             {
                 if (!dto.FinanceAccountId.HasValue || !dto.PaymentMethod.HasValue)
@@ -263,10 +297,14 @@ namespace DAMS.Application.Services
 
         private async Task<decimal> ValidBookingRebateCreditsAsync(int bookingId, CancellationToken cancellationToken) => Money(
             (await _context.RebateDisbursements.Where(d => d.Rebate.BookingId == bookingId
-                    && d.Method != CustomerRebateMethod.CashOrBankPayment)
+                    && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                        || d.Method == CustomerRebateMethod.InstallmentAdjustment
+                        || d.Method == CustomerRebateMethod.CreditNote))
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
             - (await _context.RebateDisbursementReversals.Where(r => r.Disbursement.Rebate.BookingId == bookingId
-                    && r.Disbursement.Method != CustomerRebateMethod.CashOrBankPayment)
+                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
                 .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
 
         private static decimal NetDisbursed(CustomerRebate rebate) =>

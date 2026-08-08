@@ -107,11 +107,13 @@ namespace DAMS.Application.Services
 
             ThirdPartyAttribution attribution;
             var action = FinancialWorkflowAction.PartnerAssigned;
+            decimal? previousAllocation = null;
             if (id.HasValue)
             {
                 attribution = await _context.ThirdPartyAttributions.SingleOrDefaultAsync(a => a.Id == id, cancellationToken)
                     ?? throw new KeyNotFoundException("Attribution not found.");
                 ApplyToken(attribution, dto.ConcurrencyToken, "attribution");
+                previousAllocation = attribution.AllocationPercent;
                 var isReferenced = await _context.BookingCommissions.AnyAsync(c => c.AttributionId == attribution.Id, cancellationToken);
                 if (isReferenced && (attribution.PartnerId != dto.PartnerId || attribution.BookingId != dto.BookingId
                     || attribution.CustomerId != dto.CustomerId || attribution.LeadId != dto.LeadId))
@@ -139,7 +141,8 @@ namespace DAMS.Application.Services
             attribution.IntroducedAt = dto.IntroducedAt; attribution.SourceDetails = Limited(dto.SourceDetails, "Source details", 1000);
             attribution.Notes = Limited(dto.Notes, "Notes", 2000); attribution.IsPrimary = dto.IsPrimary;
             attribution.AllocationPercent = Money(dto.AllocationPercent);
-            Audit(action, actor, partnerId: dto.PartnerId, customerId: dto.CustomerId, bookingId: dto.BookingId);
+            Audit(action, actor, partnerId: dto.PartnerId, customerId: dto.CustomerId, bookingId: dto.BookingId,
+                previousAmount: previousAllocation, newAmount: attribution.AllocationPercent);
             await _context.SaveChangesAsync(cancellationToken);
             return await MapAttributionAsync(attribution.Id, cancellationToken);
         }
@@ -271,10 +274,13 @@ namespace DAMS.Application.Services
             if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis)
                 || !Enum.IsDefined(dto.EarningCondition) || (dto.BookingSource.HasValue && !Enum.IsDefined(dto.BookingSource.Value)))
                 throw new InvalidOperationException("Select valid rule calculation, basis, earning, and source values.");
+            if (dto.CalculationBasis == FinancialCalculationBasis.ManuallyApprovedAmount)
+                throw new InvalidOperationException("A manually approved basis is available only for a documented manual commission.");
             if (!string.IsNullOrWhiteSpace(dto.PartnerType) && !PartnerTypes.Contains(dto.PartnerType.Trim()))
                 throw new InvalidOperationException("Select a valid partner type for the rule scope.");
             if (dto.EffectiveFrom == default) throw new InvalidOperationException("Effective-from date is required.");
-            if (dto.EffectiveTo < dto.EffectiveFrom) throw new InvalidOperationException("Effective-to date cannot precede effective-from date.");
+            if (dto.EffectiveTo?.Date < dto.EffectiveFrom.Date)
+                throw new InvalidOperationException("Effective-to date cannot precede effective-from date.");
             if (dto.CalculationType == FinancialCalculationType.Percentage)
             {
                 if (dto.PercentageRate is <= 0m or > 100m || dto.FixedAmount.HasValue)
@@ -292,15 +298,18 @@ namespace DAMS.Application.Services
         private static void AssignRule(CommissionRule r, SaveCommissionRuleDto dto)
         {
             r.Name = Required(dto.Name, "Rule name", 200); r.Description = Limited(dto.Description, "Description", 1000);
-            r.IsActive = dto.IsActive; r.EffectiveFrom = dto.EffectiveFrom; r.EffectiveTo = dto.EffectiveTo;
+            r.IsActive = dto.IsActive; r.EffectiveFrom = dto.EffectiveFrom.Date; r.EffectiveTo = dto.EffectiveTo?.Date;
             r.PartnerId = dto.PartnerId; r.PartnerType = Limited(dto.PartnerType, "Partner type", 80);
             r.ProjectId = dto.ProjectId; r.UnitCategory = Limited(dto.UnitCategory, "Unit category", 100);
             r.BookingSource = dto.BookingSource; r.BookingId = dto.BookingId; r.CalculationType = dto.CalculationType;
-            r.PercentageRate = dto.PercentageRate; r.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
+            r.PercentageRate = dto.PercentageRate.HasValue ? Rate(dto.PercentageRate.Value) : null;
+            r.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
             r.CalculationBasis = dto.CalculationBasis; r.MinimumCommission = dto.MinimumCommission.HasValue ? Money(dto.MinimumCommission.Value) : null;
             r.MaximumCommission = dto.MaximumCommission.HasValue ? Money(dto.MaximumCommission.Value) : null;
             r.EligibilityCondition = Limited(dto.EligibilityCondition, "Eligibility condition", 1000);
-            r.EarningCondition = dto.EarningCondition; r.MinimumCollectionPercent = dto.MinimumCollectionPercent;
+            r.EarningCondition = dto.EarningCondition;
+            r.MinimumCollectionPercent = dto.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
+                ? Money(dto.MinimumCollectionPercent!.Value) : null;
             r.Priority = dto.Priority; r.RequiresApproval = dto.RequiresApproval; r.Notes = Limited(dto.Notes, "Notes", 2000);
         }
     }

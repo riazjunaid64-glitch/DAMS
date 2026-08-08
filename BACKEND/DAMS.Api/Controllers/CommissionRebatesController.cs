@@ -62,12 +62,15 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("commissions")]
         public Task<IActionResult> Commissions([FromQuery] BookingCommissionStatus? status, [FromQuery] int? partnerId,
-            [FromQuery] int? projectId, CancellationToken cancellationToken) =>
-            Run(() => _service.GetCommissionsAsync(status, partnerId, projectId, cancellationToken));
+            [FromQuery] int? projectId, [FromQuery] int skip = 0, [FromQuery] int take = 25,
+            CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetCommissionsAsync(status, partnerId, projectId, skip, take, cancellationToken));
 
         [HttpGet("rebates")]
         public Task<IActionResult> Rebates([FromQuery] CustomerRebateStatus? status, [FromQuery] int? projectId,
-            CancellationToken cancellationToken) => Run(() => _service.GetRebatesAsync(status, projectId, cancellationToken));
+            [FromQuery] int skip = 0, [FromQuery] int take = 25,
+            CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetRebatesAsync(status, projectId, skip, take, cancellationToken));
 
         [HttpGet("bookings/{bookingId:int}")]
         public Task<IActionResult> BookingWorkspace(int bookingId, CancellationToken cancellationToken) =>

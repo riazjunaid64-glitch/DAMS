@@ -254,6 +254,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public PaymentMethod? PaymentMethod { get; set; }
         public string? Reference { get; set; }
         public string? Notes { get; set; }
+        public List<FinancialEvidenceDto> Evidence { get; set; } = [];
         public string ConcurrencyToken { get; set; } = string.Empty;
     }
 
@@ -308,10 +309,19 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal? ApprovedAmount { get; set; }
         public decimal PaidAmount { get; set; }
         public decimal OutstandingAmount { get; set; }
+        public decimal RecoveryRequiredAmount { get; set; }
         public CommissionEarningCondition EarningCondition { get; set; }
         public decimal? MinimumCollectionPercent { get; set; }
         public BookingCommissionStatus Status { get; set; }
         public DateTime CreatedAt { get; set; }
+        public string? SubmittedByName { get; set; }
+        public DateTime? SubmittedAt { get; set; }
+        public string? DecisionByName { get; set; }
+        public DateTime? DecisionAt { get; set; }
+        public string? DecisionReason { get; set; }
+        public DateTime? EarnedAt { get; set; }
+        public DateTime? PayableAt { get; set; }
+        public string? CancellationOrReversalReason { get; set; }
         public List<MoneyMovementDto> Payouts { get; set; } = [];
         public List<FinancialEvidenceDto> Evidence { get; set; } = [];
         public string ConcurrencyToken { get; set; } = string.Empty;
@@ -336,11 +346,18 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal? ApprovedAmount { get; set; }
         public decimal AppliedOrPaidAmount { get; set; }
         public decimal OutstandingAmount { get; set; }
+        public decimal RecoveryRequiredAmount { get; set; }
         public string Reason { get; set; } = string.Empty;
         public CustomerRebateMethod Method { get; set; }
         public CustomerRebateStatus Status { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
+        public string? SubmittedByName { get; set; }
+        public DateTime? SubmittedAt { get; set; }
+        public string? DecisionByName { get; set; }
+        public DateTime? DecisionAt { get; set; }
+        public string? DecisionReason { get; set; }
+        public string? CancellationOrReversalReason { get; set; }
         public List<MoneyMovementDto> Disbursements { get; set; } = [];
         public List<FinancialEvidenceDto> Evidence { get; set; } = [];
         public string ConcurrencyToken { get; set; } = string.Empty;

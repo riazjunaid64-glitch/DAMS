@@ -39,6 +39,7 @@ export interface MoneyMovement {
   id:number; financeAccountId:number|null; financeAccountName:string|null; installmentId:number|null;
   rebateMethod:RebateMethod|null; amount:number; reversedAmount:number; date:string; paymentMethod:string|null;
   reference:string|null; notes:string|null; concurrencyToken:string;
+  evidence:Evidence[];
 }
 
 export interface Evidence { id:number; originalFileName:string; contentType:string; fileSize:number; uploadedByName:string|null; uploadedAt:string }
@@ -54,8 +55,10 @@ export interface Commission {
   allocationPercent:number;
   calculationType:CalculationType; percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis;
   basisAmount:number; calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number;
-  approvedAmount:number|null; paidAmount:number; outstandingAmount:number; earningCondition:EarningCondition;
-  minimumCollectionPercent:number|null; status:CommissionStatus; createdAt:string; payouts:MoneyMovement[];
+  approvedAmount:number|null; paidAmount:number; outstandingAmount:number; recoveryRequiredAmount:number; earningCondition:EarningCondition;
+  minimumCollectionPercent:number|null; status:CommissionStatus; createdAt:string; submittedByName:string|null;
+  submittedAt:string|null; decisionByName:string|null; decisionAt:string|null; decisionReason:string|null;
+  earnedAt:string|null; payableAt:string|null; cancellationOrReversalReason:string|null; payouts:MoneyMovement[];
   evidence:Evidence[]; concurrencyToken:string;
 }
 
@@ -63,8 +66,10 @@ export interface Rebate {
   id:number; bookingId:number; bookingReference:string; customerId:number; customerName:string; calculationType:CalculationType;
   percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis; basisAmount:number;
   calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number; approvedAmount:number|null;
-  appliedOrPaidAmount:number; outstandingAmount:number; reason:string; method:RebateMethod; status:RebateStatus;
-  notes:string|null; createdAt:string; disbursements:MoneyMovement[]; evidence:Evidence[]; concurrencyToken:string;
+  appliedOrPaidAmount:number; outstandingAmount:number; recoveryRequiredAmount:number; reason:string; method:RebateMethod; status:RebateStatus;
+  notes:string|null; createdAt:string; submittedByName:string|null; submittedAt:string|null; decisionByName:string|null;
+  decisionAt:string|null; decisionReason:string|null; cancellationOrReversalReason:string|null;
+  disbursements:MoneyMovement[]; evidence:Evidence[]; concurrencyToken:string;
 }
 
 export interface BookingWorkspace {

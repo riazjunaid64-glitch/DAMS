@@ -4,6 +4,7 @@ using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services
 {
@@ -21,11 +22,13 @@ namespace DAMS.Application.Services
                 .ToListAsync(cancellationToken);
             var commissions = await _context.BookingCommissions.AsNoTracking().Include(c => c.Partner)
                 .Include(c => c.Payouts).ThenInclude(p => p.FinanceAccount)
-                .Include(c => c.Payouts).ThenInclude(p => p.Reversals).Include(c => c.Evidence)
+                .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
+                .Include(c => c.Payouts).ThenInclude(p => p.Evidence).Include(c => c.Evidence)
                 .Where(c => c.BookingId == bookingId).OrderBy(c => c.CreatedAt).AsSplitQuery().ToListAsync(cancellationToken);
             var rebates = await _context.CustomerRebates.AsNoTracking().Include(r => r.Customer)
                 .Include(r => r.Disbursements).ThenInclude(d => d.FinanceAccount)
-                .Include(r => r.Disbursements).ThenInclude(d => d.Reversals).Include(r => r.Evidence)
+                .Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
+                .Include(r => r.Disbursements).ThenInclude(d => d.Evidence).Include(r => r.Evidence)
                 .Where(r => r.BookingId == bookingId).OrderBy(r => r.CreatedAt).AsSplitQuery().ToListAsync(cancellationToken);
             var audit = await _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId)
                 .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id).Take(300)
@@ -37,7 +40,8 @@ namespace DAMS.Application.Services
                     Reason = a.Reason, PerformedByName = a.PerformedByName, OccurredAt = a.OccurredAt
                 }).ToListAsync(cancellationToken);
             var rebateCredits = rebates.SelectMany(r => r.Disbursements)
-                .Where(d => d.Method != CustomerRebateMethod.CashOrBankPayment)
+                .Where(d => d.Method is CustomerRebateMethod.OutstandingBalanceReduction
+                    or CustomerRebateMethod.InstallmentAdjustment or CustomerRebateMethod.CreditNote)
                 .Sum(d => d.Amount - d.Reversals.Sum(x => x.Amount));
             return new BookingCommissionRebateWorkspaceDto
             {
@@ -82,7 +86,15 @@ namespace DAMS.Application.Services
             }
             catch
             {
-                await _storage.DeleteAsync(stored, CancellationToken.None);
+                try
+                {
+                    await _storage.DeleteAsync(stored, CancellationToken.None);
+                }
+                catch (Exception cleanupError)
+                {
+                    _logger.LogError(cleanupError,
+                        "Could not remove orphaned commission/rebate evidence file {StoredFileName}", stored);
+                }
                 throw;
             }
         }
@@ -192,13 +204,19 @@ namespace DAMS.Application.Services
                 CalculationBasis = c.CalculationBasis, BasisAmount = c.BasisAmount, CalculatedAmount = c.CalculatedAmount,
                 AdjustmentAmount = c.AdjustmentAmount, AdjustmentReason = c.AdjustmentReason, FinalAmount = c.FinalAmount,
                 ApprovedAmount = c.ApprovedAmount, PaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(approved - paid)),
+                RecoveryRequiredAmount = c.Status == BookingCommissionStatus.ReversalRequired ? paid : 0m,
                 EarningCondition = c.EarningCondition, MinimumCollectionPercent = c.MinimumCollectionPercent,
-                Status = c.Status, CreatedAt = c.CreatedAt, ConcurrencyToken = Token(c.RowVersion),
+                Status = c.Status, CreatedAt = c.CreatedAt, SubmittedByName = c.SubmittedByName,
+                SubmittedAt = c.SubmittedAt, DecisionByName = c.DecisionByName, DecisionAt = c.DecisionAt,
+                DecisionReason = c.DecisionReason, EarnedAt = c.EarnedAt, PayableAt = c.PayableAt,
+                CancellationOrReversalReason = c.CancellationOrReversalReason,
+                ConcurrencyToken = Token(c.RowVersion),
                 Payouts = c.Payouts.OrderByDescending(p => p.PaymentDate).Select(p => new MoneyMovementDto
                 {
                     Id = p.Id, FinanceAccountId = p.FinanceAccountId, FinanceAccountName = p.FinanceAccount?.Name,
                     Amount = p.Amount, ReversedAmount = p.Reversals.Sum(r => r.Amount), Date = p.PaymentDate,
                     PaymentMethod = p.PaymentMethod, Reference = p.PaymentReference, Notes = p.Notes,
+                    Evidence = p.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList(),
                     ConcurrencyToken = Token(p.RowVersion)
                 }).ToList(), Evidence = c.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()
             };
@@ -214,8 +232,12 @@ namespace DAMS.Application.Services
                 PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount, CalculationBasis = r.CalculationBasis,
                 BasisAmount = r.BasisAmount, CalculatedAmount = r.CalculatedAmount, AdjustmentAmount = r.AdjustmentAmount,
                 AdjustmentReason = r.AdjustmentReason, FinalAmount = r.FinalAmount, ApprovedAmount = r.ApprovedAmount,
-                AppliedOrPaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(approved - paid)), Reason = r.Reason,
-                Method = r.Method, Status = r.Status, Notes = r.Notes, CreatedAt = r.CreatedAt,
+                AppliedOrPaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(approved - paid)),
+                RecoveryRequiredAmount = r.Status == CustomerRebateStatus.ReversalRequired ? paid : 0m,
+                Reason = r.Reason, Method = r.Method, Status = r.Status, Notes = r.Notes, CreatedAt = r.CreatedAt,
+                SubmittedByName = r.SubmittedByName, SubmittedAt = r.SubmittedAt,
+                DecisionByName = r.DecisionByName, DecisionAt = r.DecisionAt,
+                DecisionReason = r.DecisionReason, CancellationOrReversalReason = r.CancellationOrReversalReason,
                 ConcurrencyToken = Token(r.RowVersion), Disbursements = r.Disbursements.OrderByDescending(d => d.AppliedAt)
                     .Select(d => new MoneyMovementDto
                     {
@@ -223,6 +245,7 @@ namespace DAMS.Application.Services
                         InstallmentId = d.InstallmentId, RebateMethod = d.Method, Amount = d.Amount,
                         ReversedAmount = d.Reversals.Sum(x => x.Amount), Date = d.AppliedAt,
                         PaymentMethod = d.PaymentMethod, Reference = d.Reference, Notes = d.Notes,
+                        Evidence = d.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList(),
                         ConcurrencyToken = Token(d.RowVersion)
                     }).ToList(), Evidence = r.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()
             };

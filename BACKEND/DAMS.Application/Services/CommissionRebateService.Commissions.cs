@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CommissionRebateDtos;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -8,18 +9,27 @@ namespace DAMS.Application.Services
 {
     public sealed partial class CommissionRebateService
     {
-        public async Task<List<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status,
-            int? partnerId, int? projectId, CancellationToken cancellationToken = default)
+        public async Task<PagedResult<BookingCommissionDto>> GetCommissionsAsync(BookingCommissionStatus? status,
+            int? partnerId, int? projectId, int skip, int take, CancellationToken cancellationToken = default)
         {
+            skip = Math.Max(0, skip);
+            take = Math.Clamp(take, 1, 100);
             var query = _context.BookingCommissions.AsNoTracking()
                 .Include(c => c.Booking).ThenInclude(b => b.Unit)
                 .Include(c => c.Partner).Include(c => c.Payouts).ThenInclude(p => p.FinanceAccount)
-                .Include(c => c.Payouts).ThenInclude(p => p.Reversals).Include(c => c.Evidence).AsSplitQuery().AsQueryable();
+                .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
+                .Include(c => c.Payouts).ThenInclude(p => p.Evidence)
+                .Include(c => c.Evidence).AsSplitQuery().AsQueryable();
             if (status.HasValue) query = query.Where(c => c.Status == status.Value);
             if (partnerId.HasValue) query = query.Where(c => c.PartnerId == partnerId.Value);
             if (projectId.HasValue) query = query.Where(c => c.Booking.Unit.ProjectId == projectId.Value);
-            var rows = await query.OrderByDescending(c => c.CreatedAt).Take(500).ToListAsync(cancellationToken);
-            return rows.Select(c => MapCommission(c)).ToList();
+            var rows = await query.OrderByDescending(c => c.CreatedAt).ThenByDescending(c => c.Id)
+                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            return new PagedResult<BookingCommissionDto>
+            {
+                Items = rows.Take(take).Select(c => MapCommission(c)).ToList(),
+                HasMore = rows.Count > take
+            };
         }
 
         public async Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId,
@@ -51,6 +61,8 @@ namespace DAMS.Application.Services
             else await ApplyRuleCalculationAsync(commission, booking, partner, dto.RuleId, cancellationToken);
             ApplyCommissionAdjustment(commission, dto.AdjustmentAmount, dto.AdjustmentReason,
                 dto.IsManual ? dto.ManualReason : null, booking);
+            if (commission.FinalAmount <= 0m)
+                throw new InvalidOperationException("Final commission must be greater than zero.");
             if (!commission.IsManual && !commission.RequiresApprovalSnapshot)
             {
                 commission.Status = BookingCommissionStatus.Approved;
@@ -66,6 +78,18 @@ namespace DAMS.Application.Services
                 newAmount: commission.FinalAmount,
                 reason: commission.IsManual ? commission.ManualReason : commission.RuleNameSnapshot);
             audit.Commission = commission;
+            var calculationAudit = Audit(FinancialWorkflowAction.CommissionCalculated, actor, partner.Id,
+                booking.CustomerId, bookingId, newAmount: commission.CalculatedAmount,
+                reason: commission.RuleNameSnapshot ?? commission.ManualReason, commissionRuleId: commission.RuleId);
+            calculationAudit.Commission = commission;
+            if (commission.AdjustmentAmount != 0m)
+            {
+                var adjustmentAudit = Audit(FinancialWorkflowAction.CommissionAdjusted, actor, partner.Id,
+                    booking.CustomerId, bookingId, previousAmount: commission.CalculatedAmount,
+                    newAmount: commission.FinalAmount, reason: commission.AdjustmentReason,
+                    commissionRuleId: commission.RuleId);
+                adjustmentAudit.Commission = commission;
+            }
             if (commission.Status == BookingCommissionStatus.Approved)
             {
                 var approvalAudit = Audit(FinancialWorkflowAction.CommissionApproved, actor, partner.Id,
@@ -143,15 +167,28 @@ namespace DAMS.Application.Services
             {
                 ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.PaymentDate);
                 if (!Enum.IsDefined(dto.PaymentMethod)) throw new InvalidOperationException("Select a valid payout payment method.");
+                var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
+                var paymentDate = dto.PaymentDate.Date;
+                var paymentReference = Limited(dto.PaymentReference, "Payment reference", 200);
+                var notes = Limited(dto.Notes, "Notes", 2000);
+                if (dto.PaymentMethod != PaymentMethod.Cash && paymentReference == null)
+                    throw new InvalidOperationException("A payment reference is required for non-cash payouts.");
                 var existing = await _context.CommissionPayouts.AsNoTracking().Include(p => p.Commission)
-                    .SingleOrDefaultAsync(p => p.IdempotencyKey == dto.IdempotencyKey, cancellationToken);
+                    .SingleOrDefaultAsync(p => p.IdempotencyKey == idempotencyKey, cancellationToken);
                 if (existing != null)
                 {
                     if (existing.CommissionId != commissionId || existing.Amount != Money(dto.Amount)
-                        || existing.FinanceAccountId != dto.FinanceAccountId || existing.Commission.BookingId != bookingId)
+                        || existing.FinanceAccountId != dto.FinanceAccountId || existing.Commission.BookingId != bookingId
+                        || existing.PaymentDate != paymentDate || existing.PaymentMethod != dto.PaymentMethod
+                        || existing.PaymentReference != paymentReference || existing.Notes != notes)
                         throw new InvalidOperationException("This idempotency key was already used for a different payout.");
                     return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
                 }
+                if (paymentReference != null && (await _context.CommissionPayouts.AnyAsync(p =>
+                        p.FinanceAccountId == dto.FinanceAccountId && p.PaymentReference == paymentReference, cancellationToken)
+                    || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
+                        && d.Reference == paymentReference, cancellationToken)))
+                    throw new InvalidOperationException("This payment reference is already recorded against the selected finance account.");
                 var commission = await _context.BookingCommissions.Include(c => c.Booking)
                     .Include(c => c.Partner)
                     .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
@@ -161,6 +198,12 @@ namespace DAMS.Application.Services
                 EnsureActiveBooking(commission.Booking);
                 if (!await _context.ThirdPartyPartners.AnyAsync(p => p.Id == commission.PartnerId && p.IsActive, cancellationToken))
                     throw new InvalidOperationException("This partner is inactive. Reactivate the partner before recording a payout.");
+                if (dto.PaymentMethod == PaymentMethod.BankTransfer
+                    && (string.IsNullOrWhiteSpace(commission.Partner.BankName)
+                        || string.IsNullOrWhiteSpace(commission.Partner.AccountTitle)
+                        || (string.IsNullOrWhiteSpace(commission.Partner.AccountNumber)
+                            && string.IsNullOrWhiteSpace(commission.Partner.Iban))))
+                    throw new InvalidOperationException("Bank-transfer payouts require the partner's bank name, account title, and account number or IBAN.");
                 if (commission.Status is not (BookingCommissionStatus.Payable or BookingCommissionStatus.PartiallyPaid))
                     throw new InvalidOperationException("Only payable or partially-paid commissions can receive a payout.");
                 await _financeAccounts.EnsureSelectableAsync(dto.FinanceAccountId, cancellationToken: cancellationToken);
@@ -170,13 +213,13 @@ namespace DAMS.Application.Services
                 var payout = new CommissionPayout
                 {
                     CommissionId = commission.Id, FinanceAccountId = dto.FinanceAccountId, Amount = amount,
-                    PaymentDate = dto.PaymentDate, PaymentMethod = dto.PaymentMethod,
-                    PaymentReference = Limited(dto.PaymentReference, "Payment reference", 200),
+                    PaymentDate = paymentDate, PaymentMethod = dto.PaymentMethod,
+                    PaymentReference = paymentReference,
                     DestinationBankNameSnapshot = commission.Partner.BankName,
                     DestinationAccountTitleSnapshot = commission.Partner.AccountTitle,
                     DestinationAccountNumberSnapshot = commission.Partner.AccountNumber,
                     DestinationIbanSnapshot = commission.Partner.Iban,
-                    IdempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80), Notes = Limited(dto.Notes, "Notes", 2000),
+                    IdempotencyKey = idempotencyKey, Notes = notes,
                     RecordedByUserId = actor.UserId, RecordedByName = actor.DisplayName, RecordedAt = DateTime.UtcNow
                 };
                 _context.CommissionPayouts.Add(payout);
@@ -196,13 +239,16 @@ namespace DAMS.Application.Services
             SerializableAsync(async () =>
             {
                 ValidateReversal(dto);
+                var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
+                var reason = Required(dto.Reason, "Reversal reason", 2000);
                 var existing = await _context.CommissionPayoutReversals.AsNoTracking()
                     .Include(r => r.Payout).ThenInclude(p => p.Commission)
-                    .SingleOrDefaultAsync(r => r.IdempotencyKey == dto.IdempotencyKey, cancellationToken);
+                    .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
                 if (existing != null)
                 {
                     if (existing.PayoutId != payoutId || existing.Amount != Money(dto.Amount)
-                        || existing.Payout.CommissionId != commissionId || existing.Payout.Commission.BookingId != bookingId)
+                        || existing.Payout.CommissionId != commissionId || existing.Payout.Commission.BookingId != bookingId
+                        || existing.Reason != reason)
                         throw new InvalidOperationException("This idempotency key was already used for a different reversal.");
                     return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
                 }
@@ -216,8 +262,8 @@ namespace DAMS.Application.Services
                 if (amount > available) throw new InvalidOperationException($"Reversal exceeds the payout balance of {available:0.00}.");
                 var reversal = new CommissionPayoutReversal
                 {
-                    PayoutId = payout.Id, Amount = amount, Reason = Required(dto.Reason, "Reversal reason", 2000),
-                    IdempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80), ReversedByUserId = actor.UserId,
+                    PayoutId = payout.Id, Amount = amount, Reason = reason,
+                    IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
                     ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
                 };
                 _context.CommissionPayoutReversals.Add(reversal);
@@ -247,8 +293,9 @@ namespace DAMS.Application.Services
         private async Task ApplyRuleCalculationAsync(BookingCommission commission, Booking booking, ThirdPartyPartner partner,
             int? explicitRuleId, CancellationToken cancellationToken)
         {
+            var bookingDate = booking.BookingDate.Date;
             var rules = _context.CommissionRules.AsNoTracking().Where(r => r.IsActive
-                    && r.EffectiveFrom <= booking.BookingDate && (r.EffectiveTo == null || r.EffectiveTo >= booking.BookingDate)
+                    && r.EffectiveFrom <= bookingDate && (r.EffectiveTo == null || r.EffectiveTo >= bookingDate)
                     && (r.PartnerId == null || r.PartnerId == partner.Id)
                     && (r.PartnerType == null || r.PartnerType == partner.PartnerType)
                     && (r.ProjectId == null || r.ProjectId == booking.Unit.ProjectId)
@@ -300,12 +347,14 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Manual calculation type is required.");
             commission.CalculationBasis = dto.ManualCalculationBasis
                 ?? throw new InvalidOperationException("Manual calculation basis is required.");
+            if (!Enum.IsDefined(commission.CalculationType) || !Enum.IsDefined(commission.CalculationBasis))
+                throw new InvalidOperationException("Select a valid manual calculation type and basis.");
             commission.BasisAmount = BasisAmount(booking, commission.CalculationBasis, dto.ManualBasisAmount);
             if (commission.CalculationType == FinancialCalculationType.Percentage)
             {
                 if (dto.ManualPercentageRate is not (> 0m and <= 100m) || dto.ManualFixedAmount.HasValue)
                     throw new InvalidOperationException("Manual percentage commission requires a rate between 0 and 100 and no fixed amount.");
-                commission.PercentageRate = dto.ManualPercentageRate;
+                commission.PercentageRate = Rate(dto.ManualPercentageRate.Value);
             }
             else
             {
@@ -316,7 +365,10 @@ namespace DAMS.Application.Services
             commission.CalculatedAmount = Money(CalculateRaw(commission.CalculationType, commission.BasisAmount,
                 commission.PercentageRate, commission.FixedAmount) * commission.AllocationPercentSnapshot / 100m);
             commission.EarningCondition = dto.ManualEarningCondition ?? CommissionEarningCondition.ManualMilestone;
-            commission.MinimumCollectionPercent = dto.MinimumCollectionPercent;
+            if (!Enum.IsDefined(commission.EarningCondition))
+                throw new InvalidOperationException("Select a valid commission earning condition.");
+            commission.MinimumCollectionPercent = commission.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
+                ? Money(dto.MinimumCollectionPercent ?? 0m) : null;
             if (commission.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
                 && commission.MinimumCollectionPercent is not (> 0m and <= 100m))
                 throw new InvalidOperationException("A collection percentage between 0 and 100 is required.");
@@ -390,6 +442,7 @@ namespace DAMS.Application.Services
             if (Money(amount) <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
             Required(idempotencyKey, "Idempotency key", 80);
             if (date == default) throw new InvalidOperationException("Transaction date is required.");
+            if (date.Date > PakistanTime.Today) throw new InvalidOperationException("Transaction date cannot be in the future.");
         }
         private static void ValidateReversal(ReverseMoneyMovementDto dto)
         {
