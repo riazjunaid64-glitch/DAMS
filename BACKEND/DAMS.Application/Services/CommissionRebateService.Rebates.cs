@@ -254,7 +254,10 @@ namespace DAMS.Application.Services
             });
             if (disbursement.InstallmentId.HasValue)
                 await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, DateTime.UtcNow, cancellationToken);
-            var remaining = Money(NetDisbursed(rebate) - amount); var previous = rebate.Status;
+            // NetDisbursed already reflects this reversal (EF fixup tracked it into
+            // disbursement.Reversals above); subtracting `amount` again would double-count and
+            // leave a fully reversed rebate stuck in PartiallyApplied / ReversalRequired.
+            var remaining = NetDisbursed(rebate); var previous = rebate.Status;
             if (rebate.Booking.Status == BookingStatus.Cancelled)
                 rebate.Status = remaining == 0m ? CustomerRebateStatus.Reversed : CustomerRebateStatus.ReversalRequired;
             else rebate.Status = remaining == 0m ? CustomerRebateStatus.Approved : CustomerRebateStatus.PartiallyApplied;

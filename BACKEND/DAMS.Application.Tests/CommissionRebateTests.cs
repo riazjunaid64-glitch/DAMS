@@ -277,6 +277,54 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
+    public async Task PaymentReference_IsBlockedWhileLive_ButReusableAfterFullReversal()
+    {
+        await using var harness = await Harness.Create();
+        var commission = await harness.MakePayable();
+        const string reference = "TXN-REUSE";
+        var full = commission.OutstandingAmount;
+
+        // Original payout consumes the reference and pays the commission in full.
+        var workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, new RecordCommissionPayoutDto
+        {
+            FinanceAccountId = harness.AccountId, Amount = full, PaymentDate = DateTime.UtcNow,
+            PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = reference,
+            IdempotencyKey = "payout-original", CommissionConcurrencyToken = commission.ConcurrencyToken
+        }, Actor);
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(BookingCommissionStatus.Paid, commission.Status);
+        var payout = Assert.Single(commission.Payouts);
+
+        // While the payout still holds a live balance the reference stays blocked.
+        var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.RecordPayoutAsync(
+            harness.BookingId, commission.Id, new RecordCommissionPayoutDto
+            {
+                FinanceAccountId = harness.AccountId, Amount = full, PaymentDate = DateTime.UtcNow,
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = reference,
+                IdempotencyKey = "payout-blocked", CommissionConcurrencyToken = commission.ConcurrencyToken
+            }, Actor));
+        Assert.Contains("already recorded", blocked.Message);
+
+        // A full reversal returns the commission to Payable; the reversed payout no longer holds money out.
+        workspace = await harness.Service.ReversePayoutAsync(harness.BookingId, commission.Id, payout.Id,
+            new ReverseMoneyMovementDto { Amount = full, Reason = "Mis-keyed entry", IdempotencyKey = "reverse-full" }, Actor);
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(BookingCommissionStatus.Payable, commission.Status);
+
+        // The genuine bank reference can now be re-recorded correctly.
+        workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, new RecordCommissionPayoutDto
+        {
+            FinanceAccountId = harness.AccountId, Amount = full, PaymentDate = DateTime.UtcNow,
+            PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = reference,
+            IdempotencyKey = "payout-corrected", CommissionConcurrencyToken = commission.ConcurrencyToken
+        }, Actor);
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(BookingCommissionStatus.Paid, commission.Status);
+        Assert.Equal(full, commission.PaidAmount);
+        Assert.Equal(2, commission.Payouts.Count);
+    }
+
+    [Fact]
     public async Task FinancialInputs_AreNormalizedAuditedAndCannotProduceZeroCommission()
     {
         await using var harness = await Harness.Create();

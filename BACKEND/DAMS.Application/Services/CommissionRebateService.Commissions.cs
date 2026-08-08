@@ -273,7 +273,11 @@ namespace DAMS.Application.Services
                     ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
                 };
                 _context.CommissionPayoutReversals.Add(reversal);
-                var remainingPaid = Money(NetPaid(commission) - amount);
+                // NetPaid already reflects this reversal: EF relationship fixup adds it to
+                // payout.Reversals the moment it is tracked. Subtracting `amount` again would
+                // double-count and leave a fully reversed payout stuck in PartiallyPaid (and,
+                // on a cancelled booking, in ReversalRequired instead of the terminal Reversed).
+                var remainingPaid = NetPaid(commission);
                 var previous = commission.Status;
                 if (commission.Booking.Status == BookingStatus.Cancelled)
                     commission.Status = remainingPaid == 0m ? BookingCommissionStatus.Reversed : BookingCommissionStatus.ReversalRequired;
