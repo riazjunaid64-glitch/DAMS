@@ -184,10 +184,16 @@ namespace DAMS.Application.Services
                         throw new InvalidOperationException("This idempotency key was already used for a different payout.");
                     return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
                 }
+                // Uniqueness guards against recording the same live bank transaction twice. A fully
+                // reversed payout/disbursement no longer represents money out, so its reference must be
+                // reusable (e.g. reverse a mis-keyed entry, then re-record it correctly). Partially
+                // reversed rows still hold a live balance and keep the reference blocked.
                 if (paymentReference != null && (await _context.CommissionPayouts.AnyAsync(p =>
-                        p.FinanceAccountId == dto.FinanceAccountId && p.PaymentReference == paymentReference, cancellationToken)
+                        p.FinanceAccountId == dto.FinanceAccountId && p.PaymentReference == paymentReference
+                        && p.Amount > p.Reversals.Sum(r => r.Amount), cancellationToken)
                     || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
-                        && d.Reference == paymentReference, cancellationToken)))
+                        && d.Reference == paymentReference
+                        && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))
                     throw new InvalidOperationException("This payment reference is already recorded against the selected finance account.");
                 var commission = await _context.BookingCommissions.Include(c => c.Booking)
                     .Include(c => c.Partner)

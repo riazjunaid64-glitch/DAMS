@@ -126,7 +126,11 @@ namespace DAMS.Application.Services
                     {
                         CustomerId = r.CustomerId,
                         IsRequired = r.IsRequired,
-                        Status = r.Status
+                        Status = r.Status,
+                        // Needed by CustomerDocumentCompletion.Calculate to compute PostponedDue;
+                        // omitting it made the list badge silently under-report overdue postponements
+                        // versus the detail/checklist views that share the same rule.
+                        PostponedUntil = r.PostponedUntil
                     })
                     .ToListAsync();
             var summaries = requirementRows

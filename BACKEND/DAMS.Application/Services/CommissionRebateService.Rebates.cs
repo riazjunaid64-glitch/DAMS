@@ -156,13 +156,18 @@ namespace DAMS.Application.Services
                         throw new InvalidOperationException("This idempotency key was already used for a different rebate disbursement.");
                     return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
                 }
+                // See RecordPayoutAsync: a fully reversed payout/disbursement no longer holds a live
+                // balance, so its reference is reusable; partially reversed rows keep it blocked.
                 if (reference != null && (dto.FinanceAccountId.HasValue
                         ? await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == dto.FinanceAccountId
-                                && p.PaymentReference == reference, cancellationToken)
+                                && p.PaymentReference == reference
+                                && p.Amount > p.Reversals.Sum(r => r.Amount), cancellationToken)
                             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
-                                && d.Reference == reference, cancellationToken)
+                                && d.Reference == reference
+                                && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)
                         : await _context.RebateDisbursements.AnyAsync(d => d.RebateId == rebateId
-                            && d.Reference == reference, cancellationToken)))
+                            && d.Reference == reference
+                            && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))
                     throw new InvalidOperationException("This reference is already recorded for the selected account or rebate.");
                 var rebate = await _context.CustomerRebates.Include(r => r.Booking).ThenInclude(b => b.Payments)
                     .Include(r => r.Booking).ThenInclude(b => b.Installments)
