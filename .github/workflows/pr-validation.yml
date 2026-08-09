@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    # Runs on Windows to match the development/hosting environment; the suite is validated on Windows
+    # and some tests rely on Windows-specific behavior. (A Linux run surfaced an environment-specific
+    # test failure that does not reproduce on Windows.)
+    runs-on: windows-latest
     timeout-minutes: 25
     # The real SQL Server invariant suite (SqlServerProductionInvariantTests) is deferred for now: it
     # is not run in CI. Without DAMS_SQLSERVER_TEST_CONNECTION it skips itself, so the build and the
