@@ -138,7 +138,9 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         public DateTime UpdatedAt { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
         public CustomerDocumentVersionDto? LatestVersion { get; set; }
+        /// <summary>The most recent versions only (newest first); older versions exist when <see cref="HasMoreVersions"/> is true.</summary>
         public List<CustomerDocumentVersionDto> Versions { get; set; } = [];
+        public bool HasMoreVersions { get; set; }
     }
 
     public class CustomerDocumentVersionDto

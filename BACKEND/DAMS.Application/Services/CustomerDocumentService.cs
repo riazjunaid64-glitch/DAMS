@@ -21,6 +21,10 @@ namespace DAMS.Application.Services
         public const long MaxRequestSize = MaxFileSize + (512 * 1024);
         private const int AssignmentBatchSize = 500;
         private const int HistoryPreviewSize = 100;
+        // A requirement can accumulate many replacement versions over time; only the newest are
+        // loaded/rendered so a long-lived requirement cannot force an unbounded read. HasMoreVersions
+        // on the DTO signals that older versions exist beyond this preview.
+        private const int VersionPreviewSize = 20;
 
         private static readonly Expression<Func<CustomerDocumentAuditEntry, CustomerDocumentAuditDto>> AuditProjection =
             a => new CustomerDocumentAuditDto
@@ -303,7 +307,7 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .Where(r => r.CustomerId == customerId)
                 .Include(r => r.Category)
-                .Include(r => r.Versions)
+                .Include(r => r.Versions.OrderByDescending(v => v.VersionNumber).Take(VersionPreviewSize + 1))
                 .OrderByDescending(r => r.IsRequired)
                 .ThenBy(r => r.DisplayOrder)
                 .ThenBy(r => r.Name)
@@ -312,11 +316,12 @@ namespace DAMS.Application.Services
 
             // Load only a bounded preview of the newest audit rows; the full log is served by the
             // paged history endpoint so a long-lived customer cannot force an unbounded read here.
+            // Ordered by Id (a monotonic surrogate matching insertion/time order) so "load more" can
+            // continue from the last previewed Id with a stable keyset cursor.
             var history = await _context.CustomerDocumentAuditEntries
                 .AsNoTracking()
                 .Where(a => a.CustomerId == customerId)
-                .OrderByDescending(a => a.OccurredAt)
-                .ThenByDescending(a => a.Id)
+                .OrderByDescending(a => a.Id)
                 .Select(AuditProjection)
                 .Take(HistoryPreviewSize + 1)
                 .ToListAsync(cancellationToken);
@@ -335,23 +340,26 @@ namespace DAMS.Application.Services
             };
         }
 
+        // Keyset (cursor) pagination on the monotonic Id: the caller passes the Id of the last row it
+        // has seen and receives strictly older rows. Unlike skip/take, this stays stable when new
+        // audit rows are appended between page loads — offset paging would repeat or skip rows.
         public async Task<PagedResult<CustomerDocumentAuditDto>> GetHistoryAsync(
             int customerId,
-            int skip,
+            int? beforeId,
             int take,
             CancellationToken cancellationToken = default)
         {
             if (!await _context.Customers.AsNoTracking().AnyAsync(c => c.Id == customerId, cancellationToken))
                 throw new KeyNotFoundException("Customer not found.");
-            skip = Math.Max(0, skip);
             take = Math.Clamp(take, 1, 200);
-            var rows = await _context.CustomerDocumentAuditEntries
+            var query = _context.CustomerDocumentAuditEntries
                 .AsNoTracking()
-                .Where(a => a.CustomerId == customerId)
-                .OrderByDescending(a => a.OccurredAt)
-                .ThenByDescending(a => a.Id)
+                .Where(a => a.CustomerId == customerId);
+            if (beforeId.HasValue)
+                query = query.Where(a => a.Id < beforeId.Value);
+            var rows = await query
+                .OrderByDescending(a => a.Id)
                 .Select(AuditProjection)
-                .Skip(skip)
                 .Take(take + 1)
                 .ToListAsync(cancellationToken);
             return new PagedResult<CustomerDocumentAuditDto>
@@ -759,7 +767,7 @@ namespace DAMS.Application.Services
         {
             var requirement = await _context.CustomerDocumentRequirements.AsNoTracking()
                 .Include(r => r.Category)
-                .Include(r => r.Versions)
+                .Include(r => r.Versions.OrderByDescending(v => v.VersionNumber).Take(VersionPreviewSize + 1))
                 .SingleOrDefaultAsync(r => r.Id == requirementId && r.CustomerId == customerId, cancellationToken)
                 ?? throw new KeyNotFoundException("Document requirement not found.");
             return MapRequirement(requirement);
@@ -776,8 +784,12 @@ namespace DAMS.Application.Services
 
         private static CustomerDocumentRequirementDto MapRequirement(CustomerDocumentRequirement requirement)
         {
-            var versions = requirement.Versions
-                .OrderByDescending(v => v.VersionNumber)
+            // Versions arrive bounded to the newest VersionPreviewSize (+1 probe) from the read paths;
+            // the probe row, if present, only tells us older versions exist and is not rendered.
+            var ordered = requirement.Versions.OrderByDescending(v => v.VersionNumber).ToList();
+            var hasMoreVersions = ordered.Count > VersionPreviewSize;
+            var versions = ordered
+                .Take(VersionPreviewSize)
                 .Select(v => new CustomerDocumentVersionDto
                 {
                     Id = v.Id,
@@ -813,7 +825,8 @@ namespace DAMS.Application.Services
                 UpdatedAt = requirement.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(requirement.RowVersion),
                 LatestVersion = versions.SingleOrDefault(v => v.IsCurrent),
-                Versions = versions
+                Versions = versions,
+                HasMoreVersions = hasMoreVersions
             };
         }
 
@@ -924,7 +937,9 @@ namespace DAMS.Application.Services
                 Action = action,
                 PreviousStatus = previousStatus,
                 NewStatus = newStatus,
-                Notes = CleanOptional(notes, 2000),
+                // Not truncated: a category change summary records exact before/after values for every
+                // control field. The column is unbounded, so the full audited detail is preserved.
+                Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim(),
                 PerformedByUserId = actor.UserId,
                 PerformedByName = CleanRequired(actor.DisplayName, 200, "Actor name"),
                 OccurredAt = DateTime.UtcNow

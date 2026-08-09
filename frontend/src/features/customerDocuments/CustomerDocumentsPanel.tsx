@@ -154,11 +154,12 @@ function RequirementCard({ customerId, requirement, onAction, onFileError }: {
         </div>
       </div>
       {requirement.versions.length > 0 && <details className="mt-4 border-t border-[var(--border)] pt-3">
-        <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">Version history ({requirement.versions.length})</summary>
+        <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">Version history ({requirement.versions.length}{requirement.hasMoreVersions ? "+" : ""})</summary>
         <div className="mt-3 space-y-2">{requirement.versions.map((version) => <div key={version.id} className="flex flex-col gap-2 rounded-xl bg-[var(--surface-glass-hover)] p-3 text-xs sm:flex-row sm:items-center sm:justify-between">
           <div><p className="font-medium text-[var(--text-primary)]">Version {version.versionNumber} · {version.originalFileName} {version.isCurrent && "· Current"}</p><p className="mt-1 text-[var(--text-muted)]">Uploaded {new Date(version.uploadedAt).toLocaleString()} by {version.uploadedByName ?? "Admin"} · {statusLabel(version.reviewStatus)}</p>{version.reviewReason && <p className="mt-1 text-rose-300">{version.reviewReason}</p>}</div>
           <div className="flex gap-2"><button type="button" className="text-indigo-300 hover:underline" onClick={() => open(false, version)}>View</button><button type="button" className="text-indigo-300 hover:underline" onClick={() => open(true, version)}>Download</button></div>
         </div>)}</div>
+        {requirement.hasMoreVersions && <p className="mt-2 text-xs text-[var(--text-muted)]">Showing the latest {requirement.versions.length} versions; older versions are retained but not listed here.</p>}
       </details>}
     </article>
   );

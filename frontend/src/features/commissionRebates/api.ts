@@ -1,5 +1,5 @@
 import { api } from "../../api/api";
-import type { BookingWorkspace, Commission, CommissionRebateSummary, CommissionRule, PagedResult, Partner, Rebate } from "./types";
+import type { AuditEntry, BookingWorkspace, Commission, CommissionRebateSummary, CommissionRule, PagedResult, Partner, Rebate } from "./types";
 
 const root = "/api/finance/commissions-rebates";
 
@@ -30,6 +30,10 @@ export const commissionRebateApi = {
   commissions: (status="", skip=0, take=25) => { const q=new URLSearchParams({skip:String(skip),take:String(take)});if(status)q.set("status",status);return json<PagedResult<Commission>>(`/commissions?${q}`); },
   rebates: (status="", skip=0, take=25) => { const q=new URLSearchParams({skip:String(skip),take:String(take)});if(status)q.set("status",status);return json<PagedResult<Rebate>>(`/rebates?${q}`); },
   workspace: (bookingId:number) => json<BookingWorkspace>(`/bookings/${bookingId}`),
+  bookingAudit: (bookingId:number, beforeId?:number, take=50) => {
+    const q = new URLSearchParams({take:String(take)}); if(beforeId!==undefined)q.set("beforeId",String(beforeId));
+    return json<PagedResult<AuditEntry>>(`/bookings/${bookingId}/audit?${q}`);
+  },
   attribution: (body:unknown, id?:number) => json<unknown>(id?`/attributions/${id}`:"/attributions", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   createCommission: (bookingId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions`, {method:"POST",body:JSON.stringify(body)}),
   commissionStatus: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/status`, {method:"POST",body:JSON.stringify(body)}),

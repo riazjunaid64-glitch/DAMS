@@ -12,7 +12,7 @@ namespace DAMS.Application.Interfaces
         Task DeleteCategoryAsync(int id, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
         Task<CustomerDocumentAssignmentResultDto> AssignCategoryAsync(int id, AssignCustomerDocumentCategoryDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
         Task<CustomerDocumentChecklistDto> GetChecklistAsync(int customerId, CancellationToken cancellationToken = default);
-        Task<PagedResult<CustomerDocumentAuditDto>> GetHistoryAsync(int customerId, int skip, int take, CancellationToken cancellationToken = default);
+        Task<PagedResult<CustomerDocumentAuditDto>> GetHistoryAsync(int customerId, int? beforeId, int take, CancellationToken cancellationToken = default);
         Task<CustomerDocumentRequirementDto> AddRequirementAsync(int customerId, AddCustomerDocumentRequirementDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
         Task<CustomerDocumentRequirementDto> UploadAsync(int customerId, int requirementId, string concurrencyToken, CustomerDocumentUpload upload, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
         Task<CustomerDocumentRequirementDto> ChangeStatusAsync(int customerId, int requirementId, CustomerDocumentStatusChangeDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);

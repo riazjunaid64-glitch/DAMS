@@ -75,7 +75,7 @@ export interface Rebate {
 export interface BookingWorkspace {
   bookingId:number; bookingReference:string; customerName:string; projectName:string; unitNumber:string; bookingStatus:string;
   agreedSalePrice:number; netSalePrice:number; amountCollected:number; rebateCredits:number;
-  attributions:Attribution[]; commissions:Commission[]; rebates:Rebate[]; audit:AuditEntry[];
+  attributions:Attribution[]; commissions:Commission[]; rebates:Rebate[]; audit:AuditEntry[]; hasMoreAudit:boolean;
 }
 
 export interface FinanceAccountOption { id:number; name:string; accountHolderName:string; isActive:boolean }

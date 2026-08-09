@@ -5,7 +5,7 @@ import type { DocumentRequirement } from "./types.ts";
 const requirement = (status: DocumentRequirement["status"]): DocumentRequirement => ({
   id: 1, categoryIsActive: true, name: "CNIC Front", isRequired: true, displayOrder: 1,
   allowedFileTypes: [".pdf"], maxFileSizeBytes: 1024, status, updatedAt: "2026-08-04",
-  concurrencyToken: "token", versions: [],
+  concurrencyToken: "token", versions: [], hasMoreVersions: false,
 });
 
 describe("customer document UI state", () => {

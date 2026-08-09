@@ -225,8 +225,42 @@ namespace DAMS.Application.Services
                     newRebate: rebate.Status, newAmount: amount, reason: dto.Reference);
                 audit.RebateDisbursement = disbursement;
                 await _context.SaveChangesAsync(cancellationToken);
+                if (dto.Method is CustomerRebateMethod.OutstandingBalanceReduction
+                    or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment)
+                    await TryAdvanceBookingAmountMilestoneAsync(bookingId, cancellationToken);
                 return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
             }, cancellationToken);
+
+        // A booking-level credit (balance reduction / credit note / installment adjustment) can cover
+        // the booking-amount milestone entirely on its own. That milestone is normally advanced by a
+        // cash booking-amount payment, but once credits meet the effective requirement there is no
+        // remaining cash to collect — and therefore no payment that could ever trigger the advance —
+        // so the booking would deadlock in AwaitingBookingAmount. Advance it here using the same rule
+        // as BookingService.RecordBookingAmountPaymentAsync (net price minus non-cash credits, capped
+        // at the required amount). Runs after the disbursement is saved so the just-applied credit is
+        // visible to the DB-side credit sum.
+        private async Task TryAdvanceBookingAmountMilestoneAsync(int bookingId, CancellationToken cancellationToken)
+        {
+            var booking = await _context.Bookings.Include(b => b.Unit)
+                .SingleOrDefaultAsync(b => b.Id == bookingId, cancellationToken);
+            if (booking is null || booking.Status != BookingStatus.AwaitingBookingAmount || booking.BookingAmountRequired <= 0m)
+                return;
+            var netSalePrice = Money(booking.AgreedSalePrice - booking.DiscountAmount);
+            var credits = await ValidBookingRebateCreditsAsync(bookingId, cancellationToken);
+            var effectiveRequired = Math.Min(booking.BookingAmountRequired, Math.Max(0m, netSalePrice - credits));
+            if (booking.BookingAmountReceived < effectiveRequired)
+                return;
+            booking.Status = BookingStatus.PaymentPlanActive;
+            booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
+            booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+            booking.UpdatedAt = DateTime.UtcNow;
+            if (booking.Unit != null)
+            {
+                booking.Unit.Status = UnitStatus.OnPaymentPlan;
+                booking.Unit.UpdatedAt = DateTime.UtcNow;
+            }
+            await _context.SaveChangesAsync(cancellationToken);
+        }
 
         public Task<BookingCommissionRebateWorkspaceDto> ReverseRebateDisbursementAsync(int bookingId, int rebateId,
             int disbursementId, ReverseMoneyMovementDto dto, FinancialWorkflowActor actor,

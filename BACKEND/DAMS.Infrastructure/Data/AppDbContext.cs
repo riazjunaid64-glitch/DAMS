@@ -319,7 +319,9 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.Action).HasConversion<int>();
                 entity.Property(a => a.PreviousStatus).HasConversion<int?>();
                 entity.Property(a => a.NewStatus).HasConversion<int?>();
-                entity.Property(a => a.Notes).HasMaxLength(2000);
+                // Unbounded: category change summaries record exact before/after values for every
+                // control field; a fixed cap would silently truncate and lose the audited values.
+                entity.Property(a => a.Notes);
                 entity.Property(a => a.PerformedByName).HasMaxLength(200);
 
                 entity.HasIndex(a => new { a.CustomerId, a.OccurredAt });
@@ -800,7 +802,15 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.RowVersion).IsRowVersion();
                 entity.ToTable(t => t.HasCheckConstraint("CK_BookingCommissions_Amounts",
                     "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0) AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100"));
-                entity.HasIndex(c => new { c.BookingId, c.PartnerId }).IsUnique();
+                // Uniqueness is enforced only on the live commission for a (booking, partner):
+                // a rejected, cancelled, or reversed row is closed history and must be allowed to
+                // coexist with a corrected replacement. Without the filter, superseding a rejected
+                // commission would violate the unique index at insert time.
+                entity.HasIndex(c => new { c.BookingId, c.PartnerId })
+                      .IsUnique()
+                      .HasFilter($"[Status] <> {(int)BookingCommissionStatus.Rejected} " +
+                                 $"AND [Status] <> {(int)BookingCommissionStatus.Cancelled} " +
+                                 $"AND [Status] <> {(int)BookingCommissionStatus.Reversed}");
                 entity.HasIndex(c => new { c.Status, c.CreatedAt });
                 entity.HasIndex(c => c.RuleId);
                 entity.HasOne(c => c.Booking).WithMany(b => b.Commissions).HasForeignKey(c => c.BookingId).OnDelete(DeleteBehavior.Restrict);
@@ -866,7 +876,15 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(r => r.RowVersion).IsRowVersion();
                 entity.ToTable(t => t.HasCheckConstraint("CK_CustomerRebates_Amounts",
                     "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0)"));
-                entity.HasIndex(r => r.BookingId).IsUnique();
+                // Uniqueness is enforced only on the live rebate for a booking: a rejected,
+                // cancelled, or reversed row is closed history and must be allowed to coexist with a
+                // corrected replacement. Without the filter, superseding a returned/rejected rebate
+                // would violate the unique index at insert time.
+                entity.HasIndex(r => r.BookingId)
+                      .IsUnique()
+                      .HasFilter($"[Status] <> {(int)CustomerRebateStatus.Rejected} " +
+                                 $"AND [Status] <> {(int)CustomerRebateStatus.Cancelled} " +
+                                 $"AND [Status] <> {(int)CustomerRebateStatus.Reversed}");
                 entity.HasIndex(r => new { r.Status, r.CreatedAt });
                 entity.HasIndex(r => r.CustomerId);
                 entity.HasOne(r => r.Booking).WithMany(b => b.Rebates).HasForeignKey(r => r.BookingId).OnDelete(DeleteBehavior.Restrict);
@@ -936,7 +954,10 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.NewRebateStatus).HasConversion<int?>();
                 entity.Property(a => a.PreviousAmount).HasColumnType("decimal(18,2)");
                 entity.Property(a => a.NewAmount).HasColumnType("decimal(18,2)");
-                entity.Property(a => a.Reason).HasMaxLength(2000);
+                // Unbounded: machine-generated rule change summaries record exact before/after values
+                // for every field and can legitimately exceed a fixed cap; a length limit here would
+                // make an otherwise-valid rule edit fail on save. Immutable append-only rows.
+                entity.Property(a => a.Reason);
                 entity.Property(a => a.PerformedByName).HasMaxLength(200);
                 entity.HasIndex(a => new { a.BookingId, a.OccurredAt });
                 entity.HasIndex(a => new { a.CommissionRuleId, a.OccurredAt });

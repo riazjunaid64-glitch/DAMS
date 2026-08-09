@@ -390,6 +390,77 @@ public sealed class CustomerDocumentTests
         Assert.Equal("Admin", authorize!.Roles);
     }
 
+    [Fact]
+    public async Task Download_FailsClosed_WhenTheAccessAuditCannotBeSaved()
+    {
+        await using var db = Context();
+        var storage = new MemoryStorage();
+        var service = Service(db, storage);
+        var customer = await Customer(db, "Audited Download Customer");
+        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Sensitive ID"), Admin);
+        requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken, Pdf("id.pdf"), Admin);
+
+        // A private identity document must never be released without a durable download record: if the
+        // audit write fails, the download fails rather than serving an unlogged access.
+        db.SavingChanges += (_, _) => throw new DbUpdateException("Simulated audit write failure.");
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.DownloadAsync(customer.Id, requirement.Id,
+            requirement.LatestVersion!.Id, Admin));
+        Assert.False(await db.CustomerDocumentAuditEntries.AnyAsync(a => a.Action == CustomerDocumentAction.FileDownloaded));
+    }
+
+    [Fact]
+    public async Task CategoryUpdate_WithLongValues_PreservesFullBeforeAfter_WithoutTruncation()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var category = await service.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
+        {
+            Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true,
+            Description = new string('a', 1000), AllowedFileTypes = [".pdf"],
+            MaxFileSizeBytes = 1024 * 1024, AssignmentMode = CustomerDocumentAssignmentMode.None
+        }, Admin);
+
+        // The before -> after diff of the two 1,000-char descriptions exceeds the old 2,000-char cap.
+        await service.UpdateCategoryAsync(category.Id, new UpdateCustomerDocumentCategoryDto
+        {
+            Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true, DisplayOrder = category.DisplayOrder,
+            Description = new string('b', 1000), AllowedFileTypes = [".pdf"], MaxFileSizeBytes = category.MaxFileSizeBytes,
+            IsActive = true, ConcurrencyToken = category.ConcurrencyToken
+        }, Admin);
+
+        var audit = Assert.Single(await db.CustomerDocumentAuditEntries
+            .Where(a => a.Action == CustomerDocumentAction.CategoryUpdated).ToListAsync());
+        Assert.NotNull(audit.Notes);
+        Assert.True(audit.Notes!.Length > 2000);
+        // The exact new value is preserved in full rather than truncated at the old cap.
+        Assert.Contains(new string('b', 1000), audit.Notes);
+    }
+
+    [Fact]
+    public async Task Checklist_BoundsVersionsToThePreview_AndFlagsMore()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await Customer(db, "Heavy Versions Customer");
+        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Frequently Replaced"), Admin);
+        // Seed more versions than the preview bound directly; a full replacement cycle each would be noise.
+        for (var i = 1; i <= 25; i++)
+            db.CustomerDocumentVersions.Add(new CustomerDocumentVersion
+            {
+                RequirementId = requirement.Id, VersionNumber = i, IsCurrent = i == 25,
+                StoredFileName = $"stored-{i}.pdf", OriginalFileName = $"v{i}.pdf",
+                ContentType = "application/pdf", FileSize = 10, UploadedByName = "Admin", UploadedAt = DateTime.UtcNow,
+                ReviewStatus = CustomerDocumentVersionStatus.UnderReview
+            });
+        await db.SaveChangesAsync();
+
+        var checklist = await service.GetChecklistAsync(customer.Id);
+        var loaded = Assert.Single(checklist.Requirements, r => r.Id == requirement.Id);
+        Assert.Equal(20, loaded.Versions.Count);
+        Assert.True(loaded.HasMoreVersions);
+        Assert.Equal(25, loaded.LatestVersion!.VersionNumber);
+    }
+
     private static AppDbContext Context()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()

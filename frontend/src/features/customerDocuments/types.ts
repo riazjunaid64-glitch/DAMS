@@ -52,6 +52,7 @@ export interface DocumentRequirement {
   concurrencyToken: string;
   latestVersion?: DocumentVersion | null;
   versions: DocumentVersion[];
+  hasMoreVersions: boolean;
 }
 
 export interface DocumentAudit {
@@ -73,6 +74,12 @@ export interface DocumentChecklist {
   summary: DocumentSummary;
   requirements: DocumentRequirement[];
   history: DocumentAudit[];
+  hasMoreHistory: boolean;
+}
+
+export interface DocumentAuditPage {
+  items: DocumentAudit[];
+  hasMore: boolean;
 }
 
 export interface DocumentCategory {

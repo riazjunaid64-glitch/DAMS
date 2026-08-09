@@ -146,7 +146,11 @@ namespace DAMS.Application.Services
                 CommissionRuleId = commissionRuleId,
                 Action = action, PreviousCommissionStatus = oldCommission, NewCommissionStatus = newCommission,
                 PreviousRebateStatus = oldRebate, NewRebateStatus = newRebate,
-                PreviousAmount = previousAmount, NewAmount = newAmount, Reason = Limited(reason, "Reason", 2000),
+                // Not length-capped: the reason may be a machine-generated rule change summary that
+                // records exact before/after values for every field and can exceed a fixed cap.
+                // User-entered reasons are already validated at their call sites. The column is
+                // unbounded, so a long summary is preserved in full instead of failing the save.
+                PreviousAmount = previousAmount, NewAmount = newAmount, Reason = Clean(reason),
                 PerformedByUserId = actor.UserId, PerformedByName = Limited(actor.DisplayName, "Actor name", 200),
                 OccurredAt = DateTime.UtcNow
             };

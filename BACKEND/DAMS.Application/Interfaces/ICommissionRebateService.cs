@@ -35,7 +35,7 @@ namespace DAMS.Application.Interfaces
             int skip, int take, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> GetBookingWorkspaceAsync(int bookingId,
             CancellationToken cancellationToken = default);
-        Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int skip, int take,
+        Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int? beforeId, int take,
             CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId, CreateBookingCommissionDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);

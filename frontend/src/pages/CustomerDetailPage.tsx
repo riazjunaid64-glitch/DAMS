@@ -226,7 +226,7 @@ export default function CustomerDetailPage({ user }: Props) {
           )}
         </div>}
       {activeTab === "documents" && <CustomerDocumentsPanel customerId={customerId} checklist={documents} loading={documentsLoading} error={documentsError} onRefresh={loadDocuments} />}
-      {activeTab === "history" && (documentsLoading && !documents ? <p className="py-12 text-center text-sm text-[var(--text-muted)]">Loading history…</p> : documentsError && !documents ? <p className="py-12 text-center text-sm text-rose-300">{documentsError}</p> : <CustomerDocumentHistory history={documents?.history ?? []} />)}
+      {activeTab === "history" && (documentsLoading && !documents ? <p className="py-12 text-center text-sm text-[var(--text-muted)]">Loading history…</p> : documentsError && !documents ? <p className="py-12 text-center text-sm text-rose-300">{documentsError}</p> : <CustomerDocumentHistory customerId={customerId} history={documents?.history ?? []} hasMore={documents?.hasMoreHistory ?? false} />)}
       </TabLayout>
 
       {editing && (

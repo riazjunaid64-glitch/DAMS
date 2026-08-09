@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
@@ -91,6 +92,91 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         var response = await client.GetAsync($"/api/customer-documents/customers/{customerId}");
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
+
+    // Mutation surfaces (create/update). Authorization runs before model binding, so an empty body
+    // still exercises the 401/403 gate.
+    public static IEnumerable<object[]> AdminOnlyMutations() => new[]
+    {
+        new object[] { "/api/customer-documents/categories" },
+        new object[] { "/api/finance/commissions-rebates/partners" },
+        new object[] { "/api/finance/commissions-rebates/rules" },
+    };
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyMutations))]
+    public async Task AnonymousMutation_IsRejectedWith401(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.PostAsync(path, JsonBody());
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyMutations))]
+    public async Task NonAdminMutation_IsRejectedWith403(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer("Client");
+        var response = await client.PostAsync(path, JsonBody());
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    // Private-file download surfaces: a leak here would expose identity documents / financial evidence.
+    public static IEnumerable<object[]> AdminOnlyDownloads() => new[]
+    {
+        new object[] { "/api/customer-documents/customers/1/requirements/1/versions/1/file" },
+        new object[] { "/api/finance/commissions-rebates/evidence/1/file" },
+    };
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyDownloads))]
+    public async Task AnonymousDownload_IsRejectedWith401(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyDownloads))]
+    public async Task NonAdminDownload_IsRejectedWith403(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer("Client");
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    // Per-resource reads: a non-admin must not reach ANY customer's checklist/history or a booking's
+    // audit by guessing ids — the Admin-only policy is the ownership boundary and rejects before the
+    // resource is resolved (so this is the IDOR guard for these back-office surfaces).
+    public static IEnumerable<object[]> AdminOnlyResourceReads() => new[]
+    {
+        new object[] { "/api/customer-documents/customers/1" },
+        new object[] { "/api/customer-documents/customers/1/history" },
+        new object[] { "/api/finance/commissions-rebates/bookings/1/audit" },
+    };
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyResourceReads))]
+    public async Task AnonymousResourceRead_IsRejectedWith401(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(AdminOnlyResourceReads))]
+    public async Task NonAdminResourceRead_IsRejectedWith403(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer("Client");
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    private static StringContent JsonBody() => new("{}", Encoding.UTF8, "application/json");
 
     private static readonly WebApplicationFactoryClientOptions NoRedirect = new() { AllowAutoRedirect = false };
 

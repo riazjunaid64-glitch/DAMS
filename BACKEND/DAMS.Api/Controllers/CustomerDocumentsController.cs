@@ -58,8 +58,8 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("customers/{customerId:int}/history")]
         public Task<IActionResult> GetHistory(int customerId,
-            [FromQuery] int skip = 0, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
-            RunAsync(() => _documents.GetHistoryAsync(customerId, skip, take, cancellationToken));
+            [FromQuery] int? beforeId = null, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
+            RunAsync(() => _documents.GetHistoryAsync(customerId, beforeId, take, cancellationToken));
 
         [HttpPost("customers/{customerId:int}/requirements")]
         public Task<IActionResult> AddRequirement(

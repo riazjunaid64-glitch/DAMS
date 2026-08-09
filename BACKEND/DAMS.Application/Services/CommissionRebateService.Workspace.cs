@@ -32,8 +32,10 @@ namespace DAMS.Application.Services
                 .Where(r => r.BookingId == bookingId).OrderBy(r => r.CreatedAt).AsSplitQuery().ToListAsync(cancellationToken);
             // Only the newest audit entries are inlined; the full log is served by the paged audit
             // endpoint so a heavily-worked booking cannot force an unbounded read into the workspace.
+            // Ordered by Id (a monotonic surrogate that matches insertion/time order) so "load more"
+            // can continue from the last previewed Id with a stable keyset cursor.
             var audit = await _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId)
-                .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id)
+                .OrderByDescending(a => a.Id)
                 .Select(AuditProjection).Take(AuditPreviewSize + 1).ToListAsync(cancellationToken);
             var hasMoreAudit = audit.Count > AuditPreviewSize;
             if (hasMoreAudit)
@@ -67,16 +69,20 @@ namespace DAMS.Application.Services
                 Reason = a.Reason, PerformedByName = a.PerformedByName, OccurredAt = a.OccurredAt
             };
 
-        public async Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int skip, int take,
+        // Keyset (cursor) pagination on the monotonic Id: the caller passes the Id of the last row it
+        // has seen and receives strictly older rows. Unlike skip/take, this stays stable when new
+        // audit rows are appended between page loads — offset paging would repeat or skip rows.
+        public async Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int? beforeId, int take,
             CancellationToken cancellationToken = default)
         {
             if (!await _context.Bookings.AsNoTracking().AnyAsync(b => b.Id == bookingId, cancellationToken))
                 throw new KeyNotFoundException("Booking not found.");
-            skip = Math.Max(0, skip);
             take = Math.Clamp(take, 1, 200);
-            var rows = await _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId)
-                .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id)
-                .Select(AuditProjection).Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var query = _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId);
+            if (beforeId.HasValue)
+                query = query.Where(a => a.Id < beforeId.Value);
+            var rows = await query.OrderByDescending(a => a.Id)
+                .Select(AuditProjection).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<FinancialAuditDto>
             {
                 Items = rows.Take(take).ToList(),

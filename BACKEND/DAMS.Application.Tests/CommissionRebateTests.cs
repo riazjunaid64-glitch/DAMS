@@ -665,6 +665,99 @@ public sealed class CommissionRebateTests
         Assert.Empty(harness.Context.RebateDisbursementReversals);
     }
 
+    [Fact]
+    public void FilteredUniqueIndexes_AllowSupersedingTerminalFinancialRecords()
+    {
+        using var context = Context();
+        // The uniqueness is filtered to non-terminal rows, which is what lets a rejected/cancelled/
+        // reversed record be superseded on real SQL Server without violating the index at insert.
+        var rebateIndex = context.Model.FindEntityType(typeof(CustomerRebate))!.GetIndexes()
+            .Single(i => i.IsUnique && i.Properties.Count == 1 && i.Properties.Single().Name == "BookingId");
+        Assert.False(string.IsNullOrWhiteSpace(rebateIndex.GetFilter()));
+        var commissionIndex = context.Model.FindEntityType(typeof(BookingCommission))!.GetIndexes()
+            .Single(i => i.IsUnique && i.Properties.Select(p => p.Name).SequenceEqual(new[] { "BookingId", "PartnerId" }));
+        Assert.False(string.IsNullOrWhiteSpace(commissionIndex.GetFilter()));
+    }
+
+    [Fact]
+    public async Task BookingCredit_ThatCoversTheBookingAmount_AdvancesTheOtherwiseStuckMilestone()
+    {
+        await using var harness = await Harness.Create();
+        // Return the booking to awaiting-booking-amount with no cash received, drop the seeded payment
+        // so a full balance-reduction credit is possible, and reserve the unit.
+        var booking = harness.Context.Bookings.Include(b => b.Payments).Include(b => b.Unit).Single();
+        harness.Context.Payments.RemoveRange(booking.Payments);
+        booking.Status = BookingStatus.AwaitingBookingAmount;
+        booking.BookingAmountReceived = 0m;
+        booking.BookingAmountRequired = 100_000m;
+        booking.BookingAmountConfirmedDate = null;
+        booking.Unit.Status = UnitStatus.Reserved;
+        await harness.Context.SaveChangesAsync();
+
+        var full = harness.NetPrice; // the largest rebate the booking allows
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = full, Reason = "Full balance credit", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+        await harness.UploadPdf(FinancialEvidenceOwnerType.Rebate, rebate.Id);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.Approved, rebate.FinalAmount), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+
+        // Still awaiting the booking amount; there is no remaining cash a payment could ever settle.
+        Assert.Equal(BookingStatus.AwaitingBookingAmount, harness.Context.Bookings.Single().Status);
+
+        await harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
+            new RecordRebateDisbursementDto
+            {
+                Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = full, AppliedAt = DateTime.UtcNow,
+                IdempotencyKey = "full-credit", RebateConcurrencyToken = rebate.ConcurrencyToken
+            }, Actor);
+
+        // Applying the credit that covers the booking-amount milestone advances the stuck booking.
+        var advanced = harness.Context.Bookings.Include(b => b.Unit).Single();
+        Assert.Equal(BookingStatus.PaymentPlanActive, advanced.Status);
+        Assert.NotNull(advanced.BookingAmountConfirmedDate);
+        Assert.Equal(UnitStatus.OnPaymentPlan, advanced.Unit.Status);
+    }
+
+    [Fact]
+    public async Task RuleUpdate_WithMaximumLengthValues_PreservesFullDiff_WithoutFailing()
+    {
+        await using var harness = await Harness.Create();
+        var created = await harness.Service.CreateRuleAsync(new SaveCommissionRuleDto
+        {
+            Name = "Detailed Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
+            CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
+        }, Actor);
+
+        // Every long text field changes at once, so the machine-generated diff exceeds the old
+        // 2,000-char audit cap. The update must still succeed and record the full before -> after detail.
+        await harness.Service.UpdateRuleAsync(created.Id, new SaveCommissionRuleDto
+        {
+            Name = "Detailed Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
+            CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived,
+            Description = new string('a', 1000), EligibilityCondition = new string('c', 1000),
+            Notes = new string('b', 2000), ConcurrencyToken = created.ConcurrencyToken
+        }, Actor);
+
+        var audit = Assert.Single(harness.Context.FinancialWorkflowAuditEntries
+            .Where(a => a.Action == FinancialWorkflowAction.RuleUpdated).ToList());
+        Assert.NotNull(audit.Reason);
+        Assert.True(audit.Reason!.Length > 2000);
+        Assert.Contains(new string('b', 2000), audit.Reason);
+    }
+
     private static CommissionStatusChangeDto Change(BookingCommissionDto commission, BookingCommissionStatus status,
         string? reason = null, decimal? approved = null) => new()
     {

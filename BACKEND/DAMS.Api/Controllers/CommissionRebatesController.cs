@@ -79,8 +79,8 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("bookings/{bookingId:int}/audit")]
         public Task<IActionResult> BookingAudit(int bookingId,
-            [FromQuery] int skip = 0, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
-            Run(() => _service.GetBookingAuditAsync(bookingId, skip, take, cancellationToken));
+            [FromQuery] int? beforeId = null, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetBookingAuditAsync(bookingId, beforeId, take, cancellationToken));
 
         [HttpPost("bookings/{bookingId:int}/commissions")]
         public Task<IActionResult> CreateCommission(int bookingId, [FromBody] CreateBookingCommissionDto dto,
