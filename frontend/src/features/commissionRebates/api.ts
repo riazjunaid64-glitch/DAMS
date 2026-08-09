@@ -22,8 +22,8 @@ export const commissionRebateApi = {
   },
   savePartner: (body:unknown, id?:number) => json<Partner>(id?`/partners/${id}`:"/partners", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   partnerStatus: (id:number, body:unknown) => json<Partner>(`/partners/${id}/status`, {method:"PATCH",body:JSON.stringify(body)}),
-  rules: (isActive?:boolean, skip=0, take=500) => {
-    const q = new URLSearchParams({skip:String(skip),take:String(take)}); if(isActive!==undefined)q.set("isActive",String(isActive));
+  rules: (isActive?:boolean, skip=0, take=50, search="") => {
+    const q = new URLSearchParams({skip:String(skip),take:String(take)}); if(isActive!==undefined)q.set("isActive",String(isActive));if(search.trim())q.set("search",search.trim());
     return json<PagedResult<CommissionRule>>(`/rules?${q}`);
   },
   saveRule: (body:unknown, id?:number) => json<CommissionRule>(id?`/rules/${id}`:"/rules", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
@@ -36,10 +36,12 @@ export const commissionRebateApi = {
   },
   attribution: (body:unknown, id?:number) => json<unknown>(id?`/attributions/${id}`:"/attributions", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   createCommission: (bookingId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions`, {method:"POST",body:JSON.stringify(body)}),
+  updateCommission: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}`, {method:"PUT",body:JSON.stringify(body)}),
   commissionStatus: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/status`, {method:"POST",body:JSON.stringify(body)}),
   payout: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/payouts`, {method:"POST",body:JSON.stringify(body)}),
   reversePayout: (bookingId:number, commissionId:number, payoutId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/payouts/${payoutId}/reversals`, {method:"POST",body:JSON.stringify(body)}),
   createRebate: (bookingId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/rebates`, {method:"POST",body:JSON.stringify(body)}),
+  updateRebate: (bookingId:number, rebateId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/rebates/${rebateId}`, {method:"PUT",body:JSON.stringify(body)}),
   rebateStatus: (bookingId:number, rebateId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/rebates/${rebateId}/status`, {method:"POST",body:JSON.stringify(body)}),
   disburseRebate: (bookingId:number, rebateId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/rebates/${rebateId}/disbursements`, {method:"POST",body:JSON.stringify(body)}),
   reverseDisbursement: (bookingId:number, rebateId:number, disbursementId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/rebates/${rebateId}/disbursements/${disbursementId}/reversals`, {method:"POST",body:JSON.stringify(body)}),

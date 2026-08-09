@@ -4,6 +4,9 @@ using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace DAMS.Application.Services
 {
@@ -147,12 +150,16 @@ namespace DAMS.Application.Services
             return await MapAttributionAsync(attribution.Id, cancellationToken);
         }
 
-        public async Task<PagedResult<CommissionRuleDto>> GetRulesAsync(bool? isActive, int skip, int take,
+        public async Task<PagedResult<CommissionRuleDto>> GetRulesAsync(string? search, bool? isActive, int skip, int take,
             CancellationToken cancellationToken = default)
         {
             skip = Math.Max(0, skip);
-            take = Math.Clamp(take, 1, 500);
+            take = Math.Clamp(take, 1, 100);
             var query = _context.CommissionRules.AsNoTracking().AsQueryable();
+            var term = Limited(search, "Rule search", 100);
+            if (term != null)
+                query = query.Where(r => r.Name.Contains(term)
+                    || (r.Description != null && r.Description.Contains(term)));
             if (isActive.HasValue) query = query.Where(r => r.IsActive == isActive.Value);
             // Id is the final tie-breaker so paging is stable across rows with equal priority/name.
             var ordered = query.OrderByDescending(r => r.IsActive).ThenByDescending(r => r.Priority)
@@ -178,7 +185,8 @@ namespace DAMS.Application.Services
                 MaximumCommission = r.MaximumCommission, EligibilityCondition = r.EligibilityCondition,
                 EarningCondition = r.EarningCondition, MinimumCollectionPercent = r.MinimumCollectionPercent,
                 Priority = r.Priority, RequiresApproval = r.RequiresApproval, Notes = r.Notes,
-                ConcurrencyToken = Convert.ToBase64String(r.RowVersion)
+                ConcurrencyToken = Convert.ToBase64String(r.RowVersion),
+                CurrentRevisionNumber = r.Revisions.Select(x => (int?)x.RevisionNumber).Max() ?? 0
             });
 
         private async Task<CommissionRuleDto> GetRuleByIdAsync(int id, CancellationToken cancellationToken) =>
@@ -202,28 +210,38 @@ namespace DAMS.Application.Services
             if (dto.BookingId.HasValue && !await _context.Bookings.AnyAsync(b => b.Id == dto.BookingId, cancellationToken))
                 throw new InvalidOperationException("Booking not found.");
             CommissionRule rule;
-            string? changeSummary = null;
+            CommissionRuleRevision revision;
+            string changeReason;
             if (id.HasValue)
             {
-                rule = await _context.CommissionRules.SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
+                rule = await _context.CommissionRules.Include(r => r.Revisions)
+                    .SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
                     ?? throw new KeyNotFoundException("Commission rule not found.");
                 ApplyToken(rule, dto.ConcurrencyToken, "rule");
-                // Capture the payout-driving control values before and after the edit so the audit
-                // preserves what actually changed; without this a RuleUpdated entry is unreconstructable.
-                var before = RuleSnapshot(rule);
+                changeReason = Required(dto.ChangeReason, "Rule change reason", 2000);
+                var beforeJson = rule.Revisions.OrderByDescending(r => r.RevisionNumber)
+                    .Select(r => r.SnapshotJson).FirstOrDefault() ?? SerializeRuleSnapshot(rule);
                 AssignRule(rule, dto);
-                changeSummary = DiffSnapshots(before, RuleSnapshot(rule));
+                var afterJson = SerializeRuleSnapshot(rule);
+                if (string.Equals(beforeJson, afterJson, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Change at least one rule field before saving a new revision.");
+                revision = NewRuleRevision(rule, rule.Revisions.Select(r => r.RevisionNumber).DefaultIfEmpty(0).Max() + 1,
+                    beforeJson, afterJson, changeReason, actor);
             }
             else
             {
                 rule = new CommissionRule { CreatedAt = DateTime.UtcNow, CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName };
                 _context.CommissionRules.Add(rule);
                 AssignRule(rule, dto);
+                changeReason = Limited(dto.ChangeReason, "Rule change reason", 2000) ?? "Initial rule configuration.";
+                revision = NewRuleRevision(rule, 1, null, SerializeRuleSnapshot(rule), changeReason, actor);
             }
+            _context.CommissionRuleRevisions.Add(revision);
             rule.UpdatedAt = id.HasValue ? DateTime.UtcNow : null;
             var audit = Audit(id.HasValue ? FinancialWorkflowAction.RuleUpdated : FinancialWorkflowAction.RuleCreated,
-                actor, commissionRuleId: id, reason: changeSummary);
+                actor, commissionRuleId: id, reason: changeReason);
             if (!id.HasValue) audit.CommissionRule = rule;
+            audit.CommissionRuleRevision = revision;
             await _context.SaveChangesAsync(cancellationToken);
             return await GetRuleByIdAsync(rule.Id, cancellationToken);
         }
@@ -346,19 +364,32 @@ namespace DAMS.Application.Services
             ("Notes", r => r.Notes),
         };
 
-        private static List<(string Label, string? Value)> RuleSnapshot(CommissionRule r) =>
-            RuleFields.Select(f => (f.Label, f.Value(r))).ToList();
-
-        private static string DiffSnapshots(
-            List<(string Label, string? Value)> before,
-            List<(string Label, string? Value)> after)
+        private static string SerializeRuleSnapshot(CommissionRule rule)
         {
-            var changes = new List<string>();
-            for (var i = 0; i < before.Count; i++)
-                if (!string.Equals(before[i].Value, after[i].Value, StringComparison.Ordinal))
-                    changes.Add($"{before[i].Label}: {before[i].Value ?? "—"} → {after[i].Value ?? "—"}");
-            return changes.Count == 0 ? "No fields changed." : string.Join("; ", changes);
+            var snapshot = new SortedDictionary<string, string?>(StringComparer.Ordinal);
+            foreach (var field in RuleFields)
+                snapshot[field.Label] = field.Value(rule);
+            return JsonSerializer.Serialize(snapshot);
         }
+
+        private static CommissionRuleRevision NewRuleRevision(
+            CommissionRule rule,
+            int revisionNumber,
+            string? previousSnapshotJson,
+            string snapshotJson,
+            string changeReason,
+            FinancialWorkflowActor actor) => new()
+        {
+            Rule = rule,
+            RevisionNumber = revisionNumber,
+            PreviousSnapshotJson = previousSnapshotJson,
+            SnapshotJson = snapshotJson,
+            SnapshotHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(snapshotJson))),
+            ChangeReason = changeReason,
+            ChangedByUserId = actor.UserId,
+            ChangedByName = Limited(actor.DisplayName, "Actor name", 200),
+            ChangedAt = DateTime.UtcNow
+        };
 
         private static void AssignRule(CommissionRule r, SaveCommissionRuleDto dto)
         {

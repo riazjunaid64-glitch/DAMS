@@ -37,6 +37,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
         public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
         public DbSet<CommissionRule> CommissionRules { get; set; }
+        public DbSet<CommissionRuleRevision> CommissionRuleRevisions { get; set; }
         public DbSet<BookingCommission> BookingCommissions { get; set; }
         public DbSet<CommissionPayout> CommissionPayouts { get; set; }
         public DbSet<CommissionPayoutReversal> CommissionPayoutReversals { get; set; }
@@ -813,10 +814,24 @@ namespace DAMS.Infrastructure.Data
                                  $"AND [Status] <> {(int)BookingCommissionStatus.Reversed}");
                 entity.HasIndex(c => new { c.Status, c.CreatedAt });
                 entity.HasIndex(c => c.RuleId);
+                entity.HasIndex(c => c.RuleRevisionId);
                 entity.HasOne(c => c.Booking).WithMany(b => b.Commissions).HasForeignKey(c => c.BookingId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(c => c.Partner).WithMany(p => p.Commissions).HasForeignKey(c => c.PartnerId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(c => c.Attribution).WithMany(a => a.Commissions).HasForeignKey(c => c.AttributionId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(c => c.Rule).WithMany(r => r.Commissions).HasForeignKey(c => c.RuleId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(c => c.RuleRevision).WithMany(r => r.Commissions).HasForeignKey(c => c.RuleRevisionId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CommissionRuleRevision>(entity =>
+            {
+                entity.Property(r => r.SnapshotJson).IsRequired();
+                entity.Property(r => r.PreviousSnapshotJson);
+                entity.Property(r => r.SnapshotHash).IsRequired().HasMaxLength(64).IsUnicode(false);
+                entity.Property(r => r.ChangeReason).IsRequired().HasMaxLength(2000);
+                entity.Property(r => r.ChangedByName).HasMaxLength(200);
+                entity.HasIndex(r => new { r.RuleId, r.RevisionNumber }).IsUnique();
+                entity.HasIndex(r => r.SnapshotHash);
+                entity.HasOne(r => r.Rule).WithMany(r => r.Revisions).HasForeignKey(r => r.RuleId).OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<CommissionPayout>(entity =>
@@ -961,6 +976,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.PerformedByName).HasMaxLength(200);
                 entity.HasIndex(a => new { a.BookingId, a.OccurredAt });
                 entity.HasIndex(a => new { a.CommissionRuleId, a.OccurredAt });
+                entity.HasIndex(a => new { a.CommissionRuleRevisionId, a.OccurredAt });
                 entity.HasIndex(a => new { a.PartnerId, a.OccurredAt });
                 entity.HasIndex(a => new { a.CommissionId, a.OccurredAt });
                 entity.HasIndex(a => new { a.RebateId, a.OccurredAt });
@@ -968,11 +984,38 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.Customer).WithMany().HasForeignKey(a => a.CustomerId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.Booking).WithMany().HasForeignKey(a => a.BookingId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.CommissionRule).WithMany().HasForeignKey(a => a.CommissionRuleId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(a => a.CommissionRuleRevision).WithMany(r => r.AuditEntries).HasForeignKey(a => a.CommissionRuleRevisionId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.Commission).WithMany().HasForeignKey(a => a.CommissionId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.Payout).WithMany().HasForeignKey(a => a.PayoutId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.Rebate).WithMany().HasForeignKey(a => a.RebateId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(a => a.RebateDisbursement).WithMany().HasForeignKey(a => a.RebateDisbursementId).OnDelete(DeleteBehavior.Restrict);
             });
+        }
+
+        private void EnforceImmutableHistory()
+        {
+            if (ChangeTracker.Entries<CommissionRuleRevision>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Commission rule revisions are immutable.");
+            if (ChangeTracker.Entries<FinancialWorkflowAuditEntry>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Financial workflow audit entries are append-only.");
+            if (ChangeTracker.Entries<CustomerDocumentAuditEntry>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Customer document audit entries are append-only.");
+        }
+
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            EnforceImmutableHistory();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
+            CancellationToken cancellationToken = default)
+        {
+            EnforceImmutableHistory();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
 
         private static CustomerDocumentCategory SeedDocumentCategory(

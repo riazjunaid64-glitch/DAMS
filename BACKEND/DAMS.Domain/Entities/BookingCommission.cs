@@ -9,6 +9,7 @@ namespace DAMS.Domain.Entities
         public int PartnerId { get; set; }
         public int? AttributionId { get; set; }
         public int? RuleId { get; set; }
+        public int? RuleRevisionId { get; set; }
         public bool IsManual { get; set; }
         public string? ManualReason { get; set; }
 
@@ -57,6 +58,7 @@ namespace DAMS.Domain.Entities
         public ThirdPartyPartner Partner { get; set; } = null!;
         public ThirdPartyAttribution? Attribution { get; set; }
         public CommissionRule? Rule { get; set; }
+        public CommissionRuleRevision? RuleRevision { get; set; }
         public ICollection<CommissionPayout> Payouts { get; set; } = new List<CommissionPayout>();
         public ICollection<FinancialEvidence> Evidence { get; set; } = new List<FinancialEvidence>();
     }

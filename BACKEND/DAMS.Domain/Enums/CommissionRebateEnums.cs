@@ -98,7 +98,8 @@ namespace DAMS.Domain.Enums
         RebateDisbursementReversed = 31,
         EvidenceUploaded = 32,
         EvidenceDownloaded = 33,
-        RebateReversalRequired = 34
+        RebateReversalRequired = 34,
+        RebateAdjusted = 35
     }
 
     public enum FinancialEvidenceOwnerType

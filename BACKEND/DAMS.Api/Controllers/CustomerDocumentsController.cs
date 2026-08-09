@@ -61,6 +61,13 @@ namespace DAMS.Api.Controllers
             [FromQuery] int? beforeId = null, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
             RunAsync(() => _documents.GetHistoryAsync(customerId, beforeId, take, cancellationToken));
 
+        [HttpGet("customers/{customerId:int}/requirements/{requirementId:int}/versions")]
+        public Task<IActionResult> GetVersions(int customerId, int requirementId,
+            [FromQuery] int? beforeVersionNumber = null, [FromQuery] int take = 20,
+            CancellationToken cancellationToken = default) =>
+            RunAsync(() => _documents.GetVersionsAsync(customerId, requirementId, beforeVersionNumber, take,
+                cancellationToken));
+
         [HttpPost("customers/{customerId:int}/requirements")]
         public Task<IActionResult> AddRequirement(
             int customerId,

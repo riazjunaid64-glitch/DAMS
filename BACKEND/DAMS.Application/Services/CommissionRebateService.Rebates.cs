@@ -87,6 +87,77 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
+        public async Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        {
+            var rebate = await _context.CustomerRebates.Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
+                .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
+                ?? throw new KeyNotFoundException("Rebate not found for this booking.");
+            ApplyToken(rebate, dto.ConcurrencyToken, "rebate");
+            if (rebate.Status != CustomerRebateStatus.Draft)
+                throw new InvalidOperationException("Only a draft rebate can be edited. Return it for correction first.");
+            if (NetDisbursed(rebate) != 0m || rebate.Disbursements.Count != 0)
+                throw new InvalidOperationException("A rebate with application or payment history cannot be edited.");
+
+            var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
+            var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
+            EnsureActiveBooking(booking);
+            if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis))
+                throw new InvalidOperationException("Select a valid rebate calculation type and basis.");
+            if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
+            var reason = Required(dto.Reason, "Rebate reason", 2000);
+            var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
+            decimal calculated;
+            if (dto.CalculationType == FinancialCalculationType.Percentage)
+            {
+                if (dto.PercentageRate is not (> 0m and <= 100m) || dto.FixedAmount.HasValue)
+                    throw new InvalidOperationException("Percentage rebate requires a rate between 0 and 100 and no fixed amount.");
+                calculated = Calculate(dto.CalculationType, basis, Rate(dto.PercentageRate.Value), null);
+            }
+            else
+            {
+                if (dto.FixedAmount is not > 0m || dto.PercentageRate.HasValue)
+                    throw new InvalidOperationException("Fixed rebate requires a positive fixed amount and no percentage rate.");
+                calculated = Calculate(dto.CalculationType, basis, null, dto.FixedAmount);
+            }
+            var adjustment = Money(dto.AdjustmentAmount);
+            var adjustmentReason = Limited(dto.AdjustmentReason, "Adjustment reason", 2000);
+            if (adjustment != 0m && adjustmentReason == null)
+                throw new InvalidOperationException("An adjustment reason is required.");
+            var final = Money(calculated + adjustment);
+            if (final <= 0m) throw new InvalidOperationException("Final rebate must be greater than zero.");
+            if (final > Money(booking.AgreedSalePrice - booking.DiscountAmount))
+                throw new InvalidOperationException("Rebate cannot exceed the booking's net sale price.");
+
+            var previousAmount = rebate.FinalAmount;
+            rebate.CalculationType = dto.CalculationType;
+            rebate.PercentageRate = dto.PercentageRate.HasValue ? Rate(dto.PercentageRate.Value) : null;
+            rebate.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
+            rebate.CalculationBasis = dto.CalculationBasis;
+            rebate.BasisAmount = basis;
+            rebate.CalculatedAmount = calculated;
+            rebate.AdjustmentAmount = adjustment;
+            rebate.AdjustmentReason = adjustmentReason;
+            rebate.FinalAmount = final;
+            rebate.ApprovedAmount = null;
+            rebate.Reason = reason;
+            rebate.Method = dto.Method;
+            rebate.Notes = Limited(dto.Notes, "Notes", 2000);
+            rebate.SubmittedAt = null;
+            rebate.SubmittedByUserId = null;
+            rebate.SubmittedByName = null;
+            rebate.DecisionAt = null;
+            rebate.DecisionByUserId = null;
+            rebate.DecisionByName = null;
+            rebate.DecisionReason = null;
+            rebate.UpdatedAt = DateTime.UtcNow;
+            Audit(FinancialWorkflowAction.RebateAdjusted, actor, customerId: booking.CustomerId, bookingId: bookingId,
+                rebateId: rebate.Id, oldRebate: CustomerRebateStatus.Draft, newRebate: CustomerRebateStatus.Draft,
+                previousAmount: previousAmount, newAmount: rebate.FinalAmount, reason: changeReason);
+            await _context.SaveChangesAsync(cancellationToken);
+            return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
+        }
+
         public async Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
             RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
         {
@@ -224,10 +295,10 @@ namespace DAMS.Application.Services
                     actor, customerId: rebate.CustomerId, bookingId: bookingId, rebateId: rebate.Id,
                     newRebate: rebate.Status, newAmount: amount, reason: dto.Reference);
                 audit.RebateDisbursement = disbursement;
-                await _context.SaveChangesAsync(cancellationToken);
                 if (dto.Method is CustomerRebateMethod.OutstandingBalanceReduction
                     or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment)
-                    await TryAdvanceBookingAmountMilestoneAsync(bookingId, cancellationToken);
+                    await ReconcileBookingAmountMilestoneAsync(bookingId, amount, cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
                 return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
             }, cancellationToken);
 
@@ -239,27 +310,55 @@ namespace DAMS.Application.Services
         // as BookingService.RecordBookingAmountPaymentAsync (net price minus non-cash credits, capped
         // at the required amount). Runs after the disbursement is saved so the just-applied credit is
         // visible to the DB-side credit sum.
-        private async Task TryAdvanceBookingAmountMilestoneAsync(int bookingId, CancellationToken cancellationToken)
+        private async Task ReconcileBookingAmountMilestoneAsync(
+            int bookingId,
+            decimal pendingCreditDelta,
+            CancellationToken cancellationToken)
         {
-            var booking = await _context.Bookings.Include(b => b.Unit)
+            var booking = await _context.Bookings.Include(b => b.Unit).Include(b => b.Installments)
+                .Include(b => b.Payments)
                 .SingleOrDefaultAsync(b => b.Id == bookingId, cancellationToken);
-            if (booking is null || booking.Status != BookingStatus.AwaitingBookingAmount || booking.BookingAmountRequired <= 0m)
+            if (booking is null || booking.BookingAmountRequired <= 0m
+                || booking.Status is not (BookingStatus.AwaitingBookingAmount or BookingStatus.PaymentPlanActive))
                 return;
-            var netSalePrice = Money(booking.AgreedSalePrice - booking.DiscountAmount);
-            var credits = await ValidBookingRebateCreditsAsync(bookingId, cancellationToken);
-            var effectiveRequired = Math.Min(booking.BookingAmountRequired, Math.Max(0m, netSalePrice - credits));
-            if (booking.BookingAmountReceived < effectiveRequired)
-                return;
-            booking.Status = BookingStatus.PaymentPlanActive;
-            booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
-            booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
-            booking.UpdatedAt = DateTime.UtcNow;
-            if (booking.Unit != null)
+
+            var persistedCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId, cancellationToken);
+            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(
+                booking, Money(persistedCredits + pendingCreditDelta));
+            var satisfied = booking.BookingAmountReceived >= effectiveRequired;
+            if (booking.Status == BookingStatus.AwaitingBookingAmount && satisfied)
             {
-                booking.Unit.Status = UnitStatus.OnPaymentPlan;
+                booking.Status = BookingStatus.PaymentPlanActive;
+                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
+                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.UpdatedAt = DateTime.UtcNow;
+                if (booking.Unit != null)
+                {
+                    booking.Unit.Status = UnitStatus.OnPaymentPlan;
+                    booking.Unit.UpdatedAt = DateTime.UtcNow;
+                }
+                return;
+            }
+
+            if (booking.Status != BookingStatus.PaymentPlanActive || satisfied)
+                return;
+
+            var hasPlanActivity = booking.Installments.Count != 0
+                || booking.InstallmentPlanGeneratedAt.HasValue
+                || booking.Payments.Any(p => p.Type == PaymentType.Installment);
+            if (hasPlanActivity)
+                throw new InvalidOperationException(
+                    "This reversal would invalidate the booking-amount milestone after installment activity began. Adjust or reopen the payment plan before reversing the credit.");
+
+            booking.Status = BookingStatus.AwaitingBookingAmount;
+            booking.BookingAmountConfirmedDate = null;
+            booking.InstallmentPlanStartDate = null;
+            booking.UpdatedAt = DateTime.UtcNow;
+            if (booking.Unit?.Status == UnitStatus.OnPaymentPlan)
+            {
+                booking.Unit.Status = UnitStatus.Reserved;
                 booking.Unit.UpdatedAt = DateTime.UtcNow;
             }
-            await _context.SaveChangesAsync(cancellationToken);
         }
 
         public Task<BookingCommissionRebateWorkspaceDto> ReverseRebateDisbursementAsync(int bookingId, int rebateId,
@@ -319,6 +418,9 @@ namespace DAMS.Application.Services
             if (rebate.Status == CustomerRebateStatus.Reversed)
                 Audit(FinancialWorkflowAction.RebateReversed, actor, customerId: rebate.CustomerId, bookingId: bookingId,
                     rebateId: rebate.Id, oldRebate: previous, newRebate: rebate.Status, reason: dto.Reason);
+            if (disbursement.Method is CustomerRebateMethod.OutstandingBalanceReduction
+                or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment)
+                await ReconcileBookingAmountMilestoneAsync(bookingId, -amount, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }, cancellationToken);
@@ -354,17 +456,8 @@ namespace DAMS.Application.Services
             - (await _context.RebateDisbursementReversals.Where(r => r.Disbursement.InstallmentId == installmentId)
                 .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
 
-        private async Task<decimal> ValidBookingRebateCreditsAsync(int bookingId, CancellationToken cancellationToken) => Money(
-            (await _context.RebateDisbursements.Where(d => d.Rebate.BookingId == bookingId
-                    && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                        || d.Method == CustomerRebateMethod.InstallmentAdjustment
-                        || d.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-            - (await _context.RebateDisbursementReversals.Where(r => r.Disbursement.Rebate.BookingId == bookingId
-                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
-                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
+        private Task<decimal> ValidBookingRebateCreditsAsync(int bookingId, CancellationToken cancellationToken) =>
+            BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId, cancellationToken);
 
         private static decimal NetDisbursed(CustomerRebate rebate) =>
             Money(rebate.Disbursements.Sum(d => d.Amount - d.Reversals.Sum(r => r.Amount)));

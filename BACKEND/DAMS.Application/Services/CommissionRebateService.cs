@@ -137,13 +137,13 @@ namespace DAMS.Application.Services
             int? rebateId = null, int? rebateDisbursementId = null, BookingCommissionStatus? oldCommission = null,
             BookingCommissionStatus? newCommission = null, CustomerRebateStatus? oldRebate = null,
             CustomerRebateStatus? newRebate = null, decimal? previousAmount = null, decimal? newAmount = null,
-            string? reason = null, int? commissionRuleId = null)
+            string? reason = null, int? commissionRuleId = null, int? commissionRuleRevisionId = null)
         {
             var entry = new FinancialWorkflowAuditEntry
             {
                 PartnerId = partnerId, CustomerId = customerId, BookingId = bookingId, CommissionId = commissionId,
                 PayoutId = payoutId, RebateId = rebateId, RebateDisbursementId = rebateDisbursementId,
-                CommissionRuleId = commissionRuleId,
+                CommissionRuleId = commissionRuleId, CommissionRuleRevisionId = commissionRuleRevisionId,
                 Action = action, PreviousCommissionStatus = oldCommission, NewCommissionStatus = newCommission,
                 PreviousRebateStatus = oldRebate, NewRebateStatus = newRebate,
                 // Not length-capped: the reason may be a machine-generated rule change summary that

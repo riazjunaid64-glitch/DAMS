@@ -24,7 +24,8 @@ namespace DAMS.Application.Interfaces
             CancellationToken cancellationToken = default);
         Task<ThirdPartyAttributionDto> SaveAttributionAsync(int? id, SaveThirdPartyAttributionDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
-        Task<PagedResult<CommissionRuleDto>> GetRulesAsync(bool? isActive, int skip, int take, CancellationToken cancellationToken = default);
+        Task<PagedResult<CommissionRuleDto>> GetRulesAsync(string? search, bool? isActive, int skip, int take,
+            CancellationToken cancellationToken = default);
         Task<CommissionRuleDto> CreateRuleAsync(SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
         Task<CommissionRuleDto> UpdateRuleAsync(int id, SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
@@ -39,6 +40,8 @@ namespace DAMS.Application.Interfaces
             CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId, CreateBookingCommissionDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
+        Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
+            UpdateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> ChangeCommissionStatusAsync(int bookingId, int commissionId,
             CommissionStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> RecordPayoutAsync(int bookingId, int commissionId,
@@ -47,6 +50,8 @@ namespace DAMS.Application.Interfaces
             ReverseMoneyMovementDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
+        Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
             RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> RecordRebateDisbursementAsync(int bookingId, int rebateId,

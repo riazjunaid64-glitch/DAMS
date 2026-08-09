@@ -16,7 +16,8 @@ namespace DAMS.Application.Services
             take = Math.Clamp(take, 1, 100);
             var query = _context.BookingCommissions.AsNoTracking()
                 .Include(c => c.Booking).ThenInclude(b => b.Unit)
-                .Include(c => c.Partner).Include(c => c.Payouts).ThenInclude(p => p.FinanceAccount)
+                .Include(c => c.Partner).Include(c => c.RuleRevision)
+                .Include(c => c.Payouts).ThenInclude(p => p.FinanceAccount)
                 .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
                 .Include(c => c.Payouts).ThenInclude(p => p.Evidence)
                 .Include(c => c.Evidence).AsSplitQuery().AsQueryable();
@@ -85,7 +86,8 @@ namespace DAMS.Application.Services
             audit.Commission = commission;
             var calculationAudit = Audit(FinancialWorkflowAction.CommissionCalculated, actor, partner.Id,
                 booking.CustomerId, bookingId, newAmount: commission.CalculatedAmount,
-                reason: commission.RuleNameSnapshot ?? commission.ManualReason, commissionRuleId: commission.RuleId);
+                reason: commission.RuleNameSnapshot ?? commission.ManualReason, commissionRuleId: commission.RuleId,
+                commissionRuleRevisionId: commission.RuleRevisionId);
             calculationAudit.Commission = commission;
             if (commission.AdjustmentAmount != 0m)
             {
@@ -103,6 +105,83 @@ namespace DAMS.Application.Services
                     newAmount: commission.ApprovedAmount, reason: commission.DecisionReason);
                 approvalAudit.Commission = commission;
             }
+            await _context.SaveChangesAsync(cancellationToken);
+            return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
+        }
+
+        public async Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
+            UpdateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        {
+            var commission = await _context.BookingCommissions
+                .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
+                .SingleOrDefaultAsync(c => c.Id == commissionId && c.BookingId == bookingId, cancellationToken)
+                ?? throw new KeyNotFoundException("Commission not found for this booking.");
+            ApplyToken(commission, dto.ConcurrencyToken, "commission");
+            if (commission.Status != BookingCommissionStatus.Draft)
+                throw new InvalidOperationException("Only a draft commission can be edited. Return it for correction first.");
+            if (NetPaid(commission) != 0m)
+                throw new InvalidOperationException("A commission with payout history cannot be edited.");
+
+            var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
+            var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
+            EnsureActiveBooking(booking);
+            if (await _context.BookingCommissions.AnyAsync(c => c.Id != commissionId && c.BookingId == bookingId
+                    && c.PartnerId == dto.PartnerId && c.Status != BookingCommissionStatus.Rejected
+                    && c.Status != BookingCommissionStatus.Cancelled && c.Status != BookingCommissionStatus.Reversed,
+                    cancellationToken))
+                throw new InvalidOperationException("An active commission already exists for this partner and booking.");
+            var partner = await _context.ThirdPartyPartners.AsNoTracking()
+                .SingleOrDefaultAsync(p => p.Id == dto.PartnerId, cancellationToken)
+                ?? throw new InvalidOperationException("Partner not found.");
+            if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");
+            var attribution = dto.AttributionId.HasValue
+                ? await _context.ThirdPartyAttributions.AsNoTracking()
+                    .SingleOrDefaultAsync(a => a.Id == dto.AttributionId && a.BookingId == bookingId, cancellationToken)
+                : await _context.ThirdPartyAttributions.AsNoTracking()
+                    .SingleOrDefaultAsync(a => a.BookingId == bookingId && a.PartnerId == dto.PartnerId, cancellationToken);
+            if (attribution == null || attribution.PartnerId != dto.PartnerId)
+                throw new InvalidOperationException("Create a booking-level attribution for this partner before calculating commission.");
+
+            var previousAmount = commission.FinalAmount;
+            ResetCommissionCalculation(commission);
+            commission.PartnerId = partner.Id;
+            commission.AttributionId = attribution.Id;
+            commission.PartnerNameSnapshot = partner.Name;
+            commission.PartnerTypeSnapshot = partner.PartnerType;
+            commission.PartnerInternalCodeSnapshot = partner.InternalCode;
+            commission.AllocationPercentSnapshot = attribution.AllocationPercent;
+            commission.IsManual = dto.IsManual;
+            if (dto.IsManual) ApplyManualCalculation(commission, booking, dto);
+            else await ApplyRuleCalculationAsync(commission, booking, partner, dto.RuleId, cancellationToken);
+            ApplyCommissionAdjustment(commission, dto.AdjustmentAmount, dto.AdjustmentReason,
+                dto.IsManual ? dto.ManualReason : null, booking);
+            if (commission.FinalAmount <= 0m)
+                throw new InvalidOperationException("Final commission must be greater than zero.");
+
+            commission.Status = BookingCommissionStatus.Draft;
+            commission.ApprovedAmount = null;
+            commission.SubmittedAt = null;
+            commission.SubmittedByUserId = null;
+            commission.SubmittedByName = null;
+            commission.DecisionAt = null;
+            commission.DecisionByUserId = null;
+            commission.DecisionByName = null;
+            commission.DecisionReason = null;
+            commission.UpdatedAt = DateTime.UtcNow;
+            if (!commission.IsManual && !commission.RequiresApprovalSnapshot)
+            {
+                commission.Status = BookingCommissionStatus.Approved;
+                commission.ApprovedAmount = commission.FinalAmount;
+                commission.DecisionAt = DateTime.UtcNow;
+                commission.DecisionByUserId = actor.UserId;
+                commission.DecisionByName = actor.DisplayName;
+                commission.DecisionReason = "Approval inherited from the applied rule after correction.";
+            }
+
+            Audit(FinancialWorkflowAction.CommissionAdjusted, actor, partner.Id, booking.CustomerId, bookingId,
+                commission.Id, oldCommission: BookingCommissionStatus.Draft, newCommission: commission.Status,
+                previousAmount: previousAmount, newAmount: commission.FinalAmount, reason: changeReason,
+                commissionRuleId: commission.RuleId, commissionRuleRevisionId: commission.RuleRevisionId);
             await _context.SaveChangesAsync(cancellationToken);
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
@@ -341,6 +420,9 @@ namespace DAMS.Application.Services
                 rule = best.Rule;
             }
             commission.RuleId = rule.Id; commission.RuleNameSnapshot = rule.Name; commission.CalculationType = rule.CalculationType;
+            commission.RuleRevisionId = await _context.CommissionRuleRevisions.AsNoTracking()
+                .Where(r => r.RuleId == rule.Id).OrderByDescending(r => r.RevisionNumber)
+                .Select(r => (int?)r.Id).FirstOrDefaultAsync(cancellationToken);
             commission.PercentageRate = rule.PercentageRate; commission.FixedAmount = rule.FixedAmount;
             commission.CalculationBasis = rule.CalculationBasis; commission.BasisAmount = BasisAmount(booking, rule.CalculationBasis, null);
             var calculated = CalculateRaw(rule.CalculationType, commission.BasisAmount, rule.PercentageRate, rule.FixedAmount);
@@ -401,6 +483,27 @@ namespace DAMS.Application.Services
             var netPrice = Money(booking.AgreedSalePrice - booking.DiscountAmount);
             if (commission.FinalAmount > netPrice && commission.AdjustmentReason == null && string.IsNullOrWhiteSpace(manualReason))
                 throw new InvalidOperationException("Commission above the net sale price requires an explicit justification.");
+        }
+
+        private static void ResetCommissionCalculation(BookingCommission commission)
+        {
+            commission.RuleId = null;
+            commission.RuleRevisionId = null;
+            commission.RuleNameSnapshot = null;
+            commission.RulePrioritySnapshot = null;
+            commission.MinimumCommissionSnapshot = null;
+            commission.MaximumCommissionSnapshot = null;
+            commission.EligibilityConditionSnapshot = null;
+            commission.RequiresApprovalSnapshot = true;
+            commission.ManualReason = null;
+            commission.PercentageRate = null;
+            commission.FixedAmount = null;
+            commission.BasisAmount = 0m;
+            commission.CalculatedAmount = 0m;
+            commission.AdjustmentAmount = 0m;
+            commission.AdjustmentReason = null;
+            commission.FinalAmount = 0m;
+            commission.MinimumCollectionPercent = null;
         }
 
         private static decimal BasisAmount(Booking booking, FinancialCalculationBasis basis, decimal? manual) => basis switch

@@ -412,13 +412,13 @@ namespace DAMS.Application.Services
             if (booking.BookingAmountRequired <= 0m)
                 throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
 
-            var bookingCredits = await ValidNonCashRebateCreditsAsync(booking.Id);
+            var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
             var netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount;
             // Booking-level credits reduce the total owed, so the cash still required for the
             // booking-amount milestone can never exceed the sale's remaining balance. Without this
             // cap a credit larger than (net price - booking amount) would demand more cash than the
             // sale allows, permanently deadlocking the booking in AwaitingBookingAmount.
-            var effectiveRequired = Math.Min(booking.BookingAmountRequired, Math.Max(0m, netSalePrice - bookingCredits));
+            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits);
             var totalCollected = await _context.Payments.Where(p => p.BookingId == booking.Id)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
@@ -512,12 +512,13 @@ namespace DAMS.Application.Services
             if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
                 throw new InvalidOperationException("Only an active or possession-given booking can be completed.");
 
-            var rebateCredits = await ValidNonCashRebateCreditsAsync(booking.Id);
+            var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+            var effectiveBookingAmountRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, rebateCredits);
             var totalOutstanding = booking.AgreedSalePrice - booking.DiscountAmount
                 - booking.Payments.Sum(p => p.Amount) - rebateCredits;
             if (totalOutstanding > 0m)
             {
-                if (booking.BookingAmountReceived < booking.BookingAmountRequired)
+                if (booking.BookingAmountReceived < effectiveBookingAmountRequired)
                     throw new InvalidOperationException("Booking amount has not been fully received or credited yet.");
                 var unpaidInstallments = booking.Installments.Count(i => i.Status != InstallmentStatus.Paid);
                 throw new InvalidOperationException($"The sale still has {totalOutstanding:0.00} outstanding across {unpaidInstallments} installment(s).");
@@ -573,18 +574,6 @@ namespace DAMS.Application.Services
                 })
                 .ToListAsync();
         }
-
-        private async Task<decimal> ValidNonCashRebateCreditsAsync(int bookingId) =>
-            (await _context.RebateDisbursements
-                .Where(d => d.Rebate.BookingId == bookingId && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                    || d.Method == CustomerRebateMethod.InstallmentAdjustment || d.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(d => (decimal?)d.Amount) ?? 0m)
-            - (await _context.RebateDisbursementReversals
-                .Where(r => r.Disbursement.Rebate.BookingId == bookingId
-                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
-                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m);
 
         public async Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId)
         {

@@ -176,6 +176,75 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    public static IEnumerable<object[]> EveryProtectedRoute()
+    {
+        static object[] R(string method, string path, bool multipart = false) => [method, path, multipart];
+        return
+        [
+            R("GET", "/api/customer-documents/categories"),
+            R("POST", "/api/customer-documents/categories"),
+            R("PUT", "/api/customer-documents/categories/1"),
+            R("DELETE", "/api/customer-documents/categories/1"),
+            R("POST", "/api/customer-documents/categories/1/assign"),
+            R("GET", "/api/customer-documents/customers/1"),
+            R("GET", "/api/customer-documents/customers/1/history"),
+            R("GET", "/api/customer-documents/customers/1/requirements/1/versions"),
+            R("POST", "/api/customer-documents/customers/1/requirements"),
+            R("POST", "/api/customer-documents/customers/1/requirements/1/upload", true),
+            R("POST", "/api/customer-documents/customers/1/requirements/1/status"),
+            R("PUT", "/api/customer-documents/customers/1/requirements/1/due-date"),
+            R("GET", "/api/customer-documents/customers/1/requirements/1/versions/1/file"),
+            R("GET", "/api/finance/commissions-rebates/summary"),
+            R("GET", "/api/finance/commissions-rebates/partners"),
+            R("POST", "/api/finance/commissions-rebates/partners"),
+            R("PUT", "/api/finance/commissions-rebates/partners/1"),
+            R("PATCH", "/api/finance/commissions-rebates/partners/1/status"),
+            R("POST", "/api/finance/commissions-rebates/attributions"),
+            R("PUT", "/api/finance/commissions-rebates/attributions/1"),
+            R("GET", "/api/finance/commissions-rebates/rules"),
+            R("POST", "/api/finance/commissions-rebates/rules"),
+            R("PUT", "/api/finance/commissions-rebates/rules/1"),
+            R("GET", "/api/finance/commissions-rebates/commissions"),
+            R("GET", "/api/finance/commissions-rebates/rebates"),
+            R("GET", "/api/finance/commissions-rebates/bookings/1"),
+            R("GET", "/api/finance/commissions-rebates/bookings/1/audit"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/commissions"),
+            R("PUT", "/api/finance/commissions-rebates/bookings/1/commissions/1"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/commissions/1/status"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/commissions/1/payouts"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/commissions/1/payouts/1/reversals"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/rebates"),
+            R("PUT", "/api/finance/commissions-rebates/bookings/1/rebates/1"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/rebates/1/status"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/rebates/1/disbursements"),
+            R("POST", "/api/finance/commissions-rebates/bookings/1/rebates/1/disbursements/1/reversals"),
+            R("POST", "/api/finance/commissions-rebates/evidence/Commission/1", true),
+            R("GET", "/api/finance/commissions-rebates/evidence/1/file"),
+        ];
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryProtectedRoute))]
+    public async Task EveryRoute_RejectsAnonymousAndNonAdminBeforeBinding(string method, string path, bool multipart)
+    {
+        var anonymous = _factory.CreateClient(NoRedirect);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await SendAsync(anonymous, method, path, multipart)).StatusCode);
+
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer("Client");
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await SendAsync(client, method, path, multipart)).StatusCode);
+    }
+
+    private static Task<HttpResponseMessage> SendAsync(HttpClient client, string method, string path, bool multipart)
+    {
+        var request = new HttpRequestMessage(new HttpMethod(method), path);
+        if (method is not ("GET" or "DELETE"))
+            request.Content = multipart ? new MultipartFormDataContent() : JsonBody();
+        return client.SendAsync(request);
+    }
+
     private static StringContent JsonBody() => new("{}", Encoding.UTF8, "application/json");
 
     private static readonly WebApplicationFactoryClientOptions NoRedirect = new() { AllowAutoRedirect = false };

@@ -10,6 +10,7 @@ namespace DAMS.Domain.Entities
         public int? CustomerId { get; set; }
         public int? BookingId { get; set; }
         public int? CommissionRuleId { get; set; }
+        public int? CommissionRuleRevisionId { get; set; }
         public int? CommissionId { get; set; }
         public int? PayoutId { get; set; }
         public int? RebateId { get; set; }
@@ -30,6 +31,7 @@ namespace DAMS.Domain.Entities
         public Customer? Customer { get; set; }
         public Booking? Booking { get; set; }
         public CommissionRule? CommissionRule { get; set; }
+        public CommissionRuleRevision? CommissionRuleRevision { get; set; }
         public BookingCommission? Commission { get; set; }
         public CommissionPayout? Payout { get; set; }
         public CustomerRebate? Rebate { get; set; }

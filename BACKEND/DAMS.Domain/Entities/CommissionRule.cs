@@ -38,5 +38,6 @@ namespace DAMS.Domain.Entities
         public Project? Project { get; set; }
         public Booking? Booking { get; set; }
         public ICollection<BookingCommission> Commissions { get; set; } = new List<BookingCommission>();
+        public ICollection<CommissionRuleRevision> Revisions { get; set; } = new List<CommissionRuleRevision>();
     }
 }

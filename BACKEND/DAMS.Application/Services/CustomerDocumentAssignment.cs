@@ -15,8 +15,13 @@ namespace DAMS.Application.Services
             CustomerDocumentActor? actor,
             CancellationToken cancellationToken = default)
         {
+            var existingCategoryIds = await context.CustomerDocumentRequirements
+                .Where(r => r.CustomerId == customer.Id && r.CategoryId != null)
+                .Select(r => r.CategoryId!.Value)
+                .ToListAsync(cancellationToken);
+            var existing = existingCategoryIds.ToHashSet();
             var categories = await context.CustomerDocumentCategories
-                .Where(c => c.IsActive && c.AssignToNewCustomers)
+                .Where(c => c.IsActive && c.AssignToNewCustomers && !existing.Contains(c.Id))
                 .OrderBy(c => c.DisplayOrder)
                 .ToListAsync(cancellationToken);
 
@@ -39,6 +44,17 @@ namespace DAMS.Application.Services
                 });
             }
         }
+
+        /// <summary>
+        /// Reconciles defaults idempotently. Callers still rely on the database unique index as the
+        /// final guard when two application instances discover the same missing assignment.
+        /// </summary>
+        public static Task ReconcileCustomerAsync(
+            AppDbContext context,
+            Customer customer,
+            CustomerDocumentActor? actor = null,
+            CancellationToken cancellationToken = default) =>
+            AddDefaultsForNewCustomerAsync(context, customer, actor, cancellationToken);
 
         public static CustomerDocumentRequirement FromCategory(
             Customer customer,

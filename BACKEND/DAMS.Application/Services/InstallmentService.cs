@@ -36,7 +36,8 @@ namespace DAMS.Application.Services
 
             var canRegenerate = await CanRegenerateAsync(bookingId);
             var paidByInstallment = await GetPaidByInstallmentAsync(bookingId);
-            return MapSchedule(booking, canRegenerate, paidByInstallment);
+            var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
+            return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits);
         }
 
         public async Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
@@ -74,7 +75,7 @@ namespace DAMS.Application.Services
             var remaining = installment.Amount - alreadyPaid;
             var totalCollected = await _context.Payments.Where(p => p.BookingId == bookingId)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var rebateCredits = await ValidNonCashRebateCreditsAsync(bookingId);
+            var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
             var overallRemaining = Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - totalCollected - rebateCredits);
             remaining = Math.Min(remaining, overallRemaining);
             if (dto.Amount > remaining)
@@ -202,18 +203,6 @@ namespace DAMS.Application.Services
                 .Where(r => r.Disbursement.InstallmentId == installmentId)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m);
 
-        private async Task<decimal> ValidNonCashRebateCreditsAsync(int bookingId) =>
-            (await _context.RebateDisbursements
-                .Where(d => d.Rebate.BookingId == bookingId && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                    || d.Method == CustomerRebateMethod.InstallmentAdjustment || d.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(d => (decimal?)d.Amount) ?? 0m)
-            - (await _context.RebateDisbursementReversals
-                .Where(r => r.Disbursement.Rebate.BookingId == bookingId
-                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
-                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m);
-
         // Globally unique sequential receipt number, e.g. RCP-000001.
         private async Task<string> GenerateReceiptNumberAsync()
         {
@@ -252,8 +241,10 @@ namespace DAMS.Application.Services
             if (booking.Status != BookingStatus.PaymentPlanActive)
                 throw new InvalidOperationException("Installment schedule can only be generated when the booking is on an active payment plan.");
 
-            if (booking.BookingAmountReceived < booking.BookingAmountRequired)
-                throw new InvalidOperationException("Booking amount must be fully received before generating installments.");
+            var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
+            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
+            if (booking.BookingAmountReceived < effectiveRequired)
+                throw new InvalidOperationException("Booking amount must be fully received or credited before generating installments.");
 
             var hasExisting = booking.Installments.Count > 0;
             if (hasExisting)
@@ -274,9 +265,11 @@ namespace DAMS.Application.Services
             var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
             var netSalePrice = dto.AgreedSalePrice - discountAmount;
 
-            var installmentPool = netSalePrice - booking.BookingAmountReceived - possessionAmount;
+            if (nonCashCredits > netSalePrice - booking.BookingAmountReceived)
+                throw new InvalidOperationException("Existing rebate credits exceed the revised booking balance. Reverse or adjust them before changing the plan terms.");
+            var installmentPool = netSalePrice - booking.BookingAmountReceived - nonCashCredits - possessionAmount;
             if (installmentPool <= 0m)
-                throw new InvalidOperationException("Installment pool must be greater than zero after discount, booking amount and possession amount.");
+                throw new InvalidOperationException("Installment pool must be greater than zero after discount, booking amount, rebate credits and possession amount.");
 
             if (hasExisting)
             {
@@ -308,7 +301,7 @@ namespace DAMS.Application.Services
             await _context.Entry(booking).Collection(b => b.Installments).LoadAsync();
 
             // A freshly generated schedule has no payments yet.
-            return MapSchedule(booking, canRegenerate: true, new Dictionary<int, decimal>());
+            return MapSchedule(booking, canRegenerate: true, new Dictionary<int, decimal>(), nonCashCredits);
         }
 
         private static void ValidatePlanInput(GenerateInstallmentPlanDto dto)
@@ -415,14 +408,16 @@ namespace DAMS.Application.Services
             return !hasInstallmentPayments && !hasRebateCredits;
         }
 
-        private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate, Dictionary<int, decimal> paidByInstallment)
+        private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate,
+            Dictionary<int, decimal> paidByInstallment, decimal nonCashCredits)
         {
             var hasSchedule = booking.Installments.Count > 0;
+            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
             var canGenerate = booking.Status == BookingStatus.PaymentPlanActive
-                              && booking.BookingAmountReceived >= booking.BookingAmountRequired
+                              && booking.BookingAmountReceived >= effectiveRequired
                               && (!hasSchedule || canRegenerate);
 
-            var installmentPool = (booking.AgreedSalePrice - booking.DiscountAmount) - booking.BookingAmountReceived - booking.PossessionAmount;
+            var installmentPool = BookingCreditPolicy.RemainingInstallmentPool(booking, nonCashCredits);
             var today = PakistanTime.Today;
 
             var items = booking.Installments

@@ -33,6 +33,7 @@ export interface CommissionRule {
   percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis; minimumCommission:number|null;
   maximumCommission:number|null; eligibilityCondition:string|null; earningCondition:EarningCondition;
   minimumCollectionPercent:number|null; priority:number; requiresApproval:boolean; notes:string|null; concurrencyToken:string;
+  currentRevisionNumber:number;
 }
 
 export interface MoneyMovement {
@@ -51,7 +52,7 @@ export interface AuditEntry {
 
 export interface Commission {
   id:number; bookingId:number; bookingReference:string; partnerId:number; partnerName:string; attributionId:number|null;
-  ruleId:number|null; ruleNameSnapshot:string|null; rulePriority:number|null; isManual:boolean; manualReason:string|null;
+  ruleId:number|null; ruleRevisionId:number|null; ruleRevisionNumber:number|null; ruleNameSnapshot:string|null; rulePriority:number|null; isManual:boolean; manualReason:string|null;
   allocationPercent:number;
   calculationType:CalculationType; percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis;
   basisAmount:number; calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number;

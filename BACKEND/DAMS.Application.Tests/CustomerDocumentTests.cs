@@ -461,6 +461,83 @@ public sealed class CustomerDocumentTests
         Assert.Equal(25, loaded.LatestVersion!.VersionNumber);
     }
 
+    [Fact]
+    public async Task VersionHistory_KeysetPaging_ReachesEveryProtectedVersionWithoutDuplicates()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await Customer(db, "Paged Versions Customer");
+        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Long-lived document"), Admin);
+        for (var i = 1; i <= 47; i++)
+            db.CustomerDocumentVersions.Add(new CustomerDocumentVersion
+            {
+                RequirementId = requirement.Id, VersionNumber = i, IsCurrent = i == 47,
+                StoredFileName = $"stored-{i}.pdf", OriginalFileName = $"v{i}.pdf",
+                ContentType = "application/pdf", FileSize = 10, UploadedByName = "Admin",
+                UploadedAt = DateTime.UtcNow.AddMinutes(i), ReviewStatus = CustomerDocumentVersionStatus.UnderReview
+            });
+        await db.SaveChangesAsync();
+
+        var all = new List<CustomerDocumentVersionDto>();
+        int? cursor = null;
+        bool hasMore;
+        do
+        {
+            var page = await service.GetVersionsAsync(customer.Id, requirement.Id, cursor, 13);
+            all.AddRange(page.Items);
+            hasMore = page.HasMore;
+            cursor = page.Items.Last().VersionNumber;
+        } while (hasMore);
+
+        Assert.Equal(47, all.Count);
+        Assert.Equal(47, all.Select(v => v.Id).Distinct().Count());
+        Assert.Equal(Enumerable.Range(1, 47).Reverse(), all.Select(v => v.VersionNumber));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            service.GetVersionsAsync(customer.Id + 999, requirement.Id, null, 20));
+    }
+
+    [Fact]
+    public async Task DefaultAssignmentFailure_NeverRollsBackCustomer_AndReconciliationIsIdempotent()
+    {
+        await using var db = Context();
+        // Isolate the scenario to a single default category so the reconciled count is deterministic,
+        // independent of the seeded starter categories.
+        db.CustomerDocumentCategories.RemoveRange(await db.CustomerDocumentCategories.ToListAsync());
+        db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
+        {
+            Name = "Default identity", Code = "default_identity", IsActive = true,
+            AssignToNewCustomers = true, IsRequiredByDefault = true, DisplayOrder = 1,
+            AllowedFileTypes = ".pdf", MaxFileSizeBytes = 1024 * 1024, CreatedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var failAdvisorySave = true;
+        db.SavingChanges += (_, _) =>
+        {
+            if (failAdvisorySave && db.ChangeTracker.Entries<CustomerDocumentRequirement>()
+                    .Any(entry => entry.State == EntityState.Added))
+                throw new InvalidOperationException("Simulated unavailable document persistence");
+        };
+        var customers = new CustomerService(db, NullLogger<CustomerService>.Instance);
+        var created = await customers.CreateCustomerAsync(new CreateCustomerDto
+        {
+            FullName = "Core Workflow Customer", Phone = "03001234567", Source = CustomerSource.WalkIn
+        }, Admin.UserId, Admin.DisplayName);
+
+        Assert.True(created.Id > 0);
+        Assert.True(await db.Customers.AnyAsync(customer => customer.Id == created.Id));
+        Assert.False(await db.CustomerDocumentRequirements.AnyAsync(row => row.CustomerId == created.Id));
+        Assert.DoesNotContain(db.ChangeTracker.Entries<CustomerDocumentRequirement>(),
+            entry => entry.State != EntityState.Unchanged);
+
+        failAdvisorySave = false;
+        var reconciler = new CustomerDocumentReconciliationService(db,
+            NullLogger<CustomerDocumentReconciliationService>.Instance);
+        Assert.Equal(1, await reconciler.ReconcileBatchAsync());
+        Assert.Equal(0, await reconciler.ReconcileBatchAsync());
+        Assert.Single(await db.CustomerDocumentRequirements.Where(row => row.CustomerId == created.Id).ToListAsync());
+    }
+
     private static AppDbContext Context()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()

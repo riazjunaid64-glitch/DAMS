@@ -6,16 +6,25 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 using DAMS.Application.Common;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DAMS.Application.Services
 {
     public class CustomerService : ICustomerService
     {
         private readonly AppDbContext _context;
+        private readonly ILogger<CustomerService> _logger;
 
         public CustomerService(AppDbContext context)
+            : this(context, NullLogger<CustomerService>.Instance)
+        {
+        }
+
+        public CustomerService(AppDbContext context, ILogger<CustomerService> logger)
         {
             _context = context;
+            _logger = logger;
         }
 
         public async Task<CustomerResponseDto> CreateCustomerAsync(
@@ -40,13 +49,11 @@ namespace DAMS.Application.Services
             };
 
             _context.Customers.Add(customer);
-            await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(
-                _context,
-                customer,
+            await _context.SaveChangesAsync();
+            await TryAssignDefaultDocumentsAsync(customer,
                 createdByUserId.HasValue
                     ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
                     : null);
-            await _context.SaveChangesAsync();
 
             return Map(customer, 0, CustomerDocumentCompletion.Calculate(customer.DocumentRequirements));
         }
@@ -291,10 +298,40 @@ namespace DAMS.Application.Services
             };
 
             _context.Customers.Add(customer);
-            await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(_context, customer, null);
             await _context.SaveChangesAsync();
+            await TryAssignDefaultDocumentsAsync(customer, null);
 
             return new CustomerResolution(customer.Id, WasCreated: true);
+        }
+
+        private async Task TryAssignDefaultDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
+        {
+            try
+            {
+                await CustomerDocumentAssignment.ReconcileCustomerAsync(_context, customer, actor);
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Documents are advisory. A missing table during a rolling deployment, a transient
+                // database failure, or an assignment conflict must never turn a committed customer
+                // (and therefore a booking) into a failed core workflow. Remove failed tracked rows so
+                // the scoped context can safely continue; the reconciliation worker retries later.
+                var advisoryEntries = _context.ChangeTracker.Entries()
+                             .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
+                             .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                             .ToList();
+                var failedRequirements = advisoryEntries.Select(e => e.Entity)
+                    .OfType<CustomerDocumentRequirement>().ToList();
+                foreach (var entry in advisoryEntries)
+                    entry.State = EntityState.Detached;
+                foreach (var requirement in failedRequirements)
+                    customer.DocumentRequirements.Remove(requirement);
+
+                _logger.LogWarning(ex,
+                    "Customer {CustomerId} was created without its advisory document defaults; reconciliation will retry.",
+                    customer.Id);
+            }
         }
 
         private static void EnsureWeakMatchDoesNotConflict(

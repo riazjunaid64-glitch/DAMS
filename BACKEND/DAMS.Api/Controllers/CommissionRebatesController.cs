@@ -49,9 +49,9 @@ namespace DAMS.Api.Controllers
             CancellationToken cancellationToken) => Run(() => _service.SaveAttributionAsync(id, dto, Actor(), cancellationToken));
 
         [HttpGet("rules")]
-        public Task<IActionResult> Rules([FromQuery] bool? isActive,
-            [FromQuery] int skip = 0, [FromQuery] int take = 100, CancellationToken cancellationToken = default) =>
-            Run(() => _service.GetRulesAsync(isActive, skip, take, cancellationToken));
+        public Task<IActionResult> Rules([FromQuery] string? search, [FromQuery] bool? isActive,
+            [FromQuery] int skip = 0, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
+            Run(() => _service.GetRulesAsync(search, isActive, skip, take, cancellationToken));
 
         [HttpPost("rules")]
         public Task<IActionResult> CreateRule([FromBody] SaveCommissionRuleDto dto, CancellationToken cancellationToken) =>
@@ -86,6 +86,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> CreateCommission(int bookingId, [FromBody] CreateBookingCommissionDto dto,
             CancellationToken cancellationToken) => Run(() => _service.CreateCommissionAsync(bookingId, dto, Actor(), cancellationToken));
 
+        [HttpPut("bookings/{bookingId:int}/commissions/{commissionId:int}")]
+        public Task<IActionResult> UpdateCommission(int bookingId, int commissionId,
+            [FromBody] UpdateBookingCommissionDto dto, CancellationToken cancellationToken) =>
+            Run(() => _service.UpdateCommissionAsync(bookingId, commissionId, dto, Actor(), cancellationToken));
+
         [HttpPost("bookings/{bookingId:int}/commissions/{commissionId:int}/status")]
         public Task<IActionResult> CommissionStatus(int bookingId, int commissionId, [FromBody] CommissionStatusChangeDto dto,
             CancellationToken cancellationToken) =>
@@ -104,6 +109,11 @@ namespace DAMS.Api.Controllers
         [HttpPost("bookings/{bookingId:int}/rebates")]
         public Task<IActionResult> CreateRebate(int bookingId, [FromBody] CreateCustomerRebateDto dto,
             CancellationToken cancellationToken) => Run(() => _service.CreateRebateAsync(bookingId, dto, Actor(), cancellationToken));
+
+        [HttpPut("bookings/{bookingId:int}/rebates/{rebateId:int}")]
+        public Task<IActionResult> UpdateRebate(int bookingId, int rebateId, [FromBody] UpdateCustomerRebateDto dto,
+            CancellationToken cancellationToken) =>
+            Run(() => _service.UpdateRebateAsync(bookingId, rebateId, dto, Actor(), cancellationToken));
 
         [HttpPost("bookings/{bookingId:int}/rebates/{rebateId:int}/status")]
         public Task<IActionResult> RebateStatus(int bookingId, int rebateId, [FromBody] RebateStatusChangeDto dto,

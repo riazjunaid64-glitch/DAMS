@@ -4,7 +4,7 @@ import Modal from "../../lib/Modal.tsx";
 import { documentJson, jsonBody, openPrivateDocument } from "./documentApi.ts";
 import { canOverride, matchesDocumentFilter, statusLabel, statusTone, uploadAllowed, type DocumentFilter } from "./documentState.ts";
 import DocumentSummaryBadge from "./DocumentSummaryBadge.tsx";
-import type { AssignmentMode, DocumentCategory, DocumentChecklist, DocumentRequirement, DocumentStatus } from "./types.ts";
+import type { AssignmentMode, DocumentCategory, DocumentChecklist, DocumentRequirement, DocumentStatus, DocumentVersion } from "./types.ts";
 
 type ActionKind = "upload" | "approve" | "reject" | "replacement" | "postpone" | "waive" | "notApplicable" | "requested" | "expired" | "due";
 type ActionState = { kind: ActionKind; requirement: DocumentRequirement } | null;
@@ -107,6 +107,13 @@ export default function CustomerDocumentsPanel({ customerId, checklist, loading,
 function RequirementCard({ customerId, requirement, onAction, onFileError }: {
   customerId: number; requirement: DocumentRequirement; onAction: (kind: ActionKind) => void; onFileError: (message: string) => void;
 }) {
+  const [versions, setVersions] = useState<DocumentVersion[]>(requirement.versions);
+  const [hasMoreVersions, setHasMoreVersions] = useState(requirement.hasMoreVersions);
+  const [versionsBusy, setVersionsBusy] = useState(false);
+  useEffect(() => {
+    setVersions(requirement.versions);
+    setHasMoreVersions(requirement.hasMoreVersions);
+  }, [requirement.updatedAt, requirement.versions, requirement.hasMoreVersions]);
   const postponedDue = requirement.status === "Postponed"
     && !!requirement.postponedUntil
     && new Date(requirement.postponedUntil).getTime() <= Date.now();
@@ -120,6 +127,22 @@ function RequirementCard({ customerId, requirement, onAction, onFileError }: {
     if (!version) return;
     void openPrivateDocument(customerId, requirement.id, version.id, version.originalFileName, download)
       .catch((caught) => onFileError(caught instanceof Error ? caught.message : "The private document could not be opened."));
+  };
+  const loadOlderVersions = async () => {
+    const beforeVersionNumber = versions[versions.length - 1]?.versionNumber;
+    if (!beforeVersionNumber || versionsBusy) return;
+    setVersionsBusy(true);
+    try {
+      const page = await documentJson<{ items: DocumentVersion[]; hasMore: boolean }>(
+        `/api/customer-documents/customers/${customerId}/requirements/${requirement.id}/versions?beforeVersionNumber=${beforeVersionNumber}&take=20`,
+      );
+      setVersions((current) => [...current, ...page.items.filter((item) => !current.some((row) => row.id === item.id))]);
+      setHasMoreVersions(page.hasMore);
+    } catch (caught) {
+      onFileError(caught instanceof Error ? caught.message : "Older document versions could not be loaded.");
+    } finally {
+      setVersionsBusy(false);
+    }
   };
   return (
     <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5">
@@ -153,13 +176,13 @@ function RequirementCard({ customerId, requirement, onAction, onFileError }: {
           <Button size="sm" variant="ghost" onClick={() => onAction("due")}>Due date</Button>
         </div>
       </div>
-      {requirement.versions.length > 0 && <details className="mt-4 border-t border-[var(--border)] pt-3">
-        <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">Version history ({requirement.versions.length}{requirement.hasMoreVersions ? "+" : ""})</summary>
-        <div className="mt-3 space-y-2">{requirement.versions.map((version) => <div key={version.id} className="flex flex-col gap-2 rounded-xl bg-[var(--surface-glass-hover)] p-3 text-xs sm:flex-row sm:items-center sm:justify-between">
+      {versions.length > 0 && <details className="mt-4 border-t border-[var(--border)] pt-3">
+        <summary className="cursor-pointer text-sm font-medium text-[var(--text-secondary)]">Version history ({versions.length}{hasMoreVersions ? "+" : ""})</summary>
+        <div className="mt-3 space-y-2">{versions.map((version) => <div key={version.id} className="flex flex-col gap-2 rounded-xl bg-[var(--surface-glass-hover)] p-3 text-xs sm:flex-row sm:items-center sm:justify-between">
           <div><p className="font-medium text-[var(--text-primary)]">Version {version.versionNumber} · {version.originalFileName} {version.isCurrent && "· Current"}</p><p className="mt-1 text-[var(--text-muted)]">Uploaded {new Date(version.uploadedAt).toLocaleString()} by {version.uploadedByName ?? "Admin"} · {statusLabel(version.reviewStatus)}</p>{version.reviewReason && <p className="mt-1 text-rose-300">{version.reviewReason}</p>}</div>
           <div className="flex gap-2"><button type="button" className="text-indigo-300 hover:underline" onClick={() => open(false, version)}>View</button><button type="button" className="text-indigo-300 hover:underline" onClick={() => open(true, version)}>Download</button></div>
         </div>)}</div>
-        {requirement.hasMoreVersions && <p className="mt-2 text-xs text-[var(--text-muted)]">Showing the latest {requirement.versions.length} versions; older versions are retained but not listed here.</p>}
+        {hasMoreVersions && <div className="mt-3 text-center"><Button type="button" size="sm" variant="ghost" disabled={versionsBusy} onClick={() => void loadOlderVersions()}>{versionsBusy ? "Loading…" : "Load older versions"}</Button></div>}
       </details>}
     </article>
   );

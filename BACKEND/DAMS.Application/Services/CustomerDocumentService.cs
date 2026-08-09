@@ -109,6 +109,7 @@ namespace DAMS.Application.Services
 
             ValidateAssignment(dto.AssignmentMode, dto.SelectedCustomerIds);
             var now = DateTime.UtcNow;
+            await using var transaction = await BeginSerializableAsync(cancellationToken);
             var category = new CustomerDocumentCategory
             {
                 Name = values.Name,
@@ -126,19 +127,31 @@ namespace DAMS.Application.Services
                 CreatedAt = now
             };
 
-            _context.CustomerDocumentCategories.Add(category);
-            RecordAudit(CustomerDocumentAction.CategoryCreated, actor, category: category,
-                notes: $"Category '{category.Name}' created with assignment mode {dto.AssignmentMode}.");
-            await _context.SaveChangesAsync(cancellationToken);
-
-            if (dto.AssignmentMode is CustomerDocumentAssignmentMode.AllActiveCustomers
-                or CustomerDocumentAssignmentMode.SelectedCustomers)
+            try
             {
-                await AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
+                _context.CustomerDocumentCategories.Add(category);
+                RecordAudit(CustomerDocumentAction.CategoryCreated, actor, category: category,
+                    notes: $"Category '{category.Name}' created with assignment mode {dto.AssignmentMode}.");
+                await _context.SaveChangesAsync(cancellationToken);
+
+                if (dto.AssignmentMode is CustomerDocumentAssignmentMode.AllActiveCustomers
+                    or CustomerDocumentAssignmentMode.SelectedCustomers)
                 {
-                    AssignmentMode = dto.AssignmentMode,
-                    SelectedCustomerIds = dto.SelectedCustomerIds
-                }, actor, cancellationToken);
+                    await AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
+                    {
+                        AssignmentMode = dto.AssignmentMode,
+                        SelectedCustomerIds = dto.SelectedCustomerIds
+                    }, actor, cancellationToken);
+                }
+
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                if (transaction != null)
+                    await transaction.RollbackAsync(CancellationToken.None);
+                throw;
             }
 
             return await LoadCategoryAsync(category.Id, cancellationToken);
@@ -365,6 +378,28 @@ namespace DAMS.Application.Services
             return new PagedResult<CustomerDocumentAuditDto>
             {
                 Items = rows.Take(take).ToList(),
+                HasMore = rows.Count > take
+            };
+        }
+
+        public async Task<PagedResult<CustomerDocumentVersionDto>> GetVersionsAsync(int customerId, int requirementId,
+            int? beforeVersionNumber, int take, CancellationToken cancellationToken = default)
+        {
+            if (!await _context.CustomerDocumentRequirements.AsNoTracking()
+                    .AnyAsync(r => r.Id == requirementId && r.CustomerId == customerId, cancellationToken))
+                throw new KeyNotFoundException("Document requirement not found for this customer.");
+            if (beforeVersionNumber is <= 0)
+                throw new InvalidOperationException("The version cursor is invalid.");
+            take = Math.Clamp(take, 1, 100);
+            var query = _context.CustomerDocumentVersions.AsNoTracking()
+                .Where(v => v.RequirementId == requirementId);
+            if (beforeVersionNumber.HasValue)
+                query = query.Where(v => v.VersionNumber < beforeVersionNumber.Value);
+            var rows = await query.OrderByDescending(v => v.VersionNumber).Take(take + 1)
+                .ToListAsync(cancellationToken);
+            return new PagedResult<CustomerDocumentVersionDto>
+            {
+                Items = rows.Take(take).Select(MapVersion).ToList(),
                 HasMore = rows.Count > take
             };
         }
@@ -790,21 +825,7 @@ namespace DAMS.Application.Services
             var hasMoreVersions = ordered.Count > VersionPreviewSize;
             var versions = ordered
                 .Take(VersionPreviewSize)
-                .Select(v => new CustomerDocumentVersionDto
-                {
-                    Id = v.Id,
-                    VersionNumber = v.VersionNumber,
-                    IsCurrent = v.IsCurrent,
-                    OriginalFileName = v.OriginalFileName,
-                    ContentType = v.ContentType,
-                    FileSize = v.FileSize,
-                    UploadedByName = v.UploadedByName,
-                    UploadedAt = v.UploadedAt,
-                    ReviewStatus = v.ReviewStatus,
-                    ReviewedByName = v.ReviewedByName,
-                    ReviewedAt = v.ReviewedAt,
-                    ReviewReason = v.ReviewReason
-                }).ToList();
+                .Select(MapVersion).ToList();
 
             return new CustomerDocumentRequirementDto
             {
@@ -829,6 +850,22 @@ namespace DAMS.Application.Services
                 HasMoreVersions = hasMoreVersions
             };
         }
+
+        private static CustomerDocumentVersionDto MapVersion(CustomerDocumentVersion version) => new()
+        {
+            Id = version.Id,
+            VersionNumber = version.VersionNumber,
+            IsCurrent = version.IsCurrent,
+            OriginalFileName = version.OriginalFileName,
+            ContentType = version.ContentType,
+            FileSize = version.FileSize,
+            UploadedByName = version.UploadedByName,
+            UploadedAt = version.UploadedAt,
+            ReviewStatus = version.ReviewStatus,
+            ReviewedByName = version.ReviewedByName,
+            ReviewedAt = version.ReviewedAt,
+            ReviewReason = version.ReviewReason
+        };
 
         private static void EnsureUploadAllowed(CustomerDocumentStatus status)
         {
@@ -900,7 +937,7 @@ namespace DAMS.Application.Services
         }
 
         private async Task<IDbContextTransaction?> BeginSerializableAsync(CancellationToken cancellationToken) =>
-            _context.Database.IsRelational()
+            _context.Database.IsRelational() && _context.Database.CurrentTransaction == null
                 ? await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
                 : null;
 

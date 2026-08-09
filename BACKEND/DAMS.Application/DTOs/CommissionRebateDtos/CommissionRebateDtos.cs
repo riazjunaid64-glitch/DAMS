@@ -130,6 +130,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public bool RequiresApproval { get; set; }
         public string? Notes { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
+        public int CurrentRevisionNumber { get; set; }
     }
 
     public sealed class SaveCommissionRuleDto
@@ -158,9 +159,10 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public bool RequiresApproval { get; set; } = true;
         public string? Notes { get; set; }
         public string? ConcurrencyToken { get; set; }
+        public string? ChangeReason { get; set; }
     }
 
-    public sealed class CreateBookingCommissionDto
+    public class CreateBookingCommissionDto
     {
         public int PartnerId { get; set; }
         public int? AttributionId { get; set; }
@@ -176,6 +178,12 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal? MinimumCollectionPercent { get; set; }
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
+    }
+
+    public sealed class UpdateBookingCommissionDto : CreateBookingCommissionDto
+    {
+        public string ConcurrencyToken { get; set; } = string.Empty;
+        public string ChangeReason { get; set; } = string.Empty;
     }
 
     public sealed class CommissionStatusChangeDto
@@ -205,7 +213,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string IdempotencyKey { get; set; } = string.Empty;
     }
 
-    public sealed class CreateCustomerRebateDto
+    public class CreateCustomerRebateDto
     {
         public FinancialCalculationType CalculationType { get; set; }
         public FinancialCalculationBasis CalculationBasis { get; set; }
@@ -217,6 +225,12 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string Reason { get; set; } = string.Empty;
         public CustomerRebateMethod Method { get; set; }
         public string? Notes { get; set; }
+    }
+
+    public sealed class UpdateCustomerRebateDto : CreateCustomerRebateDto
+    {
+        public string ConcurrencyToken { get; set; } = string.Empty;
+        public string ChangeReason { get; set; } = string.Empty;
     }
 
     public sealed class RebateStatusChangeDto
@@ -292,6 +306,8 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string PartnerName { get; set; } = string.Empty;
         public int? AttributionId { get; set; }
         public int? RuleId { get; set; }
+        public int? RuleRevisionId { get; set; }
+        public int? RuleRevisionNumber { get; set; }
         public string? RuleNameSnapshot { get; set; }
         public int? RulePriority { get; set; }
         public bool IsManual { get; set; }

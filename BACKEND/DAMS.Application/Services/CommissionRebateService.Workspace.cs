@@ -21,6 +21,7 @@ namespace DAMS.Application.Services
                 .Where(a => a.BookingId == bookingId).OrderByDescending(a => a.IsPrimary).ThenBy(a => a.Id)
                 .ToListAsync(cancellationToken);
             var commissions = await _context.BookingCommissions.AsNoTracking().Include(c => c.Partner)
+                .Include(c => c.RuleRevision)
                 .Include(c => c.Payouts).ThenInclude(p => p.FinanceAccount)
                 .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
                 .Include(c => c.Payouts).ThenInclude(p => p.Evidence).Include(c => c.Evidence)
@@ -231,6 +232,7 @@ namespace DAMS.Application.Services
             {
                 Id = c.Id, BookingId = c.BookingId, BookingReference = bookingReference ?? c.Booking.BookingReference,
                 PartnerId = c.PartnerId, PartnerName = c.PartnerNameSnapshot, AttributionId = c.AttributionId, RuleId = c.RuleId,
+                RuleRevisionId = c.RuleRevisionId, RuleRevisionNumber = c.RuleRevision != null ? c.RuleRevision.RevisionNumber : null,
                 RuleNameSnapshot = c.RuleNameSnapshot, RulePriority = c.RulePrioritySnapshot,
                 IsManual = c.IsManual, ManualReason = c.ManualReason,
                 AllocationPercent = c.AllocationPercentSnapshot,

@@ -64,37 +64,20 @@ namespace DAMS.Infrastructure.Migrations
                 name: "IX_BookingCommissions_BookingId_PartnerId",
                 table: "BookingCommissions");
 
-            migrationBuilder.AlterColumn<string>(
-                name: "Reason",
-                table: "FinancialWorkflowAuditEntries",
-                type: "nvarchar(2000)",
-                maxLength: 2000,
-                nullable: true,
-                oldClrType: typeof(string),
-                oldType: "nvarchar(max)",
-                oldNullable: true);
-
-            migrationBuilder.AlterColumn<string>(
-                name: "Notes",
-                table: "CustomerDocumentAuditEntries",
-                type: "nvarchar(2000)",
-                maxLength: 2000,
-                nullable: true,
-                oldClrType: typeof(string),
-                oldType: "nvarchar(max)",
-                oldNullable: true);
-
+            // A database may now contain multiple closed historical records per booking/partner and
+            // audit text longer than 2,000 characters. Restoring the old unique constraints or
+            // narrowing the audit columns would either fail or destroy production history. Keep the
+            // widened columns and restore broad, non-unique lookup indexes so an application rollback
+            // remains usable without discarding records. Re-applying Up safely replaces these indexes.
             migrationBuilder.CreateIndex(
                 name: "IX_CustomerRebates_BookingId",
                 table: "CustomerRebates",
-                column: "BookingId",
-                unique: true);
+                column: "BookingId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_BookingCommissions_BookingId_PartnerId",
                 table: "BookingCommissions",
-                columns: new[] { "BookingId", "PartnerId" },
-                unique: true);
+                columns: new[] { "BookingId", "PartnerId" });
         }
     }
 }
