@@ -185,20 +185,27 @@ namespace DAMS.Application.Services
             if (dto.BookingId.HasValue && !await _context.Bookings.AnyAsync(b => b.Id == dto.BookingId, cancellationToken))
                 throw new InvalidOperationException("Booking not found.");
             CommissionRule rule;
+            string? changeSummary = null;
             if (id.HasValue)
             {
                 rule = await _context.CommissionRules.SingleOrDefaultAsync(r => r.Id == id, cancellationToken)
                     ?? throw new KeyNotFoundException("Commission rule not found.");
                 ApplyToken(rule, dto.ConcurrencyToken, "rule");
+                // Capture the payout-driving control values before and after the edit so the audit
+                // preserves what actually changed; without this a RuleUpdated entry is unreconstructable.
+                var before = RuleSnapshot(rule);
+                AssignRule(rule, dto);
+                changeSummary = DiffSnapshots(before, RuleSnapshot(rule));
             }
             else
             {
                 rule = new CommissionRule { CreatedAt = DateTime.UtcNow, CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName };
                 _context.CommissionRules.Add(rule);
+                AssignRule(rule, dto);
             }
-            AssignRule(rule, dto); rule.UpdatedAt = id.HasValue ? DateTime.UtcNow : null;
+            rule.UpdatedAt = id.HasValue ? DateTime.UtcNow : null;
             var audit = Audit(id.HasValue ? FinancialWorkflowAction.RuleUpdated : FinancialWorkflowAction.RuleCreated,
-                actor, commissionRuleId: id);
+                actor, commissionRuleId: id, reason: changeSummary);
             if (!id.HasValue) audit.CommissionRule = rule;
             await _context.SaveChangesAsync(cancellationToken);
             return (await GetRulesAsync(null, cancellationToken)).Single(r => r.Id == rule.Id);
@@ -293,6 +300,47 @@ namespace DAMS.Application.Services
             if (dto.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
                 && dto.MinimumCollectionPercent is not (> 0m and <= 100m))
                 throw new InvalidOperationException("A minimum collection percentage between 0 and 100 is required.");
+        }
+
+        private static readonly (string Label, Func<CommissionRule, string?> Value)[] RuleFields =
+        {
+            ("Name", r => r.Name),
+            ("Description", r => r.Description),
+            ("IsActive", r => r.IsActive.ToString()),
+            ("EffectiveFrom", r => r.EffectiveFrom.ToString("yyyy-MM-dd")),
+            ("EffectiveTo", r => r.EffectiveTo?.ToString("yyyy-MM-dd")),
+            ("PartnerId", r => r.PartnerId?.ToString()),
+            ("PartnerType", r => r.PartnerType),
+            ("ProjectId", r => r.ProjectId?.ToString()),
+            ("UnitCategory", r => r.UnitCategory),
+            ("BookingSource", r => r.BookingSource?.ToString()),
+            ("BookingId", r => r.BookingId?.ToString()),
+            ("CalculationType", r => r.CalculationType.ToString()),
+            ("PercentageRate", r => r.PercentageRate?.ToString()),
+            ("FixedAmount", r => r.FixedAmount?.ToString()),
+            ("CalculationBasis", r => r.CalculationBasis.ToString()),
+            ("MinimumCommission", r => r.MinimumCommission?.ToString()),
+            ("MaximumCommission", r => r.MaximumCommission?.ToString()),
+            ("EligibilityCondition", r => r.EligibilityCondition),
+            ("EarningCondition", r => r.EarningCondition.ToString()),
+            ("MinimumCollectionPercent", r => r.MinimumCollectionPercent?.ToString()),
+            ("Priority", r => r.Priority.ToString()),
+            ("RequiresApproval", r => r.RequiresApproval.ToString()),
+            ("Notes", r => r.Notes),
+        };
+
+        private static List<(string Label, string? Value)> RuleSnapshot(CommissionRule r) =>
+            RuleFields.Select(f => (f.Label, f.Value(r))).ToList();
+
+        private static string DiffSnapshots(
+            List<(string Label, string? Value)> before,
+            List<(string Label, string? Value)> after)
+        {
+            var changes = new List<string>();
+            for (var i = 0; i < before.Count; i++)
+                if (!string.Equals(before[i].Value, after[i].Value, StringComparison.Ordinal))
+                    changes.Add($"{before[i].Label}: {before[i].Value ?? "—"} → {after[i].Value ?? "—"}");
+            return changes.Count == 0 ? "No fields changed." : string.Join("; ", changes);
         }
 
         private static void AssignRule(CommissionRule r, SaveCommissionRuleDto dto)

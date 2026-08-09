@@ -536,6 +536,73 @@ public sealed class CommissionRebateTests
             new FinancialEvidenceUpload { Content = new MemoryStream(bad), FileName = "proof.pdf", Length = bad.Length }, Actor));
     }
 
+    [Fact]
+    public async Task RuleUpdate_RecordsChangedControlValues_InImmutableAudit()
+    {
+        await using var harness = await Harness.Create();
+        var created = await harness.Service.CreateRuleAsync(new SaveCommissionRuleDto
+        {
+            Name = "Base Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
+            CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
+        }, Actor);
+
+        await harness.Service.UpdateRuleAsync(created.Id, new SaveCommissionRuleDto
+        {
+            Name = "Base Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 5,
+            CalculationType = FinancialCalculationType.Percentage, PercentageRate = 3m,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived,
+            ConcurrencyToken = created.ConcurrencyToken
+        }, Actor);
+
+        var audit = Assert.Single(harness.Context.FinancialWorkflowAuditEntries
+            .Where(a => a.Action == FinancialWorkflowAction.RuleUpdated).ToList());
+        Assert.NotNull(audit.Reason);
+        // The audit preserves the exact before -> after values of every changed payout-driving field.
+        Assert.Contains("PercentageRate: 2 → 3", audit.Reason);
+        Assert.Contains("Priority: 1 → 5", audit.Reason);
+    }
+
+    [Fact]
+    public async Task CreditReversal_OnCompletedBooking_IsBlockedUntilReopen()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 100m, Reason = "Account credit", Method = CustomerRebateMethod.CreditNote
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+        await harness.UploadPdf(FinancialEvidenceOwnerType.Rebate, rebate.Id);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.Approved, rebate.FinalAmount), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        workspace = await harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
+            new RecordRebateDisbursementDto
+            {
+                Method = CustomerRebateMethod.CreditNote, Amount = 100m, AppliedAt = DateTime.UtcNow,
+                Reference = "CN-900", IdempotencyKey = "credit-live", RebateConcurrencyToken = rebate.ConcurrencyToken
+            }, Actor);
+        var disbursement = Assert.Single(Assert.Single(workspace.Rebates).Disbursements);
+
+        // Complete the sale; the credit now underpins the completion.
+        harness.Context.Bookings.Single().Status = BookingStatus.SaleCompleted;
+        await harness.Context.SaveChangesAsync();
+
+        // Reversing the credit would restore a receivable on a completed, sold booking with no
+        // collection path, so it must be blocked until the booking is reopened.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.ReverseRebateDisbursementAsync(harness.BookingId, rebate.Id, disbursement.Id,
+                new ReverseMoneyMovementDto { Amount = 100m, Reason = "Correction", IdempotencyKey = "credit-reverse" }, Actor));
+        Assert.Empty(harness.Context.RebateDisbursementReversals);
+    }
+
     private static CommissionStatusChangeDto Change(BookingCommissionDto commission, BookingCommissionStatus status,
         string? reason = null, decimal? approved = null) => new()
     {

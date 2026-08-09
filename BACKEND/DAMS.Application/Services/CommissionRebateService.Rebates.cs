@@ -244,6 +244,16 @@ namespace DAMS.Application.Services
                 ?? throw new KeyNotFoundException("Rebate not found for this booking.");
             var disbursement = rebate.Disbursements.SingleOrDefault(d => d.Id == disbursementId)
                 ?? throw new KeyNotFoundException("Disbursement not found for this rebate.");
+            // A booking-level credit (balance reduction / credit note / installment adjustment) can be
+            // counted toward sale completion. Reversing it on an already completed or possession-given
+            // booking would restore a receivable with no valid collection path and leave the unit sold,
+            // so block it until the booking is reopened rather than silently stranding the balance.
+            // (Cancelled bookings intentionally keep the reversal path: that is how they reach Reversed.)
+            if (disbursement.Method is CustomerRebateMethod.OutstandingBalanceReduction
+                    or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment
+                && rebate.Booking.Status is BookingStatus.SaleCompleted or BookingStatus.PossessionGiven)
+                throw new InvalidOperationException(
+                    "This credit was applied to a completed or possession-given booking. Reopen the booking before reversing the credit.");
             var amount = Money(dto.Amount); var available = Money(disbursement.Amount - disbursement.Reversals.Sum(r => r.Amount));
             if (amount > available) throw new InvalidOperationException($"Reversal exceeds the disbursement balance of {available:0.00}.");
             _context.RebateDisbursementReversals.Add(new RebateDisbursementReversal

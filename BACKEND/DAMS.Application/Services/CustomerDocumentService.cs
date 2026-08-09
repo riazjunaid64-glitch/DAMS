@@ -142,6 +142,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException($"A document category with code '{values.Code}' already exists.");
 
             var wasActive = category.IsActive;
+            // Snapshot the checklist-policy fields before the overwrite so the audit records exactly
+            // which control values changed; a bare "updated" note is not reconstructable.
+            var before = CategorySnapshot(category);
             category.Name = values.Name;
             category.Code = values.Code;
             category.Description = values.Description;
@@ -153,11 +156,12 @@ namespace DAMS.Application.Services
             category.AssignToNewCustomers = dto.IsActive && dto.AssignToNewCustomers;
             category.DefaultDueDays = dto.DefaultDueDays;
             category.UpdatedAt = DateTime.UtcNow;
+            var changeSummary = DiffSnapshots(before, CategorySnapshot(category));
 
             var action = wasActive == category.IsActive
                 ? CustomerDocumentAction.CategoryUpdated
                 : category.IsActive ? CustomerDocumentAction.CategoryActivated : CustomerDocumentAction.CategoryDeactivated;
-            RecordAudit(action, actor, category: category, notes: $"Category '{category.Name}' updated.");
+            RecordAudit(action, actor, category: category, notes: $"Category '{category.Name}' updated. {changeSummary}");
 
             await SaveWithConcurrencyMessageAsync(cancellationToken);
             return await LoadCategoryAsync(category.Id, cancellationToken);
@@ -609,6 +613,9 @@ namespace DAMS.Application.Services
                 throw new FileNotFoundException("The stored document is unavailable. Ask an administrator to upload a replacement.");
             }
 
+            // Fail closed: a private identity document must never be released without a durable
+            // download record. If the audit write fails, dispose the opened stream and surface the
+            // error rather than serving an unlogged access to a sensitive file.
             try
             {
                 RecordAudit(CustomerDocumentAction.FileDownloaded, actor, version.Requirement.Customer,
@@ -618,7 +625,9 @@ namespace DAMS.Application.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Could not record download audit for customer document version {VersionId}.", version.Id);
+                _logger.LogError(ex, "Blocked a customer document download because its audit record could not be saved for version {VersionId}.", version.Id);
+                await content.DisposeAsync();
+                throw;
             }
 
             return new CustomerDocumentDownload
@@ -881,6 +890,34 @@ namespace DAMS.Application.Services
                 PerformedByName = CleanRequired(actor.DisplayName, 200, "Actor name"),
                 OccurredAt = DateTime.UtcNow
             });
+        }
+
+        private static readonly (string Label, Func<CustomerDocumentCategory, string?> Value)[] CategoryFields =
+        {
+            ("Name", c => c.Name),
+            ("Code", c => c.Code),
+            ("Description", c => c.Description),
+            ("IsRequiredByDefault", c => c.IsRequiredByDefault.ToString()),
+            ("DisplayOrder", c => c.DisplayOrder.ToString()),
+            ("AllowedFileTypes", c => c.AllowedFileTypes),
+            ("MaxFileSizeBytes", c => c.MaxFileSizeBytes.ToString()),
+            ("IsActive", c => c.IsActive.ToString()),
+            ("AssignToNewCustomers", c => c.AssignToNewCustomers.ToString()),
+            ("DefaultDueDays", c => c.DefaultDueDays?.ToString()),
+        };
+
+        private static List<(string Label, string? Value)> CategorySnapshot(CustomerDocumentCategory c) =>
+            CategoryFields.Select(f => (f.Label, f.Value(c))).ToList();
+
+        private static string DiffSnapshots(
+            List<(string Label, string? Value)> before,
+            List<(string Label, string? Value)> after)
+        {
+            var changes = new List<string>();
+            for (var i = 0; i < before.Count; i++)
+                if (!string.Equals(before[i].Value, after[i].Value, StringComparison.Ordinal))
+                    changes.Add($"{before[i].Label}: {before[i].Value ?? "—"} → {after[i].Value ?? "—"}");
+            return changes.Count == 0 ? "No fields changed." : string.Join("; ", changes);
         }
 
         private static void Touch(CustomerDocumentRequirement requirement, CustomerDocumentActor actor, DateTime now)

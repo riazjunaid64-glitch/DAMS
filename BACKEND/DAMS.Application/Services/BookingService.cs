@@ -412,12 +412,17 @@ namespace DAMS.Application.Services
             if (booking.BookingAmountRequired <= 0m)
                 throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
 
-            var remaining = booking.BookingAmountRequired - booking.BookingAmountReceived;
             var bookingCredits = await ValidNonCashRebateCreditsAsync(booking.Id);
+            var netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount;
+            // Booking-level credits reduce the total owed, so the cash still required for the
+            // booking-amount milestone can never exceed the sale's remaining balance. Without this
+            // cap a credit larger than (net price - booking amount) would demand more cash than the
+            // sale allows, permanently deadlocking the booking in AwaitingBookingAmount.
+            var effectiveRequired = Math.Min(booking.BookingAmountRequired, Math.Max(0m, netSalePrice - bookingCredits));
             var totalCollected = await _context.Payments.Where(p => p.BookingId == booking.Id)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var overallRemaining = Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - totalCollected - bookingCredits);
-            remaining = Math.Min(remaining, overallRemaining);
+            var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
+            var remaining = Math.Max(0m, Math.Min(effectiveRequired - booking.BookingAmountReceived, overallRemaining));
             if (dto.Amount > remaining)
                 throw new InvalidOperationException(
                     $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
@@ -441,8 +446,9 @@ namespace DAMS.Application.Services
             booking.BookingAmountReceived += dto.Amount;
             booking.UpdatedAt = DateTime.UtcNow;
 
-            // Fully received -> activate the payment plan stage and move the unit accordingly.
-            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            // Fully received (in cash, net of any booking-level credits) -> activate the payment
+            // plan stage and move the unit accordingly.
+            if (booking.BookingAmountReceived >= effectiveRequired)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
                 booking.BookingAmountConfirmedDate = DateTime.UtcNow;
@@ -516,6 +522,14 @@ namespace DAMS.Application.Services
                 var unpaidInstallments = booking.Installments.Count(i => i.Status != InstallmentStatus.Paid);
                 throw new InvalidOperationException($"The sale still has {totalOutstanding:0.00} outstanding across {unpaidInstallments} installment(s).");
             }
+
+            // A schedule must be settled per-installment before completion. Booking-level credits
+            // (balance reduction / credit note) lower the overall balance but are not allocated to any
+            // installment and never mark one Paid, so without this guard they can drive totalOutstanding
+            // to zero while installments stay unpaid — leaving the booking completed and overdue at once.
+            if (booking.Installments.Count != 0 && booking.Installments.Any(i => i.Status != InstallmentStatus.Paid))
+                throw new InvalidOperationException(
+                    "The sale cannot be completed while installments remain unpaid. Apply each remaining credit as an installment adjustment, or collect the installment, before completing.");
 
             booking.Status = BookingStatus.SaleCompleted;
             booking.CompletionDate = DateTime.UtcNow;

@@ -77,6 +77,33 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
+    public async Task CategoryUpdate_RecordsChangedControlValues_InAudit()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var category = await service.CreateCategoryAsync(Category("kyc_form"), Admin);
+
+        await service.UpdateCategoryAsync(category.Id, new UpdateCustomerDocumentCategoryDto
+        {
+            Name = category.Name,
+            Code = category.Code,
+            IsRequiredByDefault = false,
+            DisplayOrder = 42,
+            AllowedFileTypes = [".pdf"],
+            MaxFileSizeBytes = category.MaxFileSizeBytes,
+            IsActive = true,
+            ConcurrencyToken = category.ConcurrencyToken
+        }, Admin);
+
+        var audit = Assert.Single(await db.CustomerDocumentAuditEntries
+            .Where(a => a.Action == CustomerDocumentAction.CategoryUpdated).ToListAsync());
+        Assert.NotNull(audit.Notes);
+        // The audit preserves the exact before -> after values of the changed policy fields.
+        Assert.Contains("IsRequiredByDefault: True → False", audit.Notes);
+        Assert.Contains("DisplayOrder: 100 → 42", audit.Notes);
+    }
+
+    [Fact]
     public async Task BulkAssignment_IsIdempotent_AndAudited()
     {
         await using var db = Context();
