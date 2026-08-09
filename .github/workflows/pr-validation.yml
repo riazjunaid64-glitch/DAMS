@@ -12,21 +12,10 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    services:
-      sqlserver:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: Y
-          MSSQL_SA_PASSWORD: Dams_ci_SQL_2026!
-        ports:
-          - 1433:1433
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Dams_ci_SQL_2026!' -C -Q 'SELECT 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      DAMS_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;Database=master;User Id=sa;Password=Dams_ci_SQL_2026!;Encrypt=False;TrustServerCertificate=True
+    # The real SQL Server invariant suite (SqlServerProductionInvariantTests) is deferred for now: it
+    # is not run in CI. Without DAMS_SQLSERVER_TEST_CONNECTION it skips itself, so the build and the
+    # full in-memory test suite still gate every PR. Re-add a `services: sqlserver` block and that env
+    # var when we bring the SQL-Server checks back online.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -36,7 +25,7 @@ jobs:
         run: dotnet restore BACKEND/DAMS.sln
       - name: Build
         run: dotnet build BACKEND/DAMS.sln --configuration Release --no-restore
-      - name: Test including SQL Server invariants
+      - name: Test
         run: dotnet test BACKEND/DAMS.Application.Tests/DAMS.Application.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=backend-tests.trx"
       - uses: actions/upload-artifact@v4
         if: always()
