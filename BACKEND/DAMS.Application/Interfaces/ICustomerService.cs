@@ -5,7 +5,7 @@ namespace DAMS.Application.Interfaces
 {
     public interface ICustomerService
     {
-        Task<CustomerResponseDto> CreateCustomerAsync(CreateCustomerDto dto, int? createdByUserId);
+        Task<CustomerResponseDto> CreateCustomerAsync(CreateCustomerDto dto, int? createdByUserId, string? createdByName = null);
 
         Task<CustomerResponseDto?> GetCustomerByIdAsync(int id);
 

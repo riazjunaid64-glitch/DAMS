@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
@@ -14,17 +15,20 @@ namespace DAMS.Application.Services
         private readonly AppDbContext _context;
         private readonly ICustomerService _customerService;
         private readonly INotificationEventService? _notifications;
+        private readonly ICommissionBookingLifecycle? _commissionLifecycle;
 
         /// <param name="notifications">
         /// Optional on purpose: booking and payment work must be able to run without the
         /// notification platform present. Every call into it happens after the money is
         /// committed and is wrapped so a notification problem cannot undo a payment.
         /// </param>
-        public BookingService(AppDbContext context, ICustomerService customerService, INotificationEventService? notifications = null)
+        public BookingService(AppDbContext context, ICustomerService customerService,
+            INotificationEventService? notifications = null, ICommissionBookingLifecycle? commissionLifecycle = null)
         {
             _context = context;
             _customerService = customerService;
             _notifications = notifications;
+            _commissionLifecycle = commissionLifecycle;
         }
 
         /// <summary>
@@ -291,6 +295,9 @@ namespace DAMS.Application.Services
 
         public async Task<BookingResponseDto> CancelBookingAsync(int id, string? reason, int adminUserId)
         {
+            if (string.IsNullOrWhiteSpace(reason))
+                throw new InvalidOperationException("A booking cancellation reason is required.");
+
             var booking = await _context.Bookings
                 .Include(b => b.Unit)
                 .FirstOrDefaultAsync(b => b.Id == id);
@@ -313,6 +320,10 @@ namespace DAMS.Application.Services
             // Release the unit back to the market.
             booking.Unit.Status = UnitStatus.Available;
             booking.Unit.UpdatedAt = DateTime.UtcNow;
+
+            if (_commissionLifecycle != null)
+                await _commissionLifecycle.HandleBookingCancelledAsync(booking.Id, reason.Trim(),
+                    new FinancialWorkflowActor(adminUserId, $"Admin #{adminUserId}"));
 
             await _context.SaveChangesAsync();
 
@@ -401,7 +412,17 @@ namespace DAMS.Application.Services
             if (booking.BookingAmountRequired <= 0m)
                 throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
 
-            var remaining = booking.BookingAmountRequired - booking.BookingAmountReceived;
+            var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+            var netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount;
+            // Booking-level credits reduce the total owed, so the cash still required for the
+            // booking-amount milestone can never exceed the sale's remaining balance. Without this
+            // cap a credit larger than (net price - booking amount) would demand more cash than the
+            // sale allows, permanently deadlocking the booking in AwaitingBookingAmount.
+            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits);
+            var totalCollected = await _context.Payments.Where(p => p.BookingId == booking.Id)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
+            var remaining = Math.Max(0m, Math.Min(effectiveRequired - booking.BookingAmountReceived, overallRemaining));
             if (dto.Amount > remaining)
                 throw new InvalidOperationException(
                     $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
@@ -425,8 +446,9 @@ namespace DAMS.Application.Services
             booking.BookingAmountReceived += dto.Amount;
             booking.UpdatedAt = DateTime.UtcNow;
 
-            // Fully received -> activate the payment plan stage and move the unit accordingly.
-            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            // Fully received (in cash, net of any booking-level credits) -> activate the payment
+            // plan stage and move the unit accordingly.
+            if (booking.BookingAmountReceived >= effectiveRequired)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
                 booking.BookingAmountConfirmedDate = DateTime.UtcNow;
@@ -481,6 +503,7 @@ namespace DAMS.Application.Services
             var booking = await _context.Bookings
                 .Include(b => b.Unit)
                 .Include(b => b.Installments)
+                .Include(b => b.Payments)
                 .FirstOrDefaultAsync(b => b.Id == id);
 
             if (booking == null)
@@ -489,12 +512,25 @@ namespace DAMS.Application.Services
             if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
                 throw new InvalidOperationException("Only an active or possession-given booking can be completed.");
 
-            if (booking.BookingAmountReceived < booking.BookingAmountRequired)
-                throw new InvalidOperationException("Booking amount has not been fully received yet.");
+            var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+            var effectiveBookingAmountRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, rebateCredits);
+            var totalOutstanding = booking.AgreedSalePrice - booking.DiscountAmount
+                - booking.Payments.Sum(p => p.Amount) - rebateCredits;
+            if (totalOutstanding > 0m)
+            {
+                if (booking.BookingAmountReceived < effectiveBookingAmountRequired)
+                    throw new InvalidOperationException("Booking amount has not been fully received or credited yet.");
+                var unpaidInstallments = booking.Installments.Count(i => i.Status != InstallmentStatus.Paid);
+                throw new InvalidOperationException($"The sale still has {totalOutstanding:0.00} outstanding across {unpaidInstallments} installment(s).");
+            }
 
-            var unpaidInstallments = booking.Installments.Count(i => i.Status != InstallmentStatus.Paid);
-            if (unpaidInstallments > 0)
-                throw new InvalidOperationException($"{unpaidInstallments} installment(s) are still unpaid.");
+            // A schedule must be settled per-installment before completion. Booking-level credits
+            // (balance reduction / credit note) lower the overall balance but are not allocated to any
+            // installment and never mark one Paid, so without this guard they can drive totalOutstanding
+            // to zero while installments stay unpaid — leaving the booking completed and overdue at once.
+            if (booking.Installments.Count != 0 && booking.Installments.Any(i => i.Status != InstallmentStatus.Paid))
+                throw new InvalidOperationException(
+                    "The sale cannot be completed while installments remain unpaid. Apply each remaining credit as an installment adjustment, or collect the installment, before completing.");
 
             booking.Status = BookingStatus.SaleCompleted;
             booking.CompletionDate = DateTime.UtcNow;

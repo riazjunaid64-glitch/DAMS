@@ -12,14 +12,15 @@ interface TabLayoutProps {
   tabs: Tab[];
   activeTab: string;
   onTabChange: (tabId: string) => void;
+  ariaLabel?: string;
   children: ReactNode;
 }
 
-export default function TabLayout({ tabs, activeTab, onTabChange, children }: TabLayoutProps) {
+export default function TabLayout({ tabs, activeTab, onTabChange, ariaLabel = "Sections", children }: TabLayoutProps) {
   return (
     <div>
       <div className="tab-bar-wrapper">
-        <div className="tab-bar" role="tablist" aria-label="Project sections">
+        <div className="tab-bar" role="tablist" aria-label={ariaLabel}>
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
             return (

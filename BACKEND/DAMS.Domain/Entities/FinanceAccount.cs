@@ -17,5 +17,7 @@ namespace DAMS.Domain.Entities
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
         public ICollection<ManualRevenue> ManualRevenues { get; set; } = new List<ManualRevenue>();
         public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
+        public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();
+        public ICollection<RebateDisbursement> RebateDisbursements { get; set; } = new List<RebateDisbursement>();
     }
 }

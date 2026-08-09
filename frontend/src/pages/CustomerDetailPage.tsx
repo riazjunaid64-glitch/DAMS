@@ -5,6 +5,11 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import TabLayout from "../lib/TabLayout.tsx";
+import CustomerDocumentsPanel from "../features/customerDocuments/CustomerDocumentsPanel.tsx";
+import CustomerDocumentHistory from "../features/customerDocuments/CustomerDocumentHistory.tsx";
+import DocumentSummaryBadge from "../features/customerDocuments/DocumentSummaryBadge.tsx";
+import type { DocumentChecklist, DocumentSummary } from "../features/customerDocuments/types.ts";
 
 type Props = { user: User | null };
 
@@ -21,6 +26,7 @@ interface CustomerDetail {
   notes?: string | null;
   bookingsCount: number;
   createdAt: string;
+  documentSummary: DocumentSummary;
 }
 
 const STATUS_OPTIONS = ["Active", "Inactive", "Blocked"];
@@ -42,6 +48,10 @@ export default function CustomerDetailPage({ user }: Props) {
   const [bookings, setBookings] = useState<BookingSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [documents, setDocuments] = useState<DocumentChecklist | null>(null);
+  const [documentsLoading, setDocumentsLoading] = useState(true);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -59,6 +69,20 @@ export default function CustomerDetailPage({ user }: Props) {
 
   const isAdmin = user?.role === "Admin";
 
+  const loadDocuments = async () => {
+    setDocumentsLoading(true); setDocumentsError(null);
+    try {
+      const response = await api(`/api/customer-documents/customers/${customerId}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { message?: string };
+        throw new Error(body.message ?? "Unable to load customer documents.");
+      }
+      setDocuments(await response.json());
+    } catch (caught) {
+      setDocumentsError(caught instanceof Error ? caught.message : "Unable to load customer documents.");
+    } finally { setDocumentsLoading(false); }
+  };
+
   const load = async () => {
     setLoading(true);
     setError(null);
@@ -73,6 +97,7 @@ export default function CustomerDetailPage({ user }: Props) {
         const data = await bookRes.json();
         setBookings(data.items ?? []);
       }
+      await loadDocuments();
     } catch {
       setError("Unable to load customer.");
     } finally {
@@ -157,11 +182,18 @@ export default function CustomerDetailPage({ user }: Props) {
         <div>
           <h1 className="text-2xl font-bold text-[var(--text-heading)]">{customer.fullName}</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">{customer.phone} · {customer.source}</p>
+          <div className="mt-3"><DocumentSummaryBadge summary={documents?.summary ?? customer.documentSummary} /></div>
         </div>
         <Button size="sm" variant="outline" onClick={openEdit}>Edit Details</Button>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <TabLayout tabs={[
+        { id: "overview", label: "Overview" },
+        { id: "documents", label: "Documents", badge: documents?.summary.missing || documents?.summary.awaitingReview || undefined },
+        { id: "bookings", label: "Bookings", badge: bookings.length || undefined },
+        { id: "history", label: "History", badge: documents?.history.length || undefined },
+      ]} activeTab={activeTab} onTabChange={setActiveTab} ariaLabel="Customer sections">
+      {activeTab === "overview" && <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">Contact</h2>
           <dl className="space-y-3 text-sm">
@@ -172,8 +204,10 @@ export default function CustomerDetailPage({ user }: Props) {
             <div><dt className="text-[var(--text-muted)]">Notes</dt><dd className="text-[var(--text-primary)]">{customer.notes ?? "—"}</dd></div>
           </dl>
         </div>
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6"><h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">Document readiness</h2><DocumentSummaryBadge summary={documents?.summary ?? customer.documentSummary} /><p className="mt-4 text-sm text-[var(--text-muted)]">Required documents are tracked as operational warnings. Customer, booking, payment, and installment work remains available.</p></div>
+      </div>}
 
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
+      {activeTab === "bookings" && <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">Bookings ({bookings.length})</h2>
           {bookings.length === 0 ? (
             <p className="text-sm text-[var(--text-muted)]">No confirmed bookings yet.</p>
@@ -190,8 +224,10 @@ export default function CustomerDetailPage({ user }: Props) {
               ))}
             </ul>
           )}
-        </div>
-      </div>
+        </div>}
+      {activeTab === "documents" && <CustomerDocumentsPanel customerId={customerId} checklist={documents} loading={documentsLoading} error={documentsError} onRefresh={loadDocuments} />}
+      {activeTab === "history" && (documentsLoading && !documents ? <p className="py-12 text-center text-sm text-[var(--text-muted)]">Loading history…</p> : documentsError && !documents ? <p className="py-12 text-center text-sm text-rose-300">{documentsError}</p> : <CustomerDocumentHistory customerId={customerId} history={documents?.history ?? []} hasMore={documents?.hasMoreHistory ?? false} />)}
+      </TabLayout>
 
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !saving && setEditing(false)}>

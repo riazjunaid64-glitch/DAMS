@@ -220,6 +220,189 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("Bookings");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.BookingCommission", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("AdjustmentAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("AdjustmentReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal>("AllocationPercentSnapshot")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<decimal?>("ApprovedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("AttributionId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("BasisAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("CalculatedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CalculationBasis")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CalculationType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CancellationOrReversalReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("DecisionAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DecisionByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("DecisionByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime?>("EarnedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("EarningCondition")
+                        .HasColumnType("int");
+
+                    b.Property<string>("EligibilityConditionSnapshot")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal>("FinalAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("FixedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("IsManual")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ManualReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal?>("MaximumCommissionSnapshot")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("MinimumCollectionPercent")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<decimal?>("MinimumCommissionSnapshot")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("PartnerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PartnerInternalCodeSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("PartnerNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PartnerTypeSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime?>("PayableAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("PercentageRate")
+                        .HasColumnType("decimal(9,6)");
+
+                    b.Property<bool>("RequiresApprovalSnapshot")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int?>("RuleId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RuleNameSnapshot")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("RulePrioritySnapshot")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RuleRevisionId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SubmittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SubmittedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("SubmittedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AttributionId");
+
+                    b.HasIndex("PartnerId");
+
+                    b.HasIndex("RuleId");
+
+                    b.HasIndex("RuleRevisionId");
+
+                    b.HasIndex("BookingId", "PartnerId")
+                        .IsUnique()
+                        .HasFilter("[Status] <> 7 AND [Status] <> 8 AND [Status] <> 10");
+
+                    b.HasIndex("Status", "CreatedAt");
+
+                    b.ToTable("BookingCommissions", t =>
+                        {
+                            t.HasCheckConstraint("CK_BookingCommissions_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0) AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.BookingRequest", b =>
                 {
                     b.Property<int>("Id")
@@ -314,6 +497,307 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("BookingRequests");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CommissionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DestinationAccountNumberSnapshot")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("DestinationAccountTitleSnapshot")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("DestinationBankNameSnapshot")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("DestinationIbanSnapshot")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("PaymentDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("PaymentMethod")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PaymentReference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RecordedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("RecordedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CommissionId", "PaymentDate");
+
+                    b.ToTable("CommissionPayouts", t =>
+                        {
+                            t.HasCheckConstraint("CK_CommissionPayouts_Positive", "[Amount] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayoutReversal", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<int>("PayoutId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("ReversedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReversedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ReversedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("PayoutId", "ReversedAt");
+
+                    b.ToTable("CommissionPayoutReversals", t =>
+                        {
+                            t.HasCheckConstraint("CK_CommissionPayoutReversals_Positive", "[Amount] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("BookingSource")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CalculationBasis")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CalculationType")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("EarningCondition")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("EffectiveFrom")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("EffectiveTo")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EligibilityCondition")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal?>("FixedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<decimal?>("MaximumCommission")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("MinimumCollectionPercent")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<decimal?>("MinimumCommission")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int?>("PartnerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PartnerType")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<decimal?>("PercentageRate")
+                        .HasColumnType("decimal(9,6)");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("UnitCategory")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("PartnerId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("IsActive", "EffectiveFrom", "EffectiveTo", "Priority");
+
+                    b.ToTable("CommissionRules", t =>
+                        {
+                            t.HasCheckConstraint("CK_CommissionRules_Calculation", "([CalculationType] = 0 AND [PercentageRate] IS NOT NULL AND [PercentageRate] > 0 AND [FixedAmount] IS NULL) OR ([CalculationType] = 1 AND [FixedAmount] IS NOT NULL AND [FixedAmount] > 0 AND [PercentageRate] IS NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRuleRevision", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ChangeReason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ChangedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ChangedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PreviousSnapshotJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("RevisionNumber")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RuleId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SnapshotHash");
+
+                    b.HasIndex("RuleId", "RevisionNumber")
+                        .IsUnique();
+
+                    b.ToTable("CommissionRuleRevisions");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
                 {
                     b.Property<int>("Id")
@@ -404,6 +888,554 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Customers");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentAuditEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Action")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("NewStatus")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PerformedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("PerformedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PreviousStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RequirementId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("VersionId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("VersionId");
+
+                    b.HasIndex("CustomerId", "OccurredAt");
+
+                    b.HasIndex("RequirementId", "OccurredAt");
+
+                    b.ToTable("CustomerDocumentAuditEntries");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AllowedFileTypes")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<bool>("AssignToNewCustomers")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("DefaultDueDays")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsRequiredByDefault")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("MaxFileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignToNewCustomers");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.HasIndex("IsActive", "DisplayOrder");
+
+                    b.ToTable("CustomerDocumentCategories");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "cnic_front",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 10,
+                            IsActive = true,
+                            IsRequiredByDefault = true,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "CNIC Front",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 2,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "cnic_back",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 20,
+                            IsActive = true,
+                            IsRequiredByDefault = true,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "CNIC Back",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 3,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "customer_photo",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 30,
+                            IsActive = true,
+                            IsRequiredByDefault = true,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Customer Photograph",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 4,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "proof_of_address",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 40,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Proof of Address",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 5,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "passport",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 50,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Passport",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 6,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "next_of_kin_cnic",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 60,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Next-of-Kin CNIC",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 7,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "signature_specimen",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 70,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Signature Specimen",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 8,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "tax_document",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 80,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Tax Document",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 9,
+                            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
+                            AssignToNewCustomers = true,
+                            Code = "other",
+                            CreatedAt = new DateTime(2026, 8, 4, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 90,
+                            IsActive = true,
+                            IsRequiredByDefault = false,
+                            MaxFileSizeBytes = 10485760L,
+                            Name = "Other",
+                            RowVersion = new byte[0]
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentRequirement", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AllowedFileTypes")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("CategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("DueDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("LastActionByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("LastActionByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("MaxFileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<DateTime?>("PostponedUntil")
+                        .HasColumnType("datetime2");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("CustomerId", "CategoryId")
+                        .IsUnique()
+                        .HasFilter("[CategoryId] IS NOT NULL");
+
+                    b.HasIndex("CustomerId", "DisplayOrder");
+
+                    b.HasIndex("CustomerId", "Status");
+
+                    b.HasIndex(new[] { "CustomerId", "Name" }, "IX_CustomerDocumentRequirements_CustomerId_CustomName")
+                        .IsUnique()
+                        .HasFilter("[CategoryId] IS NULL");
+
+                    b.ToTable("CustomerDocumentRequirements");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<int>("RequirementId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ReviewReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("ReviewStatus")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReviewedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ReviewedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("StoredFileName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UploadedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("UploadedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UploadedAt");
+
+                    b.HasIndex("RequirementId", "VersionNumber")
+                        .IsUnique();
+
+                    b.HasIndex(new[] { "RequirementId" }, "IX_CustomerDocumentVersions_RequirementId_Current")
+                        .IsUnique()
+                        .HasFilter("[IsCurrent] = 1");
+
+                    b.ToTable("CustomerDocumentVersions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerRebate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("AdjustmentAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("AdjustmentReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal?>("ApprovedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("BasisAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("CalculatedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CalculationBasis")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CalculationType")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CancellationOrReversalReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("DecisionAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DecisionByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("DecisionByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal>("FinalAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("FixedAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("Method")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal?>("PercentageRate")
+                        .HasColumnType("decimal(9,6)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SubmittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SubmittedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("SubmittedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId")
+                        .IsUnique()
+                        .HasFilter("[Status] <> 6 AND [Status] <> 7 AND [Status] <> 8");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("Status", "CreatedAt");
+
+                    b.ToTable("CustomerRebates", t =>
+                        {
+                            t.HasCheckConstraint("CK_CustomerRebates_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0)");
+                        });
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.EmailSuppression", b =>
@@ -814,6 +1846,165 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)");
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinancialEvidence", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("CommissionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(180)
+                        .HasColumnType("nvarchar(180)");
+
+                    b.Property<int?>("PayoutId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RebateDisbursementId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RebateId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("StoredFileName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UploadedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("UploadedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CommissionId");
+
+                    b.HasIndex("PayoutId");
+
+                    b.HasIndex("RebateDisbursementId");
+
+                    b.HasIndex("RebateId");
+
+                    b.HasIndex("StoredFileName")
+                        .IsUnique();
+
+                    b.ToTable("FinancialEvidence", t =>
+                        {
+                            t.HasCheckConstraint("CK_FinancialEvidence_ExactlyOneOwner", "(CASE WHEN [CommissionId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [PayoutId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END) = 1");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinancialWorkflowAuditEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Action")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommissionId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommissionRuleId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CommissionRuleRevisionId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("NewAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("NewCommissionStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("NewRebateStatus")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("PartnerId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PayoutId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PerformedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("PerformedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal?>("PreviousAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int?>("PreviousCommissionStatus")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("PreviousRebateStatus")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("RebateDisbursementId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("RebateId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("PayoutId");
+
+                    b.HasIndex("RebateDisbursementId");
+
+                    b.HasIndex("BookingId", "OccurredAt");
+
+                    b.HasIndex("CommissionId", "OccurredAt");
+
+                    b.HasIndex("CommissionRuleId", "OccurredAt");
+
+                    b.HasIndex("CommissionRuleRevisionId", "OccurredAt");
+
+                    b.HasIndex("PartnerId", "OccurredAt");
+
+                    b.HasIndex("RebateId", "OccurredAt");
+
+                    b.ToTable("FinancialWorkflowAuditEntries");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -2822,6 +4013,128 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("PushSubscriptions");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.RebateDisbursement", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("AppliedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<int?>("InstallmentId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Method")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int?>("PaymentMethod")
+                        .HasColumnType("int");
+
+                    b.Property<int>("RebateId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RecordedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("RecordedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("InstallmentId");
+
+                    b.HasIndex("RebateId", "AppliedAt");
+
+                    b.ToTable("RebateDisbursements", t =>
+                        {
+                            t.HasCheckConstraint("CK_RebateDisbursements_Positive", "[Amount] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.RebateDisbursementReversal", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("DisbursementId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<DateTime>("ReversedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReversedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ReversedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("DisbursementId", "ReversedAt");
+
+                    b.ToTable("RebateDisbursementReversals", t =>
+                        {
+                            t.HasCheckConstraint("CK_RebateDisbursementReversals_Positive", "[Amount] > 0");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Role", b =>
                 {
                     b.Property<int>("RoleId")
@@ -2894,6 +4207,223 @@ namespace DAMS.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("Teams");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("AllocationPercent")
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<DateTime>("AssignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AssignedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("AssignedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("IntroducedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsPrimary")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("PartnerId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RelationshipType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SourceDetails")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PartnerId");
+
+                    b.HasIndex("BookingId", "PartnerId")
+                        .IsUnique()
+                        .HasFilter("[BookingId] IS NOT NULL");
+
+                    b.HasIndex("CustomerId", "PartnerId")
+                        .IsUnique()
+                        .HasFilter("[CustomerId] IS NOT NULL");
+
+                    b.HasIndex("LeadId", "PartnerId")
+                        .IsUnique()
+                        .HasFilter("[LeadId] IS NOT NULL");
+
+                    b.HasIndex(new[] { "BookingId" }, "IX_ThirdPartyAttributions_Booking_Primary")
+                        .IsUnique()
+                        .HasFilter("[BookingId] IS NOT NULL AND [IsPrimary] = 1");
+
+                    b.ToTable("ThirdPartyAttributions", t =>
+                        {
+                            t.HasCheckConstraint("CK_ThirdPartyAttributions_Allocation", "[AllocationPercent] > 0 AND [AllocationPercent] <= 100");
+
+                            t.HasCheckConstraint("CK_ThirdPartyAttributions_ExactlyOneOwner", "([LeadId] IS NOT NULL AND [CustomerId] IS NULL AND [BookingId] IS NULL) OR ([LeadId] IS NULL AND [CustomerId] IS NOT NULL AND [BookingId] IS NULL) OR ([LeadId] IS NULL AND [CustomerId] IS NULL AND [BookingId] IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyPartner", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AccountNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("AccountTitle")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("BankName")
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<string>("Cnic")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("ContactPerson")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreatedByName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Iban")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("InternalCode")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NormalizedCnic")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("NormalizedEmail")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("NormalizedNtn")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("NormalizedPhone")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Ntn")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("PartnerType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("RegistrationNumber")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InternalCode")
+                        .IsUnique();
+
+                    b.HasIndex("NormalizedCnic")
+                        .IsUnique()
+                        .HasFilter("[NormalizedCnic] IS NOT NULL");
+
+                    b.HasIndex("NormalizedEmail");
+
+                    b.HasIndex("NormalizedNtn")
+                        .IsUnique()
+                        .HasFilter("[NormalizedNtn] IS NOT NULL");
+
+                    b.HasIndex("NormalizedPhone");
+
+                    b.HasIndex("IsActive", "PartnerType");
+
+                    b.ToTable("ThirdPartyPartners");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -3079,6 +4609,46 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Unit");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.BookingCommission", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.ThirdPartyAttribution", "Attribution")
+                        .WithMany("Commissions")
+                        .HasForeignKey("AttributionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Commissions")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.ThirdPartyPartner", "Partner")
+                        .WithMany("Commissions")
+                        .HasForeignKey("PartnerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionRule", "Rule")
+                        .WithMany("Commissions")
+                        .HasForeignKey("RuleId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionRuleRevision", "RuleRevision")
+                        .WithMany("Commissions")
+                        .HasForeignKey("RuleRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Attribution");
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Partner");
+
+                    b.Navigation("Rule");
+
+                    b.Navigation("RuleRevision");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.BookingRequest", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
@@ -3118,6 +4688,71 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.BookingCommission", "Commission")
+                        .WithMany("Payouts")
+                        .HasForeignKey("CommissionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("CommissionPayouts")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Commission");
+
+                    b.Navigation("FinanceAccount");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayoutReversal", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CommissionPayout", "Payout")
+                        .WithMany("Reversals")
+                        .HasForeignKey("PayoutId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Payout");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRule", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("CommissionRules")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.ThirdPartyPartner", "Partner")
+                        .WithMany("CommissionRules")
+                        .HasForeignKey("PartnerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Partner");
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRuleRevision", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CommissionRule", "Rule")
+                        .WithMany("Revisions")
+                        .HasForeignKey("RuleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Rule");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.User", "User")
@@ -3126,6 +4761,85 @@ namespace DAMS.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentAuditEntry", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CustomerDocumentCategory", "Category")
+                        .WithMany()
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CustomerDocumentRequirement", "Requirement")
+                        .WithMany("AuditEntries")
+                        .HasForeignKey("RequirementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CustomerDocumentVersion", "Version")
+                        .WithMany()
+                        .HasForeignKey("VersionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Category");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("Requirement");
+
+                    b.Navigation("Version");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentRequirement", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CustomerDocumentCategory", "Category")
+                        .WithMany("Requirements")
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany("DocumentRequirements")
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Category");
+
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentVersion", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CustomerDocumentRequirement", "Requirement")
+                        .WithMany("Versions")
+                        .HasForeignKey("RequirementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Requirement");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerRebate", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("Rebates")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Customer");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
@@ -3231,6 +4945,103 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Expense");
 
                     b.Navigation("ManualRevenue");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinancialEvidence", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.BookingCommission", "Commission")
+                        .WithMany("Evidence")
+                        .HasForeignKey("CommissionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionPayout", "Payout")
+                        .WithMany("Evidence")
+                        .HasForeignKey("PayoutId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.RebateDisbursement", "RebateDisbursement")
+                        .WithMany("Evidence")
+                        .HasForeignKey("RebateDisbursementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CustomerRebate", "Rebate")
+                        .WithMany("Evidence")
+                        .HasForeignKey("RebateId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Commission");
+
+                    b.Navigation("Payout");
+
+                    b.Navigation("Rebate");
+
+                    b.Navigation("RebateDisbursement");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinancialWorkflowAuditEntry", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.BookingCommission", "Commission")
+                        .WithMany()
+                        .HasForeignKey("CommissionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionRule", "CommissionRule")
+                        .WithMany()
+                        .HasForeignKey("CommissionRuleId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionRuleRevision", "CommissionRuleRevision")
+                        .WithMany("AuditEntries")
+                        .HasForeignKey("CommissionRuleRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.ThirdPartyPartner", "Partner")
+                        .WithMany()
+                        .HasForeignKey("PartnerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CommissionPayout", "Payout")
+                        .WithMany()
+                        .HasForeignKey("PayoutId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.RebateDisbursement", "RebateDisbursement")
+                        .WithMany()
+                        .HasForeignKey("RebateDisbursementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CustomerRebate", "Rebate")
+                        .WithMany()
+                        .HasForeignKey("RebateId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Commission");
+
+                    b.Navigation("CommissionRule");
+
+                    b.Navigation("CommissionRuleRevision");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("Partner");
+
+                    b.Navigation("Payout");
+
+                    b.Navigation("Rebate");
+
+                    b.Navigation("RebateDisbursement");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -3558,6 +5369,42 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.RebateDisbursement", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("RebateDisbursements")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Installment", "Installment")
+                        .WithMany()
+                        .HasForeignKey("InstallmentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.CustomerRebate", "Rebate")
+                        .WithMany("Disbursements")
+                        .HasForeignKey("RebateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("FinanceAccount");
+
+                    b.Navigation("Installment");
+
+                    b.Navigation("Rebate");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.RebateDisbursementReversal", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.RebateDisbursement", "Disbursement")
+                        .WithMany("Reversals")
+                        .HasForeignKey("DisbursementId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Disbursement");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Employee", "ManagerEmployee")
@@ -3566,6 +5413,38 @@ namespace DAMS.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.NoAction);
 
                     b.Navigation("ManagerEmployee");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithMany("ThirdPartyAttributions")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
+                        .WithMany()
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.ThirdPartyPartner", "Partner")
+                        .WithMany("Attributions")
+                        .HasForeignKey("PartnerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("Lead");
+
+                    b.Navigation("Partner");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>
@@ -3603,14 +5482,71 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
                 {
+                    b.Navigation("CommissionRules");
+
+                    b.Navigation("Commissions");
+
                     b.Navigation("Installments");
 
                     b.Navigation("Payments");
+
+                    b.Navigation("Rebates");
+
+                    b.Navigation("ThirdPartyAttributions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.BookingCommission", b =>
+                {
+                    b.Navigation("Evidence");
+
+                    b.Navigation("Payouts");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
+                {
+                    b.Navigation("Evidence");
+
+                    b.Navigation("Reversals");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRule", b =>
+                {
+                    b.Navigation("Commissions");
+
+                    b.Navigation("Revisions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CommissionRuleRevision", b =>
+                {
+                    b.Navigation("AuditEntries");
+
+                    b.Navigation("Commissions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Customer", b =>
                 {
                     b.Navigation("Bookings");
+
+                    b.Navigation("DocumentRequirements");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentCategory", b =>
+                {
+                    b.Navigation("Requirements");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerDocumentRequirement", b =>
+                {
+                    b.Navigation("AuditEntries");
+
+                    b.Navigation("Versions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CustomerRebate", b =>
+                {
+                    b.Navigation("Disbursements");
+
+                    b.Navigation("Evidence");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
@@ -3629,9 +5565,13 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAccount", b =>
                 {
+                    b.Navigation("CommissionPayouts");
+
                     b.Navigation("Expenses");
 
                     b.Navigation("ManualRevenues");
+
+                    b.Navigation("RebateDisbursements");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -3685,9 +5625,30 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Units");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.RebateDisbursement", b =>
+                {
+                    b.Navigation("Evidence");
+
+                    b.Navigation("Reversals");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
                 {
                     b.Navigation("Members");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>
+                {
+                    b.Navigation("Commissions");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyPartner", b =>
+                {
+                    b.Navigation("Attributions");
+
+                    b.Navigation("CommissionRules");
+
+                    b.Navigation("Commissions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Unit", b =>

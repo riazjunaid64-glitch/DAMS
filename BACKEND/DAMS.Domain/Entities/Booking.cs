@@ -124,5 +124,13 @@ namespace DAMS.Domain.Entities
         public ICollection<Installment> Installments { get; set; } = new List<Installment>();
 
         public ICollection<Payment> Payments { get; set; } = new List<Payment>();
+
+        public ICollection<ThirdPartyAttribution> ThirdPartyAttributions { get; set; } = new List<ThirdPartyAttribution>();
+
+        public ICollection<CommissionRule> CommissionRules { get; set; } = new List<CommissionRule>();
+
+        public ICollection<BookingCommission> Commissions { get; set; } = new List<BookingCommission>();
+
+        public ICollection<CustomerRebate> Rebates { get; set; } = new List<CustomerRebate>();
     }
 }

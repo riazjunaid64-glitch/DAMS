@@ -1,4 +1,5 @@
 using DAMS.Domain.Enums;
+using DAMS.Application.DTOs.CustomerDocumentDtos;
 
 namespace DAMS.Application.DTOs.CustomerDtos
 {
@@ -33,5 +34,7 @@ namespace DAMS.Application.DTOs.CustomerDtos
         public DateTime CreatedAt { get; set; }
 
         public DateTime? UpdatedAt { get; set; }
+
+        public CustomerDocumentSummaryDto DocumentSummary { get; set; } = new();
     }
 }

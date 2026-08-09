@@ -5,6 +5,7 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
 
 type Props = { user: User | null };
 
@@ -613,6 +614,8 @@ export default function BookingDetailPage({ user }: Props) {
         </div>
       )}
 
+      <BookingCommissionRebatePanel bookingId={bookingId} />
+
       {/* Plan configuration */}
       {canShowPlanForm && (
         <div className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
@@ -880,10 +883,10 @@ export default function BookingDetailPage({ user }: Props) {
             </p>
 
             <div className="mt-4 grid gap-4">
-              <Field label="Reason (optional)" value={cancelReason}
+              <Field label="Reason" required value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)} />
               <div className="flex gap-2">
-                <Button type="button" variant="danger" onClick={handleCancelBooking} disabled={cancelling}>
+                <Button type="button" variant="danger" onClick={handleCancelBooking} disabled={cancelling || !cancelReason.trim()}>
                   {cancelling ? "Cancelling..." : "Confirm Cancel"}
                 </Button>
                 <Button type="button" variant="ghost" onClick={() => setShowCancel(false)} disabled={cancelling}>Keep Booking</Button>

@@ -22,7 +22,8 @@
       "Bash(dotnet ef *)",
       "PowerShell(dotnet build \"c:\\\\Users\\\\PC\\\\Desktop\\\\DAMS\\\\BACKEND\" -v q 2>$null)",
       "Bash(timeout 25 curl -s -o /dev/null -w \"nuget:%{http_code}\\\\n\" https://api.nuget.org/v3/index.json)",
-      "Bash(timeout 25 curl -s -o /dev/null -w \"npm:%{http_code}\\\\n\" https://registry.npmjs.org/)"
+      "Bash(timeout 25 curl -s -o /dev/null -w \"npm:%{http_code}\\\\n\" https://registry.npmjs.org/)",
+      "Bash(gh pr *)"
     ],
     "ask": [
       "Bash(git push *)",

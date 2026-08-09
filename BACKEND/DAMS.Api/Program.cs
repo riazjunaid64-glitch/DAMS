@@ -10,6 +10,7 @@ using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using DAMS.Api;
 using DAMS.Api.Middleware;
+using DAMS.Api.Services;
 using DAMS.Application.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -22,6 +23,10 @@ using Microsoft.Net.Http.Headers;
 using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 
 builder.Services.AddMemoryCache();
 
@@ -36,7 +41,9 @@ builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = Comp
 builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.MultipartBodyLengthLimit = FinanceAttachmentFileValidator.MaxRequestSize;
+    options.MultipartBodyLengthLimit = Math.Max(
+        FinanceAttachmentFileValidator.MaxRequestSize,
+        CustomerDocumentService.MaxRequestSize);
 });
 
 builder.Services.AddRateLimiter(options =>
@@ -145,6 +152,9 @@ builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<IUnitService, UnitService>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
+builder.Services.AddScoped<ICustomerDocumentService, CustomerDocumentService>();
+builder.Services.AddScoped<CustomerDocumentReconciliationService>();
+builder.Services.AddHostedService<CustomerDocumentReconciliationWorker>();
 builder.Services.AddScoped<IMediaService, MediaService>();
 builder.Services.AddScoped<IBookingService, BookingService>();
 builder.Services.AddScoped<IInstallmentService, InstallmentService>();
@@ -153,6 +163,9 @@ builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
+builder.Services.AddScoped<CommissionRebateService>();
+builder.Services.AddScoped<ICommissionRebateService>(sp => sp.GetRequiredService<CommissionRebateService>());
+builder.Services.AddScoped<ICommissionBookingLifecycle>(sp => sp.GetRequiredService<CommissionRebateService>());
 builder.Services.AddScoped<ILeadUserContextResolver, LeadUserContextResolver>();
 builder.Services.AddScoped<ILeadNotificationService, LeadNotificationService>();
 builder.Services.AddScoped<ILeadService, LeadService>();
@@ -202,6 +215,12 @@ builder.Services.AddScoped<IFileStorageService>(sp =>
 builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
     new PrivateFinanceAttachmentStorage(ResolvePrivateStoragePath(
         sp, "FinanceAttachments:StoragePath", Path.Combine("App_Data", "finance-attachments"))));
+builder.Services.AddScoped<ICustomerDocumentStorage>(sp =>
+    new PrivateCustomerDocumentStorage(ResolvePrivateStoragePath(
+        sp, "CustomerDocuments:StoragePath", Path.Combine("App_Data", "customer-documents"))));
+builder.Services.AddScoped<IFinancialEvidenceStorage>(sp =>
+    new PrivateFinancialEvidenceStorage(ResolvePrivateStoragePath(
+        sp, "CommissionRebates:EvidenceStoragePath", Path.Combine("App_Data", "commission-rebate-evidence"))));
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -329,3 +348,6 @@ static string ResolvePrivateStoragePath(IServiceProvider sp, string configuratio
 
     return storagePath;
 }
+
+// Exposed so the integration-test project can boot the real pipeline via WebApplicationFactory<Program>.
+public partial class Program { }

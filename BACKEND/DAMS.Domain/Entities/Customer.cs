@@ -49,5 +49,7 @@ namespace DAMS.Domain.Entities
         public User? User { get; set; }
 
         public ICollection<Booking> Bookings { get; set; } = new List<Booking>();
+
+        public ICollection<CustomerDocumentRequirement> DocumentRequirements { get; set; } = new List<CustomerDocumentRequirement>();
     }
 }

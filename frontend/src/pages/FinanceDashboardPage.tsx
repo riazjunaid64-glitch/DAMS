@@ -723,7 +723,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).projectName}</span> },
             { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as OutstandingLine).unitNumber}</span> },
             { key: "agreed", header: "Agreed Price", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).agreedSalePrice) },
-            { key: "received", header: "Received", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).receivedAmount, "text-emerald-400") },
+            { key: "received", header: "Received / credited", width: "155px", align: "right", render: (r) => money((r as OutstandingLine).receivedAmount, "text-emerald-400") },
             { key: "outstanding", header: "Outstanding", width: "130px", align: "right", render: (r) => money((r as OutstandingLine).outstandingAmount, "text-amber-400") },
           ],
         };
@@ -876,6 +876,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
           <div className="flex flex-wrap gap-2.5">
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+            <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
             <Button variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
             </Button>

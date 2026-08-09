@@ -4,6 +4,8 @@ import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Pagination from "../lib/Pagination.tsx";
+import DocumentSummaryBadge from "../features/customerDocuments/DocumentSummaryBadge.tsx";
+import type { DocumentSummary } from "../features/customerDocuments/types.ts";
 
 type Props = { user: User | null };
 
@@ -17,6 +19,7 @@ interface Customer {
   status: string;
   bookingsCount: number;
   createdAt: string;
+  documentSummary: DocumentSummary;
 }
 
 interface CustomerList {
@@ -100,22 +103,23 @@ export default function CustomersPage({ user }: Props) {
         <table className="data-table w-full text-left text-sm">
           <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
             <tr>
-              {["Name", "Phone", "Email", "Source", "Bookings", "Status", ""].map((h) => (
+              {["Name", "Phone", "Email", "Source", "Documents", "Bookings", "Status", ""].map((h) => (
                 <th key={h} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="px-4 py-12 text-center text-[var(--text-muted)]">Loading...</td></tr>
+              <tr><td colSpan={8} className="px-4 py-12 text-center text-[var(--text-muted)]">Loading...</td></tr>
             ) : customers.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-12 text-center text-[var(--text-muted)]">No customers found.</td></tr>
+              <tr><td colSpan={8} className="px-4 py-12 text-center text-[var(--text-muted)]">No customers found.</td></tr>
             ) : customers.map((c) => (
               <tr key={c.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface-glass-hover)]">
                 <td className="px-4 py-3 font-medium text-[var(--text-heading)]">{c.fullName}</td>
                 <td className="px-4 py-3 text-[var(--text-secondary)]">{c.phone}</td>
                 <td className="px-4 py-3 text-[var(--text-secondary)]">{c.email ?? "—"}</td>
                 <td className="px-4 py-3 text-[var(--text-secondary)]">{SOURCE_LABELS[c.source] ?? c.source}</td>
+                <td className="px-4 py-3"><DocumentSummaryBadge summary={c.documentSummary} compact /></td>
                 <td className="px-4 py-3 text-[var(--text-secondary)]">{c.bookingsCount}</td>
                 <td className="px-4 py-3">
                   <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-400">{c.status}</span>
