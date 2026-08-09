@@ -345,3 +345,6 @@ static string ResolvePrivateStoragePath(IServiceProvider sp, string configuratio
 
     return storagePath;
 }
+
+// Exposed so the integration-test project can boot the real pipeline via WebApplicationFactory<Program>.
+public partial class Program { }
