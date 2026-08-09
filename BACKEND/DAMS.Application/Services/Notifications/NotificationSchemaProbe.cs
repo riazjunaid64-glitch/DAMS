@@ -1,5 +1,6 @@
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services.Notifications
 {
@@ -21,6 +22,10 @@ namespace DAMS.Application.Services.Notifications
             try
             {
                 await using var command = connection.CreateCommand();
+                // A caller may already have an EF transaction open on this connection. SQL
+                // Server rejects a command on a connection with a pending local transaction
+                // unless the command is enlisted in it.
+                command.Transaction = context.Database.CurrentTransaction?.GetDbTransaction();
                 command.CommandText = $"""
                     SELECT CASE WHEN
                         OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
