@@ -37,8 +37,15 @@ namespace DAMS.Application.Services
             EnsureActiveBooking(booking);
             if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis))
                 throw new InvalidOperationException("Select a valid rebate calculation type and basis.");
-            if (await _context.CustomerRebates.AnyAsync(r => r.BookingId == bookingId, cancellationToken))
-                throw new InvalidOperationException("A customer rebate already exists for this booking. Adjust its approval or disbursements instead of duplicating it.");
+            // Uniqueness applies only to the live rebate: a rejected, cancelled, or reversed one is a
+            // closed historical record and must not block a corrected replacement. This is what lets a
+            // returned/rejected rebate be superseded (cancel it, then create a new one) instead of
+            // leaving the booking permanently unable to hold a rebate.
+            if (await _context.CustomerRebates.AnyAsync(r => r.BookingId == bookingId
+                    && r.Status != CustomerRebateStatus.Rejected
+                    && r.Status != CustomerRebateStatus.Cancelled
+                    && r.Status != CustomerRebateStatus.Reversed, cancellationToken))
+                throw new InvalidOperationException("An active customer rebate already exists for this booking. Adjust its approval or disbursements, or reject/cancel it before creating a replacement.");
             var reason = Required(dto.Reason, "Rebate reason", 2000);
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
             var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);

@@ -114,7 +114,9 @@ namespace DAMS.Application.DTOs.CustomerDocumentDtos
         public string CustomerName { get; set; } = string.Empty;
         public CustomerDocumentSummaryDto Summary { get; set; } = new();
         public List<CustomerDocumentRequirementDto> Requirements { get; set; } = [];
+        /// <summary>The most recent audit entries only; page the full log via the history endpoint when <see cref="HasMoreHistory"/> is true.</summary>
         public List<CustomerDocumentAuditDto> History { get; set; } = [];
+        public bool HasMoreHistory { get; set; }
     }
 
     public class CustomerDocumentRequirementDto

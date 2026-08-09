@@ -30,15 +30,14 @@ namespace DAMS.Application.Services
                 .Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
                 .Include(r => r.Disbursements).ThenInclude(d => d.Evidence).Include(r => r.Evidence)
                 .Where(r => r.BookingId == bookingId).OrderBy(r => r.CreatedAt).AsSplitQuery().ToListAsync(cancellationToken);
+            // Only the newest audit entries are inlined; the full log is served by the paged audit
+            // endpoint so a heavily-worked booking cannot force an unbounded read into the workspace.
             var audit = await _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId)
-                .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id).Take(300)
-                .Select(a => new FinancialAuditDto
-                {
-                    Id = a.Id, Action = a.Action, PreviousCommissionStatus = a.PreviousCommissionStatus,
-                    NewCommissionStatus = a.NewCommissionStatus, PreviousRebateStatus = a.PreviousRebateStatus,
-                    NewRebateStatus = a.NewRebateStatus, PreviousAmount = a.PreviousAmount, NewAmount = a.NewAmount,
-                    Reason = a.Reason, PerformedByName = a.PerformedByName, OccurredAt = a.OccurredAt
-                }).ToListAsync(cancellationToken);
+                .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id)
+                .Select(AuditProjection).Take(AuditPreviewSize + 1).ToListAsync(cancellationToken);
+            var hasMoreAudit = audit.Count > AuditPreviewSize;
+            if (hasMoreAudit)
+                audit.RemoveAt(audit.Count - 1);
             var rebateCredits = rebates.SelectMany(r => r.Disbursements)
                 .Where(d => d.Method is CustomerRebateMethod.OutstandingBalanceReduction
                     or CustomerRebateMethod.InstallmentAdjustment or CustomerRebateMethod.CreditNote)
@@ -52,7 +51,36 @@ namespace DAMS.Application.Services
                 AmountCollected = Money(booking.Payments.Sum(p => p.Amount)), RebateCredits = Money(rebateCredits),
                 Attributions = attributions.Select(MapAttribution).ToList(),
                 Commissions = commissions.Select(c => MapCommission(c, booking.BookingReference)).ToList(),
-                Rebates = rebates.Select(r => MapRebate(r, booking.BookingReference)).ToList(), Audit = audit
+                Rebates = rebates.Select(r => MapRebate(r, booking.BookingReference)).ToList(),
+                Audit = audit, HasMoreAudit = hasMoreAudit
+            };
+        }
+
+        private const int AuditPreviewSize = 100;
+
+        private static readonly System.Linq.Expressions.Expression<Func<FinancialWorkflowAuditEntry, FinancialAuditDto>> AuditProjection =
+            a => new FinancialAuditDto
+            {
+                Id = a.Id, Action = a.Action, PreviousCommissionStatus = a.PreviousCommissionStatus,
+                NewCommissionStatus = a.NewCommissionStatus, PreviousRebateStatus = a.PreviousRebateStatus,
+                NewRebateStatus = a.NewRebateStatus, PreviousAmount = a.PreviousAmount, NewAmount = a.NewAmount,
+                Reason = a.Reason, PerformedByName = a.PerformedByName, OccurredAt = a.OccurredAt
+            };
+
+        public async Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int skip, int take,
+            CancellationToken cancellationToken = default)
+        {
+            if (!await _context.Bookings.AsNoTracking().AnyAsync(b => b.Id == bookingId, cancellationToken))
+                throw new KeyNotFoundException("Booking not found.");
+            skip = Math.Max(0, skip);
+            take = Math.Clamp(take, 1, 200);
+            var rows = await _context.FinancialWorkflowAuditEntries.AsNoTracking().Where(a => a.BookingId == bookingId)
+                .OrderByDescending(a => a.OccurredAt).ThenByDescending(a => a.Id)
+                .Select(AuditProjection).Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            return new PagedResult<FinancialAuditDto>
+            {
+                Items = rows.Take(take).ToList(),
+                HasMore = rows.Count > take
             };
         }
 

@@ -37,8 +37,13 @@ namespace DAMS.Application.Services
         {
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
-            if (await _context.BookingCommissions.AnyAsync(c => c.BookingId == bookingId && c.PartnerId == dto.PartnerId, cancellationToken))
-                throw new InvalidOperationException("A commission already exists for this partner and booking.");
+            // Uniqueness applies only to the live commission for this partner: a rejected, cancelled, or
+            // reversed one is a closed historical record and must not block a corrected replacement.
+            if (await _context.BookingCommissions.AnyAsync(c => c.BookingId == bookingId && c.PartnerId == dto.PartnerId
+                    && c.Status != BookingCommissionStatus.Rejected
+                    && c.Status != BookingCommissionStatus.Cancelled
+                    && c.Status != BookingCommissionStatus.Reversed, cancellationToken))
+                throw new InvalidOperationException("An active commission already exists for this partner and booking. Reject or cancel it before creating a replacement.");
             var partner = await _context.ThirdPartyPartners.AsNoTracking().SingleOrDefaultAsync(p => p.Id == dto.PartnerId, cancellationToken)
                 ?? throw new InvalidOperationException("Partner not found.");
             if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");

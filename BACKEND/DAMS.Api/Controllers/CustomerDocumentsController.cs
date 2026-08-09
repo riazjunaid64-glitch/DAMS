@@ -56,6 +56,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> GetChecklist(int customerId, CancellationToken cancellationToken) =>
             RunAsync(() => _documents.GetChecklistAsync(customerId, cancellationToken));
 
+        [HttpGet("customers/{customerId:int}/history")]
+        public Task<IActionResult> GetHistory(int customerId,
+            [FromQuery] int skip = 0, [FromQuery] int take = 50, CancellationToken cancellationToken = default) =>
+            RunAsync(() => _documents.GetHistoryAsync(customerId, skip, take, cancellationToken));
+
         [HttpPost("customers/{customerId:int}/requirements")]
         public Task<IActionResult> AddRequirement(
             int customerId,
@@ -122,9 +127,11 @@ namespace DAMS.Api.Controllers
                 var result = await _documents.DownloadAsync(customerId, requirementId, versionId, Actor(), cancellationToken);
                 Response.Headers[HeaderNames.XContentTypeOptions] = "nosniff";
                 Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, must-revalidate";
-                return download
-                    ? File(result.Content, result.ContentType, result.FileName, enableRangeProcessing: true)
-                    : File(result.Content, result.ContentType, enableRangeProcessing: true);
+                // Always deliver as an attachment so a validated-but-hostile file can never render
+                // inline in an authenticated admin session on direct navigation. The SPA fetches the
+                // bytes as a blob and controls view-vs-save itself, so in-app preview is unaffected.
+                _ = download;
+                return File(result.Content, result.ContentType, result.FileName, enableRangeProcessing: true);
             }
             catch (Exception ex) when (IsExpected(ex))
             {

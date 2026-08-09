@@ -378,7 +378,9 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public List<ThirdPartyAttributionDto> Attributions { get; set; } = [];
         public List<BookingCommissionDto> Commissions { get; set; } = [];
         public List<CustomerRebateDto> Rebates { get; set; } = [];
+        /// <summary>The most recent audit entries only; page the full log via the audit endpoint when <see cref="HasMoreAudit"/> is true.</summary>
         public List<FinancialAuditDto> Audit { get; set; } = [];
+        public bool HasMoreAudit { get; set; }
     }
 
     public sealed class FinancialEvidenceUpload

@@ -566,6 +566,68 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
+    public async Task CancelledRebate_CanBeSupersededByACorrectedReplacement()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 500m, Reason = "First attempt", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+
+        // While the first rebate is live, a duplicate is rejected.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.CreateRebateAsync(harness.BookingId,
+            new CreateCustomerRebateDto
+            {
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = 600m, Reason = "Duplicate", Method = CustomerRebateMethod.OutstandingBalanceReduction
+            }, Actor));
+
+        // Cancel it, then a corrected replacement is allowed and the cancelled record is preserved.
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.Cancelled, reason: "Wrong amount"), Actor);
+        Assert.Equal(CustomerRebateStatus.Cancelled, Assert.Single(workspace.Rebates).Status);
+
+        workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 600m, Reason = "Corrected", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        Assert.Equal(2, workspace.Rebates.Count);
+        Assert.Single(workspace.Rebates.Where(r => r.Status == CustomerRebateStatus.Draft));
+        Assert.Single(workspace.Rebates.Where(r => r.Status == CustomerRebateStatus.Cancelled));
+    }
+
+    [Fact]
+    public async Task RuleDirectory_PagesWithStableOrder_AndReportsHasMore()
+    {
+        await using var harness = await Harness.Create();
+        for (var i = 0; i < 5; i++)
+            await harness.Service.CreateRuleAsync(new SaveCommissionRuleDto
+            {
+                Name = $"Rule {i}", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = i,
+                CalculationType = FinancialCalculationType.Percentage, PercentageRate = 1m,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
+            }, Actor);
+
+        var page1 = await harness.Service.GetRulesAsync(null, 0, 2);
+        var page2 = await harness.Service.GetRulesAsync(null, 2, 2);
+        var page3 = await harness.Service.GetRulesAsync(null, 4, 2);
+
+        Assert.Equal(2, page1.Items.Count); Assert.True(page1.HasMore);
+        Assert.Equal(2, page2.Items.Count); Assert.True(page2.HasMore);
+        Assert.Single(page3.Items); Assert.False(page3.HasMore);
+        // Stable ordering: no row appears on two pages.
+        var ids = page1.Items.Concat(page2.Items).Concat(page3.Items).Select(r => r.Id).ToList();
+        Assert.Equal(5, ids.Distinct().Count());
+    }
+
+    [Fact]
     public async Task CreditReversal_OnCompletedBooking_IsBlockedUntilReopen()
     {
         await using var harness = await Harness.Create();

@@ -24,7 +24,7 @@ namespace DAMS.Application.Interfaces
             CancellationToken cancellationToken = default);
         Task<ThirdPartyAttributionDto> SaveAttributionAsync(int? id, SaveThirdPartyAttributionDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
-        Task<List<CommissionRuleDto>> GetRulesAsync(bool? isActive, CancellationToken cancellationToken = default);
+        Task<PagedResult<CommissionRuleDto>> GetRulesAsync(bool? isActive, int skip, int take, CancellationToken cancellationToken = default);
         Task<CommissionRuleDto> CreateRuleAsync(SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default);
         Task<CommissionRuleDto> UpdateRuleAsync(int id, SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
@@ -34,6 +34,8 @@ namespace DAMS.Application.Interfaces
         Task<PagedResult<CustomerRebateDto>> GetRebatesAsync(CustomerRebateStatus? status, int? projectId,
             int skip, int take, CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> GetBookingWorkspaceAsync(int bookingId,
+            CancellationToken cancellationToken = default);
+        Task<PagedResult<FinancialAuditDto>> GetBookingAuditAsync(int bookingId, int skip, int take,
             CancellationToken cancellationToken = default);
         Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId, CreateBookingCommissionDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default);

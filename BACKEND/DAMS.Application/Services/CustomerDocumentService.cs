@@ -1,7 +1,9 @@
 using System.Data;
+using System.Linq.Expressions;
 using System.Text.RegularExpressions;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -18,6 +20,22 @@ namespace DAMS.Application.Services
         public const long MaxFileSize = 25 * 1024 * 1024;
         public const long MaxRequestSize = MaxFileSize + (512 * 1024);
         private const int AssignmentBatchSize = 500;
+        private const int HistoryPreviewSize = 100;
+
+        private static readonly Expression<Func<CustomerDocumentAuditEntry, CustomerDocumentAuditDto>> AuditProjection =
+            a => new CustomerDocumentAuditDto
+            {
+                Id = a.Id,
+                RequirementId = a.RequirementId,
+                VersionId = a.VersionId,
+                DocumentName = a.Requirement != null ? a.Requirement.Name : a.Category != null ? a.Category.Name : null,
+                Action = a.Action,
+                PreviousStatus = a.PreviousStatus,
+                NewStatus = a.NewStatus,
+                Notes = a.Notes,
+                PerformedByName = a.PerformedByName,
+                OccurredAt = a.OccurredAt
+            };
         private static readonly HashSet<string> SupportedTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             ".pdf", ".jpg", ".jpeg", ".png"
@@ -292,25 +310,19 @@ namespace DAMS.Application.Services
                 .AsSplitQuery()
                 .ToListAsync(cancellationToken);
 
+            // Load only a bounded preview of the newest audit rows; the full log is served by the
+            // paged history endpoint so a long-lived customer cannot force an unbounded read here.
             var history = await _context.CustomerDocumentAuditEntries
                 .AsNoTracking()
                 .Where(a => a.CustomerId == customerId)
                 .OrderByDescending(a => a.OccurredAt)
                 .ThenByDescending(a => a.Id)
-                .Select(a => new CustomerDocumentAuditDto
-                {
-                    Id = a.Id,
-                    RequirementId = a.RequirementId,
-                    VersionId = a.VersionId,
-                    DocumentName = a.Requirement != null ? a.Requirement.Name : a.Category != null ? a.Category.Name : null,
-                    Action = a.Action,
-                    PreviousStatus = a.PreviousStatus,
-                    NewStatus = a.NewStatus,
-                    Notes = a.Notes,
-                    PerformedByName = a.PerformedByName,
-                    OccurredAt = a.OccurredAt
-                })
+                .Select(AuditProjection)
+                .Take(HistoryPreviewSize + 1)
                 .ToListAsync(cancellationToken);
+            var hasMoreHistory = history.Count > HistoryPreviewSize;
+            if (hasMoreHistory)
+                history.RemoveAt(history.Count - 1);
 
             return new CustomerDocumentChecklistDto
             {
@@ -318,7 +330,34 @@ namespace DAMS.Application.Services
                 CustomerName = customer.FullName,
                 Summary = CustomerDocumentCompletion.Calculate(requirements),
                 Requirements = requirements.Select(MapRequirement).ToList(),
-                History = history
+                History = history,
+                HasMoreHistory = hasMoreHistory
+            };
+        }
+
+        public async Task<PagedResult<CustomerDocumentAuditDto>> GetHistoryAsync(
+            int customerId,
+            int skip,
+            int take,
+            CancellationToken cancellationToken = default)
+        {
+            if (!await _context.Customers.AsNoTracking().AnyAsync(c => c.Id == customerId, cancellationToken))
+                throw new KeyNotFoundException("Customer not found.");
+            skip = Math.Max(0, skip);
+            take = Math.Clamp(take, 1, 200);
+            var rows = await _context.CustomerDocumentAuditEntries
+                .AsNoTracking()
+                .Where(a => a.CustomerId == customerId)
+                .OrderByDescending(a => a.OccurredAt)
+                .ThenByDescending(a => a.Id)
+                .Select(AuditProjection)
+                .Skip(skip)
+                .Take(take + 1)
+                .ToListAsync(cancellationToken);
+            return new PagedResult<CustomerDocumentAuditDto>
+            {
+                Items = rows.Take(take).ToList(),
+                HasMore = rows.Count > take
             };
         }
 

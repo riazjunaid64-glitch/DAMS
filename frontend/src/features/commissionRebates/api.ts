@@ -22,7 +22,10 @@ export const commissionRebateApi = {
   },
   savePartner: (body:unknown, id?:number) => json<Partner>(id?`/partners/${id}`:"/partners", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   partnerStatus: (id:number, body:unknown) => json<Partner>(`/partners/${id}/status`, {method:"PATCH",body:JSON.stringify(body)}),
-  rules: (isActive?:boolean) => json<CommissionRule[]>(`/rules${isActive===undefined?"":`?isActive=${isActive}`}`),
+  rules: (isActive?:boolean, skip=0, take=500) => {
+    const q = new URLSearchParams({skip:String(skip),take:String(take)}); if(isActive!==undefined)q.set("isActive",String(isActive));
+    return json<PagedResult<CommissionRule>>(`/rules?${q}`);
+  },
   saveRule: (body:unknown, id?:number) => json<CommissionRule>(id?`/rules/${id}`:"/rules", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   commissions: (status="", skip=0, take=25) => { const q=new URLSearchParams({skip:String(skip),take:String(take)});if(status)q.set("status",status);return json<PagedResult<Commission>>(`/commissions?${q}`); },
   rebates: (status="", skip=0, take=25) => { const q=new URLSearchParams({skip:String(skip),take:String(take)});if(status)q.set("status",status);return json<PagedResult<Rebate>>(`/rebates?${q}`); },

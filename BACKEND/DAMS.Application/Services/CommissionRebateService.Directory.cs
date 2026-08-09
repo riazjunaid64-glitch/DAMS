@@ -147,26 +147,43 @@ namespace DAMS.Application.Services
             return await MapAttributionAsync(attribution.Id, cancellationToken);
         }
 
-        public async Task<List<CommissionRuleDto>> GetRulesAsync(bool? isActive, CancellationToken cancellationToken = default)
+        public async Task<PagedResult<CommissionRuleDto>> GetRulesAsync(bool? isActive, int skip, int take,
+            CancellationToken cancellationToken = default)
         {
+            skip = Math.Max(0, skip);
+            take = Math.Clamp(take, 1, 500);
             var query = _context.CommissionRules.AsNoTracking().AsQueryable();
             if (isActive.HasValue) query = query.Where(r => r.IsActive == isActive.Value);
-            return await query.OrderByDescending(r => r.IsActive).ThenByDescending(r => r.Priority).ThenBy(r => r.Name)
-                .Take(500).Select(r => new CommissionRuleDto
-                {
-                    Id = r.Id, Name = r.Name, Description = r.Description, IsActive = r.IsActive,
-                    EffectiveFrom = r.EffectiveFrom, EffectiveTo = r.EffectiveTo, PartnerId = r.PartnerId,
-                    PartnerName = r.Partner != null ? r.Partner.Name : null, PartnerType = r.PartnerType,
-                    ProjectId = r.ProjectId, ProjectName = r.Project != null ? r.Project.ProjectName : null,
-                    UnitCategory = r.UnitCategory, BookingSource = r.BookingSource, BookingId = r.BookingId,
-                    CalculationType = r.CalculationType, PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount,
-                    CalculationBasis = r.CalculationBasis, MinimumCommission = r.MinimumCommission,
-                    MaximumCommission = r.MaximumCommission, EligibilityCondition = r.EligibilityCondition,
-                    EarningCondition = r.EarningCondition, MinimumCollectionPercent = r.MinimumCollectionPercent,
-                    Priority = r.Priority, RequiresApproval = r.RequiresApproval, Notes = r.Notes,
-                    ConcurrencyToken = Convert.ToBase64String(r.RowVersion)
-                }).ToListAsync(cancellationToken);
+            // Id is the final tie-breaker so paging is stable across rows with equal priority/name.
+            var ordered = query.OrderByDescending(r => r.IsActive).ThenByDescending(r => r.Priority)
+                .ThenBy(r => r.Name).ThenBy(r => r.Id);
+            var rows = await ProjectRules(ordered).Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            return new PagedResult<CommissionRuleDto>
+            {
+                Items = rows.Take(take).ToList(),
+                HasMore = rows.Count > take
+            };
         }
+
+        private static IQueryable<CommissionRuleDto> ProjectRules(IQueryable<CommissionRule> query) =>
+            query.Select(r => new CommissionRuleDto
+            {
+                Id = r.Id, Name = r.Name, Description = r.Description, IsActive = r.IsActive,
+                EffectiveFrom = r.EffectiveFrom, EffectiveTo = r.EffectiveTo, PartnerId = r.PartnerId,
+                PartnerName = r.Partner != null ? r.Partner.Name : null, PartnerType = r.PartnerType,
+                ProjectId = r.ProjectId, ProjectName = r.Project != null ? r.Project.ProjectName : null,
+                UnitCategory = r.UnitCategory, BookingSource = r.BookingSource, BookingId = r.BookingId,
+                CalculationType = r.CalculationType, PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount,
+                CalculationBasis = r.CalculationBasis, MinimumCommission = r.MinimumCommission,
+                MaximumCommission = r.MaximumCommission, EligibilityCondition = r.EligibilityCondition,
+                EarningCondition = r.EarningCondition, MinimumCollectionPercent = r.MinimumCollectionPercent,
+                Priority = r.Priority, RequiresApproval = r.RequiresApproval, Notes = r.Notes,
+                ConcurrencyToken = Convert.ToBase64String(r.RowVersion)
+            });
+
+        private async Task<CommissionRuleDto> GetRuleByIdAsync(int id, CancellationToken cancellationToken) =>
+            await ProjectRules(_context.CommissionRules.AsNoTracking().Where(r => r.Id == id))
+                .SingleAsync(cancellationToken);
 
         public Task<CommissionRuleDto> CreateRuleAsync(SaveCommissionRuleDto dto, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default) => SaveRuleAsync(null, dto, actor, cancellationToken);
@@ -208,7 +225,7 @@ namespace DAMS.Application.Services
                 actor, commissionRuleId: id, reason: changeSummary);
             if (!id.HasValue) audit.CommissionRule = rule;
             await _context.SaveChangesAsync(cancellationToken);
-            return (await GetRulesAsync(null, cancellationToken)).Single(r => r.Id == rule.Id);
+            return await GetRuleByIdAsync(rule.Id, cancellationToken);
         }
 
         private async Task<ThirdPartyAttributionDto> MapAttributionAsync(int id, CancellationToken cancellationToken) =>
