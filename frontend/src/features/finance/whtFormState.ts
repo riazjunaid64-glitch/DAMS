@@ -45,6 +45,19 @@ export function effectiveTax(value: WhtFormValue, preview: WhtCalculation | null
   return preview?.isWhtApplicable ? preview.whtAmount : 0;
 }
 
+/**
+ * True while an edit form is still showing the tax the expense was actually saved with.
+ *
+ * The server treats the gross amount, category, vendor and date as the only inputs that can move
+ * a recorded deduction; any other edit keeps the filed figure untouched. Until one of those moves,
+ * the form has to agree — a January payment that was correctly below the annual threshold will
+ * preview as taxable once February crosses it, and prompting for an "override reason" there would
+ * be asking the operator to justify the figure that was right all along.
+ */
+export function showsFiledFigures(openedKey: string | null, currentKey: string): boolean {
+  return openedKey !== null && openedKey === currentKey;
+}
+
 /** True only when the figure genuinely differs from what the rate table produces. */
 export function isOverridden(value: WhtFormValue, preview: WhtCalculation | null): boolean {
   if (preview == null || !preview.isWhtApplicable) return false;

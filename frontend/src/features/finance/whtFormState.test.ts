@@ -8,6 +8,7 @@ import {
   isOverridden,
   netPaid,
   seededKey,
+  showsFiledFigures,
 } from "./whtFormState.ts";
 import type { WhtCalculation, WhtFormValue } from "./whtTypes.ts";
 
@@ -134,5 +135,24 @@ describe("fromPreview", () => {
 
   it("drops trailing zeros so a rate reads as 7.5%, not 7.5000%", () => {
     expect(fromPreview(preview({ rate: 7.5 })).rate).toBe("7.5");
+  });
+});
+
+describe("showsFiledFigures", () => {
+  const opened = calculationKey({ categoryId: "1", vendorId: "1", grossAmount: "40000", date: "2026-01-10" });
+
+  it("holds while an edit leaves the tax basis alone", () => {
+    // Fixing a typo in the description does not touch category, vendor, amount or date, so the
+    // figure on screen is still the one that was filed — no override prompt belongs here.
+    expect(showsFiledFigures(opened, opened)).toBe(true);
+  });
+
+  it("releases as soon as the basis moves", () => {
+    const raised = calculationKey({ categoryId: "1", vendorId: "1", grossAmount: "50000", date: "2026-01-10" });
+    expect(showsFiledFigures(opened, raised)).toBe(false);
+  });
+
+  it("never applies to a new expense, which has nothing filed yet", () => {
+    expect(showsFiledFigures(null, opened)).toBe(false);
   });
 });

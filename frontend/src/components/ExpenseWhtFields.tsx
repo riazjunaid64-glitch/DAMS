@@ -8,6 +8,7 @@ import {
   isOverridden,
   netPaid as deriveNetPaid,
   seededKey,
+  showsFiledFigures,
 } from "../features/finance/whtFormState.ts";
 import { formatRs, type WhtCalculation, type WhtFormValue } from "../features/finance/whtTypes.ts";
 
@@ -49,6 +50,12 @@ export default function ExpenseWhtFields({
   // deliberate override — replaced the moment the first preview lands. Prefilling then only
   // happens when the calculation basis actually moves.
   const appliedKey = useRef<string | null>(seededKey(value, key));
+
+  // The key the form opened on, kept fixed. While the basis has not moved off it, what is on
+  // screen is the filed snapshot — the server keeps it as-is and asks for no reason, so the form
+  // must not demand one either.
+  const openedKey = useRef<string | null>(seededKey(value, key));
+  const asFiled = showsFiledFigures(openedKey.current, key);
 
   useEffect(() => {
     if (!categoryId || !Number.isFinite(gross) || gross <= 0) {
@@ -103,7 +110,8 @@ export default function ExpenseWhtFields({
   }
 
   const netPaid = deriveNetPaid(grossAmount, value, preview);
-  const overridden = isOverridden(value, preview);
+  const overridden = !asFiled && isOverridden(value, preview);
+  const differsFromToday = asFiled && isOverridden(value, preview);
 
   return (
     <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4">
@@ -168,6 +176,14 @@ export default function ExpenseWhtFields({
             className="w-full rounded-lg border border-amber-500/25 bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none"
           />
         </div>
+      )}
+
+      {differsFromToday && (
+        <p className="rounded-lg border border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+          This is the tax as originally withheld, and it is kept on save. Today's rules would give{" "}
+          {formatRs(preview!.whtAmount)} — filed periods are not restated. Change the amount,
+          category, vendor or date to recalculate.
+        </p>
       )}
 
       {preview?.notice && (
