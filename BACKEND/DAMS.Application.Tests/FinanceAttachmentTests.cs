@@ -209,8 +209,11 @@ public sealed class FinanceAttachmentTests
 
     private static FinanceAccount TestAccount() => new() { Id = 1, Name = "Test Cash", AccountHolderName = "Test Holder", IsActive = true };
 
-    private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage) =>
-        new(context, storage, new FinanceAccountService(context), NullLogger<FinanceService>.Instance);
+    private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage)
+    {
+        var accounts = new FinanceAccountService(context);
+        return new FinanceService(context, storage, accounts, new WhtService(context, accounts), NullLogger<FinanceService>.Instance);
+    }
 
     private static FinanceAttachmentUpload Pdf(string name)
     {

@@ -31,6 +31,10 @@ namespace DAMS.Infrastructure.Data
         public DbSet<EmployeeSalary> EmployeeSalaries { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
+        public DbSet<Vendor> Vendors { get; set; }
+        public DbSet<WhtDeposit> WhtDeposits { get; set; }
+        public DbSet<FinanceSetting> FinanceSettings { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
         public DbSet<FinanceAccount> FinanceAccounts { get; set; }
@@ -594,10 +598,26 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(e => e.Description).HasMaxLength(1000);
                 entity.Property(e => e.Vendor).HasMaxLength(200);
 
+                // Rates are stored to 4 decimals: a rate back-computed from a hand-entered tax
+                // amount (e.g. 4.7619%) must round-trip, or the s.165 statement stops tying out.
+                entity.Property(e => e.WhtRate).HasColumnType("decimal(9,4)");
+                entity.Property(e => e.WhtAmount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.WhtOverrideReason).HasMaxLength(500);
+                entity.Property(e => e.WhtTaxSection).HasMaxLength(30);
+                entity.Property(e => e.VendorFilerStatusAtEntry).HasConversion<int>();
+                // Derived from Amount and WhtAmount; storing it would let the three drift apart.
+                entity.Ignore(e => e.NetPaid);
+
                 entity.HasIndex(e => e.ProjectId);
                 entity.HasIndex(e => e.Date);
                 entity.HasIndex(e => e.Category);
                 entity.HasIndex(e => e.FinanceAccountId);
+                entity.HasIndex(e => e.CategoryId);
+                // Threshold checks ask "what has this vendor been paid this year"; the WHT reports
+                // scan the same rows by date. Both are covered here.
+                entity.HasIndex(e => new { e.VendorId, e.Date });
+                entity.HasIndex(e => new { e.WhtApplied, e.Date })
+                      .HasFilter("[WhtApplied] = 1");
 
                 entity.HasOne(e => e.Project)
                       .WithMany()
@@ -608,7 +628,21 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.Expenses)
                       .HasForeignKey(e => e.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+
+                // Restrict, not SetNull: severing the link would leave the snapshot columns
+                // (Category, WhtRate, WhtTaxSection) as the only record of what was withheld.
+                entity.HasOne(e => e.ExpenseCategory)
+                      .WithMany(c => c.Expenses)
+                      .HasForeignKey(e => e.CategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(e => e.VendorAccount)
+                      .WithMany(v => v.Expenses)
+                      .HasForeignKey(e => e.VendorId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
+
+            ConfigureWithholdingTax(modelBuilder);
 
             modelBuilder.Entity<ManualRevenue>(entity =>
             {
@@ -1031,6 +1065,182 @@ namespace DAMS.Infrastructure.Data
             IsActive = true,
             AssignToNewCustomers = true,
             CreatedAt = createdAt
+        };
+
+        // Fixed timestamp: HasData must be deterministic or every `migrations add` produces
+        // a spurious "changed" row for every seeded category.
+        private static readonly DateTime WhtSeededAt = new(2026, 8, 11, 0, 0, 0, DateTimeKind.Utc);
+
+        private static void ConfigureWithholdingTax(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ExpenseCategory>(entity =>
+            {
+                entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
+                entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.Description).HasMaxLength(1000);
+                entity.Property(c => c.TaxSection).HasMaxLength(30);
+                entity.Property(c => c.FilerRate).HasColumnType("decimal(9,4)");
+                entity.Property(c => c.NonFilerRate).HasColumnType("decimal(9,4)");
+                entity.Property(c => c.AnnualThreshold).HasColumnType("decimal(18,2)");
+                entity.Property(c => c.RowVersion).IsRowVersion();
+
+                entity.HasIndex(c => c.Code).IsUnique();
+                entity.HasIndex(c => new { c.IsActive, c.DisplayOrder });
+                // The threshold is a per-vendor annual aggregate per tax section, so reporting and
+                // the threshold check both group categories by section.
+                entity.HasIndex(c => c.TaxSection);
+
+                entity.HasData(SeedExpenseCategories());
+            });
+
+            modelBuilder.Entity<Vendor>(entity =>
+            {
+                entity.Property(v => v.Name).IsRequired().HasMaxLength(200);
+                entity.Property(v => v.Ntn).HasMaxLength(30);
+                entity.Property(v => v.Cnic).HasMaxLength(20);
+                entity.Property(v => v.Phone).HasMaxLength(50);
+                entity.Property(v => v.Address).HasMaxLength(500);
+                entity.Property(v => v.Notes).HasMaxLength(1000);
+                entity.Property(v => v.FilerStatus).HasConversion<int>();
+                entity.Property(v => v.RowVersion).IsRowVersion();
+
+                entity.HasIndex(v => v.Name).IsUnique();
+                entity.HasIndex(v => new { v.IsActive, v.Name });
+                // Filtered, so the many vendors without an NTN do not collide on NULL.
+                entity.HasIndex(v => v.Ntn).IsUnique().HasFilter("[Ntn] IS NOT NULL");
+            });
+
+            modelBuilder.Entity<WhtDeposit>(entity =>
+            {
+                entity.Property(d => d.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(d => d.ChallanNumber).HasMaxLength(100);
+                entity.Property(d => d.Notes).HasMaxLength(1000);
+                entity.Property(d => d.RowVersion).IsRowVersion();
+
+                entity.HasIndex(d => d.DepositDate);
+                entity.HasIndex(d => d.FinanceAccountId);
+                entity.HasIndex(d => d.ChallanNumber).IsUnique().HasFilter("[ChallanNumber] IS NOT NULL");
+
+                entity.HasOne(d => d.FinanceAccount)
+                      .WithMany(a => a.WhtDeposits)
+                      .HasForeignKey(d => d.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<FinanceSetting>(entity =>
+            {
+                entity.Property(s => s.WhtRatesConfirmedByName).HasMaxLength(200);
+                entity.Property(s => s.RowVersion).IsRowVersion();
+                // One row, always. The check constraint is what makes "singleton" true in the
+                // database rather than only in the service that reads it.
+                entity.ToTable(t => t.HasCheckConstraint("CK_FinanceSettings_Singleton", "[Id] = 1"));
+                entity.HasData(new FinanceSetting
+                {
+                    Id = FinanceSetting.SingletonId,
+                    FinancialYearStartMonth = 7
+                });
+            });
+        }
+
+        /// <summary>
+        /// Starting withholding rates for the expense heads a property developer actually uses.
+        /// <para>
+        /// These are STARTING VALUES, not settled law. Published rates for the same head differ
+        /// between sources and moved again under the last two Finance Acts, which is exactly why
+        /// every rate here is editable in Finance ▸ Settings. The rate table shows an unverified
+        /// banner until an accountant confirms them (<c>FinanceSetting.WhtRatesConfirmedAt</c>).
+        /// </para>
+        /// <para>
+        /// Cement and steel sit in their own FBR band alongside FMCG, fertiliser, sugar and edible
+        /// oil, at a materially lower rate than general goods — which is why "materials" cannot be
+        /// one category.
+        /// </para>
+        /// </summary>
+        private static ExpenseCategory[] SeedExpenseCategories() =>
+        [
+            // ── Land & statutory ──
+            // These three carry the names the expense form offered before categories existed, so
+            // the migration's name match links historic rows to them. None is withheld at the
+            // point of payment, which is why each is flagged not-applicable rather than 0%.
+            Head(60, "Land Acquisition", "land_acquisition", null, 0m, 0m, 0m, 5,
+                isWhtApplicable: false,
+                description: "Purchase of land or immovable property. Advance tax under s.236K is collected by the registering authority at transfer — the buyer withholds nothing from the seller here."),
+            Head(61, "Permits & Approvals", "permits_approvals", null, 0m, 0m, 0m, 590,
+                isWhtApplicable: false,
+                description: "Fees paid to government and regulatory bodies. Payments to government are outside the s.153 withholding regime."),
+            Head(62, "Taxes & Fees", "taxes_fees", null, 0m, 0m, 0m, 595,
+                isWhtApplicable: false,
+                description: "Statutory levies and government charges. Not withheld at the point of payment."),
+
+            // ── Construction materials — s.153(1)(a), goods ──
+            Head(1, "Cement", "cement", "153(1)(a)", 1.00m, 2.00m, 75_000m, 10),
+            Head(2, "Steel / Iron / Rebar", "steel_rebar", "153(1)(a)", 1.00m, 2.00m, 75_000m, 20),
+            Head(3, "Sand, Gravel & Aggregate", "sand_aggregate", "153(1)(a)", 5.00m, 10.00m, 75_000m, 30),
+            Head(4, "Bricks & Blocks", "bricks_blocks", "153(1)(a)", 5.00m, 10.00m, 75_000m, 40),
+            Head(5, "Tiles, Marble & Flooring", "tiles_marble", "153(1)(a)", 5.00m, 10.00m, 75_000m, 50),
+            Head(6, "Wood & Timber", "wood_timber", "153(1)(a)", 5.00m, 10.00m, 75_000m, 60),
+            Head(7, "Paint & Finishing Materials", "paint_finishing", "153(1)(a)", 5.00m, 10.00m, 75_000m, 70),
+            Head(8, "Electrical Materials", "electrical_materials", "153(1)(a)", 5.00m, 10.00m, 75_000m, 80),
+            Head(9, "Plumbing & Sanitary Materials", "plumbing_sanitary", "153(1)(a)", 5.00m, 10.00m, 75_000m, 90),
+            Head(10, "Glass & Aluminium", "glass_aluminium", "153(1)(a)", 5.00m, 10.00m, 75_000m, 100),
+            Head(11, "Hardware & Tools", "hardware_tools", "153(1)(a)", 5.00m, 10.00m, 75_000m, 110),
+            Head(12, "Other Construction Materials", "other_materials", "153(1)(a)", 5.00m, 10.00m, 75_000m, 120),
+
+            // ── Construction services & contracts ──
+            Head(20, "Construction Contract (Company)", "contract_company", "153(1)(c)", 7.50m, 15.00m, 30_000m, 200),
+            Head(21, "Construction Contract (Individual/AOP)", "contract_individual", "153(1)(c)", 8.00m, 16.00m, 30_000m, 210),
+            Head(22, "Labour & Manpower", "labour_manpower", "153(1)(b)", 15.00m, 30.00m, 30_000m, 220),
+            Head(23, "Architecture & Design Fee", "architecture_design", "153(1)(b)", 15.00m, 30.00m, 30_000m, 230),
+            Head(24, "Engineering & Consultancy", "engineering_consultancy", "153(1)(b)", 15.00m, 30.00m, 30_000m, 240),
+            Head(25, "Surveying & Soil Testing", "surveying_soil_testing", "153(1)(b)", 15.00m, 30.00m, 30_000m, 250),
+            Head(26, "Machinery & Equipment Rent", "machinery_rent", "153(1)(b)", 15.00m, 30.00m, 30_000m, 260),
+            Head(27, "Transport & Freight", "transport_freight", "153(1)(b)", 6.00m, 12.00m, 30_000m, 270),
+            Head(28, "Security Services", "security_services", "153(1)(b)", 6.00m, 12.00m, 30_000m, 280),
+
+            // ── Office & administration ──
+            Head(40, "Office Rent", "office_rent", "155", 5.00m, 10.00m, 0m, 400),
+            // s.149 is slab-based on each employee, not a flat supplier rate — payroll's job, not this form's.
+            Head(41, "Salaries", "salaries", "149", 0m, 0m, 0m, 410, isWhtApplicable: false),
+            // s.235 is collected at source by the utility company; the developer withholds nothing.
+            Head(42, "Utilities", "utilities", "235", 0m, 0m, 0m, 420, isWhtApplicable: false),
+            Head(43, "Printing & Stationery", "printing_stationery", "153(1)(a)", 5.00m, 10.00m, 75_000m, 430),
+            Head(44, "Office Supplies", "office_supplies", "153(1)(a)", 5.00m, 10.00m, 75_000m, 440),
+            Head(45, "Office Equipment", "office_equipment", "153(1)(a)", 5.00m, 10.00m, 75_000m, 450),
+            Head(46, "Office Renovation", "office_renovation", "153(1)(c)", 7.50m, 15.00m, 30_000m, 460),
+            Head(47, "Software & Web", "software_web", "153(1)(b)", 4.00m, 8.00m, 30_000m, 470),
+            Head(48, "Marketing & Advertisement", "marketing_advertisement", "153(1)(b)", 15.00m, 30.00m, 30_000m, 480),
+            Head(49, "Business Promotion", "business_promotion", "153(1)(b)", 15.00m, 30.00m, 30_000m, 490),
+            Head(50, "Legal & Professional", "legal_professional", "153(1)(b)", 15.00m, 30.00m, 30_000m, 500),
+            Head(51, "Camera Equipment Rent", "camera_rent", "153(1)(b)", 15.00m, 30.00m, 30_000m, 510),
+            Head(52, "Entertainment & Food", "entertainment_food", "153(1)(b)", 6.00m, 12.00m, 30_000m, 520),
+            Head(53, "Repairs & Maintenance", "repairs_maintenance", "153(1)(b)", 15.00m, 30.00m, 30_000m, 530),
+            Head(54, "Rebate / Commission", "rebate_commission", "233", 12.00m, 24.00m, 0m, 540),
+
+            // ── Heads with no withholding section. Flagged not-applicable rather than left at 0%
+            //    so the form says "no tax withheld" instead of showing an empty tax block.
+            Head(55, "Site Expenses", "site_expenses", null, 0m, 0m, 0m, 550, isWhtApplicable: false),
+            Head(56, "Preliminary", "preliminary", null, 0m, 0m, 0m, 560, isWhtApplicable: false),
+            Head(57, "Donation / Charity", "donation_charity", null, 0m, 0m, 0m, 570, isWhtApplicable: false),
+            Head(58, "Miscellaneous", "miscellaneous", null, 0m, 0m, 0m, 580, isWhtApplicable: false),
+        ];
+
+        private static ExpenseCategory Head(
+            int id, string name, string code, string? section,
+            decimal filerRate, decimal nonFilerRate, decimal threshold, int order,
+            bool isWhtApplicable = true, string? description = null) => new()
+        {
+            Id = id,
+            Name = name,
+            Code = code,
+            Description = description,
+            TaxSection = section,
+            IsWhtApplicable = isWhtApplicable,
+            FilerRate = filerRate,
+            NonFilerRate = nonFilerRate,
+            AnnualThreshold = threshold,
+            DisplayOrder = order,
+            IsActive = true,
+            CreatedAt = WhtSeededAt
         };
 
         private static void ConfigureLeadManagement(ModelBuilder modelBuilder)

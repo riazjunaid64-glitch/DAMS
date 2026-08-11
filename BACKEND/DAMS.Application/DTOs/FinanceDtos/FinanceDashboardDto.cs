@@ -11,11 +11,20 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal OutstandingAmount { get; set; }
         public decimal OverdueAmount { get; set; }
 
+        /// <summary>Tax withheld from expenses in the period. Money that is inside
+        /// <see cref="TotalExpenses"/> but has not left the bank — it is owed to FBR.</summary>
+        public decimal WhtWithheld { get; set; }
+
         // Populated only when a single finance account is selected. Opening balance and the
         // balance accumulated up to the end of the selected period (period start is ignored so
         // the figure is a true running balance, not a period delta).
         public decimal? AccountOpeningBalance { get; set; }
         public decimal? AccountCurrentBalance { get; set; }
+
+        /// <summary>Cash movement over the period for the selected account. Distinct from
+        /// <see cref="NetProfit"/>: expenses count at what actually left the account (net of tax
+        /// withheld), and FBR deposits count even though they are not a business cost.</summary>
+        public decimal? AccountNetMovement { get; set; }
     }
 
     /// <summary>A single row in the revenue table (automatic payment OR manual revenue).</summary>
@@ -55,9 +64,22 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public int? ProjectId { get; set; }
         public string ProjectName { get; set; } = "—";
         public string Category { get; set; } = string.Empty;
+        public int? CategoryId { get; set; }
+
+        /// <summary>Gross — the business cost. Cash paid is <see cref="NetPaid"/>.</summary>
         public decimal Amount { get; set; }
+
+        public bool WhtApplied { get; set; }
+        public decimal WhtRate { get; set; }
+        public decimal WhtAmount { get; set; }
+        public decimal NetPaid { get; set; }
+        public bool WhtRateOverridden { get; set; }
+        public string? WhtOverrideReason { get; set; }
+        public string? WhtTaxSection { get; set; }
+
         public string? Description { get; set; }
         public string? Reference { get; set; }
+        public int? VendorId { get; set; }
         public int? FinanceAccountId { get; set; }
         public string? FinanceAccountName { get; set; }
         public string? AccountHolderName { get; set; }

@@ -19,5 +19,6 @@ namespace DAMS.Domain.Entities
         public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
         public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();
         public ICollection<RebateDisbursement> RebateDisbursements { get; set; } = new List<RebateDisbursement>();
+        public ICollection<WhtDeposit> WhtDeposits { get; set; } = new List<WhtDeposit>();
     }
 }

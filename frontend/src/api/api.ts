@@ -31,7 +31,9 @@ export async function refreshAccessToken(): Promise<boolean> {
           method: "POST",
           credentials: "include",
           cache: "no-store",
-          headers: { "Content-Type": "application/json" },
+          // Harmless outside ngrok; when tunneled through ngrok's free tier this stops it
+          // intercepting the request with an HTML click-through page in place of JSON.
+          headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
         });
         if (!res.ok) {
           _accessToken = null;
@@ -74,6 +76,11 @@ export const api = async (
   }
   if (!headers.has("Pragma")) {
     headers.set("Pragma", "no-cache");
+  }
+  // Harmless outside ngrok; when tunneled through ngrok's free tier this stops it
+  // intercepting the request with an HTML click-through page in place of JSON.
+  if (!headers.has("ngrok-skip-browser-warning")) {
+    headers.set("ngrok-skip-browser-warning", "true");
   }
 
   const response = await fetch(`${apiBaseUrl()}${endpoint}`, {

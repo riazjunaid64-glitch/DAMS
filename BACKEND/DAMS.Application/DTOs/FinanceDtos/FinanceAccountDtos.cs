@@ -32,7 +32,17 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? BankOrWalletName { get; set; }
         public string? Description { get; set; }
         public decimal RevenueReceived { get; set; }
+
+        /// <summary>Cash that left the account: expenses NET of tax withheld, plus commissions,
+        /// rebates and FBR deposits.</summary>
         public decimal ExpensesPaid { get; set; }
+
+        /// <summary>Tax withheld from this account's expenses — inside the balance, but owed to
+        /// FBR rather than available to spend.</summary>
+        public decimal WhtWithheld { get; set; }
+
+        public decimal WhtDeposited { get; set; }
+
         public decimal NetMovement { get; set; }
         public decimal CurrentBalance { get; set; }
         public int TransactionCount { get; set; }
@@ -49,7 +59,16 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string Label { get; set; } = string.Empty;
         public string? Reference { get; set; }
         public string ProjectName { get; set; } = "General";
+
+        /// <summary>Signed cash effect on the account. For an expense this is the net paid, not
+        /// the invoice total.</summary>
         public decimal Amount { get; set; }
+
+        /// <summary>Invoice total, set on expense rows so the detail view can show gross, tax and
+        /// net side by side. Zero elsewhere.</summary>
+        public decimal GrossAmount { get; set; }
+
+        public decimal WhtAmount { get; set; }
     }
 
     public sealed class FinanceHolderBalanceDto

@@ -15,13 +15,15 @@ namespace DAMS.Application.Services
         private readonly AppDbContext _context;
         private readonly IFinanceAttachmentStorage _attachmentStorage;
         private readonly IFinanceAccountService _accountService;
+        private readonly IWhtService _whtService;
         private readonly ILogger<FinanceService> _logger;
 
-        public FinanceService(AppDbContext context, IFinanceAttachmentStorage attachmentStorage, IFinanceAccountService accountService, ILogger<FinanceService> logger)
+        public FinanceService(AppDbContext context, IFinanceAttachmentStorage attachmentStorage, IFinanceAccountService accountService, IWhtService whtService, ILogger<FinanceService> logger)
         {
             _context = context;
             _attachmentStorage = attachmentStorage;
             _accountService = accountService;
+            _whtService = whtService;
             _logger = logger;
         }
 
@@ -35,8 +37,12 @@ namespace DAMS.Application.Services
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+            // GROSS. The full invoice is the business cost, whatever was withheld from the payment,
+            // so the expense and profit figures are unaffected by withholding.
             var ordinaryExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+            var whtWithheld = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(e => (decimal?)e.WhtAmount) ?? 0m;
             var commissionPayouts = await CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var commissionReversals = await CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
@@ -65,6 +71,7 @@ namespace DAMS.Application.Services
             // balance is a property of the account, matching the Accounts detail view.
             decimal? accountOpeningBalance = null;
             decimal? accountCurrentBalance = null;
+            decimal? accountNetMovement = null;
             if (accountId.HasValue)
             {
                 var opening = await _context.FinanceAccounts.AsNoTracking()
@@ -75,18 +82,20 @@ namespace DAMS.Application.Services
                 {
                     var cumulativeRevenue = await ManualQuery(null, null, toExclusive, accountId, false)
                         .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-                    var cumulativeExpenses = await ExpenseQuery(null, null, toExclusive, accountId, false)
-                        .SumAsync(e => (decimal?)e.Amount) ?? 0m;
-                    cumulativeExpenses += (await CommissionPayoutQuery(null, null, toExclusive, accountId, false)
-                        .SumAsync(p => (decimal?)p.Amount) ?? 0m)
-                        - (await CommissionReversalQuery(null, null, toExclusive, accountId, false)
-                            .SumAsync(r => (decimal?)r.Amount) ?? 0m)
-                        + (await CashRebateQuery(null, null, toExclusive, accountId, false)
-                            .SumAsync(d => (decimal?)d.Amount) ?? 0m)
-                        - (await CashRebateReversalQuery(null, null, toExclusive, accountId, false)
-                            .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+                    var cumulativeExpenses = await CashOutflowBeforeAsync(toExclusive, accountId.Value);
                     accountOpeningBalance = opening.Value;
                     accountCurrentBalance = opening.Value + cumulativeRevenue - cumulativeExpenses;
+
+                    // Cash movement over the selected period — not the same thing as profit.
+                    // Expenses count at what actually left the account and FBR deposits count too,
+                    // even though neither matches the P&L figure above.
+                    var outflowBeforePeriod = fromValue.HasValue
+                        ? await CashOutflowBeforeAsync(fromValue, accountId.Value)
+                        : 0m;
+                    accountNetMovement =
+                        (await ManualQuery(null, fromValue, toExclusive, accountId, false)
+                            .SumAsync(r => (decimal?)r.Amount) ?? 0m)
+                        - (cumulativeExpenses - outflowBeforePeriod);
                 }
             }
 
@@ -98,10 +107,12 @@ namespace DAMS.Application.Services
                 TotalRevenue = totalRevenue,
                 TotalExpenses = totalExpenses,
                 NetProfit = totalRevenue - totalExpenses,
+                WhtWithheld = whtWithheld,
                 OutstandingAmount = outstandingTotal,
                 OverdueAmount = overdueTotal,
                 AccountOpeningBalance = accountOpeningBalance,
-                AccountCurrentBalance = accountCurrentBalance
+                AccountCurrentBalance = accountCurrentBalance,
+                AccountNetMovement = accountNetMovement
             };
         }
 
@@ -218,9 +229,18 @@ namespace DAMS.Application.Services
                     ProjectId = e.ProjectId,
                     ProjectName = e.Project != null ? e.Project.ProjectName : "General",
                     Category = e.Category,
+                    CategoryId = e.CategoryId,
                     Amount = e.Amount,
+                    WhtApplied = e.WhtApplied,
+                    WhtRate = e.WhtRate,
+                    WhtAmount = e.WhtAmount,
+                    NetPaid = e.Amount - e.WhtAmount,
+                    WhtRateOverridden = e.WhtRateOverridden,
+                    WhtOverrideReason = e.WhtOverrideReason,
+                    WhtTaxSection = e.WhtTaxSection,
                     Description = e.Description,
                     Reference = e.Vendor,
+                    VendorId = e.VendorId,
                     FinanceAccountId = e.FinanceAccountId,
                     FinanceAccountName = e.FinanceAccount != null ? e.FinanceAccount.Name : null,
                     AccountHolderName = e.FinanceAccount != null ? e.FinanceAccount.AccountHolderName : null,
@@ -381,6 +401,40 @@ namespace DAMS.Application.Services
             }).ToList();
 
             return new PagedResult<NetProfitLineDto> { Items = items, HasMore = raw.Count > take };
+        }
+
+        /// <summary>
+        /// Everything that has left one account before <paramref name="toExclusive"/> (all of time
+        /// when null).
+        /// <para>
+        /// Expenses count at their NET amount, because tax withheld from a supplier never left the
+        /// bank — it is held for FBR. It leaves later, as a <c>WhtDeposit</c>, which is why
+        /// deposits are an outflow here even though they are not a business expense and never
+        /// appear in the P&amp;L.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> CashOutflowBeforeAsync(DateTime? toExclusive, int accountId)
+        {
+            var expenses = await ExpenseQuery(null, null, toExclusive, accountId, false)
+                .SumAsync(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m;
+            var commissions = (await CommissionPayoutQuery(null, null, toExclusive, accountId, false)
+                    .SumAsync(p => (decimal?)p.Amount) ?? 0m)
+                - (await CommissionReversalQuery(null, null, toExclusive, accountId, false)
+                    .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+            var rebates = (await CashRebateQuery(null, null, toExclusive, accountId, false)
+                    .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+                - (await CashRebateReversalQuery(null, null, toExclusive, accountId, false)
+                    .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+            var whtDeposits = await WhtDepositQuery(toExclusive, accountId)
+                .SumAsync(d => (decimal?)d.Amount) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits;
+        }
+
+        private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
+        {
+            var q = _context.WhtDeposits.AsNoTracking().Where(d => d.FinanceAccountId == accountId);
+            if (toExclusive.HasValue) q = q.Where(d => d.DepositDate < toExclusive.Value);
+            return q;
         }
 
         // ── Filtered base queries (shared by summary totals and paged rows) ──
@@ -780,7 +834,6 @@ namespace DAMS.Application.Services
             FinanceAttachmentUpload? attachment = null,
             CancellationToken cancellationToken = default)
         {
-            ValidateExpense(dto.Amount, dto.Category);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
@@ -791,13 +844,12 @@ namespace DAMS.Application.Services
                 ProjectId = dto.ProjectId,
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
-                Category = dto.Category.Trim(),
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
-                Vendor = string.IsNullOrWhiteSpace(dto.Vendor) ? null : dto.Vendor.Trim(),
                 Date = dto.Date?.Date ?? DateTime.UtcNow,
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
+            await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
 
             string? newStoredFileName = null;
             if (attachment != null)
@@ -841,7 +893,6 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
-            ValidateExpense(dto.Amount, dto.Category);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
@@ -869,11 +920,12 @@ namespace DAMS.Application.Services
             expense.ProjectId = dto.ProjectId;
             expense.FinanceAccountId = dto.FinanceAccountId;
             expense.Amount = dto.Amount;
-            expense.Category = dto.Category.Trim();
             expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
-            expense.Vendor = string.IsNullOrWhiteSpace(dto.Vendor) ? null : dto.Vendor.Trim();
             if (dto.Date.HasValue)
                 expense.Date = dto.Date.Value.Date;
+            // Re-resolved after the date and amount move, because both feed the threshold check
+            // and therefore the tax.
+            await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
 
             try
             {
@@ -967,6 +1019,66 @@ namespace DAMS.Application.Services
             await DeleteObsoleteFileAsync(storedFileName);
         }
 
+        /// <summary>
+        /// Resolves the category and vendor an expense was entered against, snapshots their names
+        /// onto the row, then hands off to the withholding calculation.
+        /// <para>
+        /// The names are copied rather than joined so that renaming a category, retiring it, or
+        /// correcting a vendor never rewrites what a past expense says it was for. That also keeps
+        /// every pre-existing free-text row valid: no category link, just the text that was typed.
+        /// </para>
+        /// </summary>
+        private async Task ApplyExpenseDetailsAsync(Expense expense, CreateExpenseDto dto, CancellationToken cancellationToken)
+        {
+            if (dto.Amount <= 0)
+                throw new InvalidOperationException("Amount must be greater than zero.");
+
+            if (dto.CategoryId.HasValue)
+            {
+                var category = await _context.ExpenseCategories.AsNoTracking()
+                    .Where(c => c.Id == dto.CategoryId.Value)
+                    .Select(c => new { c.Id, c.Name, c.IsActive })
+                    .SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Selected expense category does not exist.");
+                // A retired category stays valid on the expense that already used it, so editing an
+                // old row does not force the operator to re-classify it.
+                if (!category.IsActive && expense.CategoryId != category.Id)
+                    throw new InvalidOperationException("Selected expense category is inactive. Choose an active category.");
+
+                expense.CategoryId = category.Id;
+                expense.Category = category.Name;
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(dto.Category))
+                    throw new InvalidOperationException("Category is required.");
+                expense.CategoryId = null;
+                expense.Category = dto.Category.Trim();
+            }
+
+            if (dto.VendorId.HasValue)
+            {
+                var vendor = await _context.Vendors.AsNoTracking()
+                    .Where(v => v.Id == dto.VendorId.Value)
+                    .Select(v => new { v.Id, v.Name, v.IsActive })
+                    .SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Selected vendor does not exist.");
+                if (!vendor.IsActive && expense.VendorId != vendor.Id)
+                    throw new InvalidOperationException("Selected vendor is inactive. Choose an active vendor.");
+
+                expense.VendorId = vendor.Id;
+                expense.Vendor = vendor.Name;
+            }
+            else
+            {
+                expense.VendorId = null;
+                expense.Vendor = string.IsNullOrWhiteSpace(dto.Vendor) ? null : dto.Vendor.Trim();
+            }
+
+            await _whtService.ApplyToExpenseAsync(
+                expense, dto.WhtRate, dto.WhtAmount, dto.WhtOverrideReason, cancellationToken);
+        }
+
         private async Task EnsureProjectExistsAsync(int? projectId, CancellationToken cancellationToken = default)
         {
             if (!projectId.HasValue)
@@ -1020,9 +1132,19 @@ namespace DAMS.Application.Services
                 AccountHolderName = account?.Holder,
                 Amount = e.Amount,
                 Category = e.Category,
+                CategoryId = e.CategoryId,
                 Description = e.Description,
                 Vendor = e.Vendor,
+                VendorId = e.VendorId,
                 Date = e.Date,
+                WhtApplied = e.WhtApplied,
+                WhtRate = e.WhtRate,
+                WhtAmount = e.WhtAmount,
+                NetPaid = e.NetPaid,
+                WhtRateOverridden = e.WhtRateOverridden,
+                WhtOverrideReason = e.WhtOverrideReason,
+                WhtTaxSection = e.WhtTaxSection,
+                VendorFilerStatusAtEntry = e.VendorFilerStatusAtEntry,
                 CreatedAt = e.CreatedAt,
                 Attachment = MapAttachment(e.Attachment)
             };
@@ -1128,14 +1250,6 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Amount must be greater than zero.");
             if (string.IsNullOrWhiteSpace(revenueType))
                 throw new InvalidOperationException("Revenue type is required.");
-        }
-
-        private static void ValidateExpense(decimal amount, string category)
-        {
-            if (amount <= 0)
-                throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(category))
-                throw new InvalidOperationException("Category is required.");
         }
 
         private static string ResolveAutomaticRevenueType(PaymentType type, InstallmentType? installmentType)
