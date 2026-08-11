@@ -7,6 +7,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace DAMS.Application.Services
 {
@@ -89,6 +90,9 @@ namespace DAMS.Application.Services
             Expense expense, decimal? requestedRate, decimal? requestedAmount, string? overrideReason,
             CancellationToken cancellationToken = default)
         {
+            if (KeepsExistingTax(expense, requestedRate, requestedAmount))
+                return;
+
             var category = expense.CategoryId.HasValue
                 ? await _context.ExpenseCategories.AsNoTracking()
                     .SingleOrDefaultAsync(c => c.Id == expense.CategoryId.Value, cancellationToken)
@@ -159,6 +163,50 @@ namespace DAMS.Application.Services
             // towards the section's annual aggregate, so the section has to be recorded.
             expense.WhtTaxSection = category.TaxSection;
             expense.VendorFilerStatusAtEntry = filerStatus;
+        }
+
+        /// <summary>
+        /// True when this edit cannot legitimately have moved the tax, so the figure already on the
+        /// row stands untouched.
+        /// <para>
+        /// Withheld tax is a snapshot of what was actually deducted and handed to FBR. Only four
+        /// inputs can change it: the gross amount, the category, the vendor and the date. Every
+        /// other edit — fixing a typo in the description, swapping the attachment, moving the
+        /// expense to a project — has to leave it exactly as filed.
+        /// </para>
+        /// <para>
+        /// Without this guard, re-saving an old expense re-runs the annual threshold against
+        /// everything paid <em>since</em>. A January payment that was correctly below the allowance
+        /// looks taxable once February crosses it, so correcting its spelling in March would either
+        /// demand an override reason for a figure that was right all along, or quietly restate tax
+        /// for a period that may already be filed.
+        /// </para>
+        /// </summary>
+        private bool KeepsExistingTax(Expense expense, decimal? requestedRate, decimal? requestedAmount)
+        {
+            if (expense.Id == 0) return false;
+
+            var entry = _context.Entry(expense);
+            if (entry.State is EntityState.Detached or EntityState.Added) return false;
+
+            if (HasChanged(entry, nameof(Expense.Amount))
+                || HasChanged(entry, nameof(Expense.CategoryId))
+                || HasChanged(entry, nameof(Expense.VendorId))
+                || HasChanged(entry, nameof(Expense.Date)))
+                return false;
+
+            // Correcting the deduction by hand is still allowed — that is a deliberate change to
+            // the tax and goes through the override path below. The amount wins over the rate here
+            // for the same reason it does there: it is the figure that will be deposited.
+            if (requestedAmount.HasValue) return requestedAmount.Value == expense.WhtAmount;
+            if (requestedRate.HasValue) return requestedRate.Value == expense.WhtRate;
+            return true;
+        }
+
+        private static bool HasChanged(EntityEntry<Expense> entry, string propertyName)
+        {
+            var property = entry.Property(propertyName);
+            return !Equals(property.OriginalValue, property.CurrentValue);
         }
 
         private static void ClearWht(Expense expense, FilerStatus filerStatus, string? section)
@@ -378,14 +426,18 @@ namespace DAMS.Application.Services
         public async Task<List<WhtVendorLineDto>> GetByVendorAsync(
             DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
         {
-            // Grouped by vendor *and* section: a s.165 statement reports each section separately,
-            // and one supplier can be paid under more than one.
+            // Grouped by vendor, section *and* the filer status the tax was withheld under. A s.165
+            // statement reports each section separately, one supplier can be paid under more than
+            // one, and a supplier whose ATL status changed mid-period was genuinely withheld at two
+            // different rates — collapsing that into one line at today's status would report a
+            // filer rate against a non-filer heading.
             var rows = await WithheldQuery(from, to)
-                .GroupBy(e => new { e.VendorId, e.WhtTaxSection })
+                .GroupBy(e => new { e.VendorId, e.WhtTaxSection, e.VendorFilerStatusAtEntry })
                 .Select(g => new
                 {
                     g.Key.VendorId,
                     g.Key.WhtTaxSection,
+                    g.Key.VendorFilerStatusAtEntry,
                     // Free-text vendors have no record to read a name from; take the snapshot on
                     // any row in the group, which is the name that was on the payment.
                     FallbackName = g.Min(e => e.Vendor),
@@ -411,7 +463,10 @@ namespace DAMS.Application.Services
                         VendorName = vendor?.Name ?? r.FallbackName ?? "Unnamed vendor",
                         Ntn = vendor?.Ntn,
                         Cnic = vendor?.Cnic,
-                        FilerStatus = vendor?.FilerStatus ?? FilerStatus.Unknown,
+                        // Name, NTN and CNIC are identity — the current record is the right one to
+                        // report. Filer status is not identity: it is the fact that set the rate on
+                        // the day, so it comes off the expense snapshot and never moves again.
+                        FilerStatus = r.VendorFilerStatusAtEntry,
                         TaxSection = string.IsNullOrWhiteSpace(r.WhtTaxSection) ? null : r.WhtTaxSection,
                         GrossAmount = r.GrossAmount,
                         WhtAmount = r.WhtAmount,

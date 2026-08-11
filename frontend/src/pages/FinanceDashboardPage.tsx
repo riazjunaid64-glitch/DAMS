@@ -244,6 +244,8 @@ interface ExpenseFormState {
   /** Managed category id, or "" when the head is free text. */
   categoryId: string;
   category: string;
+  /** True only for a row recorded before the managed list existed, which may keep its free text. */
+  legacyCategory: boolean;
   description: string;
   /** Managed vendor id, or "" when the payee is free text. */
   vendorId: string;
@@ -276,6 +278,7 @@ const emptyExpenseForm = (): ExpenseFormState => ({
   amount: "",
   categoryId: "",
   category: "",
+  legacyCategory: false,
   description: "",
   vendorId: "",
   vendor: "",
@@ -539,6 +542,10 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Enter a valid amount greater than zero.");
       return;
     }
+    if (!expenseForm.categoryId && !expenseForm.legacyCategory) {
+      setFormError("Choose an expense category. Add a new head under Finance ▸ Settings if the one you need is missing.");
+      return;
+    }
     if (!expenseForm.categoryId && !expenseForm.category.trim()) {
       setFormError("Category is required.");
       return;
@@ -629,6 +636,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       amount: String(row.amount),
       categoryId: row.categoryId != null ? String(row.categoryId) : "",
       category: row.category,
+      legacyCategory: row.categoryId == null,
       description: row.description ?? "",
       vendorId: row.vendorId != null ? String(row.vendorId) : "",
       vendor: row.reference ?? "",
@@ -1068,7 +1076,14 @@ export default function FinanceDashboardPage({ user }: Props) {
                   wht: v === CUSTOM_TYPE ? emptyWht() : expenseForm.wht,
                 })}
               >
-                <option value={CUSTOM_TYPE}>Custom (enter manually — no tax withheld)…</option>
+                {/* Free text is only offered to a row that already has it — an expense recorded
+                    before the managed list existed. Offering it on a new expense would be a
+                    one-click way past the rate table. */}
+                {expenseForm.legacyCategory ? (
+                  <option value={CUSTOM_TYPE}>Keep the original text — “{expenseForm.category}”</option>
+                ) : (
+                  <option value={CUSTOM_TYPE}>Select a category</option>
+                )}
                 {expenseCategories
                   .filter((c) => c.isActive || String(c.id) === expenseForm.categoryId)
                   .map((c) => (
@@ -1078,9 +1093,9 @@ export default function FinanceDashboardPage({ user }: Props) {
                     </option>
                   ))}
               </FormSelect>
-              {!expenseForm.categoryId && (
+              {expenseForm.legacyCategory && !expenseForm.categoryId && (
                 <FormInput
-                  label="Custom Category"
+                  label="Original Category Text"
                   value={expenseForm.category}
                   onChange={(v) => setExpenseForm({ ...expenseForm, category: v })}
                 />

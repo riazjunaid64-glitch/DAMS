@@ -75,6 +75,7 @@ namespace DAMS.Application.Services
             };
             _context.Vendors.Add(vendor);
             await _context.SaveChangesAsync(cancellationToken);
+            await AdoptFreeTextHistoryAsync(vendor.Id, vendor.Name, cancellationToken);
             return await GetByIdAsync(vendor.Id, cancellationToken);
         }
 
@@ -85,6 +86,10 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Vendor not found.");
             ApplyConcurrencyToken(vendor, dto.ConcurrencyToken);
             await EnsureUniqueAsync(dto, id, cancellationToken);
+
+            // Held so that a rename can still claim what is filed under the old name — otherwise it
+            // walks away from that history and the vendor's annual total silently restarts.
+            var previousName = vendor.Name;
 
             // Changing the filer status only affects expenses entered from here on: each expense
             // snapshots the status it was withheld under.
@@ -100,6 +105,8 @@ namespace DAMS.Application.Services
             vendor.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync(cancellationToken);
+            if (vendor.Name != previousName)
+                await AdoptFreeTextHistoryAsync(vendor.Id, previousName, cancellationToken);
             return await GetByIdAsync(id, cancellationToken);
         }
 
@@ -139,6 +146,29 @@ namespace DAMS.Application.Services
                 })
                 .OrderByDescending(g => g.GrossPaid)
                 .ToList();
+        }
+
+        /// <summary>
+        /// Claims the unlinked expense rows that were already this vendor's money.
+        /// <para>
+        /// Before a supplier has a record, their payments carry the typed name and no link, and
+        /// those payments still count towards the vendor's annual threshold. Matching on the name
+        /// at query time is enough right up until someone corrects the business name — at which
+        /// point the whole history silently detaches and the allowance restarts. Writing the id
+        /// once makes the link permanent, and it is the only field touched: the name on each
+        /// expense stays the one that was on the payment.
+        /// </para>
+        /// </summary>
+        private async Task AdoptFreeTextHistoryAsync(int vendorId, string name, CancellationToken cancellationToken)
+        {
+            var orphans = await _context.Expenses
+                .Where(e => e.VendorId == null && e.Vendor == name)
+                .ToListAsync(cancellationToken);
+            if (orphans.Count == 0) return;
+
+            foreach (var expense in orphans)
+                expense.VendorId = vendorId;
+            await _context.SaveChangesAsync(cancellationToken);
         }
 
         private async Task<(DateTime Start, DateTime End)> CurrentYearWindowAsync(CancellationToken cancellationToken)

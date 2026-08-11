@@ -842,7 +842,8 @@ namespace DAMS.Application.Services
 
             // Held until after SaveChanges so the year-to-date read and the insert that depends on
             // it cannot be interleaved with another save for the same vendor.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(dto, cancellationToken);
+            await using var thresholdGuard = await BeginThresholdGuardAsync(
+                new[] { dto.VendorId }, cancellationToken);
 
             var expense = new Expense
             {
@@ -905,8 +906,10 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Paid From Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
 
-            // Editing re-decides the threshold too, so it needs the same protection as creating.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(dto, cancellationToken);
+            // Editing re-decides the threshold too, so it needs the same protection as creating —
+            // for the vendor being left as well as the one being joined.
+            await using var thresholdGuard = await BeginThresholdGuardAsync(
+                new[] { expense.VendorId, dto.VendorId }, cancellationToken);
 
             var oldStoredFileName = expense.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -963,9 +966,17 @@ namespace DAMS.Application.Services
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
 
+            // Removing an expense lowers the vendor's year-to-date total, so it moves the same
+            // aggregate a save reads. Without the lock a concurrent entry can decide the threshold
+            // against a row that is about to disappear.
+            await using var thresholdGuard = await BeginThresholdGuardAsync(
+                new[] { expense.VendorId }, cancellationToken);
+
             var storedFileName = expense.Attachment?.StoredFileName;
             _context.Expenses.Remove(expense);
             await _context.SaveChangesAsync(cancellationToken);
+            if (thresholdGuard != null)
+                await thresholdGuard.CommitAsync(cancellationToken);
             await DeleteObsoleteFileAsync(storedFileName);
         }
 
@@ -1040,24 +1051,33 @@ namespace DAMS.Application.Services
         /// both save — leaving the vendor over the threshold with no tax deducted at all.
         /// </para>
         /// <para>
-        /// Locking the single vendor row is enough, because every threshold aggregate is keyed by
-        /// vendor, and it avoids the range-lock deadlocks that a serialisable isolation level
-        /// would invite on a shared table. Non-relational providers (the in-memory store used by
-        /// tests) have no locking to take, and expenses with no vendor cannot hit a threshold.
+        /// Locking the vendor row is enough, because every threshold aggregate is keyed by vendor,
+        /// and it avoids the range-lock deadlocks that a serialisable isolation level would invite
+        /// on a shared table. Non-relational providers (the in-memory store used by tests) have no
+        /// locking to take, and expenses with no vendor cannot hit a threshold.
+        /// </para>
+        /// <para>
+        /// Every write that moves a vendor's year-to-date total takes the same lock — including
+        /// deleting an expense, and both sides of a move from one vendor to another. Rows are
+        /// locked in ascending id order so two moves in opposite directions queue instead of
+        /// deadlocking.
         /// </para>
         /// </summary>
         private async Task<IDbContextTransaction?> BeginThresholdGuardAsync(
-            CreateExpenseDto dto, CancellationToken cancellationToken)
+            IEnumerable<int?> vendorIds, CancellationToken cancellationToken)
         {
-            if (!dto.VendorId.HasValue || !dto.CategoryId.HasValue) return null;
+            var ids = vendorIds.Where(id => id.HasValue).Select(id => id!.Value)
+                .Distinct().OrderBy(id => id).ToList();
+            if (ids.Count == 0) return null;
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
 
             var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
             try
             {
-                await _context.Database.ExecuteSqlRawAsync(
-                    "SELECT TOP 1 1 FROM [Vendors] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
-                    new object[] { dto.VendorId.Value }, cancellationToken);
+                foreach (var id in ids)
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "SELECT TOP 1 1 FROM [Vendors] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
+                        new object[] { id }, cancellationToken);
                 return transaction;
             }
             catch
@@ -1098,9 +1118,16 @@ namespace DAMS.Application.Services
             }
             else
             {
+                // Rows that predate the managed list keep the free text they were entered with, so
+                // their history stays readable and editing one does not force a re-classification.
+                // A new expense has to be classified: with no managed head there is no rate table
+                // behind it, which would make "type your own category" a one-click way to pay a
+                // taxable supplier with nothing withheld.
+                if (expense.Id == 0 || expense.CategoryId != null)
+                    throw new InvalidOperationException(
+                        "Choose an expense category from the list. If the head you need is missing, add it under Finance ▸ Settings ▸ Expense heads & rates.");
                 if (string.IsNullOrWhiteSpace(dto.Category))
                     throw new InvalidOperationException("Category is required.");
-                expense.CategoryId = null;
                 expense.Category = dto.Category.Trim();
             }
 

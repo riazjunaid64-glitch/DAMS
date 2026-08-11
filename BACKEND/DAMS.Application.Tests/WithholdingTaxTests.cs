@@ -453,14 +453,17 @@ public sealed class WithholdingTaxTests
     }
 
     [Fact]
-    public async Task FreeTextCategories_StillWork_AndCarryNoTax()
+    public async Task FreeTextCategoriesAlreadyOnRecord_StillReadBack_AndCarryNoTax()
     {
+        // Free text is closed to new writes (see ANewExpense_CannotUseAFreeTextCategory), but the
+        // rows that predate the managed list have to keep working everywhere they are read.
         await using var context = Seeded();
+        context.Expenses.Add(new Expense
+        { Id = 91, FinanceAccountId = 1, Category = "Some one-off head", Amount = 5_000m });
+        await context.SaveChangesAsync();
 
-        var expense = await Finance(context).CreateExpenseAsync(new CreateExpenseDto
-        {
-            FinanceAccountId = 1, Category = "Some one-off head", Amount = 5_000m
-        }, 1);
+        var page = await Finance(context).GetExpensePageAsync(null, null, null, 0, 20);
+        var expense = Assert.Single(page.Items, e => e.Id == 91);
 
         Assert.Equal("Some one-off head", expense.Category);
         Assert.Null(expense.CategoryId);
@@ -593,6 +596,197 @@ public sealed class WithholdingTaxTests
 
     // ── Fixtures ────────────────────────────────────────────────────────────────
 
+    // ── Vendor identity survives a rename ───────────────────────────────────────
+
+    [Fact]
+    public async Task HistoricSpendStillCounts_AfterTheVendorIsRenamed()
+    {
+        // Matching legacy rows on the vendor's *current* name works only until someone corrects
+        // the business name, at which point the whole history detaches and the annual allowance
+        // silently restarts. Renaming has to carry that history with it.
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var vendors = new VendorService(context);
+
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "ABC Traders", Amount = 70_000m }, 1);
+
+        var vendor = await vendors.GetByIdAsync(1);
+        await vendors.UpdateAsync(1, new SaveVendorDto
+        {
+            Name = "ABC Traders (Pvt) Ltd", Ntn = vendor.Ntn, FilerStatus = vendor.FilerStatus,
+            IsActive = true, ConcurrencyToken = vendor.ConcurrencyToken
+        });
+
+        var afterRename = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, VendorId = 1, Amount = 20_000m }, 1);
+
+        // 70,000 + 20,000 is still over the 75,000 allowance, whatever the vendor is called now.
+        Assert.Equal(200m, afterRename.WhtAmount);
+        // The link is written once, so it cannot be lost again — and the expense keeps the name
+        // that was actually on the payment.
+        var adopted = await context.Expenses.AsNoTracking().SingleAsync(e => e.Amount == 70_000m);
+        Assert.Equal(1, adopted.VendorId);
+        Assert.Equal("ABC Traders", adopted.Vendor);
+    }
+
+    [Fact]
+    public async Task CreatingAVendor_ClaimsTheFreeTextPaymentsAlreadyMadeToThem()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "XYZ Steel", Amount = 60_000m }, 1);
+
+        var created = await new VendorService(context).CreateAsync(new SaveVendorDto
+        { Name = "XYZ Steel", FilerStatus = FilerStatus.Filer, IsActive = true }, 1);
+
+        var adopted = await context.Expenses.AsNoTracking().SingleAsync(e => e.Amount == 60_000m);
+        Assert.Equal(created.Id, adopted.VendorId);
+    }
+
+    // ── An edit that cannot move the tax must not move the tax ──────────────────
+
+    [Fact]
+    public async Task FixingADescription_AfterTheVendorCrossedTheThreshold_LeavesTheFiledTaxAlone()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        var january = await finance.CreateExpenseAsync(new CreateExpenseDto
+        {
+            FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m,
+            Date = new DateTime(2026, 1, 10), Description = "cement purchse"
+        }, 1);
+        Assert.Equal(0m, january.WhtAmount);
+
+        // February crosses the 75,000 allowance. January is deliberately not retro-assessed.
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        {
+            FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m,
+            Date = new DateTime(2026, 2, 10)
+        }, 1);
+
+        // Correcting a typo in March re-submits the stored figures, exactly as the form does.
+        var corrected = await finance.UpdateExpenseAsync(january.Id, new UpdateExpenseDto
+        {
+            FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m,
+            Date = new DateTime(2026, 1, 10), Description = "cement purchase",
+            WhtRate = 0m, WhtAmount = 0m
+        });
+
+        Assert.Equal("cement purchase", corrected.Description);
+        Assert.Equal(0m, corrected.WhtAmount);
+        Assert.False(corrected.WhtRateOverridden);
+    }
+
+    [Fact]
+    public async Task ChangingTheAmount_DoesRecalculateTheTax()
+    {
+        // The other half of the guard: the four inputs the tax is actually based on must still
+        // re-run, or a corrected invoice would keep the tax for the wrong figure.
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        var first = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m }, 1);
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m }, 1);
+
+        var raised = await finance.UpdateExpenseAsync(first.Id, new UpdateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 50_000m });
+
+        // 40,000 already paid plus 50,000 is over the allowance, so the whole payment is withheld.
+        Assert.Equal(500m, raised.WhtAmount);
+    }
+
+    [Fact]
+    public async Task ChangingTheCategory_DoesRecalculateTheTax()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        var created = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 100_000m }, 1);
+        Assert.Equal(1_000m, created.WhtAmount);           // cement, filer 1%
+
+        var moved = await finance.UpdateExpenseAsync(created.Id, new UpdateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 3, Amount = 100_000m });
+
+        Assert.Equal(6_000m, moved.WhtAmount);             // transport, filer 6%
+        Assert.Equal("153(1)(b)", moved.WhtTaxSection);
+    }
+
+    // ── Free-text heads are closed to new writes ────────────────────────────────
+
+    [Fact]
+    public async Task ANewExpense_CannotUseAFreeTextCategory()
+    {
+        // Otherwise picking "Custom" and typing "Labour" pays a taxable supplier with nothing
+        // withheld, while choosing the managed Labour head withholds 15%.
+        await using var context = Seeded();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Finance(context).CreateExpenseAsync(new CreateExpenseDto
+            { FinanceAccountId = 1, Category = "Labour", Amount = 500_000m }, 1));
+
+        Assert.Contains("category", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnExpenseRecordedBeforeTheManagedList_StaysEditable()
+    {
+        // History has to stay correctable, so the rule applies to new writes only.
+        await using var context = Seeded();
+        context.Expenses.Add(new Expense
+        { Id = 90, FinanceAccountId = 1, Amount = 5_000m, Category = "Old Head", Date = new DateTime(2026, 1, 5) });
+        await context.SaveChangesAsync();
+
+        var edited = await Finance(context).UpdateExpenseAsync(90, new UpdateExpenseDto
+        {
+            FinanceAccountId = 1, Amount = 5_000m, Category = "Old Head",
+            Date = new DateTime(2026, 1, 5), Description = "corrected note"
+        });
+
+        Assert.Equal("Old Head", edited.Category);
+        Assert.Null(edited.CategoryId);
+        Assert.Equal(0m, edited.WhtAmount);
+    }
+
+    // ── Reporting uses the status the tax was withheld under ────────────────────
+
+    [Fact]
+    public async Task TheVendorStatement_ReportsTheFilerStatusEachDeductionWasMadeUnder()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var vendors = new VendorService(context);
+
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
+
+        var vendor = await vendors.GetByIdAsync(1);
+        await vendors.UpdateAsync(1, new SaveVendorDto
+        {
+            Name = vendor.Name, Ntn = vendor.Ntn, FilerStatus = FilerStatus.NonFiler,
+            IsActive = true, ConcurrencyToken = vendor.ConcurrencyToken
+        });
+
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
+
+        var lines = await Wht(context).GetByVendorAsync(null, null);
+
+        // One line per status, not one line at today's status: collapsing them would report a
+        // filer deduction under a non-filer heading, which is not a statement FBR can accept.
+        Assert.Equal(2, lines.Count);
+        Assert.Contains(lines, l => l.FilerStatus == FilerStatus.Filer && l.WhtAmount == 10_000m);
+        Assert.Contains(lines, l => l.FilerStatus == FilerStatus.NonFiler && l.WhtAmount == 20_000m);
+        // Identity still comes from the vendor record — only the status is a snapshot.
+        Assert.All(lines, l => Assert.Equal("1234567-8", l.Ntn));
+    }
+
     private static AppDbContext Seeded()
     {
         var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
@@ -605,7 +799,10 @@ public sealed class WithholdingTaxTests
         });
         context.FinanceSettings.Add(new FinanceSetting { Id = 1, FinancialYearStartMonth = 7 });
         context.Vendors.Add(new Vendor
-        { Id = 1, Name = "ABC Traders", Ntn = "1234567-8", FilerStatus = FilerStatus.Filer, IsActive = true });
+        {
+            Id = 1, Name = "ABC Traders", Ntn = "1234567-8", FilerStatus = FilerStatus.Filer, IsActive = true,
+            RowVersion = [1]
+        });
         context.ExpenseCategories.AddRange(
             Category(1, "Cement", "cement", "153(1)(a)", 1m, 2m, 75_000m),
             Category(2, "Bricks & Blocks", "bricks", "153(1)(a)", 5m, 10m, 75_000m),
