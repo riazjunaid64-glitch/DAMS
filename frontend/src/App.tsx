@@ -21,6 +21,7 @@ const CreateBookingPage = lazy(() => import("./pages/CreateBookingPage.tsx"));
 const ApplicationFormPage = lazy(() => import("./pages/ApplicationFormPage.tsx"));
 const FinanceDashboardPage = lazy(() => import("./pages/FinanceDashboardPage.tsx"));
 const FinanceAccountsPage = lazy(() => import("./pages/FinanceAccountsPage.tsx"));
+const FinanceSettingsPage = lazy(() => import("./pages/FinanceSettingsPage.tsx"));
 const CommissionRebatesPage = lazy(() => import("./pages/CommissionRebatesPage.tsx"));
 const BookingDetailPage = lazy(() => import("./pages/BookingDetailPage.tsx"));
 const ReceiptPage = lazy(() => import("./pages/ReceiptPage.tsx"));
@@ -195,6 +196,7 @@ function App() {
             <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
             <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
             <Route path="/finance/accounts" element={<FinanceAccountsPage user={user} />} />
+            <Route path="/finance/settings" element={<FinanceSettingsPage user={user} />} />
             <Route path="/finance/commissions-rebates" element={<CommissionRebatesPage user={user} />} />
             <Route path="/crm" element={<LeadsPage user={user} />} />
             <Route path="/crm/leads/:id" element={<LeadDetailPage user={user} />} />

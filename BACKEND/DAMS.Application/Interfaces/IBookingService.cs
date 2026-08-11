@@ -6,7 +6,7 @@ namespace DAMS.Application.Interfaces
     public interface IBookingService
     {
         /// <summary>Admin creates a booking for a walk-in / phone customer.</summary>
-        Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId);
+        Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId, CancellationToken cancellationToken = default);
 
         Task<BookingResponseDto?> GetBookingByIdAsync(int id);
 
@@ -26,7 +26,7 @@ namespace DAMS.Application.Interfaces
         /// reaches the required amount, the booking moves to PaymentPlanActive and the
         /// unit moves to OnPaymentPlan.
         /// </summary>
-        Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId);
+        Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId, CancellationToken cancellationToken = default);
 
         /// <summary>Marks possession as handed over on an active payment plan.</summary>
         Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId);

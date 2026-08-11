@@ -10,6 +10,9 @@ import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
+import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
+import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
+import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
 import {
   financeApiError,
   openFinanceAttachment,
@@ -37,10 +40,12 @@ interface FinancialSummary {
   manualRevenue: number;
   totalExpenses: number;
   netProfit: number;
+  whtWithheld: number;
   outstandingAmount: number;
   overdueAmount: number;
   accountOpeningBalance: number | null;
   accountCurrentBalance: number | null;
+  accountNetMovement: number | null;
 }
 
 interface RevenueLine {
@@ -65,9 +70,19 @@ interface ExpenseLine {
   projectId: number | null;
   projectName: string;
   category: string;
+  categoryId: number | null;
+  /** Gross — the business cost. Cash paid is `netPaid`. */
   amount: number;
+  whtApplied: boolean;
+  whtRate: number;
+  whtAmount: number;
+  netPaid: number;
+  whtRateOverridden: boolean;
+  whtOverrideReason: string | null;
+  whtTaxSection: string | null;
   description: string | null;
   reference: string | null;
+  vendorId: number | null;
   financeAccountId: number | null;
   financeAccountName: string | null;
   accountHolderName: string | null;
@@ -149,24 +164,9 @@ const REVENUE_TYPES = [
 // Sentinel used by the Revenue Type <select> to switch into free-text entry.
 const CUSTOM_TYPE = "__custom__";
 
-// Developer / construction expense heads. Original values kept for backward compatibility.
-const EXPENSE_CATEGORIES = [
-  "Material",
-  "Labor",
-  "Construction",
-  "Land Acquisition",
-  "Salary",
-  "Marketing",
-  "Commission",
-  "Permits & Approvals",
-  "Utility",
-  "Transport",
-  "Maintenance",
-  "Legal",
-  "Office",
-  "Taxes & Fees",
-  "Other",
-];
+// Expense heads now come from the managed rate table (Finance ▸ Settings), because each one
+// carries the withholding rate applied to payments under it. Free text stays available for
+// one-off heads — it just carries no tax.
 
 function formatMoney(n: number) {
   const sign = n < 0 ? "-" : "";
@@ -241,10 +241,17 @@ interface ExpenseFormState {
   projectId: string;
   financeAccountId: string;
   amount: string;
+  /** Managed category id, or "" when the head is free text. */
+  categoryId: string;
   category: string;
+  /** True only for a row recorded before the managed list existed, which may keep its free text. */
+  legacyCategory: boolean;
   description: string;
+  /** Managed vendor id, or "" when the payee is free text. */
+  vendorId: string;
   vendor: string;
   date: string;
+  wht: WhtFormValue;
   attachment: FinanceAttachmentInfo | null;
   selectedAttachment: File | null;
   removeAttachment: boolean;
@@ -269,10 +276,14 @@ const emptyExpenseForm = (): ExpenseFormState => ({
   projectId: "",
   financeAccountId: "",
   amount: "",
-  category: EXPENSE_CATEGORIES[0],
+  categoryId: "",
+  category: "",
+  legacyCategory: false,
   description: "",
+  vendorId: "",
   vendor: "",
   date: todayInput(),
+  wht: emptyWht(),
   attachment: null,
   selectedAttachment: null,
   removeAttachment: false,
@@ -284,6 +295,8 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+  const [vendors, setVendors] = useState<VendorOption[]>([]);
   const [projectId, setProjectId] = useState<string>("");
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
@@ -336,6 +349,18 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
+  // Inactive entries are included so editing an old expense still shows the head or payee it was
+  // booked against, rather than silently blanking it.
+  const loadWhtLookups = useCallback(async () => {
+    try {
+      const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
+      setExpenseCategories(categories);
+      setVendors(vendorRows);
+    } catch {
+      /* The expense form falls back to free-text entry if these cannot be loaded. */
+    }
+  }, []);
+
   const loadSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
@@ -369,7 +394,8 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
     loadProjects();
     loadFinanceAccounts();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts]);
+    void loadWhtLookups();
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadWhtLookups]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -516,7 +542,11 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Enter a valid amount greater than zero.");
       return;
     }
-    if (!expenseForm.category.trim()) {
+    if (!expenseForm.categoryId && !expenseForm.legacyCategory) {
+      setFormError("Choose an expense category. Add a new head under Finance ▸ Settings if the one you need is missing.");
+      return;
+    }
+    if (!expenseForm.categoryId && !expenseForm.category.trim()) {
       setFormError("Category is required.");
       return;
     }
@@ -530,10 +560,21 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (expenseForm.projectId) body.append("projectId", expenseForm.projectId);
       body.append("financeAccountId", expenseForm.financeAccountId);
       body.append("amount", String(amount));
+      // A category id wins server-side; the text is still sent so free-text heads keep working.
+      if (expenseForm.categoryId) body.append("categoryId", expenseForm.categoryId);
       body.append("category", expenseForm.category.trim());
       body.append("description", expenseForm.description.trim());
+      if (expenseForm.vendorId) body.append("vendorId", expenseForm.vendorId);
       body.append("vendor", expenseForm.vendor.trim());
       if (expenseForm.date) body.append("date", expenseForm.date);
+      // Only sent when the head is a managed one — the server recalculates and rejects a figure
+      // that does not belong, so a stale value cannot slip through.
+      if (expenseForm.categoryId) {
+        if (expenseForm.wht.rate !== "") body.append("whtRate", expenseForm.wht.rate);
+        if (expenseForm.wht.amount !== "") body.append("whtAmount", expenseForm.wht.amount);
+        if (expenseForm.wht.overrideReason.trim())
+          body.append("whtOverrideReason", expenseForm.wht.overrideReason.trim());
+      }
       if (expenseForm.selectedAttachment) body.append("attachment", expenseForm.selectedAttachment);
       if (expenseForm.removeAttachment) body.append("removeAttachment", "true");
       const res = expenseForm.id
@@ -593,10 +634,20 @@ export default function FinanceDashboardPage({ user }: Props) {
       projectId: row.projectId != null ? String(row.projectId) : "",
       financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
+      categoryId: row.categoryId != null ? String(row.categoryId) : "",
       category: row.category,
+      legacyCategory: row.categoryId == null,
       description: row.description ?? "",
+      vendorId: row.vendorId != null ? String(row.vendorId) : "",
       vendor: row.reference ?? "",
       date: row.date.slice(0, 10),
+      // Seeded from what was actually withheld, so reopening an expense shows its own figures
+      // rather than what today's rate table would produce.
+      wht: {
+        rate: row.categoryId != null ? String(Number(row.whtRate.toFixed(4))) : "",
+        amount: row.categoryId != null ? String(row.whtAmount) : "",
+        overrideReason: row.whtOverrideReason ?? "",
+      },
       attachment: row.attachment,
       selectedAttachment: null,
       removeAttachment: false,
@@ -671,16 +722,31 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "expense":
         return {
-          minWidth: 1080,
+          minWidth: 1320,
           emptyText: "No expenses for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as ExpenseLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).projectName}</span> },
             { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x=r as ExpenseLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
-            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as ExpenseLine).category}</span> },
-            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
+            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as ExpenseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
+            { key: "amount", header: "Gross", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).amount, "text-rose-400") },
+            // Gross, tax and net are shown side by side: the expense total and the bank movement
+            // are different numbers now, and hiding either invites a reconciliation dispute.
+            { key: "wht", header: "WHT", width: "120px", align: "right", render: (r) => {
+              const x = r as ExpenseLine;
+              if (!x.whtApplied) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+              return (
+                <span className="whitespace-nowrap">
+                  {money(x.whtAmount, "text-amber-400")}
+                  <small className="block text-[var(--text-muted)]">
+                    {Number(x.whtRate.toFixed(4))}%{x.whtRateOverridden ? " ⚑" : ""}
+                  </small>
+                </span>
+              );
+            } },
+            { key: "net", header: "Net Paid", width: "120px", align: "right", render: (r) => money((r as ExpenseLine).netPaid) },
             { key: "description", header: "Description", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).description || "—"}</span> },
-            { key: "reference", header: "Reference", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).reference || "—"}</span> },
+            { key: "reference", header: "Vendor", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as ExpenseLine).reference || "—"}</span> },
             { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as ExpenseLine; return attachmentCell("expense", row.id, row.attachment); } },
             { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
               const row = r as ExpenseLine;
@@ -847,6 +913,14 @@ export default function FinanceDashboardPage({ user }: Props) {
             </p>
           )}
 
+          {summary && summary.whtWithheld > 0 && (
+            <p className="mt-2 text-xs text-amber-300/90">
+              Expenses are shown gross. {formatMoney(summary.whtWithheld)} of that was withheld as tax
+              and has not left the bank — it is owed to FBR.{" "}
+              <Link to="/finance/settings" className="underline hover:text-amber-200">View WHT payable</Link>
+            </p>
+          )}
+
           {summary && summary.accountCurrentBalance != null && (
             <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
               <div>
@@ -857,9 +931,11 @@ export default function FinanceDashboardPage({ user }: Props) {
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Opening Balance</p>
                 <p className="text-sm font-semibold text-[var(--text-primary)]">{formatMoney(summary.accountOpeningBalance ?? 0)}</p>
               </div>
+              {/* Cash movement, not profit: expenses count at what actually left the account and
+                  FBR deposits count too. The two diverge as soon as any tax is withheld. */}
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Net Movement{(fromDate || toDate) ? " (period)" : ""}</p>
-                <p className={`text-sm font-semibold ${summary.netProfit >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.netProfit)}</p>
+                <p className={`text-sm font-semibold ${(summary.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.accountNetMovement ?? 0)}</p>
               </div>
             </div>
           )}
@@ -876,6 +952,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
           <div className="flex flex-wrap gap-2.5">
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+            <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
             <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
             <Button variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
@@ -989,22 +1066,80 @@ export default function FinanceDashboardPage({ user }: Props) {
               </FormSelect>
               <FormSelect
                 label="Category"
-                value={EXPENSE_CATEGORIES.includes(expenseForm.category) ? expenseForm.category : CUSTOM_TYPE}
-                onChange={(v) => setExpenseForm({ ...expenseForm, category: v === CUSTOM_TYPE ? "" : v })}
+                value={expenseForm.categoryId || CUSTOM_TYPE}
+                onChange={(v) => setExpenseForm({
+                  ...expenseForm,
+                  categoryId: v === CUSTOM_TYPE ? "" : v,
+                  // Leaving the managed list means leaving the rate table behind, so the tax
+                  // fields reset rather than carrying a rate that no longer has a source.
+                  category: v === CUSTOM_TYPE ? "" : (expenseCategories.find((c) => String(c.id) === v)?.name ?? ""),
+                  wht: v === CUSTOM_TYPE ? emptyWht() : expenseForm.wht,
+                })}
               >
-                {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                <option value={CUSTOM_TYPE}>Custom (enter manually)…</option>
+                {/* Free text is only offered to a row that already has it — an expense recorded
+                    before the managed list existed. Offering it on a new expense would be a
+                    one-click way past the rate table. */}
+                {expenseForm.legacyCategory ? (
+                  <option value={CUSTOM_TYPE}>Keep the original text — “{expenseForm.category}”</option>
+                ) : (
+                  <option value={CUSTOM_TYPE}>Select a category</option>
+                )}
+                {expenseCategories
+                  .filter((c) => c.isActive || String(c.id) === expenseForm.categoryId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.isActive ? "" : " (Retired)"}
+                      {c.isWhtApplicable && c.taxSection ? ` — s.${c.taxSection}` : ""}
+                    </option>
+                  ))}
               </FormSelect>
-              {!EXPENSE_CATEGORIES.includes(expenseForm.category) && (
+              {expenseForm.legacyCategory && !expenseForm.categoryId && (
                 <FormInput
-                  label="Custom Category"
+                  label="Original Category Text"
                   value={expenseForm.category}
                   onChange={(v) => setExpenseForm({ ...expenseForm, category: v })}
                 />
               )}
-              <FormInput label="Amount (Rs)" type="number" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
+              <FormSelect
+                label="Vendor"
+                value={expenseForm.vendorId || CUSTOM_TYPE}
+                onChange={(v) => setExpenseForm({
+                  ...expenseForm,
+                  vendorId: v === CUSTOM_TYPE ? "" : v,
+                  vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
+                })}
+              >
+                <option value={CUSTOM_TYPE}>One-off payee (enter manually)…</option>
+                {vendors
+                  .filter((v) => v.isActive || String(v.id) === expenseForm.vendorId)
+                  .map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} — {v.filerStatus === "NonFiler" ? "Non-filer" : v.filerStatus}
+                      {v.isActive ? "" : " (Inactive)"}
+                    </option>
+                  ))}
+              </FormSelect>
+              {!expenseForm.vendorId && (
+                <FormInput
+                  label="Vendor / Reference (optional)"
+                  value={expenseForm.vendor}
+                  onChange={(v) => setExpenseForm({ ...expenseForm, vendor: v })}
+                />
+              )}
+              <FormInput label="Gross Amount (Rs)" type="number" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
               <FormInput label="Date" type="date" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
-              <FormInput label="Vendor / Reference (optional)" value={expenseForm.vendor} onChange={(v) => setExpenseForm({ ...expenseForm, vendor: v })} />
+
+              <ExpenseWhtFields
+                categoryId={expenseForm.categoryId}
+                vendorId={expenseForm.vendorId}
+                grossAmount={expenseForm.amount}
+                date={expenseForm.date}
+                excludeExpenseId={expenseForm.id}
+                value={expenseForm.wht}
+                disabled={saving}
+                onChange={(wht) => setExpenseForm((current) => current ? { ...current, wht } : current)}
+              />
+
               <FormInput label="Description (optional)" value={expenseForm.description} onChange={(v) => setExpenseForm({ ...expenseForm, description: v })} />
               <FinanceAttachmentField
                 existing={expenseForm.attachment}

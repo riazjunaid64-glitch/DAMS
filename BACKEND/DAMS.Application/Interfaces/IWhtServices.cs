@@ -1,0 +1,56 @@
+using DAMS.Application.DTOs.FinanceDtos;
+using DAMS.Application.DTOs.WhtDtos;
+
+namespace DAMS.Application.Interfaces
+{
+    /// <summary>Admin-managed expense heads and their withholding rates.</summary>
+    public interface IExpenseCategoryService
+    {
+        Task<List<ExpenseCategoryDto>> GetAllAsync(bool includeInactive, CancellationToken cancellationToken = default);
+        Task<ExpenseCategoryDto> GetByIdAsync(int id, CancellationToken cancellationToken = default);
+        Task<ExpenseCategoryDto> CreateAsync(SaveExpenseCategoryDto dto, int? adminUserId, CancellationToken cancellationToken = default);
+        Task<ExpenseCategoryDto> UpdateAsync(int id, SaveExpenseCategoryDto dto, CancellationToken cancellationToken = default);
+
+        /// <summary>Retires a category. Soft-deletes when expenses reference it, because the rate
+        /// it carried is part of filed tax history.</summary>
+        Task<ExpenseCategoryDto?> DeleteAsync(int id, CancellationToken cancellationToken = default);
+    }
+
+    public interface IVendorService
+    {
+        Task<PagedResult<VendorDto>> GetPageAsync(string? search, bool activeOnly, int skip, int take, CancellationToken cancellationToken = default);
+        Task<List<VendorOptionDto>> GetOptionsAsync(bool includeInactive, CancellationToken cancellationToken = default);
+        Task<VendorDto> GetByIdAsync(int id, CancellationToken cancellationToken = default);
+        Task<VendorDto> CreateAsync(SaveVendorDto dto, int? adminUserId, CancellationToken cancellationToken = default);
+        Task<VendorDto> UpdateAsync(int id, SaveVendorDto dto, CancellationToken cancellationToken = default);
+
+        /// <summary>Year-to-date gross and withheld for a vendor, broken down by tax section —
+        /// the detail behind the threshold notice on the expense form.</summary>
+        Task<List<VendorYtdLineDto>> GetYearToDateAsync(int vendorId, DateTime? asOf, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>Withholding calculation, settings, reporting and FBR deposits.</summary>
+    public interface IWhtService
+    {
+        Task<WhtCalculationResultDto> CalculateAsync(WhtCalculationRequestDto request, CancellationToken cancellationToken = default);
+
+        /// <summary>Resolves and persists the withholding fields onto an expense before it is
+        /// saved. The single point where an <see cref="Domain.Entities.Expense"/> gets its tax.</summary>
+        Task ApplyToExpenseAsync(Domain.Entities.Expense expense, decimal? requestedRate, decimal? requestedAmount, string? overrideReason, CancellationToken cancellationToken = default);
+
+        Task<FinanceSettingsDto> GetSettingsAsync(CancellationToken cancellationToken = default);
+        Task<FinanceSettingsDto> UpdateSettingsAsync(SaveFinanceSettingsDto dto, string? actorName, CancellationToken cancellationToken = default);
+
+        Task<WhtPayableSummaryDto> GetPayableSummaryAsync(DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
+        Task<List<WhtVendorLineDto>> GetByVendorAsync(DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
+
+        /// <summary>The s.165 statement as CSV. Excel opens it directly; no spreadsheet library
+        /// is pulled into the build for a report that is one flat table.</summary>
+        Task<(string FileName, byte[] Content)> ExportAsync(DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
+
+        Task<List<WhtDepositDto>> GetDepositsAsync(DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
+        Task<WhtDepositDto> CreateDepositAsync(SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default);
+        Task<WhtDepositDto> UpdateDepositAsync(int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default);
+        Task DeleteDepositAsync(int id, CancellationToken cancellationToken = default);
+    }
+}

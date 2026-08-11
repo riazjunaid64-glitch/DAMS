@@ -1124,7 +1124,7 @@ namespace DAMS.Application.Services
                     AssignedSalesUserId = assignedSalesUserId,
                     ReferenceId = lead.LeadReference,
                     InternalNotes = LeadContactNormalizer.Clean(dto.Notes)
-                }, ctx.UserId);
+                }, ctx.UserId, cancellationToken);
 
                 var linkedRequest = await _context.BookingRequests
                     .Where(br => br.LeadId == lead.Id

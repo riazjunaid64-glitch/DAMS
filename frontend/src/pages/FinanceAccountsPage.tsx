@@ -5,8 +5,9 @@ import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 
-type Account = { id:number; name:string; type:number; accountHolderName:string; openingBalance:number; bankOrWalletName:string|null; description:string|null; isActive:boolean; revenueReceived:number; expensesPaid:number; netMovement:number; currentBalance:number; transactionCount:number; concurrencyToken:string };
-type Transaction = { kind:string; recordId:number; date:string; label:string; reference:string|null; projectName:string; amount:number };
+type Account = { id:number; name:string; type:number; accountHolderName:string; openingBalance:number; bankOrWalletName:string|null; description:string|null; isActive:boolean; revenueReceived:number; expensesPaid:number; whtWithheld:number; whtDeposited:number; netMovement:number; currentBalance:number; transactionCount:number; concurrencyToken:string };
+// `amount` is the cash effect (net of tax withheld, for expenses); `grossAmount` is the invoice total.
+type Transaction = { kind:string; recordId:number; date:string; label:string; reference:string|null; projectName:string; amount:number; grossAmount:number; whtAmount:number };
 type Overview = { activeAccounts:number; inactiveAccounts:number; totalBalance:number; holderBalances:{accountHolderName:string;accountCount:number;currentBalance:number}[] };
 type Form = { id:number|null; name:string; type:string; accountHolderName:string; openingBalance:string; bankOrWalletName:string; description:string; concurrencyToken:string };
 type TransactionWithBalance = { t:Transaction; balance:number };
@@ -51,13 +52,16 @@ function DetailModal({account,transactions,close}:{account:Account;transactions:
   const rows = withRunningBalances(orderedAsc, account.openingBalance);
   return <Modal title={account.name} close={close}>
     <p className="mb-3 text-sm text-[var(--text-muted)]">{types[account.type-1] ?? "—"} · {account.accountHolderName}{account.bankOrWalletName?` · ${account.bankOrWalletName}`:""}{account.isActive?"":" · Inactive"}</p>
-    <div className="mb-4 grid grid-cols-2 gap-3"><Stat label="Opening balance" value={money(account.openingBalance)}/><Stat label="Current balance" value={money(account.currentBalance)}/><Stat label="Revenue received" value={money(account.revenueReceived)}/><Stat label="Expenses paid" value={money(account.expensesPaid)}/></div>
+    <div className="mb-4 grid grid-cols-2 gap-3"><Stat label="Opening balance" value={money(account.openingBalance)}/><Stat label="Current balance" value={money(account.currentBalance)}/><Stat label="Revenue received" value={money(account.revenueReceived)}/><Stat label="Cash paid out" value={money(account.expensesPaid)}/></div>
+    {/* Tax withheld from suppliers is sitting inside the balance above but is not the company's
+        money — it is owed to FBR until a challan is recorded. */}
+    {account.whtWithheld > 0 && <p className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-200">Includes {money(account.whtWithheld - account.whtDeposited)} of withholding tax held for FBR ({money(account.whtWithheld)} withheld, {money(account.whtDeposited)} deposited). <Link to="/finance/settings" className="underline">Record a deposit</Link></p>}
     <h3 className="mb-2 font-semibold">Transaction history</h3>
     {!transactions.length
       ? <p className="py-8 text-center text-sm text-[var(--text-muted)]">No transactions assigned to this account.</p>
       : <div className="max-h-80 space-y-2 overflow-y-auto">
           {fullHistory&&<div className="flex items-center justify-between rounded-xl border border-dashed border-[var(--border)] p-3 text-[var(--text-muted)]"><span className="font-medium">Opening balance</span><span>{money(account.openingBalance)}</span></div>}
-          {rows.map(({t,balance})=><div key={`${t.kind}-${t.recordId}`} className="flex items-center justify-between rounded-xl border border-[var(--border)] p-3"><div><p className="font-medium">{t.label}</p><p className="text-xs text-[var(--text-muted)]">{new Date(t.date).toLocaleDateString("en-GB")} · {t.projectName}{t.reference?` · ${t.reference}`:""}</p></div><div className="text-right"><span className={t.amount>=0?"text-emerald-400":"text-rose-400"}>{t.amount>=0?"+":""}{money(t.amount)}</span>{fullHistory&&<p className="text-xs text-[var(--text-muted)]">Balance {money(balance)}</p>}</div></div>)}
+          {rows.map(({t,balance})=><div key={`${t.kind}-${t.recordId}`} className="flex items-center justify-between rounded-xl border border-[var(--border)] p-3"><div><p className="font-medium">{t.label}</p><p className="text-xs text-[var(--text-muted)]">{new Date(t.date).toLocaleDateString("en-GB")} · {t.projectName}{t.reference?` · ${t.reference}`:""}</p>{t.whtAmount>0&&<p className="text-xs text-amber-400/90">{money(t.grossAmount)} invoiced · {money(t.whtAmount)} tax withheld</p>}</div><div className="text-right"><span className={t.amount>=0?"text-emerald-400":"text-rose-400"}>{t.amount>=0?"+":""}{money(t.amount)}</span>{fullHistory&&<p className="text-xs text-[var(--text-muted)]">Balance {money(balance)}</p>}</div></div>)}
           {!fullHistory&&<p className="pt-1 text-center text-xs text-[var(--text-muted)]">Showing the {transactions.length} most recent transactions; running balance hidden.</p>}
         </div>}
   </Modal>;

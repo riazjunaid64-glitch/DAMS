@@ -17,6 +17,10 @@ export default defineConfig({
     },
   },
   server: {
+    // Lets the dev server respond when reached through an ngrok tunnel (used to give
+    // remote collaborators temporary access to the local app); Vite otherwise rejects
+    // requests whose Host header it doesn't recognize.
+    allowedHosts: [".ngrok-free.app", ".ngrok-free.dev", ".ngrok.io", ".ngrok.app"],
     proxy: {
       // Matches BACKEND/DAMS.Api launchSettings "http" profile (applicationUrl)
       "/api": {

@@ -33,6 +33,12 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         new object[] { "/api/customer-documents/categories" },
         new object[] { "/api/finance/commissions-rebates/summary" },
         new object[] { "/api/finance/commissions-rebates/rules" },
+        // Withholding rates decide how much tax is deducted from every supplier payment, and the
+        // vendor list carries NTN/CNIC — neither is readable below Admin.
+        new object[] { "/api/finance/expense-categories" },
+        new object[] { "/api/finance/vendors" },
+        new object[] { "/api/finance/wht/settings" },
+        new object[] { "/api/finance/wht/payable-summary" },
     };
 
     [Theory]
@@ -100,6 +106,9 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         new object[] { "/api/customer-documents/categories" },
         new object[] { "/api/finance/commissions-rebates/partners" },
         new object[] { "/api/finance/commissions-rebates/rules" },
+        new object[] { "/api/finance/expense-categories" },
+        new object[] { "/api/finance/vendors" },
+        new object[] { "/api/finance/wht/deposits" },
     };
 
     [Theory]
@@ -220,6 +229,29 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("POST", "/api/finance/commissions-rebates/bookings/1/rebates/1/disbursements/1/reversals"),
             R("POST", "/api/finance/commissions-rebates/evidence/Commission/1", true),
             R("GET", "/api/finance/commissions-rebates/evidence/1/file"),
+            // Withholding tax: rates, vendor tax identities, the s.165 statement and the FBR
+            // deposit record. Every one is Admin-only and must reject before model binding.
+            R("GET", "/api/finance/expense-categories"),
+            R("GET", "/api/finance/expense-categories/1"),
+            R("POST", "/api/finance/expense-categories"),
+            R("PUT", "/api/finance/expense-categories/1"),
+            R("DELETE", "/api/finance/expense-categories/1"),
+            R("GET", "/api/finance/vendors"),
+            R("GET", "/api/finance/vendors/options"),
+            R("GET", "/api/finance/vendors/1"),
+            R("GET", "/api/finance/vendors/1/ytd-summary"),
+            R("POST", "/api/finance/vendors"),
+            R("PUT", "/api/finance/vendors/1"),
+            R("POST", "/api/finance/wht/calculate"),
+            R("GET", "/api/finance/wht/settings"),
+            R("PUT", "/api/finance/wht/settings"),
+            R("GET", "/api/finance/wht/payable-summary"),
+            R("GET", "/api/finance/wht/by-vendor"),
+            R("GET", "/api/finance/wht/export"),
+            R("GET", "/api/finance/wht/deposits"),
+            R("POST", "/api/finance/wht/deposits"),
+            R("PUT", "/api/finance/wht/deposits/1"),
+            R("DELETE", "/api/finance/wht/deposits/1"),
         ];
     }
 

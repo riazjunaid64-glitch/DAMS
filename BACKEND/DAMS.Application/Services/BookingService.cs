@@ -51,7 +51,7 @@ namespace DAMS.Application.Services
             }
         }
 
-        public async Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId)
+        public async Task<BookingResponseDto> CreateBookingAsync(CreateBookingDto dto, int adminUserId, CancellationToken cancellationToken = default)
         {
             var unit = await _context.Units
                 .Include(u => u.Project)
@@ -200,15 +200,15 @@ namespace DAMS.Application.Services
                         unit.UpdatedAt = DateTime.UtcNow;
                     }
 
-                    await SaveWithUniqueReceiptNumberAsync(payment);
+                    await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
                     applicationPaymentId = payment.Id;
                 }
-            });
+            }, cancellationToken);
 
             if (applicationPaymentId.HasValue)
                 await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(applicationPaymentId.Value));
 
-            return await GetResponseAsync(booking.Id);
+            return await GetResponseAsync(booking.Id, cancellationToken);
         }
 
         /// <summary>
@@ -217,7 +217,7 @@ namespace DAMS.Application.Services
         /// rejects nested transactions, and the outer caller must be able to roll the
         /// booking back with the rest of its own changes.
         /// </summary>
-        private async Task RunInTransactionAsync(Func<Task> action)
+        private async Task RunInTransactionAsync(Func<Task> action, CancellationToken cancellationToken = default)
         {
             if (_context.Database.CurrentTransaction != null)
             {
@@ -230,9 +230,9 @@ namespace DAMS.Application.Services
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
                 await action();
-                await transaction.CommitAsync();
+                await transaction.CommitAsync(cancellationToken);
             });
         }
 
@@ -391,7 +391,7 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id);
         }
 
-        public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId)
+        public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId, CancellationToken cancellationToken = default)
         {
             if (dto.Amount <= 0m)
                 throw new InvalidOperationException("Payment amount must be greater than zero.");
@@ -460,7 +460,7 @@ namespace DAMS.Application.Services
 
             try
             {
-                await SaveWithUniqueReceiptNumberAsync(payment);
+                await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
             }
             catch (DbUpdateConcurrencyException)
             {
@@ -471,7 +471,7 @@ namespace DAMS.Application.Services
             // The money is committed. Everything below is best-effort.
             await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(payment.Id));
 
-            return await GetResponseAsync(booking.Id);
+            return await GetResponseAsync(booking.Id, cancellationToken);
         }
 
         public async Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId)
@@ -668,7 +668,7 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync();
         }
 
-        private async Task<BookingResponseDto> GetResponseAsync(int id)
+        private async Task<BookingResponseDto> GetResponseAsync(int id, CancellationToken cancellationToken = default)
         {
             var booking = await _context.Bookings
                 .AsNoTracking()
@@ -677,7 +677,7 @@ namespace DAMS.Application.Services
                 .Include(b => b.Payments)
                 .Include(b => b.Installments)
                 .AsSplitQuery()
-                .FirstAsync(b => b.Id == id);
+                .FirstAsync(b => b.Id == id, cancellationToken);
 
             return MapProjection(booking);
         }
@@ -880,7 +880,7 @@ namespace DAMS.Application.Services
         // Receipt numbers are read-max-then-insert; two concurrent payments can pick the
         // same number and the unique index rejects the loser with a raw 500. Retry the
         // save with a freshly generated number instead.
-        private async Task SaveWithUniqueReceiptNumberAsync(Payment payment)
+        private async Task SaveWithUniqueReceiptNumberAsync(Payment payment, CancellationToken cancellationToken = default)
         {
             const int maxAttempts = 5;
             for (var attempt = 1; ; attempt++)
@@ -888,7 +888,7 @@ namespace DAMS.Application.Services
                 payment.ReceiptNumber = await GenerateReceiptNumberAsync();
                 try
                 {
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(cancellationToken);
                     return;
                 }
                 catch (DbUpdateException ex) when (attempt < maxAttempts && IsReceiptNumberCollision(ex))

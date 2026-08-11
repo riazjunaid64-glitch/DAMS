@@ -60,33 +60,47 @@ namespace DAMS.Application.Services
             if (!await _context.FinanceAccounts.AnyAsync(a => a.Id == id, cancellationToken))
                 throw new InvalidOperationException("Finance account not found.");
 
+            // These projections are unioned below, and EF aligns a union on the FIRST branch's
+            // member bindings — a property left unset in this first Select is dropped from every
+            // branch and silently returns 0. So every branch binds GrossAmount and WhtAmount, even
+            // where they only restate Amount.
             var revenue = _context.ManualRevenues.AsNoTracking().Where(r => r.FinanceAccountId == id)
                 .Select(r => new FinanceAccountTransactionDto
                 {
                     Kind = "Revenue", RecordId = r.Id, Date = r.Date, Label = r.RevenueType,
                     Reference = r.Reference, ProjectName = r.Project != null ? r.Project.ProjectName : "General",
-                    Amount = r.Amount
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
                 });
+            // Net, so the running balance in the detail view matches what the bank statement shows.
             var expenses = _context.Expenses.AsNoTracking().Where(e => e.FinanceAccountId == id)
                 .Select(e => new FinanceAccountTransactionDto
                 {
                     Kind = "Expense", RecordId = e.Id, Date = e.Date, Label = e.Category,
                     Reference = e.Vendor, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
-                    Amount = -e.Amount
+                    Amount = -(e.Amount - e.WhtAmount), GrossAmount = e.Amount, WhtAmount = e.WhtAmount
+                });
+            var whtDeposits = _context.WhtDeposits.AsNoTracking().Where(d => d.FinanceAccountId == id)
+                .Select(d => new FinanceAccountTransactionDto
+                {
+                    Kind = "WHT deposit", RecordId = d.Id, Date = d.DepositDate, Label = "Tax deposited with FBR",
+                    Reference = d.ChallanNumber, ProjectName = "General",
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
                 });
             var commissionPayouts = _context.CommissionPayouts.AsNoTracking().Where(p => p.FinanceAccountId == id)
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Commission payout", RecordId = p.Id, Date = p.PaymentDate,
                     Label = p.Commission.Partner.Name, Reference = p.PaymentReference,
-                    ProjectName = p.Commission.Booking.Unit.Project.ProjectName, Amount = -p.Amount
+                    ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
                 });
             var commissionReversals = _context.CommissionPayoutReversals.AsNoTracking()
                 .Where(r => r.Payout.FinanceAccountId == id).Select(r => new FinanceAccountTransactionDto
                 {
                     Kind = "Commission reversal", RecordId = r.Id, Date = r.ReversedAt,
                     Label = r.Payout.Commission.Partner.Name, Reference = r.Reason,
-                    ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName, Amount = r.Amount
+                    ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
                 });
             var rebatePayments = _context.RebateDisbursements.AsNoTracking()
                 .Where(d => d.FinanceAccountId == id && d.Method == CustomerRebateMethod.CashOrBankPayment)
@@ -94,7 +108,8 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer rebate", RecordId = d.Id, Date = d.AppliedAt,
                     Label = d.Rebate.Customer.FullName, Reference = d.Reference,
-                    ProjectName = d.Rebate.Booking.Unit.Project.ProjectName, Amount = -d.Amount
+                    ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
                 });
             var rebateReversals = _context.RebateDisbursementReversals.AsNoTracking()
                 .Where(r => r.Disbursement.FinanceAccountId == id
@@ -103,10 +118,11 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Rebate reversal", RecordId = r.Id, Date = r.ReversedAt,
                     Label = r.Disbursement.Rebate.Customer.FullName, Reference = r.Reason,
-                    ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName, Amount = r.Amount
+                    ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
                 });
             var rows = await revenue.Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
-                .Concat(rebatePayments).Concat(rebateReversals)
+                .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<FinanceAccountTransactionDto>
@@ -186,7 +202,8 @@ namespace DAMS.Application.Services
             var used = await _context.ManualRevenues.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
                 || await _context.Expenses.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
                 || await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
-                || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken);
+                || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
+                || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken);
             if (used) throw new InvalidOperationException("This account has transactions and cannot be deleted. Make it inactive instead.");
             _context.FinanceAccounts.Remove(account);
             await _context.SaveChangesAsync(cancellationToken);
@@ -203,6 +220,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Selected finance account is inactive. Choose an active account.");
         }
 
+        // Every outflow figure below counts expenses NET of withholding tax. Tax deducted from a
+        // supplier never left this account — it is held for FBR, and leaves later as a WhtDeposit,
+        // which is why deposits are an outflow here despite not being a business expense.
         private IQueryable<FinanceAccountResponseDto> Project(IQueryable<FinanceAccount> query) => query.Select(a =>
             new FinanceAccountResponseDto
             {
@@ -210,34 +230,40 @@ namespace DAMS.Application.Services
                 OpeningBalance = a.OpeningBalance, BankOrWalletName = a.BankOrWalletName,
                 Description = a.Description, IsActive = a.IsActive,
                 RevenueReceived = a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m,
-                ExpensesPaid = (a.Expenses.Sum(e => (decimal?)e.Amount) ?? 0m)
+                ExpensesPaid = (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     + (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     - (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                     + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .Sum(d => (decimal?)d.Amount) ?? 0m)
                     - (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m),
+                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
+                    + (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
+                WhtWithheld = a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
+                WhtDeposited = a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
                 NetMovement = (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
-                    - (a.Expenses.Sum(e => (decimal?)e.Amount) ?? 0m)
+                    - (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     - (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     + (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .Sum(d => (decimal?)d.Amount) ?? 0m)
                     + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m),
+                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
+                    - (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
                 CurrentBalance = a.OpeningBalance + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
-                    - (a.Expenses.Sum(e => (decimal?)e.Amount) ?? 0m)
+                    - (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     - (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     + (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .Sum(d => (decimal?)d.Amount) ?? 0m)
                     + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m),
+                        .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
+                    - (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
                 TransactionCount = a.ManualRevenues.Count + a.Expenses.Count + a.CommissionPayouts.Count
                     + a.CommissionPayouts.SelectMany(p => p.Reversals).Count()
                     + a.RebateDisbursements.Count(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                     + a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                        .SelectMany(d => d.Reversals).Count(),
+                        .SelectMany(d => d.Reversals).Count()
+                    + a.WhtDeposits.Count,
                 CreatedAt = a.CreatedAt, UpdatedAt = a.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
             });

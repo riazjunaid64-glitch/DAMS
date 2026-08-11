@@ -45,7 +45,7 @@ public sealed class FinanceAccountTests
         await using var context = Context();
         context.ManualRevenues.Add(new ManualRevenue { Amount = 10, RevenueType = "Legacy" });
         await context.SaveChangesAsync();
-        var finance = new FinanceService(context, new NoopStorage(), new FinanceAccountService(context), NullLogger<FinanceService>.Instance);
+        var finance = Finance(context);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => finance.CreateExpenseAsync(new CreateExpenseDto { Amount = 1, Category = "Office" }, 1));
         var rows = await finance.GetRevenuePageAsync(null, null, null, 0, 20, unassigned: true);
@@ -58,12 +58,18 @@ public sealed class FinanceAccountTests
         await using var context = Context();
         context.FinanceAccounts.Add(Account());
         await context.SaveChangesAsync();
-        var finance = new FinanceService(context, new NoopStorage(), new FinanceAccountService(context), NullLogger<FinanceService>.Instance);
+        var finance = Finance(context);
 
         var summary = await finance.GetSummaryAsync(null, null, null, accountId: 1);
 
         Assert.Equal(0, summary.OutstandingAmount);
         Assert.Equal(0, summary.OverdueAmount);
+    }
+
+    private static FinanceService Finance(AppDbContext context)
+    {
+        var accounts = new FinanceAccountService(context);
+        return new FinanceService(context, new NoopStorage(), accounts, new WhtService(context, accounts), NullLogger<FinanceService>.Instance);
     }
 
     private static AppDbContext Context() => new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);

@@ -49,14 +49,14 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         var created = await service.CreateExpenseAsync(
-            new CreateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" }, 1, Pdf("bill.pdf"));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 500, CategoryId = 1 }, 1, Pdf("bill.pdf"));
 
         Assert.NotNull(created.Attachment);
         Assert.Single(storage.Files);
 
         var removed = await service.UpdateExpenseAsync(
             created.Id,
-            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" },
+            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, CategoryId = 1 },
             removeAttachment: true);
         Assert.Null(removed.Attachment);
         Assert.Empty(storage.Files);
@@ -64,7 +64,7 @@ public sealed class FinanceAttachmentTests
 
         await service.UpdateExpenseAsync(
             created.Id,
-            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, Category = "Office" },
+            new UpdateExpenseDto { FinanceAccountId = 1, Amount = 500, CategoryId = 1 },
             Pdf("new-bill.pdf"));
         Assert.Single(storage.Files);
         await service.DeleteExpenseAsync(created.Id);
@@ -80,7 +80,7 @@ public sealed class FinanceAttachmentTests
         var revenue = await service.CreateManualRevenueAsync(
             new CreateManualRevenueDto { FinanceAccountId = 1, Amount = 100, RevenueType = "Other Income" }, 1);
         var expense = await service.CreateExpenseAsync(
-            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1);
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, CategoryId = 1 }, 1);
         Assert.Null(revenue.Attachment);
         Assert.Null(expense.Attachment);
 
@@ -100,7 +100,7 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage { FailSaves = true };
         var service = CreateService(context, storage);
         await Assert.ThrowsAsync<IOException>(() => service.CreateExpenseAsync(
-            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1, Pdf("bill.pdf")));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, CategoryId = 1 }, 1, Pdf("bill.pdf")));
         Assert.False(await context.Expenses.AnyAsync());
 
         storage.FailSaves = false;
@@ -137,7 +137,7 @@ public sealed class FinanceAttachmentTests
         var storage = new MemoryAttachmentStorage();
         var service = CreateService(context, storage);
         var expense = await service.CreateExpenseAsync(
-            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, Category = "Office" }, 1, Pdf("proof.pdf"));
+            new CreateExpenseDto { FinanceAccountId = 1, Amount = 100, CategoryId = 1 }, 1, Pdf("proof.pdf"));
         storage.Files.Clear();
         var error = await Assert.ThrowsAsync<FileNotFoundException>(() => service.GetAttachmentAsync(FinanceRecordKind.Expense, expense.Id));
         Assert.Contains("missing", error.Message, StringComparison.OrdinalIgnoreCase);
@@ -203,14 +203,22 @@ public sealed class FinanceAttachmentTests
     {
         var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         context.FinanceAccounts.Add(TestAccount());
+        // New expenses must be classified against a managed head, so these fixtures need one.
+        context.ExpenseCategories.Add(new ExpenseCategory
+        {
+            Id = 1, Name = "Office", Code = "office", IsWhtApplicable = false, IsActive = true, RowVersion = [1]
+        });
         context.SaveChanges();
         return context;
     }
 
     private static FinanceAccount TestAccount() => new() { Id = 1, Name = "Test Cash", AccountHolderName = "Test Holder", IsActive = true };
 
-    private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage) =>
-        new(context, storage, new FinanceAccountService(context), NullLogger<FinanceService>.Instance);
+    private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage)
+    {
+        var accounts = new FinanceAccountService(context);
+        return new FinanceService(context, storage, accounts, new WhtService(context, accounts), NullLogger<FinanceService>.Instance);
+    }
 
     private static FinanceAttachmentUpload Pdf(string name)
     {
