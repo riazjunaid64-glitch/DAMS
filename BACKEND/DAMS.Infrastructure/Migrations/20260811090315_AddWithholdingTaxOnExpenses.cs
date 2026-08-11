@@ -327,9 +327,18 @@ namespace DAMS.Infrastructure.Migrations
             // expense form already offered, and none of them has a close equivalent among the
             // construction categories. Anything that does not match stays free text and keeps
             // working untouched.
+            //
+            // WhtTaxSection is stamped at the same time, and that matters more than it looks.
+            // Annual thresholds aggregate a vendor's spend BY SECTION, so a row linked to a
+            // category but left with a null section is structurally migrated yet invisible to the
+            // threshold rule — it would silently fail to count towards the allowance it belongs
+            // to. Recording the section is a statement about what the payment was for, not a
+            // claim that tax was withheld: WhtApplied and WhtAmount stay false and 0, so these
+            // rows still never appear in the withholding reports.
             migrationBuilder.Sql(@"
                 UPDATE e
-                SET e.CategoryId = c.Id
+                SET e.CategoryId = c.Id,
+                    e.WhtTaxSection = CASE WHEN c.IsWhtApplicable = 1 THEN c.TaxSection ELSE NULL END
                 FROM Expenses e
                 INNER JOIN ExpenseCategories c ON c.Name = e.Category
                 WHERE e.CategoryId IS NULL;");

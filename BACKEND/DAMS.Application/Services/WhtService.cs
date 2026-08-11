@@ -63,9 +63,10 @@ namespace DAMS.Application.Services
             var filerStatus = vendor?.FilerStatus ?? FilerStatus.Unknown;
 
             var yearToDate = await YearToDateAsync(
-                request.VendorId, category, date, startMonth, request.ExcludeExpenseId, cancellationToken);
+                vendor, category, date, startMonth, request.ExcludeExpenseId, cancellationToken);
 
-            var result = WhtCalculator.Compute(Rates(category), filerStatus, request.GrossAmount, yearToDate);
+            var result = WhtCalculator.Compute(
+                Rates(category, vendor != null), filerStatus, request.GrossAmount, yearToDate);
 
             return new WhtCalculationResultDto
             {
@@ -114,10 +115,11 @@ namespace DAMS.Application.Services
 
             var startMonth = await FinanceSettingsQuery.FinancialYearStartMonthAsync(_context, cancellationToken);
             var yearToDate = await YearToDateAsync(
-                expense.VendorId, category, expense.Date, startMonth,
+                vendor, category, expense.Date, startMonth,
                 expense.Id == 0 ? null : expense.Id, cancellationToken);
 
-            var suggested = WhtCalculator.Compute(Rates(category), filerStatus, expense.Amount, yearToDate);
+            var suggested = WhtCalculator.Compute(
+                Rates(category, vendor != null), filerStatus, expense.Amount, yearToDate);
 
             decimal rate;
             decimal amount;
@@ -181,8 +183,20 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Withholding tax cannot exceed the gross amount of the expense.");
         }
 
-        private static WhtCalculator.CategoryRates Rates(ExpenseCategory category) =>
-            new(category.IsWhtApplicable, category.FilerRate, category.NonFilerRate, category.AnnualThreshold);
+        /// <summary>
+        /// The rate table as the calculator sees it.
+        /// <para>
+        /// The annual threshold is an allowance per supplier, so it can only be applied to a payee
+        /// the system can actually aggregate. Without a vendor record the allowance is withheld —
+        /// not granted — because granting it to an unidentified payee would let one supplier be
+        /// paid in slices that each look exempt while the year's total is far over the limit.
+        /// That is the same direction of caution as treating an unknown filer as a non-filer:
+        /// over-deducting is recoverable by the vendor, under-deducting is penalised.
+        /// </para>
+        /// </summary>
+        private static WhtCalculator.CategoryRates Rates(ExpenseCategory category, bool vendorLinked) =>
+            new(category.IsWhtApplicable, category.FilerRate, category.NonFilerRate,
+                vendorLinked ? category.AnnualThreshold : 0m);
 
         /// <summary>
         /// Gross already paid to this vendor in the financial year under the same tax section.
@@ -191,17 +205,22 @@ namespace DAMS.Application.Services
         /// no section fall back to matching on the category itself.
         /// </summary>
         private async Task<decimal> YearToDateAsync(
-            int? vendorId, ExpenseCategory category, DateTime date, int startMonth,
+            Vendor? vendor, ExpenseCategory category, DateTime date, int startMonth,
             int? excludeExpenseId, CancellationToken cancellationToken)
         {
-            // Without a vendor there is nothing to aggregate against, so no threshold can be
-            // proven met — treat the payment as the first of the year.
-            if (!vendorId.HasValue || category.AnnualThreshold <= 0m)
+            if (vendor == null || category.AnnualThreshold <= 0m)
                 return 0m;
 
             var (start, end) = FinancialYear.Window(date, startMonth);
+            var vendorId = vendor.Id;
+            var vendorName = vendor.Name;
             var query = _context.Expenses.AsNoTracking()
-                .Where(e => e.VendorId == vendorId.Value && e.Date >= start && e.Date < end);
+                .Where(e => e.Date >= start && e.Date < end
+                    // Payments made before this vendor had a record carry the same name as free
+                    // text. They are the same supplier's money, so they count towards the annual
+                    // aggregate — without this, the first year after a vendor is created starts
+                    // its allowance again from zero and under-withholds.
+                    && (e.VendorId == vendorId || (e.VendorId == null && e.Vendor == vendorName)));
 
             query = string.IsNullOrWhiteSpace(category.TaxSection)
                 ? query.Where(e => e.CategoryId == category.Id)
@@ -220,7 +239,9 @@ namespace DAMS.Application.Services
                 return $"\"{category.Name}\" is not subject to withholding tax at the point of payment.";
 
             if (vendor == null)
-                return "No vendor selected — the non-filer rate is applied. Link a vendor to use their filer status and track the annual threshold.";
+                return category.AnnualThreshold > 0m
+                    ? $"No vendor linked, so the {category.AnnualThreshold:N0} annual allowance cannot be tracked and tax is withheld from the first rupee, at the non-filer rate. Link a vendor to use their filer status and their allowance."
+                    : "No vendor linked — the non-filer rate is applied. Link a vendor to use their filer status.";
 
             var status = vendor.FilerStatus switch
             {

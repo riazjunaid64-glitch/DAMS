@@ -6,6 +6,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services
@@ -839,6 +840,10 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Paid From Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
+            // Held until after SaveChanges so the year-to-date read and the insert that depends on
+            // it cannot be interleaved with another save for the same vendor.
+            await using var thresholdGuard = await BeginThresholdGuardAsync(dto, cancellationToken);
+
             var expense = new Expense
             {
                 ProjectId = dto.ProjectId,
@@ -870,6 +875,8 @@ namespace DAMS.Application.Services
             try
             {
                 await _context.SaveChangesAsync(cancellationToken);
+                if (thresholdGuard != null)
+                    await thresholdGuard.CommitAsync(cancellationToken);
             }
             catch
             {
@@ -897,6 +904,9 @@ namespace DAMS.Application.Services
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
+
+            // Editing re-decides the threshold too, so it needs the same protection as creating.
+            await using var thresholdGuard = await BeginThresholdGuardAsync(dto, cancellationToken);
 
             var oldStoredFileName = expense.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -930,6 +940,8 @@ namespace DAMS.Application.Services
             try
             {
                 await _context.SaveChangesAsync(cancellationToken);
+                if (thresholdGuard != null)
+                    await thresholdGuard.CommitAsync(cancellationToken);
             }
             catch
             {
@@ -1017,6 +1029,42 @@ namespace DAMS.Application.Services
             _context.FinanceAttachments.Remove(attachment);
             await _context.SaveChangesAsync(cancellationToken);
             await DeleteObsoleteFileAsync(storedFileName);
+        }
+
+        /// <summary>
+        /// Serialises concurrent expense saves for one vendor while a threshold decision is made.
+        /// <para>
+        /// Working out withholding is a read-check-write: sum the vendor's year to date, decide
+        /// whether the annual allowance is exhausted, then insert. Two admins saving at the same
+        /// moment can both read the same below-allowance total, both conclude nothing is due, and
+        /// both save — leaving the vendor over the threshold with no tax deducted at all.
+        /// </para>
+        /// <para>
+        /// Locking the single vendor row is enough, because every threshold aggregate is keyed by
+        /// vendor, and it avoids the range-lock deadlocks that a serialisable isolation level
+        /// would invite on a shared table. Non-relational providers (the in-memory store used by
+        /// tests) have no locking to take, and expenses with no vendor cannot hit a threshold.
+        /// </para>
+        /// </summary>
+        private async Task<IDbContextTransaction?> BeginThresholdGuardAsync(
+            CreateExpenseDto dto, CancellationToken cancellationToken)
+        {
+            if (!dto.VendorId.HasValue || !dto.CategoryId.HasValue) return null;
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
+
+            var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                await _context.Database.ExecuteSqlRawAsync(
+                    "SELECT TOP 1 1 FROM [Vendors] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
+                    new object[] { dto.VendorId.Value }, cancellationToken);
+                return transaction;
+            }
+            catch
+            {
+                await transaction.DisposeAsync();
+                throw;
+            }
         }
 
         /// <summary>

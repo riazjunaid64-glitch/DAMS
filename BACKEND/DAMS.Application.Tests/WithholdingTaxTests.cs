@@ -330,6 +330,56 @@ public sealed class WithholdingTaxTests
     }
 
     [Fact]
+    public async Task RepeatedFreeTextPayments_CannotHideUnderTheThresholdForever()
+    {
+        // Without a vendor record there is no identity to aggregate against, so the annual
+        // allowance cannot be proven — and assuming it applies would let a supplier be paid in
+        // slices that each look exempt while the year's total is far over the limit.
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        var first = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "ABC Traders", Amount = 40_000m }, 1);
+        var second = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "ABC Traders", Amount = 40_000m }, 1);
+
+        // Non-filer rate, because an unidentified payee cannot be shown to be on the ATL either.
+        Assert.Equal(800m, first.WhtAmount);
+        Assert.Equal(800m, second.WhtAmount);
+    }
+
+    [Fact]
+    public async Task LinkingAVendor_StillGrantsTheThreshold()
+    {
+        // The exemption is available — it just requires saying who was paid.
+        await using var context = Seeded();
+        var expense = await Finance(context).CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 40_000m }, 1);
+
+        Assert.Equal(0m, expense.WhtAmount);
+    }
+
+    [Fact]
+    public async Task SpendPredatingAVendorRecord_StillCountsTowardsTheirAnnualThreshold()
+    {
+        // Go-live reality: a supplier was paid as free text for months, then gets a vendor record.
+        // Those payments are the same supplier's, so ignoring them would under-withhold for the
+        // whole first year.
+        await using var context = Seeded();
+        var finance = Finance(context);
+
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, Vendor = "ABC Traders", Amount = 70_000m }, 1);
+
+        var afterLinking = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, CategoryId = 1, VendorId = 1, Amount = 20_000m }, 1);
+
+        // 70,000 + 20,000 is over the 75,000 allowance, so the whole payment is withheld at the
+        // filer rate — not treated as the first 20,000 of the year.
+        Assert.Equal(200m, afterLinking.WhtAmount);
+    }
+
+    [Fact]
     public async Task EditingAnExpense_DoesNotCountItsOwnAmountTowardsItsThreshold()
     {
         await using var context = Seeded();
