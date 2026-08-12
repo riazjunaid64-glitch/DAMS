@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPeriodRange, financialYearWindow } from "./financePeriods";
+import { buildPeriodRange, financePeriodLabel, financialYearWindow } from "./financePeriods";
 
 describe("finance period ranges", () => {
   it("uses the configured financial year for the annual preset", () => {
@@ -55,5 +55,12 @@ describe("finance period ranges", () => {
       from: "2026-01-01",
       to: "2026-12-31",
     });
+  });
+
+  it("builds and labels the prior configured financial year", () => {
+    const now = new Date(2026, 7, 12);
+    expect(buildPeriodRange("lastYear", 7, now)).toEqual({ from: "2025-07-01", to: "2026-06-30" });
+    expect(financePeriodLabel("year", 7, now)).toBe("This Year (Jul 2026 – Jun 2027)");
+    expect(financePeriodLabel("lastYear", 7, now)).toBe("Last Year (Jul 2025 – Jun 2026)");
   });
 });
