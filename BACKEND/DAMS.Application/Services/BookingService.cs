@@ -14,6 +14,7 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly ICustomerService _customerService;
+        private readonly IFinanceAccountService _accountService;
         private readonly INotificationEventService? _notifications;
         private readonly ICommissionBookingLifecycle? _commissionLifecycle;
 
@@ -23,10 +24,12 @@ namespace DAMS.Application.Services
         /// committed and is wrapped so a notification problem cannot undo a payment.
         /// </param>
         public BookingService(AppDbContext context, ICustomerService customerService,
+            IFinanceAccountService accountService,
             INotificationEventService? notifications = null, ICommissionBookingLifecycle? commissionLifecycle = null)
         {
             _context = context;
             _customerService = customerService;
+            _accountService = accountService;
             _notifications = notifications;
             _commissionLifecycle = commissionLifecycle;
         }
@@ -121,6 +124,14 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Set a booking amount required before recording an amount received with the application.");
             if (applicationAmountReceived > bookingAmountRequired)
                 throw new InvalidOperationException("Application amount received cannot exceed the booking amount required.");
+            // Money received with the form becomes a real payment below, so it has to say
+            // which account it landed in — same rule the finance forms apply.
+            if (applicationAmountReceived > 0m)
+            {
+                if (!dto.ApplicationFinanceAccountId.HasValue)
+                    throw new InvalidOperationException("Received In Account is required when an amount is received with the application.");
+                await _accountService.EnsureSelectableAsync(dto.ApplicationFinanceAccountId.Value, null, cancellationToken);
+            }
 
             var booking = new Booking
             {
@@ -179,6 +190,7 @@ namespace DAMS.Application.Services
                     {
                         BookingId = booking.Id,
                         InstallmentId = null,
+                        FinanceAccountId = dto.ApplicationFinanceAccountId,
                         Type = PaymentType.BookingAmount,
                         Amount = applicationAmountReceived,
                         PaymentMethod = ParseApplicationPaymentMethod(dto.ApplicationPaymentType),
@@ -395,6 +407,9 @@ namespace DAMS.Application.Services
         {
             if (dto.Amount <= 0m)
                 throw new InvalidOperationException("Payment amount must be greater than zero.");
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Received In Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
             var booking = await _context.Bookings
                 .Include(b => b.Unit)
@@ -431,6 +446,7 @@ namespace DAMS.Application.Services
             {
                 BookingId = booking.Id,
                 InstallmentId = null,
+                FinanceAccountId = dto.FinanceAccountId,
                 Type = PaymentType.BookingAmount,
                 Amount = dto.Amount,
                 PaymentMethod = dto.PaymentMethod,

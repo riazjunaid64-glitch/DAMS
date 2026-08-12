@@ -34,7 +34,7 @@ namespace DAMS.Application.Services
             var toExclusive = to?.Date.AddDays(1);
 
             // All totals are computed in SQL — no rows are materialised for the cards.
-            var automaticRevenue = accountId.HasValue ? 0m : await PaymentsQuery(projectId, fromValue, toExclusive)
+            var automaticRevenue = await PaymentsQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
@@ -81,8 +81,7 @@ namespace DAMS.Application.Services
                     .SingleOrDefaultAsync();
                 if (opening.HasValue)
                 {
-                    var cumulativeRevenue = await ManualQuery(null, null, toExclusive, accountId, false)
-                        .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                    var cumulativeRevenue = await CashInflowBeforeAsync(toExclusive, accountId.Value);
                     var cumulativeExpenses = await CashOutflowBeforeAsync(toExclusive, accountId.Value);
                     accountOpeningBalance = opening.Value;
                     accountCurrentBalance = opening.Value + cumulativeRevenue - cumulativeExpenses;
@@ -90,12 +89,14 @@ namespace DAMS.Application.Services
                     // Cash movement over the selected period — not the same thing as profit.
                     // Expenses count at what actually left the account and FBR deposits count too,
                     // even though neither matches the P&L figure above.
+                    var inflowBeforePeriod = fromValue.HasValue
+                        ? await CashInflowBeforeAsync(fromValue, accountId.Value)
+                        : 0m;
                     var outflowBeforePeriod = fromValue.HasValue
                         ? await CashOutflowBeforeAsync(fromValue, accountId.Value)
                         : 0m;
                     accountNetMovement =
-                        (await ManualQuery(null, fromValue, toExclusive, accountId, false)
-                            .SumAsync(r => (decimal?)r.Amount) ?? 0m)
+                        (cumulativeRevenue - inflowBeforePeriod)
                         - (cumulativeExpenses - outflowBeforePeriod);
                 }
             }
@@ -129,7 +130,7 @@ namespace DAMS.Application.Services
             // Payments and manual revenue are unioned (UNION ALL) into one shape, ordered
             // and paged in SQL. A stable secondary key (Source + entity Id) keeps paging
             // deterministic across chunks.
-            var payments = PaymentsQuery(projectId, fromValue, toExclusive).Where(_ => !accountId.HasValue)
+            var payments = PaymentsQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(p => new RevenueRow
                 {
                     SortId = p.Id,
@@ -151,9 +152,9 @@ namespace DAMS.Application.Services
                     AttachmentContentType = null,
                     AttachmentFileSize = null,
                     AttachmentUploadedAt = null,
-                    FinanceAccountId = null,
-                    FinanceAccountName = null,
-                    AccountHolderName = null
+                    FinanceAccountId = p.FinanceAccountId,
+                    FinanceAccountName = p.FinanceAccount != null ? p.FinanceAccount.Name : null,
+                    AccountHolderName = p.FinanceAccount != null ? p.FinanceAccount.AccountHolderName : null
                 });
 
             var manual = ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
@@ -311,7 +312,7 @@ namespace DAMS.Application.Services
 
             // Net Profit = every revenue line (+) and expense line (−). Three sources are
             // unioned, ordered and paged in SQL.
-            var payments = PaymentsQuery(projectId, fromValue, toExclusive).Where(_ => !accountId.HasValue)
+            var payments = PaymentsQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(p => new NetProfitRow
                 {
                     SortId = p.Id,
@@ -405,6 +406,21 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
+        /// Everything that has arrived in one account before <paramref name="toExclusive"/> (all of
+        /// time when null): customer payments and manually entered revenue alike. Customer payments
+        /// are the largest inflow in the business, so a balance that omits them is not approximate
+        /// — it is arbitrarily far out, and usually negative.
+        /// </summary>
+        private async Task<decimal> CashInflowBeforeAsync(DateTime? toExclusive, int accountId)
+        {
+            var payments = await PaymentsQuery(null, null, toExclusive, accountId, false)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var manual = await ManualQuery(null, null, toExclusive, accountId, false)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+            return payments + manual;
+        }
+
+        /// <summary>
         /// Everything that has left one account before <paramref name="toExclusive"/> (all of time
         /// when null).
         /// <para>
@@ -439,7 +455,8 @@ namespace DAMS.Application.Services
         }
 
         // ── Filtered base queries (shared by summary totals and paged rows) ──
-        private IQueryable<Payment> PaymentsQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive)
+        private IQueryable<Payment> PaymentsQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive,
+            int? accountId = null, bool unassigned = false)
         {
             // Payments on cancelled bookings stay in revenue: the money was really
             // received, and cancelling a booking must not rewrite finance history.
@@ -447,6 +464,8 @@ namespace DAMS.Application.Services
             if (projectId.HasValue) q = q.Where(p => p.Booking.Unit.ProjectId == projectId.Value);
             if (fromValue.HasValue) q = q.Where(p => p.PaidAt >= fromValue.Value);
             if (toExclusive.HasValue) q = q.Where(p => p.PaidAt < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(p => p.FinanceAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(p => p.FinanceAccountId == null);
             return q;
         }
 

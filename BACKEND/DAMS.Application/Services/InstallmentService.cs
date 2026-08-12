@@ -12,15 +12,18 @@ namespace DAMS.Application.Services
     public class InstallmentService : IInstallmentService
     {
         private readonly AppDbContext _context;
+        private readonly IFinanceAccountService _accountService;
         private readonly INotificationEventService? _notifications;
 
         /// <param name="notifications">
         /// Optional on purpose: recording an installment payment must not depend on the
         /// notification platform being present or healthy.
         /// </param>
-        public InstallmentService(AppDbContext context, INotificationEventService? notifications = null)
+        public InstallmentService(AppDbContext context, IFinanceAccountService accountService,
+            INotificationEventService? notifications = null)
         {
             _context = context;
+            _accountService = accountService;
             _notifications = notifications;
         }
 
@@ -45,6 +48,9 @@ namespace DAMS.Application.Services
         {
             if (dto.Amount <= 0m)
                 throw new InvalidOperationException("Payment amount must be greater than zero.");
+            if (!dto.FinanceAccountId.HasValue)
+                throw new InvalidOperationException("Received In Account is required.");
+            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value);
 
             var booking = await _context.Bookings
                 .FirstOrDefaultAsync(b => b.Id == bookingId);
@@ -86,6 +92,7 @@ namespace DAMS.Application.Services
             {
                 BookingId = booking.Id,
                 InstallmentId = installment.Id,
+                FinanceAccountId = dto.FinanceAccountId,
                 Type = PaymentType.Installment,
                 Amount = dto.Amount,
                 PaymentMethod = dto.PaymentMethod,

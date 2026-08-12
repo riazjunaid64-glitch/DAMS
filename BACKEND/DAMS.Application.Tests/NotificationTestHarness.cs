@@ -63,6 +63,7 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
     public int SecondUnitId { get; private set; }
     public int ThirdUnitId { get; private set; }
     public int BookingId { get; private set; }
+    public int FinanceAccountId { get; private set; }
 
     public NotificationUserContext AdminCtx { get; private set; } = null!;
     public NotificationUserContext ManagerCtx { get; private set; } = null!;
@@ -98,8 +99,9 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
         var customers = new CustomerService(db);
         Events = new NotificationEventService(db, Dispatcher, Settings, Clock,
             NullLogger<NotificationEventService>.Instance);
-        Bookings = new BookingService(db, customers, Events);
-        Installments = new InstallmentService(db, Events);
+        var accounts = new FinanceAccountService(db);
+        Bookings = new BookingService(db, customers, accounts, Events);
+        Installments = new InstallmentService(db, accounts, Events);
 
         var attachments = new NotificationReceiptAttachmentBuilder(
             Bookings, Settings, NullLogger<NotificationReceiptAttachmentBuilder>.Instance);
@@ -196,8 +198,17 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
         };
         Db.Bookings.Add(booking);
         unit.Status = UnitStatus.Booked;
+
+        // Every payment has to name the account it landed in, so the harness needs one.
+        var account = new FinanceAccount
+        {
+            Name = "HBL Main", Type = FinanceAccountType.Bank,
+            AccountHolderName = "DAMS Estates", OpeningBalance = 0m, IsActive = true
+        };
+        Db.FinanceAccounts.Add(account);
         await Db.SaveChangesAsync();
         BookingId = booking.Id;
+        FinanceAccountId = account.Id;
 
         AdminCtx = Ctx(AdminUserId, LeadRoles.Admin, "Ayesha Admin", "admin@dams.test");
         ManagerCtx = Ctx(ManagerUserId, LeadRoles.Manager, "Mahmood Manager", "manager@dams.test");
@@ -250,7 +261,8 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
             new DTOs.BookingDtos.RecordBookingAmountPaymentDto
             {
                 Amount = amount,
-                PaymentMethod = PaymentMethod.BankTransfer
+                PaymentMethod = PaymentMethod.BankTransfer,
+                FinanceAccountId = FinanceAccountId
             }, AdminUserId);
 
         Db.ChangeTracker.Clear();

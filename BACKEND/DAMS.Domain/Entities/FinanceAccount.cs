@@ -15,6 +15,7 @@ namespace DAMS.Domain.Entities
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
+        public ICollection<Payment> Payments { get; set; } = new List<Payment>();
         public ICollection<ManualRevenue> ManualRevenues { get; set; } = new List<ManualRevenue>();
         public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
         public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();

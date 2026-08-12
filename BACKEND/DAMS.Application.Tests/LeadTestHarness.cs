@@ -78,7 +78,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         Inbox = new NotificationInboxService(db, Clock, eligibility);
         Notifications = new LeadNotificationService(db, Dispatcher);
         var customers = new CustomerService(db);
-        var bookings = new BookingService(db, customers);
+        var bookings = new BookingService(db, customers, new FinanceAccountService(db));
         Leads = new LeadService(db, customers, bookings, Notifications, alertOptions);
         Communications = new LeadCommunicationService(db, Notifications);
         FollowUps = new LeadFollowUpService(db, Notifications);

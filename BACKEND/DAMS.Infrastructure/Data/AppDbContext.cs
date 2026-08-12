@@ -443,6 +443,7 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(p => p.InstallmentId);
                 entity.HasIndex(p => new { p.BookingId, p.Type });
                 entity.HasIndex(p => p.PaidAt);
+                entity.HasIndex(p => p.FinanceAccountId);
                 entity.HasOne(p => p.Booking)
                       .WithMany(b => b.Payments)
                       .HasForeignKey(p => p.BookingId)
@@ -450,6 +451,12 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(p => p.Installment)
                       .WithMany(i => i.Payments)
                       .HasForeignKey(p => p.InstallmentId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                // Restrict, matching every other account link: an account that has received
+                // money cannot be deleted out from under the balance it explains.
+                entity.HasOne(p => p.FinanceAccount)
+                      .WithMany(a => a.Payments)
+                      .HasForeignKey(p => p.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
