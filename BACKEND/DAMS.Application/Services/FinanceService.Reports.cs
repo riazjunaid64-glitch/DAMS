@@ -291,6 +291,7 @@ namespace DAMS.Application.Services
             var end = asAt.Date.AddDays(1);
             var accounts = await _context.FinanceAccounts.AsNoTracking().OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name)
                 .Select(a => new AccountSnapshot { Id = a.Id, Name = a.Name, LedgerCode = a.LedgerCode, Type = a.Type,
+                    SystemRole = a.SystemRole,
                     DisplayOrder = a.DisplayOrder, Balance = !projectId.HasValue && (!openingDate.HasValue || openingDate <= asAt) ? a.OpeningBalance : 0m })
                 .ToListAsync(cancellationToken);
             var payments = await SumByAccount(PaymentsQuery(projectId, null, end).Where(p => p.FinanceAccountId != null)
@@ -339,8 +340,7 @@ namespace DAMS.Application.Services
                 // journal debits. The normal-balance direction is applied later when the trial
                 // balance places the positive amount in a Debit or Credit column.
                 account.Balance += debitMovement;
-                if (account.Type == FinanceAccountType.Liability &&
-                    (string.Equals(account.LedgerCode, "11", StringComparison.OrdinalIgnoreCase) || string.Equals(account.Name, "Tax Payable", StringComparison.OrdinalIgnoreCase)))
+                if (account.SystemRole == FinanceSystemAccountRole.TaxPayable)
                     account.Balance += Money(wht - deposited);
                 account.Balance = Money(account.Balance);
             }
@@ -363,6 +363,14 @@ namespace DAMS.Application.Services
             if (await PaymentsQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned customer payments");
             if (await ManualQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned manual revenue");
             if (await ExpenseQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned expenses");
+            var wht = await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            var deposited = projectId.HasValue
+                ? 0m
+                : await _context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
+                    .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var undeposited = Money(wht - deposited);
+            if (undeposited != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.TaxPayable))
+                issues.Add($"No Tax Payable system account found; withheld tax of {undeposited:N2} has nowhere to sit.");
             if (issues.Count == 0)
             {
                 issues.Add("Opening balances or legacy entries are not double-sided");
@@ -428,6 +436,7 @@ namespace DAMS.Application.Services
             public string Name { get; set; } = string.Empty;
             public string? LedgerCode { get; set; }
             public FinanceAccountType Type { get; set; }
+            public FinanceSystemAccountRole SystemRole { get; set; }
             public int DisplayOrder { get; set; }
             public decimal Balance { get; set; }
         }

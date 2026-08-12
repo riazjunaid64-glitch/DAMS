@@ -697,6 +697,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.Description).HasMaxLength(1000);
                 entity.Property(a => a.OpeningBalance).HasColumnType("decimal(18,2)");
                 entity.Property(a => a.LedgerCode).HasMaxLength(30);
+                entity.Property(a => a.SystemRole).HasConversion<int>();
                 entity.Property(a => a.RowVersion).IsRowVersion();
 
                 entity.HasIndex(a => a.Name).IsUnique();
@@ -704,6 +705,15 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.AccountHolderName);
                 entity.HasIndex(a => new { a.Type, a.DisplayOrder });
                 entity.HasIndex(a => a.LedgerCode);
+                entity.HasIndex(a => a.SystemRole)
+                      .IsUnique()
+                      .HasFilter("[SystemRole] <> 0");
+
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 1");
+                    t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
+                });
             });
 
             modelBuilder.Entity<FinanceAttachment>(entity =>

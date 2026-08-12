@@ -17,7 +17,11 @@ public sealed class FinanceReportingAndCapitalTests
     {
         await using var context = Context();
         var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
-        var taxPayable = new FinanceAccount { Name = "Tax Payable", LedgerCode = "11", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability, IsActive = true };
+        var taxPayable = new FinanceAccount
+        {
+            Name = "Tax Payable", LedgerCode = "11", AccountHolderName = "DAMS",
+            Type = FinanceAccountType.Liability, SystemRole = FinanceSystemAccountRole.TaxPayable, IsActive = true
+        };
         var revenueCategory = new RevenueCategory { Name = "Other Income", Code = "other", DisplayOrder = 10 };
         var expenseCategory = new ExpenseCategory { Name = "Office Rent", Code = "rent", DisplayOrder = 10 };
         context.AddRange(bank, taxPayable, revenueCategory, expenseCategory);
@@ -54,6 +58,69 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(820m, sheet.TotalAssets);
         Assert.Equal(pnl.NetProfit, sheet.RetainedProfit);
         Assert.Equal(20m, (await new FinanceAccountService(context).GetByIdAsync(taxPayable.Id)).CurrentBalance);
+    }
+
+    [Fact]
+    public async Task TaxPayableSystemRole_BalancesWht_AndProtectsIdentity()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var taxPayable = new FinanceAccount
+        {
+            Name = "Withholding payable", LedgerCode = "WHT-LIAB", AccountHolderName = "DAMS",
+            Type = FinanceAccountType.Liability, SystemRole = FinanceSystemAccountRole.TaxPayable, IsActive = true
+        };
+        context.AddRange(bank, taxPayable);
+        await context.SaveChangesAsync();
+        context.Expenses.Add(new Expense
+        {
+            FinanceAccountId = bank.Id, Category = "Supplier invoice",
+            Amount = 1_000m, WhtAmount = 100m, Date = new DateTime(2026, 8, 2)
+        });
+        await context.SaveChangesAsync();
+        var accounts = new FinanceAccountService(context);
+
+        var sheet = await Finance(context).GetBalanceSheetAsync(null, new DateTime(2026, 8, 31));
+
+        Assert.True(sheet.IsBalanced);
+        Assert.Equal(100m, (await accounts.GetByIdAsync(taxPayable.Id)).CurrentBalance);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.UpdateAsync(taxPayable.Id, new UpdateFinanceAccountDto
+        {
+            Name = "Renamed", Type = FinanceAccountType.Liability, AccountHolderName = "DAMS",
+            OpeningBalance = 0m, LedgerCode = "WHT-LIAB", ConcurrencyToken = ""
+        }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.UpdateAsync(taxPayable.Id, new UpdateFinanceAccountDto
+        {
+            Name = "Withholding payable", Type = FinanceAccountType.Bank, AccountHolderName = "DAMS",
+            OpeningBalance = 0m, LedgerCode = "WHT-LIAB", ConcurrencyToken = ""
+        }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.UpdateAsync(taxPayable.Id, new UpdateFinanceAccountDto
+        {
+            Name = "Withholding payable", Type = FinanceAccountType.Liability, AccountHolderName = "DAMS",
+            OpeningBalance = 0m, LedgerCode = "11", ConcurrencyToken = ""
+        }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.SetActiveAsync(taxPayable.Id, false, ""));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.DeleteUnusedAsync(taxPayable.Id));
+    }
+
+    [Fact]
+    public async Task BalanceSheet_DiagnosesMissingTaxPayableSystemAccount()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        context.FinanceAccounts.Add(bank);
+        await context.SaveChangesAsync();
+        context.Expenses.Add(new Expense
+        {
+            FinanceAccountId = bank.Id, Category = "Supplier invoice",
+            Amount = 1_000m, WhtAmount = 100m, Date = new DateTime(2026, 8, 2)
+        });
+        await context.SaveChangesAsync();
+
+        var sheet = await Finance(context).GetBalanceSheetAsync(null, new DateTime(2026, 8, 31));
+
+        Assert.False(sheet.IsBalanced);
+        Assert.Contains(sheet.UnbalancedAccounts, issue => issue.Contains("No Tax Payable system account found"));
     }
 
     [Fact]

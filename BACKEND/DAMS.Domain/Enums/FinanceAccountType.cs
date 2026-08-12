@@ -13,6 +13,12 @@ namespace DAMS.Domain.Enums
         WorkInProgress = 9
     }
 
+    public enum FinanceSystemAccountRole
+    {
+        None = 0,
+        TaxPayable = 1
+    }
+
     public static class AccountBalanceDirection
     {
         public static bool IsDebitNormal(FinanceAccountType type) => type switch

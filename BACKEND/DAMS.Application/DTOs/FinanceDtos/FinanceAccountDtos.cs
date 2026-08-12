@@ -34,6 +34,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal OpeningBalance { get; set; }
         public string? LedgerCode { get; set; }
         public int DisplayOrder { get; set; }
+        public FinanceSystemAccountRole SystemRole { get; set; }
+        public bool IsSystemAccount => SystemRole != FinanceSystemAccountRole.None;
         public string? BankOrWalletName { get; set; }
         public string? Description { get; set; }
         public decimal RevenueReceived { get; set; }

@@ -606,8 +606,6 @@ namespace DAMS.Infrastructure.Migrations
                 });
 
             migrationBuilder.Sql("""
-                SET IDENTITY_INSERT [dbo].[Roles] ON;
-
                 IF NOT EXISTS (SELECT 1 FROM [dbo].[Roles] WHERE [RoleId] = 3)
                 BEGIN
                     INSERT INTO [dbo].[Roles] ([RoleId], [Role_name]) VALUES (3, N'Manager');
@@ -617,8 +615,6 @@ namespace DAMS.Infrastructure.Migrations
                 BEGIN
                     INSERT INTO [dbo].[Roles] ([RoleId], [Role_name]) VALUES (4, N'Employee');
                 END
-
-                SET IDENTITY_INSERT [dbo].[Roles] OFF;
                 """);
 
             migrationBuilder.Sql("""

@@ -63,7 +63,7 @@ namespace DAMS.Application.Services
                 .Select(a => new
                 {
                     a.Type,
-                    IsTaxPayable = a.Type == FinanceAccountType.Liability && (a.LedgerCode == "11" || a.Name == "Tax Payable")
+                    IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
                 }).SingleOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
 
@@ -235,6 +235,7 @@ namespace DAMS.Application.Services
             ApplyConcurrencyToken(account, dto.ConcurrencyToken);
             if (dto.OpeningBalance != account.OpeningBalance && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
                 throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to change this amount.");
+            EnsureSystemIdentityIsPreserved(account, dto);
             if (dto.Type != account.Type && await HasDependenciesAsync(id, cancellationToken))
                 throw new InvalidOperationException("An account with financial history cannot change type. Create a correctly typed account and keep this one for reconciliation.");
             await EnsureUniqueName(dto.Name, id, cancellationToken);
@@ -257,6 +258,8 @@ namespace DAMS.Application.Services
             var account = await _context.FinanceAccounts.SingleOrDefaultAsync(a => a.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
             ApplyConcurrencyToken(account, concurrencyToken);
+            if (account.SystemRole != FinanceSystemAccountRole.None && !isActive)
+                throw new InvalidOperationException("System finance accounts cannot be deactivated because financial statements depend on them.");
             account.IsActive = isActive;
             account.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync(cancellationToken);
@@ -267,6 +270,8 @@ namespace DAMS.Application.Services
         {
             var account = await _context.FinanceAccounts.SingleOrDefaultAsync(a => a.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
+            if (account.SystemRole != FinanceSystemAccountRole.None)
+                throw new InvalidOperationException("System finance accounts cannot be deleted.");
             var used = await HasDependenciesAsync(id, cancellationToken);
             if (used) throw new InvalidOperationException("This account has transactions and cannot be deleted. Make it inactive instead.");
             _context.FinanceAccounts.Remove(account);
@@ -300,6 +305,7 @@ namespace DAMS.Application.Services
                     {
                         Name = definition.Name, Type = definition.Type, LedgerCode = definition.LedgerCode,
                         DisplayOrder = definition.DisplayOrder, AccountHolderName = definition.Holder,
+                        SystemRole = definition.SystemRole,
                         OpeningBalance = 0m, IsActive = true, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
                     };
                     _context.FinanceAccounts.Add(account);
@@ -312,6 +318,10 @@ namespace DAMS.Application.Services
                 else
                 {
                     account.LedgerCode ??= definition.LedgerCode;
+                    if (definition.SystemRole != FinanceSystemAccountRole.None && account.SystemRole == FinanceSystemAccountRole.None)
+                        account.SystemRole = definition.SystemRole;
+                    if (definition.SystemRole != FinanceSystemAccountRole.None && account.SystemRole != definition.SystemRole)
+                        throw new InvalidOperationException($"'{definition.Name}' already exists with a different system role.");
                     if (account.DisplayOrder == 0) account.DisplayOrder = definition.DisplayOrder;
                 }
             }
@@ -366,7 +376,7 @@ namespace DAMS.Application.Services
                 new("Securities & Advances", FinanceAccountType.Receivable, "19", 400),
                 new("WHT TAX", FinanceAccountType.Receivable, "37", 410),
                 new("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500),
-                new("Tax Payable", FinanceAccountType.Liability, "11", 510),
+                new("Tax Payable", FinanceAccountType.Liability, "11", 510, SystemRole: FinanceSystemAccountRole.TaxPayable),
                 new("Loan A/C", FinanceAccountType.Liability, "32", 520)
             };
             rows.AddRange(ClientPartnerNames.Select((name, index) =>
@@ -374,7 +384,13 @@ namespace DAMS.Application.Services
             return rows;
         }
 
-        private sealed record ChartAccount(string Name, FinanceAccountType Type, string? LedgerCode, int DisplayOrder, string Holder = "Seven Ventures");
+        private sealed record ChartAccount(
+            string Name,
+            FinanceAccountType Type,
+            string? LedgerCode,
+            int DisplayOrder,
+            string Holder = "Seven Ventures",
+            FinanceSystemAccountRole SystemRole = FinanceSystemAccountRole.None);
 
         // Every outflow figure below counts expenses NET of withholding tax. Tax deducted from a
         // supplier never left this account — it is held for FBR, and leaves later as a WhtDeposit,
@@ -405,7 +421,7 @@ namespace DAMS.Application.Services
             let partnerOut = a.CapitalPartners.SelectMany(p => p.Transactions)
                 .Where(t => t.Type == CapitalTransactionType.Withdrawal || t.Type == CapitalTransactionType.LossShare)
                 .Sum(t => (decimal?)t.Amount) ?? 0m
-            let isTaxPayable = a.Type == FinanceAccountType.Liability && (a.LedgerCode == "11" || a.Name == "Tax Payable")
+            let isTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
             let taxPayableIn = isTaxPayable ? (_context.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m) : 0m
             let taxPayableOut = isTaxPayable ? (_context.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m) : 0m
             let debitMovement = genericIn + cashCapitalIn - genericOut - cashCapitalOut
@@ -416,11 +432,12 @@ namespace DAMS.Application.Services
             {
                 Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
                 OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
+                SystemRole = a.SystemRole,
                 BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
                 RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + cashCapitalIn),
                 ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut),
-                WhtWithheld = a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                WhtDeposited = a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
+                WhtWithheld = isTaxPayable ? taxPayableIn : a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
+                WhtDeposited = isTaxPayable ? taxPayableOut : a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
                 NetMovement = movement,
                 CurrentBalance = a.OpeningBalance + movement,
                 TransactionCount = a.Payments.Count + a.ManualRevenues.Count + a.Expenses.Count + a.CommissionPayouts.Count
@@ -440,6 +457,15 @@ namespace DAMS.Application.Services
             var normalized = name.Trim();
             if (await _context.FinanceAccounts.AnyAsync(a => a.Name == normalized && (!excludingId.HasValue || a.Id != excludingId), cancellationToken))
                 throw new InvalidOperationException("A finance account with this name already exists.");
+        }
+
+        private static void EnsureSystemIdentityIsPreserved(FinanceAccount account, UpdateFinanceAccountDto dto)
+        {
+            if (account.SystemRole == FinanceSystemAccountRole.None) return;
+            if (!string.Equals(account.Name, dto.Name.Trim(), StringComparison.Ordinal)
+                || account.Type != dto.Type
+                || !string.Equals(account.LedgerCode, Clean(dto.LedgerCode), StringComparison.Ordinal))
+                throw new InvalidOperationException("System finance accounts cannot change name, type or ledger code.");
         }
 
         private async Task<bool> HasDependenciesAsync(int id, CancellationToken cancellationToken) =>
