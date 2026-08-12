@@ -199,7 +199,10 @@ public sealed class NotificationPaymentReceiptTests
 
         var booking = await CreateBookingForAsync(h, h.LoginlessCustomerId, h.SecondUnitId, "BK-000002");
         await h.Bookings.RecordBookingAmountPaymentAsync(booking,
-            new RecordBookingAmountPaymentDto { Amount = 100_000m, PaymentMethod = PaymentMethod.Cash }, h.AdminUserId);
+            new RecordBookingAmountPaymentDto
+            {
+                Amount = 100_000m, PaymentMethod = PaymentMethod.Cash, FinanceAccountId = h.FinanceAccountId
+            }, h.AdminUserId);
 
         var receipt = await h.Db.Notifications.AsNoTracking()
             .FirstAsync(n => n.Type == NotificationType.PaymentReceipt);
@@ -227,7 +230,10 @@ public sealed class NotificationPaymentReceiptTests
 
         var booking = await CreateBookingForAsync(h, h.LoginlessCustomerId, h.SecondUnitId, "BK-000099");
         await h.Bookings.RecordBookingAmountPaymentAsync(booking,
-            new RecordBookingAmountPaymentDto { Amount = 100_000m, PaymentMethod = PaymentMethod.Cash }, h.AdminUserId);
+            new RecordBookingAmountPaymentDto
+            {
+                Amount = 100_000m, PaymentMethod = PaymentMethod.Cash, FinanceAccountId = h.FinanceAccountId
+            }, h.AdminUserId);
 
         var customer = await h.Db.Customers.SingleAsync(item => item.Id == h.LoginlessCustomerId);
         customer.Email = "corrected@dams.test";
@@ -317,7 +323,8 @@ public sealed class NotificationPaymentReceiptTests
             new DTOs.InstallmentDtos.RecordInstallmentPaymentDto
             {
                 Amount = 500_000m,
-                PaymentMethod = PaymentMethod.BankTransfer
+                PaymentMethod = PaymentMethod.BankTransfer,
+                FinanceAccountId = h.FinanceAccountId
             }, h.AdminUserId);
 
         var receipts = await h.Db.Notifications.AsNoTracking()

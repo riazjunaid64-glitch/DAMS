@@ -891,7 +891,7 @@ public sealed class CommissionRebateTests
             }, Actor);
         var movement = Assert.Single(Assert.Single(workspace.Rebates).Disbursements);
 
-        var installments = new InstallmentService(harness.Context);
+        var installments = new InstallmentService(harness.Context, new FinanceAccountService(harness.Context));
         var schedule = await installments.GenerateScheduleAsync(harness.BookingId, new GenerateInstallmentPlanDto
         {
             AgreedSalePrice = 1_000_000.55m, DiscountPercent = 0m,

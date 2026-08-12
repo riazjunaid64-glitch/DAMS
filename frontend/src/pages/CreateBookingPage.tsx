@@ -28,6 +28,7 @@ interface Unit {
   status: string;
 }
 interface Customer { id: number; fullName: string; phone: string; }
+interface FinanceAccountOption { id: number; name: string; accountHolderName: string; }
 
 const initialForm = {
   // selection
@@ -62,6 +63,7 @@ const initialForm = {
   totalDownPayment: "",
   referenceId: "",
   amountReceived: "",
+  receivedInAccountId: "",
   paymentType: "Booking",
   through: "",
   officeDate: "",
@@ -91,6 +93,7 @@ export default function CreateBookingPage({ user }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
 
   const [projectId, setProjectId] = useState<number | "">("");
   const [unitId, setUnitId] = useState<number | "">("");
@@ -107,15 +110,17 @@ export default function CreateBookingPage({ user }: Props) {
     if (!isAdmin) return;
     (async () => {
       try {
-        const [pRes, cRes] = await Promise.all([
+        const [pRes, cRes, aRes] = await Promise.all([
           api("/api/Project"),
           api("/api/Customer?pageSize=100"),
+          api("/api/finance/accounts/options"),
         ]);
         if (pRes.ok) setProjects(await pRes.json());
         if (cRes.ok) {
           const data = await cRes.json();
           setCustomers(data.items ?? []);
         }
+        if (aRes.ok) setFinanceAccounts(await aRes.json());
       } catch {
         /* non-fatal */
       }
@@ -205,6 +210,9 @@ export default function CreateBookingPage({ user }: Props) {
       if (form.kinContact.trim() && !isValidPkMobile(form.kinContact)) return "Please enter a valid next-of-kin contact number.";
       if (form.kinCnic.trim() && !isValidCnic(form.kinCnic)) return "Please enter the next-of-kin CNIC in the format 00000-0000000-0.";
     }
+    // Money taken with the application becomes a real payment, so it has to say where it landed.
+    if ((num(form.amountReceived) ?? 0) > 0 && !form.receivedInAccountId)
+      return "Select the account the amount received was deposited in.";
     return null;
   };
 
@@ -245,6 +253,7 @@ export default function CreateBookingPage({ user }: Props) {
       paymentThrough: form.through.trim() || null,
       applicationPaymentType: form.paymentType || null,
       applicationAmountReceived: num(form.amountReceived),
+      applicationFinanceAccountId: form.receivedInAccountId ? Number(form.receivedInAccountId) : null,
       applicationDate: form.officeDate || null,
       nextOfKinName: form.kinName.trim() || null,
       nextOfKinRelation: form.kinRelation.trim() || null,
@@ -390,6 +399,15 @@ export default function CreateBookingPage({ user }: Props) {
             <Field label="Reference ID" value={form.referenceId} onChange={set("referenceId")} />
             <Field label="Amount Received" type="number" value={form.amountReceived} onChange={set("amountReceived")} />
           </div>
+          {(num(form.amountReceived) ?? 0) > 0 && (
+            <label className={labelClass}>
+              <span>Received In Account</span>
+              <select className={inputClass} required value={form.receivedInAccountId} onChange={set("receivedInAccountId")}>
+                <option value="">Select an account…</option>
+                {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
+              </select>
+            </label>
+          )}
           <div className="grid gap-4 sm:grid-cols-3">
             <label className={labelClass}>
               <span>Payment Type</span>

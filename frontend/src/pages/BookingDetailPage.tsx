@@ -126,6 +126,13 @@ function toDateInput(iso?: string | null) {
   return iso.slice(0, 10);
 }
 
+interface FinanceAccountOption {
+  id: number;
+  name: string;
+  accountHolderName: string;
+  isActive: boolean;
+}
+
 export default function BookingDetailPage({ user }: Props) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -145,10 +152,15 @@ export default function BookingDetailPage({ user }: Props) {
   const [payForm, setPayForm] = useState({
     amount: "",
     paymentMethod: "Cash",
+    financeAccountId: "",
     paymentReference: "",
     notes: "",
     paidAt: new Date().toISOString().slice(0, 10),
   });
+
+  // Which account the money lands in. Every payment must name one, so the account
+  // balances and the Finance dashboard's per-account view can be trusted.
+  const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
 
   // Booking amount: set negotiated terms + record booking-amount payments.
   const [showFinancials, setShowFinancials] = useState(false);
@@ -169,6 +181,7 @@ export default function BookingDetailPage({ user }: Props) {
   const [bookingPayForm, setBookingPayForm] = useState({
     amount: "",
     paymentMethod: "Cash",
+    financeAccountId: "",
     paymentReference: "",
     notes: "",
     paidAt: new Date().toISOString().slice(0, 10),
@@ -254,9 +267,21 @@ export default function BookingDetailPage({ user }: Props) {
     }
   }, [bookingId]);
 
+  const loadFinanceAccounts = useCallback(async () => {
+    try {
+      const res = await api("/api/finance/accounts/options");
+      if (res.ok) setFinanceAccounts(await res.json());
+    } catch {
+      /* The form keeps its "required" validation if accounts cannot be loaded. */
+    }
+  }, []);
+
   useEffect(() => {
-    if (isAdmin) load();
-  }, [isAdmin, load]);
+    if (isAdmin) {
+      load();
+      loadFinanceAccounts();
+    }
+  }, [isAdmin, load, loadFinanceAccounts]);
 
   const previewPool = useMemo(() => {
     const agreed = Number(form.agreedSalePrice) || 0;
@@ -311,6 +336,7 @@ export default function BookingDetailPage({ user }: Props) {
     setPayForm({
       amount: String(item.remainingBalance),
       paymentMethod: "Cash",
+      financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
       paidAt: new Date().toISOString().slice(0, 10),
@@ -321,12 +347,17 @@ export default function BookingDetailPage({ user }: Props) {
   const handleRecordPayment = async (e: FormEvent) => {
     e.preventDefault();
     if (!payTarget) return;
+    if (!payForm.financeAccountId) {
+      setPayError("Select the account this payment was received in.");
+      return;
+    }
     setPaySubmitting(true);
     setPayError(null);
     try {
       const body = {
         amount: Number(payForm.amount),
         paymentMethod: payForm.paymentMethod,
+        financeAccountId: Number(payForm.financeAccountId),
         paymentReference: payForm.paymentReference.trim() || null,
         notes: payForm.notes.trim() || null,
         paidAt: payForm.paidAt || null,
@@ -385,6 +416,7 @@ export default function BookingDetailPage({ user }: Props) {
     setBookingPayForm({
       amount: remaining > 0 ? String(remaining) : "",
       paymentMethod: "Cash",
+      financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
       paidAt: new Date().toISOString().slice(0, 10),
@@ -394,12 +426,17 @@ export default function BookingDetailPage({ user }: Props) {
 
   const handleRecordBookingPay = async (e: FormEvent) => {
     e.preventDefault();
+    if (!bookingPayForm.financeAccountId) {
+      setBookingPayError("Select the account this payment was received in.");
+      return;
+    }
     setBookingPaySubmitting(true);
     setBookingPayError(null);
     try {
       const body = {
         amount: Number(bookingPayForm.amount),
         paymentMethod: bookingPayForm.paymentMethod,
+        financeAccountId: Number(bookingPayForm.financeAccountId),
         paymentReference: bookingPayForm.paymentReference.trim() || null,
         notes: bookingPayForm.notes.trim() || null,
         paidAt: bookingPayForm.paidAt || null,
@@ -819,6 +856,14 @@ export default function BookingDetailPage({ user }: Props) {
                   {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
                 </select>
               </label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                <span>Received In Account</span>
+                <select required value={payForm.financeAccountId} onChange={(e) => setPayForm({ ...payForm, financeAccountId: e.target.value })}
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                  <option value="">Select an account…</option>
+                  {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
+                </select>
+              </label>
               <Field label="Reference (optional)" value={payForm.paymentReference}
                 onChange={(e) => setPayForm({ ...payForm, paymentReference: e.target.value })} />
               <Field label="Payment Date" type="date" value={payForm.paidAt}
@@ -855,6 +900,14 @@ export default function BookingDetailPage({ user }: Props) {
                 <select value={bookingPayForm.paymentMethod} onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentMethod: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                <span>Received In Account</span>
+                <select required value={bookingPayForm.financeAccountId} onChange={(e) => setBookingPayForm({ ...bookingPayForm, financeAccountId: e.target.value })}
+                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                  <option value="">Select an account…</option>
+                  {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
                 </select>
               </label>
               <Field label="Reference (optional)" value={bookingPayForm.paymentReference}

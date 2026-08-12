@@ -11,6 +11,10 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         [Required]
         public PaymentMethod PaymentMethod { get; set; }
 
+        // The account the money was received in. Nullable on the wire so the service can
+        // return the same "required" message the finance forms use instead of a raw 400.
+        public int? FinanceAccountId { get; set; }
+
         [StringLength(500)]
         public string? PaymentReference { get; set; }
 

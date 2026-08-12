@@ -121,7 +121,17 @@ namespace DAMS.Application.Services
                     ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
                     Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
                 });
-            var rows = await revenue.Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
+            // Customer money in. Bookings on a cancelled sale are kept, matching the Finance
+            // dashboard: the cash really did arrive, and cancelling must not rewrite the bank.
+            var payments = _context.Payments.AsNoTracking().Where(p => p.FinanceAccountId == id)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer payment", RecordId = p.Id, Date = p.PaidAt,
+                    Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                });
+            var rows = await revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
@@ -199,7 +209,8 @@ namespace DAMS.Application.Services
         {
             var account = await _context.FinanceAccounts.SingleOrDefaultAsync(a => a.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
-            var used = await _context.ManualRevenues.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
+            var used = await _context.Payments.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
+                || await _context.ManualRevenues.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
                 || await _context.Expenses.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
                 || await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
                 || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
@@ -223,13 +234,18 @@ namespace DAMS.Application.Services
         // Every outflow figure below counts expenses NET of withholding tax. Tax deducted from a
         // supplier never left this account — it is held for FBR, and leaves later as a WhtDeposit,
         // which is why deposits are an outflow here despite not being a business expense.
+        //
+        // Inflow is customer payments plus manually entered revenue. Payments are the larger of the
+        // two by far, so leaving them out does not make the balance approximate — it makes it wrong
+        // by the whole of what customers have paid, which is why balances used to read negative.
         private IQueryable<FinanceAccountResponseDto> Project(IQueryable<FinanceAccount> query) => query.Select(a =>
             new FinanceAccountResponseDto
             {
                 Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
                 OpeningBalance = a.OpeningBalance, BankOrWalletName = a.BankOrWalletName,
                 Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m,
+                RevenueReceived = (a.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m),
                 ExpensesPaid = (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     + (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     - (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
@@ -240,7 +256,8 @@ namespace DAMS.Application.Services
                     + (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
                 WhtWithheld = a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
                 WhtDeposited = a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
-                NetMovement = (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
+                NetMovement = (a.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     - (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     + (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
@@ -249,7 +266,9 @@ namespace DAMS.Application.Services
                     + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
-                CurrentBalance = a.OpeningBalance + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
+                CurrentBalance = a.OpeningBalance
+                    + (a.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
+                    + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
                     - (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                     + (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
@@ -258,7 +277,7 @@ namespace DAMS.Application.Services
                     + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                     - (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m),
-                TransactionCount = a.ManualRevenues.Count + a.Expenses.Count + a.CommissionPayouts.Count
+                TransactionCount = a.Payments.Count + a.ManualRevenues.Count + a.Expenses.Count + a.CommissionPayouts.Count
                     + a.CommissionPayouts.SelectMany(p => p.Reversals).Count()
                     + a.RebateDisbursements.Count(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                     + a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)

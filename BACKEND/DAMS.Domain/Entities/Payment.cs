@@ -10,6 +10,10 @@ namespace DAMS.Domain.Entities
 
         public int? InstallmentId { get; set; }
 
+        // The account the money landed in. Nullable only because payments recorded before
+        // finance accounts existed have no answer; every new payment must name one.
+        public int? FinanceAccountId { get; set; }
+
         // Distinguishes booking-amount payments from installment payments.
         public PaymentType Type { get; set; } = PaymentType.BookingAmount;
 
@@ -35,5 +39,7 @@ namespace DAMS.Domain.Entities
         public Booking Booking { get; set; } = null!;
 
         public Installment? Installment { get; set; }
+
+        public FinanceAccount? FinanceAccount { get; set; }
     }
 }

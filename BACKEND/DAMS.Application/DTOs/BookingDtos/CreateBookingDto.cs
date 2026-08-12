@@ -66,6 +66,10 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public decimal? ApplicationAmountReceived { get; set; }
 
+        // Required only when money actually came in with the application form; a booking
+        // taken with nothing received has no account to name.
+        public int? ApplicationFinanceAccountId { get; set; }
+
         public DateTime? ApplicationDate { get; set; }
 
         // Next of kin / nominee.

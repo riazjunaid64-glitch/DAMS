@@ -34,7 +34,7 @@ public sealed class BookingSaleCompletionTests
         db.AddRange(project, unit, customer, booking);
         await db.SaveChangesAsync();
 
-        var service = new BookingService(db, new CustomerService(db));
+        var service = new BookingService(db, new CustomerService(db), new FinanceAccountService(db));
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteSaleAsync(booking.Id, 5));
         Assert.Contains("installments remain unpaid", error.Message);
         Assert.Equal(BookingStatus.PaymentPlanActive, db.Bookings.Single().Status);
