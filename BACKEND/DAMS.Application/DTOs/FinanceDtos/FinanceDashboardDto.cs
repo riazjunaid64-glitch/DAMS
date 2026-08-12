@@ -36,6 +36,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         /// <summary>e.g. Booking Amount, Installment Payment, Possession Payment, Transfer Charges...</summary>
         public string RevenueType { get; set; } = string.Empty;
+        public int? RevenueCategoryId { get; set; }
 
         public decimal Amount { get; set; }
 

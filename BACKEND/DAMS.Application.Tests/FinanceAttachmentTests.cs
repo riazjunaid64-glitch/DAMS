@@ -5,6 +5,7 @@ using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -212,7 +213,14 @@ public sealed class FinanceAttachmentTests
         return context;
     }
 
-    private static FinanceAccount TestAccount() => new() { Id = 1, Name = "Test Cash", AccountHolderName = "Test Holder", IsActive = true };
+    private static FinanceAccount TestAccount() => new()
+    {
+        Id = 1,
+        Name = "Test Cash",
+        Type = FinanceAccountType.Cash,
+        AccountHolderName = "Test Holder",
+        IsActive = true
+    };
 
     private static FinanceService CreateService(AppDbContext context, IFinanceAttachmentStorage storage)
     {

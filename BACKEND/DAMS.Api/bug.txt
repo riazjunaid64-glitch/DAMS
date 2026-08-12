@@ -1,0 +1,5 @@
+1:- in flat we can have diffecnt type of flat like the one bed flat , two bed flat or studio
+2:- right now lost of the time when iwant to filll the form on some validatin it does not show proper meesge like it jsut shows that one or more than one validatioon 
+    but it sholdw sows that messge jsut below that ifles and with proper text 
+3:- when i create the commision it will be go there and and then it will be add in the expense as well for example an cutemre pay 50000% the downpayment then 10000 goes
+   for the profite but the commtison shojle be in the expanse .

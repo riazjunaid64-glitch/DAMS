@@ -10,6 +10,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public string RevenueType { get; set; } = string.Empty;
 
+        public int? RevenueCategoryId { get; set; }
+
         public string? Description { get; set; }
 
         public string? Reference { get; set; }

@@ -9,6 +9,8 @@ namespace DAMS.Domain.Entities
         public FinanceAccountType Type { get; set; }
         public string AccountHolderName { get; set; } = string.Empty;
         public decimal OpeningBalance { get; set; }
+        public string? LedgerCode { get; set; }
+        public int DisplayOrder { get; set; }
         public string? BankOrWalletName { get; set; }
         public string? Description { get; set; }
         public bool IsActive { get; set; } = true;
@@ -21,5 +23,8 @@ namespace DAMS.Domain.Entities
         public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();
         public ICollection<RebateDisbursement> RebateDisbursements { get; set; } = new List<RebateDisbursement>();
         public ICollection<WhtDeposit> WhtDeposits { get; set; } = new List<WhtDeposit>();
+        public ICollection<OpeningBalanceEntry> OpeningBalanceEntries { get; set; } = new List<OpeningBalanceEntry>();
+        public ICollection<CapitalPartner> CapitalPartners { get; set; } = new List<CapitalPartner>();
+        public ICollection<CapitalTransaction> CapitalCashTransactions { get; set; } = new List<CapitalTransaction>();
     }
 }

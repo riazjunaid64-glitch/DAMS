@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services
 {
-    public class FinanceService : IFinanceService
+    public partial class FinanceService : IFinanceService
     {
         private readonly AppDbContext _context;
         private readonly IFinanceAttachmentStorage _attachmentStorage;
@@ -146,6 +146,7 @@ namespace DAMS.Application.Services
                     BookingReference = p.Booking.BookingReference,
                     CustomerName = p.Booking.Customer.FullName,
                     RevenueType = null,
+                    RevenueCategoryId = null,
                     Reference = null,
                     Description = null,
                     AttachmentFileName = null,
@@ -173,6 +174,7 @@ namespace DAMS.Application.Services
                     BookingReference = null,
                     CustomerName = null,
                     RevenueType = r.RevenueType,
+                    RevenueCategoryId = r.RevenueCategoryId,
                     Reference = r.Reference,
                     Description = r.Description,
                     AttachmentFileName = r.Attachment != null ? r.Attachment.OriginalFileName : null,
@@ -202,6 +204,7 @@ namespace DAMS.Application.Services
                 RevenueType = r.Source == "Payment"
                     ? ResolveAutomaticRevenueType(r.PaymentType!.Value, r.InstallmentType)
                     : (r.RevenueType ?? string.Empty),
+                RevenueCategoryId = r.RevenueCategoryId,
                 Reference = r.Source == "Payment"
                     ? BuildPaymentReference(r.ReceiptNumber, r.BookingReference ?? string.Empty, r.CustomerName ?? string.Empty)
                     : r.Reference,
@@ -693,6 +696,7 @@ namespace DAMS.Application.Services
             public string? BookingReference { get; set; }
             public string? CustomerName { get; set; }
             public string? RevenueType { get; set; }
+            public int? RevenueCategoryId { get; set; }
             public string? Reference { get; set; }
             public string? Description { get; set; }
             public string? AttachmentFileName { get; set; }
@@ -723,18 +727,21 @@ namespace DAMS.Application.Services
             FinanceAttachmentUpload? attachment = null,
             CancellationToken cancellationToken = default)
         {
-            ValidateRevenue(dto.Amount, dto.RevenueType);
+            ValidateRevenue(dto.Amount, dto.RevenueType, dto.RevenueCategoryId);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Received In Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
+            var category = await ResolveRevenueCategoryAsync(dto.RevenueCategoryId, dto.RevenueType, null, cancellationToken);
 
             var revenue = new ManualRevenue
             {
                 ProjectId = dto.ProjectId,
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
-                RevenueType = dto.RevenueType.Trim(),
+                RevenueCategoryId = category.Id,
+                RevenueTypeName = category.Name,
+                RevenueType = category.Name,
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
                 Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim(),
                 Date = dto.Date?.Date ?? DateTime.UtcNow,
@@ -784,11 +791,12 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
             if (revenue == null)
                 throw new InvalidOperationException("Manual revenue entry not found.");
-            ValidateRevenue(dto.Amount, dto.RevenueType);
+            ValidateRevenue(dto.Amount, dto.RevenueType, dto.RevenueCategoryId);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Received In Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, revenue.FinanceAccountId, cancellationToken);
+            var category = await ResolveRevenueCategoryAsync(dto.RevenueCategoryId, dto.RevenueType, revenue.RevenueCategoryId, cancellationToken);
 
             var oldStoredFileName = revenue.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -812,7 +820,9 @@ namespace DAMS.Application.Services
             revenue.ProjectId = dto.ProjectId;
             revenue.FinanceAccountId = dto.FinanceAccountId;
             revenue.Amount = dto.Amount;
-            revenue.RevenueType = dto.RevenueType.Trim();
+            revenue.RevenueCategoryId = category.Id;
+            revenue.RevenueTypeName = category.Name;
+            revenue.RevenueType = category.Name;
             revenue.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
             revenue.Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim();
             if (dto.Date.HasValue)
@@ -1205,6 +1215,7 @@ namespace DAMS.Application.Services
                 AccountHolderName = account?.Holder,
                 Amount = r.Amount,
                 RevenueType = r.RevenueType,
+                RevenueCategoryId = r.RevenueCategoryId,
                 Description = r.Description,
                 Reference = r.Reference,
                 Date = r.Date,
@@ -1338,12 +1349,42 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Choose either a replacement attachment or removal, not both.");
         }
 
-        private static void ValidateRevenue(decimal amount, string revenueType)
+        private static void ValidateRevenue(decimal amount, string revenueType, int? categoryId)
         {
             if (amount <= 0)
                 throw new InvalidOperationException("Amount must be greater than zero.");
-            if (string.IsNullOrWhiteSpace(revenueType))
+            if (!categoryId.HasValue && string.IsNullOrWhiteSpace(revenueType))
                 throw new InvalidOperationException("Revenue type is required.");
+        }
+
+        private async Task<(int? Id, string Name)> ResolveRevenueCategoryAsync(
+            int? categoryId, string revenueType, int? currentCategoryId, CancellationToken cancellationToken)
+        {
+            if (categoryId.HasValue)
+            {
+                var row = await _context.RevenueCategories.AsNoTracking().Where(c => c.Id == categoryId)
+                    .Select(c => new { c.Id, c.Name, c.IsActive }).SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Selected revenue category does not exist.");
+                if (!row.IsActive && currentCategoryId != row.Id)
+                    throw new InvalidOperationException("Selected revenue category is inactive. Choose an active category.");
+                return (row.Id, row.Name);
+            }
+
+            var name = revenueType.Trim();
+            var matched = await _context.RevenueCategories.AsNoTracking().Where(c => c.Name == name)
+                .Select(c => new { c.Id, c.Name, c.IsActive }).SingleOrDefaultAsync(cancellationToken);
+            if (matched != null)
+            {
+                if (!matched.IsActive && currentCategoryId != matched.Id)
+                    throw new InvalidOperationException("Selected revenue category is inactive. Choose an active category.");
+                return (matched.Id, matched.Name);
+            }
+            // Test and legacy stores created before the managed list can still preserve their text.
+            // A migrated production store always has seeded categories, so new unclassified values
+            // cannot bypass the controlled list.
+            if (await _context.RevenueCategories.AnyAsync(cancellationToken))
+                throw new InvalidOperationException("Choose a revenue category from the managed list.");
+            return (null, name);
         }
 
         private static string ResolveAutomaticRevenueType(PaymentType type, InstallmentType? installmentType)

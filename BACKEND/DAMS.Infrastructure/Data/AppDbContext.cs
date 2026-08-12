@@ -36,8 +36,14 @@ namespace DAMS.Infrastructure.Data
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
         public DbSet<FinanceSetting> FinanceSettings { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
+        public DbSet<RevenueCategory> RevenueCategories { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
         public DbSet<FinanceAccount> FinanceAccounts { get; set; }
+        public DbSet<OpeningBalanceSet> OpeningBalanceSets { get; set; }
+        public DbSet<OpeningBalanceEntry> OpeningBalanceEntries { get; set; }
+        public DbSet<OpeningBalanceAuditEntry> OpeningBalanceAuditEntries { get; set; }
+        public DbSet<CapitalPartner> CapitalPartners { get; set; }
+        public DbSet<CapitalTransaction> CapitalTransactions { get; set; }
         public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
         public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
         public DbSet<CommissionRule> CommissionRules { get; set; }
@@ -655,6 +661,7 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.RevenueType).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.RevenueTypeName).IsRequired().HasMaxLength(150);
                 entity.Property(r => r.Description).HasMaxLength(1000);
                 entity.Property(r => r.Reference).HasMaxLength(200);
 
@@ -662,6 +669,7 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(r => r.Date);
                 entity.HasIndex(r => r.RevenueType);
                 entity.HasIndex(r => r.FinanceAccountId);
+                entity.HasIndex(r => r.RevenueCategoryId);
 
                 entity.HasOne(r => r.Project)
                       .WithMany()
@@ -672,7 +680,14 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.ManualRevenues)
                       .HasForeignKey(r => r.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(r => r.RevenueCategory)
+                      .WithMany(c => c.ManualRevenues)
+                      .HasForeignKey(r => r.RevenueCategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
+
+            ConfigureFinanceReporting(modelBuilder);
 
             modelBuilder.Entity<FinanceAccount>(entity =>
             {
@@ -681,11 +696,14 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.BankOrWalletName).HasMaxLength(150);
                 entity.Property(a => a.Description).HasMaxLength(1000);
                 entity.Property(a => a.OpeningBalance).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.LedgerCode).HasMaxLength(30);
                 entity.Property(a => a.RowVersion).IsRowVersion();
 
                 entity.HasIndex(a => a.Name).IsUnique();
                 entity.HasIndex(a => new { a.IsActive, a.Type });
                 entity.HasIndex(a => a.AccountHolderName);
+                entity.HasIndex(a => new { a.Type, a.DisplayOrder });
+                entity.HasIndex(a => a.LedgerCode);
             });
 
             modelBuilder.Entity<FinanceAttachment>(entity =>
@@ -719,6 +737,113 @@ namespace DAMS.Infrastructure.Data
             ConfigureCommissionAndRebates(modelBuilder);
             ConfigureLeadManagement(modelBuilder);
             ConfigureNotifications(modelBuilder);
+        }
+
+        private static void ConfigureFinanceReporting(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<RevenueCategory>(entity =>
+            {
+                entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
+                entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.Description).HasMaxLength(1000);
+                entity.Property(c => c.RowVersion).IsRowVersion();
+                entity.HasIndex(c => c.Name).IsUnique();
+                entity.HasIndex(c => c.Code).IsUnique();
+                entity.HasIndex(c => new { c.IsActive, c.DisplayOrder });
+                entity.HasData(SeedRevenueCategories());
+            });
+
+            modelBuilder.Entity<OpeningBalanceSet>(entity =>
+            {
+                entity.Property(s => s.RowVersion).IsRowVersion();
+                entity.HasIndex(s => s.AsAtDate).IsUnique();
+                entity.ToTable(t => t.HasCheckConstraint("CK_OpeningBalanceSets_Singleton", "[Id] = 1"));
+            });
+
+            modelBuilder.Entity<OpeningBalanceEntry>(entity =>
+            {
+                entity.Property(e => e.DebitAmount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.CreditAmount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.Note).HasMaxLength(500);
+                entity.HasIndex(e => new { e.OpeningBalanceSetId, e.FinanceAccountId }).IsUnique();
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_OpeningBalanceEntry_NonNegative", "[DebitAmount] >= 0 AND [CreditAmount] >= 0");
+                    t.HasCheckConstraint("CK_OpeningBalanceEntry_OneSide", "[DebitAmount] = 0 OR [CreditAmount] = 0");
+                });
+                entity.HasOne(e => e.OpeningBalanceSet).WithMany(s => s.Entries)
+                    .HasForeignKey(e => e.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.FinanceAccount).WithMany(a => a.OpeningBalanceEntries)
+                    .HasForeignKey(e => e.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<OpeningBalanceAuditEntry>(entity =>
+            {
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(30);
+                entity.Property(a => a.Note).HasMaxLength(1000);
+                entity.HasIndex(a => new { a.OpeningBalanceSetId, a.OccurredAt });
+                entity.HasOne(a => a.OpeningBalanceSet).WithMany(s => s.AuditEntries)
+                    .HasForeignKey(a => a.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CapitalPartner>(entity =>
+            {
+                entity.Property(p => p.Name).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.Cnic).HasMaxLength(20);
+                entity.Property(p => p.Ntn).HasMaxLength(30);
+                entity.Property(p => p.ProfitSharePercent).HasColumnType("decimal(9,4)");
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_CapitalPartners_Share",
+                    "[ProfitSharePercent] >= 0 AND [ProfitSharePercent] <= 100"));
+                entity.HasIndex(p => p.Name).IsUnique();
+                entity.HasIndex(p => p.FinanceAccountId).IsUnique().HasFilter("[FinanceAccountId] IS NOT NULL");
+                entity.HasOne(p => p.FinanceAccount).WithMany(a => a.CapitalPartners)
+                    .HasForeignKey(p => p.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CapitalTransaction>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.ProfitSharePercentSnapshot).HasColumnType("decimal(9,4)");
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_CapitalTransactions_Amount", "[Amount] > 0");
+                    t.HasCheckConstraint("CK_CapitalTransactions_Type", "[Type] >= 1 AND [Type] <= 5");
+                    t.HasCheckConstraint("CK_CapitalTransactions_CashSide",
+                        "([Type] IN (2, 3) AND [FinanceAccountId] IS NOT NULL) OR ([Type] NOT IN (2, 3) AND [FinanceAccountId] IS NULL)");
+                    t.HasCheckConstraint("CK_CapitalTransactions_ProfitSnapshot",
+                        "([Type] = 4 AND [ProfitSharePercentSnapshot] IS NOT NULL AND [ProfitSharePercentSnapshot] >= 0 AND [ProfitSharePercentSnapshot] <= 100) OR ([Type] <> 4 AND [ProfitSharePercentSnapshot] IS NULL)");
+                });
+                entity.HasIndex(t => new { t.CapitalPartnerId, t.Date });
+                entity.HasIndex(t => t.FinanceAccountId);
+                entity.HasOne(t => t.CapitalPartner).WithMany(p => p.Transactions)
+                    .HasForeignKey(t => t.CapitalPartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.FinanceAccount).WithMany(a => a.CapitalCashTransactions)
+                    .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static RevenueCategory[] SeedRevenueCategories()
+        {
+            var names = new[]
+            {
+                "Transfer Charges", "Development Charges", "Possession Charges", "Membership Charges",
+                "Documentation Charges", "NOC / NDC Charges", "Utility Connection Charges", "Parking Charges",
+                "Late Payment Surcharge", "Cancellation / Forfeiture", "Rental Income", "Commission Income",
+                "Bank Profit / Interest", "Other Income"
+            };
+            return names.Select((name, index) => new RevenueCategory
+            {
+                Id = index + 1,
+                Name = name,
+                Code = new string(name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray()).Replace("___", "_").Replace("__", "_").Trim('_'),
+                DisplayOrder = (index + 1) * 10,
+                IsActive = true,
+                CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, DateTimeKind.Utc)
+            }).ToArray();
         }
 
         private static void ConfigureCommissionAndRebates(ModelBuilder modelBuilder)
@@ -1044,6 +1169,12 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<CustomerDocumentAuditEntry>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Customer document audit entries are append-only.");
+            if (ChangeTracker.Entries<OpeningBalanceAuditEntry>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Opening balance audit entries are append-only.");
+            if (ChangeTracker.Entries<CapitalTransaction>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Capital transactions are immutable.");
         }
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
