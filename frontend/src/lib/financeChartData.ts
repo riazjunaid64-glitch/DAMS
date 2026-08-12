@@ -1,4 +1,5 @@
 import { api } from "../api/api.ts";
+import { financialYearWindow } from "./financePeriods.ts";
 
 /**
  * Finance chart data derived from the authoritative `/api/Finance/summary` endpoint.
@@ -95,17 +96,15 @@ function buildBuckets(from: string, to: string, startMonth: number): { label: st
     start = new Date(`${from}T00:00:00`);
     end = new Date(`${to}T00:00:00`);
   } else {
-    const yearStart = new Date(now.getFullYear(), Math.max(0, (startMonth ?? 7) - 1), 1);
-    const yearEnd = new Date(yearStart.getFullYear() + 1, yearStart.getMonth(), 0);
-    start = yearStart;
-    end = yearEnd;
+    const fiscalYear = financialYearWindow(now, startMonth);
+    start = fiscalYear.from;
+    end = new Date(fiscalYear.toExclusive.getFullYear(), fiscalYear.toExclusive.getMonth(), 0);
   }
 
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
-    const yearStart = new Date(now.getFullYear(), Math.max(0, (startMonth ?? 7) - 1), 1);
-    const yearEnd = new Date(yearStart.getFullYear() + 1, yearStart.getMonth(), 0);
-    start = yearStart;
-    end = yearEnd;
+    const fiscalYear = financialYearWindow(now, startMonth);
+    start = fiscalYear.from;
+    end = new Date(fiscalYear.toExclusive.getFullYear(), fiscalYear.toExclusive.getMonth(), 0);
   }
 
   const spanDays = Math.round((end.getTime() - start.getTime()) / 86_400_000);

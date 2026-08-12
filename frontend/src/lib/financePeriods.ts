@@ -23,7 +23,7 @@ export function buildPeriodRange(preset: FinancePeriodPreset, startMonth: number
     }
     case "year": {
       const { from, toExclusive } = financialYearWindow(now, startMonth);
-      const to = new Date(toExclusive.getTime() - 24 * 60 * 60 * 1000);
+      const to = new Date(toExclusive.getFullYear(), toExclusive.getMonth(), 0);
       return { from: fmtLocal(from), to: fmtLocal(to) };
     }
     case "all":
