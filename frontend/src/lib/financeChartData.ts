@@ -31,7 +31,7 @@ export interface FinanceChartData {
   distribution: DistributionSlice[];
 }
 
-export type FinancePeriod = "today" | "month" | "year" | "all" | "custom";
+export type FinancePeriod = "today" | "month" | "year" | "lastYear" | "all" | "custom";
 
 interface ProjectRef {
   id: number;

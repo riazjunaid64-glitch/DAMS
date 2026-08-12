@@ -8,7 +8,7 @@ import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
-import { buildPeriodRange } from "../lib/financePeriods.ts";
+import { buildPeriodRange, financePeriodLabel } from "../lib/financePeriods.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
@@ -35,6 +35,12 @@ interface FinanceAccountOption {
   isActive: boolean;
 }
 
+interface RevenueCategory {
+  id: number;
+  name: string;
+  isActive: boolean;
+}
+
 interface FinancialSummary {
   totalRevenue: number;
   automaticRevenue: number;
@@ -54,6 +60,7 @@ interface RevenueLine {
   projectId: number | null;
   projectName: string;
   revenueType: string;
+  revenueCategoryId: number | null;
   amount: number;
   source: string;
   reference: string | null;
@@ -185,12 +192,13 @@ function todayInput() {
   return new Date().toISOString().slice(0, 10);
 }
 
-type Period = "today" | "month" | "year" | "all" | "custom";
+type Period = "today" | "month" | "year" | "lastYear" | "all" | "custom";
 
 const PERIODS: { value: Exclude<Period, "custom">; label: string }[] = [
   { value: "today", label: "Today" },
   { value: "month", label: "This Month" },
   { value: "year", label: "This Year" },
+  { value: "lastYear", label: "Last Year" },
   { value: "all", label: "All" },
 ];
 
@@ -200,6 +208,7 @@ interface RevenueFormState {
   financeAccountId: string;
   amount: string;
   revenueType: string;
+  revenueCategoryId: string;
   description: string;
   reference: string;
   date: string;
@@ -235,6 +244,7 @@ const emptyRevenueForm = (): RevenueFormState => ({
   financeAccountId: "",
   amount: "",
   revenueType: REVENUE_TYPES[0],
+  revenueCategoryId: "",
   description: "",
   reference: "",
   date: todayInput(),
@@ -267,6 +277,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
+  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
   const [vendors, setVendors] = useState<VendorOption[]>([]);
   const [projectId, setProjectId] = useState<string>("");
@@ -315,7 +326,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const loadFinanceAccounts = useCallback(async () => {
     try {
-      const res = await api("/api/finance/accounts/options?includeInactive=true");
+      const res = await api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true");
       if (res.ok) setFinanceAccounts(await res.json());
     } catch {
       /* The form will retain its validation message if accounts cannot be loaded. */
@@ -331,6 +342,15 @@ export default function FinanceDashboardPage({ user }: Props) {
       setVendors(vendorRows);
     } catch {
       /* The expense form falls back to free-text entry if these cannot be loaded. */
+    }
+  }, []);
+
+  const loadRevenueCategories = useCallback(async () => {
+    try {
+      const response = await api("/api/finance/revenue-categories?includeInactive=true");
+      if (response.ok) setRevenueCategories(await response.json());
+    } catch {
+      /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
     }
   }, []);
 
@@ -380,7 +400,8 @@ export default function FinanceDashboardPage({ user }: Props) {
     loadFinanceAccounts();
     void loadFinanceSettings();
     void loadWhtLookups();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadFinanceSettings, loadWhtLookups]);
+    void loadRevenueCategories();
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadFinanceSettings, loadWhtLookups, loadRevenueCategories]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -484,8 +505,8 @@ export default function FinanceDashboardPage({ user }: Props) {
       setFormError("Enter a valid amount greater than zero.");
       return;
     }
-    if (!revenueForm.revenueType.trim()) {
-      setFormError("Revenue type is required.");
+    if (!revenueForm.revenueCategoryId) {
+      setFormError("Choose a revenue category. Manage the list under Finance settings.");
       return;
     }
     if (!revenueForm.financeAccountId) {
@@ -499,6 +520,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       body.append("financeAccountId", revenueForm.financeAccountId);
       body.append("amount", String(amount));
       body.append("revenueType", revenueForm.revenueType.trim());
+      body.append("revenueCategoryId", revenueForm.revenueCategoryId);
       body.append("description", revenueForm.description.trim());
       body.append("reference", revenueForm.reference.trim());
       if (revenueForm.date) body.append("date", revenueForm.date);
@@ -603,6 +625,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
       revenueType: row.revenueType,
+      revenueCategoryId: row.revenueCategoryId != null ? String(row.revenueCategoryId) : "",
       description: row.description ?? "",
       reference: row.reference ?? "",
       date: row.date.slice(0, 10),
@@ -833,7 +856,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   onClick={() => applyPeriod(p.value)}
                   className={`fin-pill ${activePeriod === p.value ? "fin-pill--active" : ""}`}
                 >
-                  {p.label}
+                  {p.value === "year" || p.value === "lastYear" ? financePeriodLabel(p.value, financialYearStartMonth) : p.label}
                 </button>
               ))}
             </div>
@@ -937,6 +960,8 @@ export default function FinanceDashboardPage({ user }: Props) {
             <p className="text-xs text-[var(--text-muted)]">{VIEW_TITLES[view]} — select a card above to switch views.</p>
           </div>
           <div className="flex flex-wrap gap-2.5">
+            <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
+            <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
             <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
             <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
@@ -993,20 +1018,17 @@ export default function FinanceDashboardPage({ user }: Props) {
                 {financeAccounts.filter((a) => a.isActive || String(a.id) === revenueForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
               </FormSelect>
               <FormSelect
-                label="Revenue Type"
-                value={REVENUE_TYPES.includes(revenueForm.revenueType) ? revenueForm.revenueType : CUSTOM_TYPE}
-                onChange={(v) => setRevenueForm({ ...revenueForm, revenueType: v === CUSTOM_TYPE ? "" : v })}
+                label="Revenue Category"
+                value={revenueForm.revenueCategoryId}
+                onChange={(v) => {
+                  const category = revenueCategories.find((item) => String(item.id) === v);
+                  setRevenueForm({ ...revenueForm, revenueCategoryId: v, revenueType: category?.name ?? revenueForm.revenueType });
+                }}
               >
-                {REVENUE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                <option value={CUSTOM_TYPE}>Custom (enter manually)…</option>
+                <option value="">Select a category</option>
+                {revenueCategories.filter((item) => item.isActive || String(item.id) === revenueForm.revenueCategoryId)
+                  .map((item) => <option key={item.id} value={item.id}>{item.name}{item.isActive ? "" : " (Retired)"}</option>)}
               </FormSelect>
-              {!REVENUE_TYPES.includes(revenueForm.revenueType) && (
-                <FormInput
-                  label="Custom Revenue Type"
-                  value={revenueForm.revenueType}
-                  onChange={(v) => setRevenueForm({ ...revenueForm, revenueType: v })}
-                />
-              )}
               <FormInput label="Amount (Rs)" type="number" value={revenueForm.amount} onChange={(v) => setRevenueForm({ ...revenueForm, amount: v })} />
               <FormInput label="Date" type="date" value={revenueForm.date} onChange={(v) => setRevenueForm({ ...revenueForm, date: v })} />
               <FormInput label="Reference (optional)" value={revenueForm.reference} onChange={(v) => setRevenueForm({ ...revenueForm, reference: v })} />

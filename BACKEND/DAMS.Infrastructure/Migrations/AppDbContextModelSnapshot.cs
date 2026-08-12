@@ -497,6 +497,124 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("BookingRequests");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Cnic")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ExitedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("JoinedDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Ntn")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<decimal>("ProfitSharePercent")
+                        .HasColumnType("decimal(9,4)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId")
+                        .IsUnique()
+                        .HasFilter("[FinanceAccountId] IS NOT NULL");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("CapitalPartners", t =>
+                        {
+                            t.HasCheckConstraint("CK_CapitalPartners_Share", "[ProfitSharePercent] >= 0 AND [ProfitSharePercent] <= 100");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CapitalTransaction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CapitalPartnerId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal?>("ProfitSharePercentSnapshot")
+                        .HasColumnType("decimal(9,4)");
+
+                    b.Property<int?>("RecordedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("CapitalPartnerId", "Date");
+
+                    b.ToTable("CapitalTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_CapitalTransactions_Amount", "[Amount] > 0");
+
+                            t.HasCheckConstraint("CK_CapitalTransactions_CashSide", "([Type] IN (2, 3) AND [FinanceAccountId] IS NOT NULL) OR ([Type] NOT IN (2, 3) AND [FinanceAccountId] IS NULL)");
+
+                            t.HasCheckConstraint("CK_CapitalTransactions_ProfitSnapshot", "([Type] = 4 AND [ProfitSharePercentSnapshot] IS NOT NULL AND [ProfitSharePercentSnapshot] >= 0 AND [ProfitSharePercentSnapshot] <= 100) OR ([Type] <> 4 AND [ProfitSharePercentSnapshot] IS NULL)");
+
+                            t.HasCheckConstraint("CK_CapitalTransactions_Type", "[Type] >= 1 AND [Type] <= 5");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
                 {
                     b.Property<int>("Id")
@@ -2512,8 +2630,15 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
+
+                    b.Property<string>("LedgerCode")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -2539,10 +2664,14 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("AccountHolderName");
 
+                    b.HasIndex("LedgerCode");
+
                     b.HasIndex("Name")
                         .IsUnique();
 
                     b.HasIndex("IsActive", "Type");
+
+                    b.HasIndex("Type", "DisplayOrder");
 
                     b.ToTable("FinanceAccounts");
                 });
@@ -4007,10 +4136,18 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<int?>("RevenueCategoryId")
+                        .HasColumnType("int");
+
                     b.Property<string>("RevenueType")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("RevenueTypeName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
 
                     b.HasKey("Id");
 
@@ -4019,6 +4156,8 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("FinanceAccountId");
 
                     b.HasIndex("ProjectId");
+
+                    b.HasIndex("RevenueCategoryId");
 
                     b.HasIndex("RevenueType");
 
@@ -4559,6 +4698,115 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("NotificationTemplates");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceAuditEntry", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("OpeningBalanceSetId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OpeningBalanceSetId", "OccurredAt");
+
+                    b.ToTable("OpeningBalanceAuditEntries");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceEntry", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("CreditAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("DebitAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int>("OpeningBalanceSetId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("OpeningBalanceSetId", "FinanceAccountId")
+                        .IsUnique();
+
+                    b.ToTable("OpeningBalanceEntries", t =>
+                        {
+                            t.HasCheckConstraint("CK_OpeningBalanceEntry_NonNegative", "[DebitAmount] >= 0 AND [CreditAmount] >= 0");
+
+                            t.HasCheckConstraint("CK_OpeningBalanceEntry_OneSide", "[DebitAmount] = 0 OR [CreditAmount] = 0");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceSet", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("AsAtDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CommittedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CommittedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsCommitted")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AsAtDate")
+                        .IsUnique();
+
+                    b.ToTable("OpeningBalanceSets", t =>
+                        {
+                            t.HasCheckConstraint("CK_OpeningBalanceSets_Singleton", "[Id] = 1");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
                 {
                     b.Property<int>("Id")
@@ -4930,6 +5178,204 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("RebateDisbursementReversals", t =>
                         {
                             t.HasCheckConstraint("CK_RebateDisbursementReversals_Positive", "[Amount] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.RevenueCategory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("nvarchar(150)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.HasIndex("IsActive", "DisplayOrder");
+
+                    b.ToTable("RevenueCategories");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Code = "transfer_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 10,
+                            IsActive = true,
+                            Name = "Transfer Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Code = "development_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 20,
+                            IsActive = true,
+                            Name = "Development Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 3,
+                            Code = "possession_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 30,
+                            IsActive = true,
+                            Name = "Possession Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 4,
+                            Code = "membership_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 40,
+                            IsActive = true,
+                            Name = "Membership Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 5,
+                            Code = "documentation_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 50,
+                            IsActive = true,
+                            Name = "Documentation Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 6,
+                            Code = "noc_ndc_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 60,
+                            IsActive = true,
+                            Name = "NOC / NDC Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 7,
+                            Code = "utility_connection_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 70,
+                            IsActive = true,
+                            Name = "Utility Connection Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 8,
+                            Code = "parking_charges",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 80,
+                            IsActive = true,
+                            Name = "Parking Charges",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 9,
+                            Code = "late_payment_surcharge",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 90,
+                            IsActive = true,
+                            Name = "Late Payment Surcharge",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 10,
+                            Code = "cancellation_forfeiture",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 100,
+                            IsActive = true,
+                            Name = "Cancellation / Forfeiture",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 11,
+                            Code = "rental_income",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 110,
+                            IsActive = true,
+                            Name = "Rental Income",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 12,
+                            Code = "commission_income",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 120,
+                            IsActive = true,
+                            Name = "Commission Income",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 13,
+                            Code = "bank_profit_interest",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 130,
+                            IsActive = true,
+                            Name = "Bank Profit / Interest",
+                            RowVersion = new byte[0]
+                        },
+                        new
+                        {
+                            Id = 14,
+                            Code = "other_income",
+                            CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
+                            DisplayOrder = 140,
+                            IsActive = true,
+                            Name = "Other Income",
+                            RowVersion = new byte[0]
                         });
                 });
 
@@ -5613,6 +6059,34 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("CapitalPartners")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("FinanceAccount");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.CapitalTransaction", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.CapitalPartner", "CapitalPartner")
+                        .WithMany("Transactions")
+                        .HasForeignKey("CapitalPartnerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("CapitalCashTransactions")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("CapitalPartner");
+
+                    b.Navigation("FinanceAccount");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.BookingCommission", "Commission")
@@ -6224,9 +6698,16 @@ namespace DAMS.Infrastructure.Migrations
                         .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("DAMS.Domain.Entities.RevenueCategory", "RevenueCategory")
+                        .WithMany("ManualRevenues")
+                        .HasForeignKey("RevenueCategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("FinanceAccount");
 
                     b.Navigation("Project");
+
+                    b.Navigation("RevenueCategory");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Notification", b =>
@@ -6266,6 +6747,36 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceAuditEntry", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.OpeningBalanceSet", "OpeningBalanceSet")
+                        .WithMany("AuditEntries")
+                        .HasForeignKey("OpeningBalanceSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("OpeningBalanceSet");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceEntry", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("OpeningBalanceEntries")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.OpeningBalanceSet", "OpeningBalanceSet")
+                        .WithMany("Entries")
+                        .HasForeignKey("OpeningBalanceSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("FinanceAccount");
+
+                    b.Navigation("OpeningBalanceSet");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
@@ -6459,6 +6970,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Payouts");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
+                {
+                    b.Navigation("Transactions");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.CommissionPayout", b =>
                 {
                     b.Navigation("Evidence");
@@ -6527,11 +7043,17 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAccount", b =>
                 {
+                    b.Navigation("CapitalCashTransactions");
+
+                    b.Navigation("CapitalPartners");
+
                     b.Navigation("CommissionPayouts");
 
                     b.Navigation("Expenses");
 
                     b.Navigation("ManualRevenues");
+
+                    b.Navigation("OpeningBalanceEntries");
 
                     b.Navigation("Payments");
 
@@ -6584,6 +7106,13 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Deliveries");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.OpeningBalanceSet", b =>
+                {
+                    b.Navigation("AuditEntries");
+
+                    b.Navigation("Entries");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
                 {
                     b.Navigation("MediaFiles");
@@ -6596,6 +7125,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Evidence");
 
                     b.Navigation("Reversals");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.RevenueCategory", b =>
+                {
+                    b.Navigation("ManualRevenues");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
