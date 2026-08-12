@@ -8,10 +8,11 @@ import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
+import { buildPeriodRange } from "../lib/financePeriods.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
-import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
+import { getSettings, listCategories, vendorOptions } from "../features/finance/whtApi.ts";
 import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
 import {
   financeApiError,
@@ -193,35 +194,6 @@ const PERIODS: { value: Exclude<Period, "custom">; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
-// Format a Date to a local YYYY-MM-DD (avoids the UTC day-shift of toISOString).
-function fmtLocal(d: Date) {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-// Resolve a preset to a {from, to} range the existing endpoint already understands.
-function periodRange(period: Period): { from: string; to: string } {
-  const now = new Date();
-  switch (period) {
-    case "today": {
-      const t = fmtLocal(now);
-      return { from: t, to: t };
-    }
-    case "month":
-      return {
-        from: fmtLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
-        to: fmtLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
-      };
-    case "year":
-      return {
-        from: fmtLocal(new Date(now.getFullYear(), 0, 1)),
-        to: fmtLocal(new Date(now.getFullYear(), 11, 31)),
-      };
-    default:
-      return { from: "", to: "" };
-  }
-}
-
 interface RevenueFormState {
   id: number | null;
   projectId: string;
@@ -301,6 +273,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
+  const [financialYearStartMonth, setFinancialYearStartMonth] = useState<number>(7);
 
   const [summary, setSummary] = useState<FinancialSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -361,6 +334,17 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
+  const loadFinanceSettings = useCallback(async () => {
+    try {
+      const settings = await getSettings();
+      setFinancialYearStartMonth(Number.isFinite(settings.financialYearStartMonth)
+        ? settings.financialYearStartMonth
+        : 7);
+    } catch {
+      setFinancialYearStartMonth(7);
+    }
+  }, []);
+
   const loadSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
@@ -394,8 +378,9 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
     loadProjects();
     loadFinanceAccounts();
+    void loadFinanceSettings();
     void loadWhtLookups();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadWhtLookups]);
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadFinanceSettings, loadWhtLookups]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -406,17 +391,17 @@ export default function FinanceDashboardPage({ user }: Props) {
     if (!fromDate && !toDate) return "all";
     for (const p of PERIODS) {
       if (p.value === "all") continue;
-      const r = periodRange(p.value);
+      const r = buildPeriodRange(p.value, financialYearStartMonth);
       if (r.from === fromDate && r.to === toDate) return p.value;
     }
     return "custom";
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, financialYearStartMonth]);
 
   const applyPeriod = useCallback((period: Period) => {
-    const r = periodRange(period);
+    const r = buildPeriodRange(period, financialYearStartMonth);
     setFromDate(r.from);
     setToDate(r.to);
-  }, []);
+  }, [financialYearStartMonth]);
 
   // Charts are derived from the same summary endpoint the KPI cards use — bucketed over
   // the active date range and split per project — so they always match the totals and
@@ -432,6 +417,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         to: toDate,
         account: accountFilter,
         period: activePeriod as FinancePeriod,
+        financialYearStartMonth,
         projects: projects.map((p) => ({ id: p.id, projectName: p.projectName })),
       },
       controller.signal,
@@ -449,7 +435,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         }
       });
     return () => controller.abort();
-  }, [isAdmin, projectId, fromDate, toDate, accountFilter, activePeriod, projects, chartTick]);
+  }, [isAdmin, projectId, fromDate, toDate, accountFilter, activePeriod, projects, chartTick, financialYearStartMonth]);
 
   const summaryCards = useMemo(() => {
     const s = summary;

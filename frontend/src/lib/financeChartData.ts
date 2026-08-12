@@ -43,6 +43,7 @@ interface ChartFilters {
   to: string; // yyyy-mm-dd or ""
   account: string; // "" = all accounts
   period: FinancePeriod;
+  financialYearStartMonth: number;
   projects: ProjectRef[];
 }
 
@@ -85,7 +86,7 @@ async function fetchSummary(
  * Split the active date range into a small number of labelled buckets. The granularity
  * adapts to the span so "This Year" reads as quarters, "This Month" as weeks, etc.
  */
-function buildBuckets(from: string, to: string): { label: string; from: string; to: string }[] {
+function buildBuckets(from: string, to: string, startMonth: number): { label: string; from: string; to: string }[] {
   const now = new Date();
   let start: Date;
   let end: Date;
@@ -94,14 +95,17 @@ function buildBuckets(from: string, to: string): { label: string; from: string; 
     start = new Date(`${from}T00:00:00`);
     end = new Date(`${to}T00:00:00`);
   } else {
-    // "All" (or unbounded): show the current calendar year as a sensible default view.
-    start = new Date(now.getFullYear(), 0, 1);
-    end = new Date(now.getFullYear(), 11, 31);
+    const yearStart = new Date(now.getFullYear(), Math.max(0, (startMonth ?? 7) - 1), 1);
+    const yearEnd = new Date(yearStart.getFullYear() + 1, yearStart.getMonth(), 0);
+    start = yearStart;
+    end = yearEnd;
   }
 
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
-    start = new Date(now.getFullYear(), 0, 1);
-    end = new Date(now.getFullYear(), 11, 31);
+    const yearStart = new Date(now.getFullYear(), Math.max(0, (startMonth ?? 7) - 1), 1);
+    const yearEnd = new Date(yearStart.getFullYear() + 1, yearStart.getMonth(), 0);
+    start = yearStart;
+    end = yearEnd;
   }
 
   const spanDays = Math.round((end.getTime() - start.getTime()) / 86_400_000);
@@ -198,7 +202,7 @@ export async function fetchFinanceChartData(
   filters: ChartFilters,
   signal?: AbortSignal,
 ): Promise<FinanceChartData> {
-  const buckets = buildBuckets(filters.from, filters.to);
+  const buckets = buildBuckets(filters.from, filters.to, filters.financialYearStartMonth);
 
   // One flaky per-bucket / per-project request must not blank the whole chart. Treat an
   // individual failure as zero for that slice; a real abort re-throws so the effect cancels.
