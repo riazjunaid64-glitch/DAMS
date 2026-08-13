@@ -16,8 +16,13 @@ namespace DAMS.Domain.Entities
 
         public decimal Amount { get; set; }
 
-        // Free-text type with a suggested set on the UI (Transfer Charges, Documentation Charges, etc.).
+        // Legacy free-text column retained during the production backfill. New writes snapshot the
+        // managed category name into both fields so older clients continue to round-trip safely.
         public string RevenueType { get; set; } = string.Empty;
+
+        public int? RevenueCategoryId { get; set; }
+
+        public string RevenueTypeName { get; set; } = string.Empty;
 
         public string? Description { get; set; }
 
@@ -36,5 +41,7 @@ namespace DAMS.Domain.Entities
         public FinanceAttachment? Attachment { get; set; }
 
         public FinanceAccount? FinanceAccount { get; set; }
+
+        public RevenueCategory? RevenueCategory { get; set; }
     }
 }

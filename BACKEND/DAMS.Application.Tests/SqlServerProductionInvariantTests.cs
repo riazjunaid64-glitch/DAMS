@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.IO.Compression;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -159,6 +160,64 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    [SqlServerFact]
+    public async Task FinanceMigrationAndReports_RunOnTheRealSqlServerProvider()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            var migrator = db.GetService<IMigrator>();
+            await migrator.MigrateAsync("20260812002506_AddPaymentFinanceAccount");
+        }
+
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new SqlCommand("""
+                INSERT INTO [FinanceAccounts]
+                    ([Name], [Type], [AccountHolderName], [OpeningBalance], [BankOrWalletName],
+                     [Description], [IsActive], [CreatedAt], [UpdatedAt])
+                VALUES
+                    (N'SQL Finance Legacy Bank', 2, N'DAMS', 0, NULL, NULL, 1, SYSUTCDATETIME(), SYSUTCDATETIME());
+                DECLARE @AccountId int = CONVERT(int, SCOPE_IDENTITY());
+                INSERT INTO [ManualRevenues]
+                    ([ProjectId], [FinanceAccountId], [Amount], [RevenueType], [Description],
+                     [Reference], [Date], [CreatedByUserId], [CreatedAt])
+                VALUES
+                    (NULL, @AccountId, 100, N'other income ', NULL, N'legacy-sql',
+                     '2026-08-01', NULL, SYSUTCDATETIME());
+                SELECT @AccountId;
+                """, connection);
+            _ = Convert.ToInt32(await command.ExecuteScalarAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var legacy = await db.ManualRevenues.Include(r => r.RevenueCategory)
+                .SingleAsync(r => r.Reference == "legacy-sql");
+            Assert.Equal("other income ", legacy.RevenueTypeName);
+            Assert.StartsWith("legacy_", legacy.RevenueCategory!.Code);
+            Assert.False(legacy.RevenueCategory.IsActive);
+
+            var accounts = new FinanceAccountService(db);
+            var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+                new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+            var pnl = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+            Assert.Equal(100m, pnl.TotalIncome);
+            Assert.Equal("Unclassified", Assert.Single(pnl.IncomeLines).Name);
+            var trial = await finance.GetTrialBalanceAsync(null, new DateTime(2026, 8, 31), 0);
+            Assert.True(Assert.Single(trial.ColumnBalanced));
+            var sheet = await finance.GetBalanceSheetAsync(null, new DateTime(2026, 8, 31));
+            Assert.True(sheet.IsBalanced);
+            Assert.Equal(100m, sheet.TotalAssets);
+            var export = await finance.ExportProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+            using var archive = new ZipArchive(new MemoryStream(export.Content), ZipArchiveMode.Read);
+            Assert.NotNull(archive.GetEntry("xl/worksheets/sheet1.xml"));
+        }
+    }
+
     private static BookingCommission Commission(int bookingId, int partnerId, BookingCommissionStatus status,
         decimal amount) => new()
     {
@@ -224,7 +283,7 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
-    private sealed class NullPrivateStorage : ICustomerDocumentStorage, IFinancialEvidenceStorage
+    private sealed class NullPrivateStorage : ICustomerDocumentStorage, IFinancialEvidenceStorage, IFinanceAttachmentStorage
     {
         public Task<string> SaveAsync(Stream content, string extension, CancellationToken cancellationToken = default) =>
             Task.FromResult($"{Guid.NewGuid():N}{extension}");

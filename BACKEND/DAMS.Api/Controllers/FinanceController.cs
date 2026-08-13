@@ -20,6 +20,36 @@ namespace DAMS.Api.Controllers
             _financeService = financeService;
         }
 
+        [HttpGet("profit-and-loss")]
+        public Task<IActionResult> GetProfitAndLoss([FromQuery] int? projectId, [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
+            Report(() => _financeService.GetProfitAndLossAsync(projectId, from, to, cancellationToken));
+
+        [HttpGet("profit-and-loss/export")]
+        public Task<IActionResult> ExportProfitAndLoss([FromQuery] int? projectId, [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportProfitAndLossAsync(projectId, from, to, cancellationToken));
+
+        [HttpGet("trial-balance")]
+        public Task<IActionResult> GetTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] int monthsBack = 12, CancellationToken cancellationToken = default) =>
+            Report(() => _financeService.GetTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
+
+        [HttpGet("trial-balance/export")]
+        public Task<IActionResult> ExportTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] int monthsBack = 12, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
+
+        [HttpGet("balance-sheet")]
+        public Task<IActionResult> GetBalanceSheet([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            CancellationToken cancellationToken = default) =>
+            Report(() => _financeService.GetBalanceSheetAsync(projectId, asAt ?? default, cancellationToken));
+
+        [HttpGet("balance-sheet/export")]
+        public Task<IActionResult> ExportBalanceSheet([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportBalanceSheetAsync(projectId, asAt ?? default, cancellationToken));
+
         // Summary cards (totals only). Table rows are fetched separately and paged.
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(
@@ -337,6 +367,24 @@ namespace DAMS.Api.Controllers
         {
             var claim = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return int.TryParse(claim, out var id) ? id : null;
+        }
+
+        private async Task<IActionResult> Report<T>(Func<Task<T>> action)
+        {
+            try { return Ok(await action()); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        private async Task<IActionResult> Export(string format, Func<Task<FinanceExportDto>> action)
+        {
+            if (!string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "Only xlsx export is supported." });
+            try
+            {
+                var file = await action();
+                return File(file.Content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", file.FileName);
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         }
     }
 }

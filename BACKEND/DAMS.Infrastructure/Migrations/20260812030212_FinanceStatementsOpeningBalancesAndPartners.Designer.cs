@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260812030212_FinanceStatementsOpeningBalancesAndPartners")]
+    partial class FinanceStatementsOpeningBalancesAndPartners
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2654,9 +2657,6 @@ namespace DAMS.Infrastructure.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion");
 
-                    b.Property<int>("SystemRole")
-                        .HasColumnType("int");
-
                     b.Property<int>("Type")
                         .HasColumnType("int");
 
@@ -2672,20 +2672,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.HasIndex("SystemRole")
-                        .IsUnique()
-                        .HasFilter("[SystemRole] <> 0");
-
                     b.HasIndex("IsActive", "Type");
 
                     b.HasIndex("Type", "DisplayOrder");
 
-                    b.ToTable("FinanceAccounts", t =>
-                        {
-                            t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 1");
-
-                            t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
-                        });
+                    b.ToTable("FinanceAccounts");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAttachment", b =>

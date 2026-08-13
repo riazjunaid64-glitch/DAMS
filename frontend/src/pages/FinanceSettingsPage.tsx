@@ -5,6 +5,8 @@ import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
 import * as whtApi from "../features/finance/whtApi.ts";
+import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
+import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
 import {
   FILER_STATUSES,
   MONTHS,
@@ -22,7 +24,7 @@ import {
 
 type Props = { user: User | null };
 type FinanceAccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
-type Tab = "rates" | "vendors" | "payable" | "year";
+type Tab = "rates" | "revenue" | "vendors" | "payable" | "opening" | "year";
 
 export default function FinanceSettingsPage({ user }: Props) {
   const navigate = useNavigate();
@@ -102,8 +104,10 @@ function SettingsWorkspace() {
           onChange={(id) => setTab(id as Tab)}
           items={[
             { id: "rates", label: "Expense categories & WHT rates", count: categories.length },
+            { id: "revenue", label: "Revenue categories" },
             { id: "vendors", label: "Vendors" },
             { id: "payable", label: "WHT payable" },
+            { id: "opening", label: "Opening balances" },
             { id: "year", label: "Financial year" },
           ]}
         />
@@ -114,8 +118,10 @@ function SettingsWorkspace() {
           ) : (
             <>
               {tab === "rates" && <RatesTab categories={categories} onChanged={loadShared} />}
+              {tab === "revenue" && <RevenueCategoriesPanel />}
               {tab === "vendors" && <VendorsTab />}
               {tab === "payable" && <PayableTab />}
+              {tab === "opening" && <OpeningBalancesPanel />}
               {tab === "year" && settings && <YearTab settings={settings} onSaved={loadShared} />}
             </>
           )}
@@ -645,7 +651,7 @@ function PayableTab() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    void api("/api/finance/accounts/options?includeInactive=true")
+    void api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true")
       .then(async (res) => { if (res.ok) setAccounts(await res.json()); })
       .catch(() => { /* the deposit form shows its own validation if accounts are unavailable */ });
   }, []);
