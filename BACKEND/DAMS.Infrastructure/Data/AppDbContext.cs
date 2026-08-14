@@ -31,6 +31,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<EmployeeSalary> EmployeeSalaries { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<AssetPurchase> AssetPurchases { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<Vendor> Vendors { get; set; }
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
@@ -655,6 +656,58 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<AssetPurchase>(entity =>
+            {
+                entity.Property(p => p.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.ItemName).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.Category).IsRequired().HasMaxLength(100);
+                entity.Property(p => p.Description).HasMaxLength(1000);
+                entity.Property(p => p.Vendor).HasMaxLength(200);
+
+                entity.Property(p => p.WhtRate).HasColumnType("decimal(9,4)");
+                entity.Property(p => p.WhtAmount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.WhtOverrideReason).HasMaxLength(500);
+                entity.Property(p => p.WhtTaxSection).HasMaxLength(30);
+                entity.Property(p => p.VendorFilerStatusAtEntry).HasConversion<int>();
+                entity.Ignore(p => p.NetPaid);
+
+                entity.HasIndex(p => p.ProjectId);
+                entity.HasIndex(p => p.Date);
+                entity.HasIndex(p => p.FinanceAccountId);
+                // The asset ledger's own drill-down and running total read by this.
+                entity.HasIndex(p => new { p.AssetAccountId, p.Date });
+                entity.HasIndex(p => p.CategoryId);
+                entity.HasIndex(p => new { p.VendorId, p.Date });
+
+                entity.HasOne(p => p.Project)
+                      .WithMany()
+                      .HasForeignKey(p => p.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                // Two accounts, both Restrict. Deleting either side would leave a purchase that
+                // debits an asset without crediting cash, or vice versa — a silently unbalanced
+                // balance sheet. FinanceAccountService refuses the delete before it gets here.
+                entity.HasOne(p => p.AssetAccount)
+                      .WithMany(a => a.AssetPurchasesReceived)
+                      .HasForeignKey(p => p.AssetAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.FinanceAccount)
+                      .WithMany(a => a.AssetPurchasesPaid)
+                      .HasForeignKey(p => p.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.ExpenseCategory)
+                      .WithMany(c => c.AssetPurchases)
+                      .HasForeignKey(p => p.CategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.VendorAccount)
+                      .WithMany(v => v.AssetPurchases)
+                      .HasForeignKey(p => p.VendorId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
             ConfigureWithholdingTax(modelBuilder);
 
             modelBuilder.Entity<ManualRevenue>(entity =>
@@ -728,10 +781,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.ExpenseId)
                       .IsUnique()
                       .HasFilter("[ExpenseId] IS NOT NULL");
+                entity.HasIndex(a => a.AssetPurchaseId)
+                      .IsUnique()
+                      .HasFilter("[AssetPurchaseId] IS NOT NULL");
 
+                // Counted rather than enumerated as pairs: with three owners the pairwise form
+                // needs six clauses and gains one more every time a record type is added.
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_FinanceAttachments_ExactlyOneOwner",
-                    "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)"));
+                    "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1"));
 
                 entity.HasOne(a => a.ManualRevenue)
                       .WithOne(r => r.Attachment)
@@ -741,6 +801,11 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.Expense)
                       .WithOne(e => e.Attachment)
                       .HasForeignKey<FinanceAttachment>(a => a.ExpenseId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.AssetPurchase)
+                      .WithOne(p => p.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.AssetPurchaseId)
                       .OnDelete(DeleteBehavior.Cascade);
             });
 

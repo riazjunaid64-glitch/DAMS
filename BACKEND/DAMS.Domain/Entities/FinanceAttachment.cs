@@ -1,8 +1,9 @@
 namespace DAMS.Domain.Entities
 {
     /// <summary>
-    /// Private supporting evidence attached to exactly one manual revenue or expense record.
-    /// File bytes are stored outside the web root; this entity stores only safe metadata.
+    /// Private supporting evidence attached to exactly one manual revenue, expense or asset
+    /// purchase record. File bytes are stored outside the web root; this entity stores only safe
+    /// metadata.
     /// </summary>
     public class FinanceAttachment
     {
@@ -11,6 +12,8 @@ namespace DAMS.Domain.Entities
         public int? ManualRevenueId { get; set; }
 
         public int? ExpenseId { get; set; }
+
+        public int? AssetPurchaseId { get; set; }
 
         public string StoredFileName { get; set; } = string.Empty;
 
@@ -25,5 +28,7 @@ namespace DAMS.Domain.Entities
         public ManualRevenue? ManualRevenue { get; set; }
 
         public Expense? Expense { get; set; }
+
+        public AssetPurchase? AssetPurchase { get; set; }
     }
 }

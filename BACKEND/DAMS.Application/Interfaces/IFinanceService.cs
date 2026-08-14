@@ -17,6 +17,7 @@ namespace DAMS.Application.Interfaces
         Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take);
         Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take);
         Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
+        Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? assetAccountId = null, int? accountId = null, bool unassigned = false);
 
         Task<ProfitAndLossDto> GetProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
         Task<TrialBalanceDto> GetTrialBalanceAsync(int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken = default);
@@ -34,6 +35,11 @@ namespace DAMS.Application.Interfaces
         Task<ExpenseResponseDto> CreateExpenseAsync(CreateExpenseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
         Task<ExpenseResponseDto> UpdateExpenseAsync(int id, UpdateExpenseDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
         Task DeleteExpenseAsync(int id, CancellationToken cancellationToken = default);
+
+        // Fixed-asset purchase CRUD. Same shape as expenses; the difference is where the value goes.
+        Task<AssetPurchaseResponseDto> CreateAssetPurchaseAsync(CreateAssetPurchaseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
+        Task<AssetPurchaseResponseDto> UpdateAssetPurchaseAsync(int id, UpdateAssetPurchaseDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
+        Task DeleteAssetPurchaseAsync(int id, CancellationToken cancellationToken = default);
 
         Task<FinanceAttachmentDownload> GetAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);
         Task RemoveAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);

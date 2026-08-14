@@ -53,6 +53,11 @@ namespace DAMS.Application.Services
             var rebateReversals = await CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals + rebatePayments - rebateReversals;
+            // Reported alongside the expense total, never inside it. Capitalising a purchase is the
+            // whole point: the money changed form rather than being consumed, so it must not reach
+            // NetProfit by any route.
+            var assetPurchases = await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
 
             // Outstanding/overdue are balance snapshots (not date-filtered). The summary and
             // paged tables share these SQL projections so their totals always reconcile.
@@ -110,6 +115,7 @@ namespace DAMS.Application.Services
                 TotalExpenses = totalExpenses,
                 NetProfit = totalRevenue - totalExpenses,
                 WhtWithheld = whtWithheld,
+                TotalAssetPurchases = assetPurchases,
                 OutstandingAmount = outstandingTotal,
                 OverdueAmount = overdueTotal,
                 AccountOpeningBalance = accountOpeningBalance,
@@ -420,7 +426,11 @@ namespace DAMS.Application.Services
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var manual = await ManualQuery(null, null, toExclusive, accountId, false)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-            return payments + manual;
+            // Value capitalised INTO this account, at the gross price. Only ever non-zero on a
+            // fixed-asset account, where it is the only thing that moves the balance at all.
+            var capitalised = await AssetPurchaseQuery(null, null, toExclusive, accountId, null, false)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            return payments + manual + capitalised;
         }
 
         /// <summary>
@@ -447,7 +457,10 @@ namespace DAMS.Application.Services
                     .SumAsync(r => (decimal?)r.Amount) ?? 0m);
             var whtDeposits = await WhtDepositQuery(toExclusive, accountId)
                 .SumAsync(d => (decimal?)d.Amount) ?? 0m;
-            return expenses + commissions + rebates + whtDeposits;
+            // Net, for the same reason expenses are: the withheld portion is still sitting here.
+            var assetPurchases = await AssetPurchaseQuery(null, null, toExclusive, null, accountId, false)
+                .SumAsync(p => (decimal?)(p.Amount - p.WhtAmount)) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits + assetPurchases;
         }
 
         private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
@@ -1014,15 +1027,24 @@ namespace DAMS.Application.Services
             int recordId,
             CancellationToken cancellationToken = default)
         {
-            var attachment = kind == FinanceRecordKind.Revenue
-                ? await _context.ManualRevenues.AsNoTracking()
+            // Switched, not a two-way ternary: with a third record kind an "else" would quietly
+            // look the id up in the wrong table and either 404 or serve someone else's file.
+            var attachment = kind switch
+            {
+                FinanceRecordKind.Revenue => await _context.ManualRevenues.AsNoTracking()
                     .Where(r => r.Id == recordId && r.Attachment != null)
                     .Select(r => r.Attachment!)
-                    .FirstOrDefaultAsync(cancellationToken)
-                : await _context.Expenses.AsNoTracking()
+                    .FirstOrDefaultAsync(cancellationToken),
+                FinanceRecordKind.Expense => await _context.Expenses.AsNoTracking()
                     .Where(e => e.Id == recordId && e.Attachment != null)
                     .Select(e => e.Attachment!)
-                    .FirstOrDefaultAsync(cancellationToken);
+                    .FirstOrDefaultAsync(cancellationToken),
+                FinanceRecordKind.AssetPurchase => await _context.AssetPurchases.AsNoTracking()
+                    .Where(p => p.Id == recordId && p.Attachment != null)
+                    .Select(p => p.Attachment!)
+                    .FirstOrDefaultAsync(cancellationToken),
+                _ => throw new InvalidOperationException("Unknown finance record kind.")
+            };
 
             if (attachment == null)
                 throw new FileNotFoundException("This finance record does not have an attachment.");
@@ -1052,6 +1074,14 @@ namespace DAMS.Application.Services
                     .FirstOrDefaultAsync(r => r.Id == recordId, cancellationToken)
                     ?? throw new InvalidOperationException("Manual revenue entry not found.");
                 attachment = revenue.Attachment;
+            }
+            else if (kind == FinanceRecordKind.AssetPurchase)
+            {
+                var purchase = await _context.AssetPurchases
+                    .Include(p => p.Attachment)
+                    .FirstOrDefaultAsync(p => p.Id == recordId, cancellationToken)
+                    ?? throw new InvalidOperationException("Asset purchase not found.");
+                attachment = purchase.Attachment;
             }
             else
             {

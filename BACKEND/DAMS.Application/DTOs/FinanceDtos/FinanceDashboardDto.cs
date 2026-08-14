@@ -15,6 +15,12 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <see cref="TotalExpenses"/> but has not left the bank — it is owed to FBR.</summary>
         public decimal WhtWithheld { get; set; }
 
+        /// <summary>Fixed assets bought in the period, at cost. Deliberately NOT part of
+        /// <see cref="TotalExpenses"/> or <see cref="NetProfit"/>: the company still owns what this
+        /// bought, so nothing was spent in the profit sense. It sits beside them as a separate
+        /// figure precisely so the two are never confused.</summary>
+        public decimal TotalAssetPurchases { get; set; }
+
         // Populated only when a single finance account is selected. Opening balance and the
         // balance accumulated up to the end of the selected period (period start is ignored so
         // the figure is a true running balance, not a period delta).

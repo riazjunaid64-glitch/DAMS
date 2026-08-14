@@ -30,5 +30,7 @@ namespace DAMS.Domain.Entities
         public byte[] RowVersion { get; set; } = [];
 
         public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
+
+        public ICollection<AssetPurchase> AssetPurchases { get; set; } = new List<AssetPurchase>();
     }
 }

@@ -123,26 +123,37 @@ namespace DAMS.Application.Services
 
             // Grouped by section, because that is the unit the statutory threshold applies to.
             // Rows with no section (heads that carry no withholding) collapse into one line.
-            var grouped = await _context.Expenses.AsNoTracking()
+            // Asset purchases are counted alongside expenses so this panel shows the same total the
+            // threshold is actually decided on — a breakdown that omitted them would explain a
+            // deduction with a figure that did not justify it.
+            var expenseGroups = await _context.Expenses.AsNoTracking()
                 .Where(e => e.VendorId == vendorId && e.Date >= start && e.Date < end)
                 .GroupBy(e => e.WhtTaxSection)
-                .Select(g => new
-                {
-                    Section = g.Key,
-                    Gross = g.Sum(e => (decimal?)e.Amount) ?? 0m,
-                    Wht = g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                    Count = g.Count()
-                })
+                .Select(g => new SectionYtd(
+                    g.Key,
+                    g.Sum(e => (decimal?)e.Amount) ?? 0m,
+                    g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
+                    g.Count()))
+                .ToListAsync(cancellationToken);
+            var purchaseGroups = await _context.AssetPurchases.AsNoTracking()
+                .Where(p => p.VendorId == vendorId && p.Date >= start && p.Date < end)
+                .GroupBy(p => p.WhtTaxSection)
+                .Select(g => new SectionYtd(
+                    g.Key,
+                    g.Sum(p => (decimal?)p.Amount) ?? 0m,
+                    g.Sum(p => (decimal?)p.WhtAmount) ?? 0m,
+                    g.Count()))
                 .ToListAsync(cancellationToken);
 
-            return grouped
+            return expenseGroups.Concat(purchaseGroups)
+                .GroupBy(g => g.Section ?? string.Empty, StringComparer.Ordinal)
                 .Select(g => new VendorYtdLineDto
                 {
-                    Scope = string.IsNullOrWhiteSpace(g.Section) ? "No withholding section" : $"Section {g.Section}",
+                    Scope = string.IsNullOrWhiteSpace(g.Key) ? "No withholding section" : $"Section {g.Key}",
                     FinancialYear = label,
-                    GrossPaid = g.Gross,
-                    WhtWithheld = g.Wht,
-                    ExpenseCount = g.Count
+                    GrossPaid = g.Sum(x => x.Gross),
+                    WhtWithheld = g.Sum(x => x.Wht),
+                    ExpenseCount = g.Sum(x => x.Count)
                 })
                 .OrderByDescending(g => g.GrossPaid)
                 .ToList();
@@ -158,18 +169,29 @@ namespace DAMS.Application.Services
         /// once makes the link permanent, and it is the only field touched: the name on each
         /// expense stays the one that was on the payment.
         /// </para>
+        /// <para>
+        /// Fixed-asset purchases are claimed on the same terms. They feed the same annual allowance,
+        /// so leaving them behind would detach exactly the history the allowance is computed from.
+        /// </para>
         /// </summary>
         private async Task AdoptFreeTextHistoryAsync(int vendorId, string name, CancellationToken cancellationToken)
         {
-            var orphans = await _context.Expenses
+            var orphanExpenses = await _context.Expenses
                 .Where(e => e.VendorId == null && e.Vendor == name)
                 .ToListAsync(cancellationToken);
-            if (orphans.Count == 0) return;
+            var orphanPurchases = await _context.AssetPurchases
+                .Where(p => p.VendorId == null && p.Vendor == name)
+                .ToListAsync(cancellationToken);
+            if (orphanExpenses.Count == 0 && orphanPurchases.Count == 0) return;
 
-            foreach (var expense in orphans)
+            foreach (var expense in orphanExpenses)
                 expense.VendorId = vendorId;
+            foreach (var purchase in orphanPurchases)
+                purchase.VendorId = vendorId;
             await _context.SaveChangesAsync(cancellationToken);
         }
+
+        private sealed record SectionYtd(string? Section, decimal Gross, decimal Wht, int Count);
 
         private async Task<(DateTime Start, DateTime End)> CurrentYearWindowAsync(CancellationToken cancellationToken)
         {

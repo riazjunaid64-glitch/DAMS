@@ -35,6 +35,32 @@ interface FinanceAccountOption {
   isActive: boolean;
 }
 
+/** A fixed-asset purchase row: what was bought, where the value landed, and what paid for it. */
+interface AssetPurchaseLine {
+  id: number;
+  date: string;
+  projectId: number | null;
+  projectName: string;
+  assetAccountId: number;
+  assetAccountName: string;
+  financeAccountId: number;
+  financeAccountName: string | null;
+  accountHolderName: string | null;
+  itemName: string;
+  category: string;
+  categoryId: number | null;
+  description: string | null;
+  vendor: string | null;
+  vendorId: number | null;
+  /** Gross — what the asset is carried at. Cash paid is `netPaid`. */
+  amount: number;
+  whtAmount: number;
+  whtRate: number;
+  netPaid: number;
+  whtTaxSection: string | null;
+  attachment: FinanceAttachmentInfo | null;
+}
+
 interface RevenueCategory {
   id: number;
   name: string;
@@ -48,6 +74,8 @@ interface FinancialSummary {
   totalExpenses: number;
   netProfit: number;
   whtWithheld: number;
+  /** Fixed assets bought in the period, at cost. Deliberately outside totalExpenses and netProfit. */
+  totalAssetPurchases: number;
   outstandingAmount: number;
   overdueAmount: number;
   accountOpeningBalance: number | null;
@@ -130,14 +158,15 @@ interface NetProfitLine {
   amount: number;
 }
 
-type AnyRow = RevenueLine | ExpenseLine | OutstandingLine | OverdueLine | NetProfitLine;
+type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | OutstandingLine | OverdueLine | NetProfitLine;
 
-type View = "revenue" | "expense" | "netProfit" | "outstanding" | "overdue";
+type View = "revenue" | "expense" | "assetPurchase" | "netProfit" | "outstanding" | "overdue";
 
 // API view query value for each card view.
 const VIEW_PARAM: Record<View, string> = {
   revenue: "revenue",
   expense: "expense",
+  assetPurchase: "assetPurchase",
   netProfit: "netProfit",
   outstanding: "outstanding",
   overdue: "overdue",
@@ -146,6 +175,7 @@ const VIEW_PARAM: Record<View, string> = {
 const VIEW_TITLES: Record<View, string> = {
   revenue: "Revenue",
   expense: "Expenses",
+  assetPurchase: "Fixed Assets Purchased",
   netProfit: "Net Profit Breakdown",
   outstanding: "Outstanding Balances",
   overdue: "Overdue Installments",
@@ -238,6 +268,50 @@ interface ExpenseFormState {
   removeAttachment: boolean;
 }
 
+/**
+ * Deliberately close to ExpenseFormState — the brief is that recording a purchase should feel like
+ * recording an expense. The two differences are the ones that matter: `assetAccountId` (where the
+ * value lands, which an expense has no equivalent of) and `itemName` (what was actually bought, as
+ * distinct from the tax head it is classified under).
+ */
+interface AssetPurchaseFormState {
+  id: number | null;
+  projectId: string;
+  assetAccountId: string;
+  financeAccountId: string;
+  amount: string;
+  itemName: string;
+  categoryId: string;
+  category: string;
+  description: string;
+  vendorId: string;
+  vendor: string;
+  date: string;
+  wht: WhtFormValue;
+  attachment: FinanceAttachmentInfo | null;
+  selectedAttachment: File | null;
+  removeAttachment: boolean;
+}
+
+const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
+  id: null,
+  projectId: "",
+  assetAccountId: "",
+  financeAccountId: "",
+  amount: "",
+  itemName: "",
+  categoryId: "",
+  category: "",
+  description: "",
+  vendorId: "",
+  vendor: "",
+  date: todayInput(),
+  wht: emptyWht(),
+  attachment: null,
+  selectedAttachment: null,
+  removeAttachment: false,
+});
+
 const emptyRevenueForm = (): RevenueFormState => ({
   id: null,
   projectId: "",
@@ -277,6 +351,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
+  const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
   const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
   const [vendors, setVendors] = useState<VendorOption[]>([]);
@@ -300,6 +375,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
+  const [assetForm, setAssetForm] = useState<AssetPurchaseFormState | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -330,6 +406,17 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (res.ok) setFinanceAccounts(await res.json());
     } catch {
       /* The form will retain its validation message if accounts cannot be loaded. */
+    }
+  }, []);
+
+  // The purchase destinations. Type 7 is FixedAsset — asked for explicitly rather than by
+  // "not cash-like", which would also offer liabilities and capital as somewhere to put a desk.
+  const loadAssetAccounts = useCallback(async () => {
+    try {
+      const res = await api("/api/finance/accounts/options?includeInactive=true&type=7");
+      if (res.ok) setAssetAccounts(await res.json());
+    } catch {
+      /* The purchase form shows its validation message if these cannot be loaded. */
     }
   }, []);
 
@@ -398,10 +485,11 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
     loadProjects();
     loadFinanceAccounts();
+    void loadAssetAccounts();
     void loadFinanceSettings();
     void loadWhtLookups();
     void loadRevenueCategories();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadFinanceSettings, loadWhtLookups, loadRevenueCategories]);
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadFinanceSettings, loadWhtLookups, loadRevenueCategories]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -463,6 +551,9 @@ export default function FinanceDashboardPage({ user }: Props) {
     return [
       { label: "Total Revenue", value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View },
       { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "expense" as View },
+      // Sits between expenses and profit on purpose: it is spending that is NOT a cost, and the
+      // adjacency is what stops someone reading the two as the same kind of number.
+      { label: "Fixed Assets", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
       { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
       { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
@@ -480,6 +571,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const resetForms = () => {
     setRevenueForm(null);
     setExpenseForm(null);
+    setAssetForm(null);
     setFormError(null);
     setSaving(false);
     savingRef.current = false;
@@ -601,6 +693,68 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   };
 
+  const submitAssetPurchase = async () => {
+    if (!assetForm) return;
+    setFormError(null);
+    const amount = Number(assetForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setFormError("Enter a valid amount greater than zero.");
+      return;
+    }
+    if (!assetForm.itemName.trim()) {
+      setFormError("Describe what was bought, e.g. “3 office desks”.");
+      return;
+    }
+    if (!assetForm.assetAccountId) {
+      setFormError("Select the asset account this purchase belongs to.");
+      return;
+    }
+    if (!assetForm.financeAccountId) {
+      setFormError("Select the account this purchase was paid from.");
+      return;
+    }
+    if (!assetForm.categoryId) {
+      setFormError("Choose a category. Add a new head under Finance ▸ Settings if the one you need is missing.");
+      return;
+    }
+    if (!startSaving()) return;
+    try {
+      const body = new FormData();
+      if (assetForm.projectId) body.append("projectId", assetForm.projectId);
+      body.append("assetAccountId", assetForm.assetAccountId);
+      body.append("financeAccountId", assetForm.financeAccountId);
+      body.append("amount", String(amount));
+      body.append("itemName", assetForm.itemName.trim());
+      body.append("categoryId", assetForm.categoryId);
+      body.append("category", assetForm.category.trim());
+      body.append("description", assetForm.description.trim());
+      if (assetForm.vendorId) body.append("vendorId", assetForm.vendorId);
+      body.append("vendor", assetForm.vendor.trim());
+      if (assetForm.date) body.append("date", assetForm.date);
+      // The server recalculates and rejects a figure that does not belong, so a stale value
+      // cannot slip through here any more than it can on the expense form.
+      if (assetForm.wht.rate !== "") body.append("whtRate", assetForm.wht.rate);
+      if (assetForm.wht.amount !== "") body.append("whtAmount", assetForm.wht.amount);
+      if (assetForm.wht.overrideReason.trim())
+        body.append("whtOverrideReason", assetForm.wht.overrideReason.trim());
+      if (assetForm.selectedAttachment) body.append("attachment", assetForm.selectedAttachment);
+      if (assetForm.removeAttachment) body.append("removeAttachment", "true");
+      const res = assetForm.id
+        ? await api(`/api/Finance/asset-purchases/${assetForm.id}/form`, { method: "PUT", body })
+        : await api("/api/Finance/asset-purchases/form", { method: "POST", body });
+      if (!res.ok) {
+        setFormError(await financeApiError(res, "Failed to save the asset purchase."));
+        return;
+      }
+      resetForms();
+      await refreshAll();
+    } catch {
+      setFormError("The purchase could not be saved. Check your connection and try again.");
+    } finally {
+      finishSaving();
+    }
+  };
+
   const deleteRevenue = async (id: number) => {
     if (!window.confirm("Delete this manual revenue entry?")) return;
     const res = await api(`/api/Finance/revenue/${id}`, { method: "DELETE" });
@@ -615,9 +769,47 @@ export default function FinanceDashboardPage({ user }: Props) {
     else alert("Failed to delete expense.");
   };
 
+  const deleteAssetPurchase = async (id: number) => {
+    if (!window.confirm("Delete this asset purchase? The bank balance and the asset account both move back.")) return;
+    const res = await api(`/api/Finance/asset-purchases/${id}`, { method: "DELETE" });
+    if (res.ok) await refreshAll();
+    else alert("Failed to delete the asset purchase.");
+  };
+
+  const editAssetPurchase = (row: AssetPurchaseLine) => {
+    setRevenueForm(null);
+    setExpenseForm(null);
+    setFormError(null);
+    setAssetForm({
+      id: row.id,
+      projectId: row.projectId != null ? String(row.projectId) : "",
+      assetAccountId: String(row.assetAccountId),
+      financeAccountId: String(row.financeAccountId),
+      amount: String(row.amount),
+      itemName: row.itemName,
+      categoryId: row.categoryId != null ? String(row.categoryId) : "",
+      category: row.category,
+      description: row.description ?? "",
+      vendorId: row.vendorId != null ? String(row.vendorId) : "",
+      vendor: row.vendor ?? "",
+      date: row.date.slice(0, 10),
+      // What was actually withheld, not what today's rate table would produce — reopening a
+      // purchase must not restate a figure that has already been filed.
+      wht: {
+        rate: String(Number(row.whtRate.toFixed(4))),
+        amount: String(row.whtAmount),
+        overrideReason: "",
+      },
+      attachment: row.attachment,
+      selectedAttachment: null,
+      removeAttachment: false,
+    });
+  };
+
   const editRevenue = (row: RevenueLine) => {
     if (row.manualRevenueId == null) return;
     setExpenseForm(null);
+    setAssetForm(null);
     setFormError(null);
     setRevenueForm({
       id: row.manualRevenueId,
@@ -637,6 +829,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const editExpense = (row: ExpenseLine) => {
     setRevenueForm(null);
+    setAssetForm(null);
     setFormError(null);
     setExpenseForm({
       id: row.id,
@@ -768,6 +961,45 @@ export default function FinanceDashboardPage({ user }: Props) {
             } },
           ],
         };
+      case "assetPurchase":
+        return {
+          minWidth: 1360,
+          emptyText: "No fixed assets purchased for the selected filters.",
+          columns: [
+            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as AssetPurchaseLine).date)}</span> },
+            { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.itemName}{x.description && <small className="block text-[var(--text-muted)]">{x.description}</small>}</span>; } },
+            // The destination account is the point of the whole record, so it is a first-class
+            // column rather than something to be inferred from the category.
+            { key: "assetAccount", header: "Asset Account", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
+            { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span>{x.financeAccountName ?? "—"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
+            { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
+            // Cost, not "gross expense": this figure is what the asset is carried at.
+            { key: "amount", header: "Cost", width: "120px", align: "right", render: (r) => money((r as AssetPurchaseLine).amount, "text-sky-300") },
+            { key: "wht", header: "WHT", width: "120px", align: "right", render: (r) => {
+              const x = r as AssetPurchaseLine;
+              if (x.whtAmount <= 0) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+              return (
+                <span className="whitespace-nowrap">
+                  {money(x.whtAmount, "text-amber-400")}
+                  <small className="block text-[var(--text-muted)]">{Number(x.whtRate.toFixed(4))}%</small>
+                </span>
+              );
+            } },
+            { key: "net", header: "Net Paid", width: "120px", align: "right", render: (r) => money((r as AssetPurchaseLine).netPaid) },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as AssetPurchaseLine).projectName}</span> },
+            { key: "vendor", header: "Supplier", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as AssetPurchaseLine).vendor || "—"}</span> },
+            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as AssetPurchaseLine; return attachmentCell("assetPurchase", row.id, row.attachment); } },
+            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+              const row = r as AssetPurchaseLine;
+              return (
+                <span className="inline-flex justify-end gap-2">
+                  <button type="button" onClick={() => editAssetPurchase(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
+                  <button type="button" onClick={() => deleteAssetPurchase(row.id)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
+                </span>
+              );
+            } },
+          ],
+        };
       case "netProfit":
         return {
           minWidth: 760,
@@ -829,6 +1061,8 @@ export default function FinanceDashboardPage({ user }: Props) {
       }
       case "expense":
         return `exp-${(row as ExpenseLine).id}`;
+      case "assetPurchase":
+        return `ast-${(row as AssetPurchaseLine).id}`;
       case "outstanding":
         return `out-${(row as OutstandingLine).bookingReference}`;
       case "overdue": {
@@ -890,7 +1124,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
 
           {/* Summary cards */}
-          <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+          <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
             {summaryCards.map((card) => {
               const active = view === card.view;
               return (
@@ -965,10 +1199,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
             <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
             <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
-            <Button variant="outline" onClick={() => { setExpenseForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
+            <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
               + Add Revenue
             </Button>
-            <Button onClick={() => { setRevenueForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
+            <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
+              ◆ Add Asset
+            </Button>
+            <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
               − Add Expense
             </Button>
           </div>
@@ -1047,6 +1284,123 @@ export default function FinanceDashboardPage({ user }: Props) {
             <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
               <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
               <Button onClick={submitRevenue} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fixed-asset purchase modal. Field order mirrors the expense form so the two feel like the
+          same task, with the asset account added as the one thing an expense has no equivalent of. */}
+      {assetForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!saving) resetForms(); }} />
+          <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
+            <div className="border-b border-[var(--border)] px-6 py-4">
+              <h3 className="text-lg font-semibold text-[var(--text-heading)]">
+                {assetForm.id ? "Edit Asset Purchase" : "Record Asset Purchase"}
+              </h3>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                The money changes form rather than being spent — profit is not affected.
+              </p>
+            </div>
+            <div className="space-y-4 p-6">
+              {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
+              <FormInput label="What was bought" value={assetForm.itemName} onChange={(v) => setAssetForm({ ...assetForm, itemName: v })} />
+              <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
+                <option value="">Select asset account</option>
+                {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
+                ))}
+              </FormSelect>
+              <FormSelect label="Paid From Account" value={assetForm.financeAccountId} onChange={(v) => setAssetForm({ ...assetForm, financeAccountId: v })}>
+                <option value="">Select account</option>
+                {financeAccounts.filter((a) => a.isActive || String(a.id) === assetForm.financeAccountId).map((a) => (
+                  <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>
+                ))}
+              </FormSelect>
+              <FormSelect label="Project" value={assetForm.projectId} onChange={(v) => setAssetForm({ ...assetForm, projectId: v })}>
+                <option value="">General (no specific project)</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
+              </FormSelect>
+              {/* The same managed heads as expenses: the annual withholding allowance is one
+                  aggregate per supplier per section, covering capital and revenue purchases alike. */}
+              <FormSelect
+                label="Category (for tax)"
+                value={assetForm.categoryId}
+                onChange={(v) => setAssetForm({
+                  ...assetForm,
+                  categoryId: v,
+                  category: expenseCategories.find((c) => String(c.id) === v)?.name ?? "",
+                  wht: v ? assetForm.wht : emptyWht(),
+                })}
+              >
+                <option value="">Select a category</option>
+                {expenseCategories
+                  .filter((c) => c.isActive || String(c.id) === assetForm.categoryId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.isActive ? "" : " (Retired)"}
+                      {c.isWhtApplicable && c.taxSection ? ` — s.${c.taxSection}` : ""}
+                    </option>
+                  ))}
+              </FormSelect>
+              <FormSelect
+                label="Supplier"
+                value={assetForm.vendorId || CUSTOM_TYPE}
+                onChange={(v) => setAssetForm({
+                  ...assetForm,
+                  vendorId: v === CUSTOM_TYPE ? "" : v,
+                  vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
+                })}
+              >
+                <option value={CUSTOM_TYPE}>One-off supplier (enter manually)…</option>
+                {vendors
+                  .filter((v) => v.isActive || String(v.id) === assetForm.vendorId)
+                  .map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} — {v.filerStatus === "NonFiler" ? "Non-filer" : v.filerStatus}
+                      {v.isActive ? "" : " (Inactive)"}
+                    </option>
+                  ))}
+              </FormSelect>
+              {!assetForm.vendorId && (
+                <FormInput
+                  label="Supplier / Reference (optional)"
+                  value={assetForm.vendor}
+                  onChange={(v) => setAssetForm({ ...assetForm, vendor: v })}
+                />
+              )}
+              <FormInput label="Cost (Rs)" type="number" value={assetForm.amount} onChange={(v) => setAssetForm({ ...assetForm, amount: v })} />
+              <FormInput label="Date" type="date" value={assetForm.date} onChange={(v) => setAssetForm({ ...assetForm, date: v })} />
+
+              <ExpenseWhtFields
+                categoryId={assetForm.categoryId}
+                vendorId={assetForm.vendorId}
+                grossAmount={assetForm.amount}
+                date={assetForm.date}
+                excludeExpenseId={null}
+                excludeAssetPurchaseId={assetForm.id}
+                capitalised
+                value={assetForm.wht}
+                disabled={saving}
+                onChange={(wht) => setAssetForm((current) => current ? { ...current, wht } : current)}
+              />
+
+              <FormInput label="Notes (optional)" value={assetForm.description} onChange={(v) => setAssetForm({ ...assetForm, description: v })} />
+              <FinanceAttachmentField
+                existing={assetForm.attachment}
+                selected={assetForm.selectedAttachment}
+                removeExisting={assetForm.removeAttachment}
+                disabled={saving}
+                onSelected={(file) => setAssetForm((current) => current ? { ...current, selectedAttachment: file } : current)}
+                onRemoveExisting={(remove) => setAssetForm((current) => current ? { ...current, removeAttachment: remove } : current)}
+                onViewExisting={() => { if (assetForm.id && assetForm.attachment) void accessAttachment("assetPurchase", assetForm.id, assetForm.attachment, false); }}
+                onDownloadExisting={() => { if (assetForm.id && assetForm.attachment) void accessAttachment("assetPurchase", assetForm.id, assetForm.attachment, true); }}
+              />
+            </div>
+            <div className="flex justify-end gap-3 border-t border-[var(--border)] px-6 py-4">
+              <Button variant="ghost" onClick={resetForms} disabled={saving}>Cancel</Button>
+              <Button onClick={submitAssetPurchase} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>
             </div>
           </div>
         </div>

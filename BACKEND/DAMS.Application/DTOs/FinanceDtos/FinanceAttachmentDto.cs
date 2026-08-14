@@ -34,6 +34,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
     public enum FinanceRecordKind
     {
         Revenue,
-        Expense
+        Expense,
+        AssetPurchase
     }
 }

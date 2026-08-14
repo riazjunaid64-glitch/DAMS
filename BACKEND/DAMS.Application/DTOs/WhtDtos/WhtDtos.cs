@@ -14,6 +14,10 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// <summary>Set when previewing an edit, so the expense's own amount is excluded from its
         /// year-to-date total and does not inflate the threshold check against itself.</summary>
         public int? ExcludeExpenseId { get; set; }
+
+        /// <summary>The same, for an asset purchase being edited. Both exist because the two record
+        /// types share one annual aggregate but number their rows independently.</summary>
+        public int? ExcludeAssetPurchaseId { get; set; }
     }
 
     public class WhtCalculationResultDto

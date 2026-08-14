@@ -2,7 +2,7 @@ using DAMS.Domain.Enums;
 
 namespace DAMS.Domain.Entities
 {
-    public class Expense
+    public class Expense : IWithholdingSubject
     {
         public int Id { get; set; }
 

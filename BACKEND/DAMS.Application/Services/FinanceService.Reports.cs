@@ -300,6 +300,13 @@ namespace DAMS.Application.Services
                 .GroupBy(r => r.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
             var expense = await SumByAccount(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
                 .GroupBy(e => e.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(e => e.Amount - e.WhtAmount))), cancellationToken);
+            // A purchase moves two accounts and touches no income statement line. Cash falls by the
+            // net paid; the asset account rises by the gross. The gap between them is the withheld
+            // tax, which lands on the payable below — which is exactly why the sheet still balances.
+            var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
+            var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .GroupBy(p => p.AssetAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
             var commission = await SumByAccount(CommissionPayoutQuery(projectId, null, end, null, false)
                 .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
             var commissionReversal = await SumByAccount(CommissionReversalQuery(projectId, null, end, null, false)
@@ -321,7 +328,9 @@ namespace DAMS.Application.Services
                 ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.CapitalPartner.FinanceAccountId != null)
                     .GroupBy(t => new { Id = t.CapitalPartner.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
                 : [];
-            var wht = await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = deposits.Sum(d => d.Amount);
 
             foreach (var account in accounts)
@@ -333,6 +342,7 @@ namespace DAMS.Application.Services
                     continue;
                 }
                 var debitMovement = Amount(payments, account.Id) + Amount(manual, account.Id) - Amount(expense, account.Id)
+                    - Amount(assetPaid, account.Id) + Amount(assetCapitalised, account.Id)
                     - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
                     - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
                     + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount);
@@ -363,7 +373,11 @@ namespace DAMS.Application.Services
             if (await PaymentsQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned customer payments");
             if (await ManualQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned manual revenue");
             if (await ExpenseQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned expenses");
-            var wht = await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            // No "unassigned asset purchases" check: both accounts are required on every purchase,
+            // so the row that would cause this imbalance cannot be saved in the first place.
+            var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = projectId.HasValue
                 ? 0m
                 : await _context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
