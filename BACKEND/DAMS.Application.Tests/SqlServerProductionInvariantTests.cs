@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
@@ -216,6 +217,61 @@ public sealed class SqlServerProductionInvariantTests
             using var archive = new ZipArchive(new MemoryStream(export.Content), ZipArchiveMode.Read);
             Assert.NotNull(archive.GetEntry("xl/worksheets/sheet1.xml"));
         }
+    }
+
+    [SqlServerFact]
+    public async Task LoanQueriesCorrectionsAndReports_RunOnTheRealSqlServerProvider()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+        var bank = new FinanceAccount
+        {
+            Name = "SQL Loan Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+        };
+        var liability = new FinanceAccount
+        {
+            Name = "SQL Loan Liability", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability, IsActive = true
+        };
+        db.AddRange(bank, liability);
+        await db.SaveChangesAsync();
+        var accounts = new FinanceAccountService(db);
+        var loans = new LoanService(db, accounts);
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        var loan = await loans.CreateAsync(new SaveLoanDto
+        {
+            Name = "SQL HBL Term Loan", LenderName = "HBL", FinanceAccountId = liability.Id
+        });
+        await loans.RecordTransactionAsync(loan.Id, new SaveLoanTransactionDto
+        {
+            Type = LoanTransactionType.Drawdown, PrincipalAmount = 5_000m,
+            Date = new DateTime(2026, 8, 1), FinanceAccountId = bank.Id
+        }, 1);
+        var repayment = await loans.RecordTransactionAsync(loan.Id, new SaveLoanTransactionDto
+        {
+            Type = LoanTransactionType.Repayment, PrincipalAmount = 500m, InterestAmount = 50m,
+            Date = new DateTime(2026, 8, 10), FinanceAccountId = bank.Id
+        }, 1);
+
+        Assert.Equal(4_500m, Assert.Single(await loans.GetAllAsync(false)).CurrentBalance);
+        Assert.Equal(2, (await loans.GetStatementAsync(loan.Id, 0, 100)).Items.Count);
+        Assert.Equal(4_450m, (await accounts.GetByIdAsync(bank.Id)).CurrentBalance);
+        Assert.Equal(4_500m, (await accounts.GetByIdAsync(liability.Id)).CurrentBalance);
+        var pnl = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+        Assert.Equal(50m, pnl.TotalExpenses);
+        Assert.True((await finance.GetBalanceSheetAsync(null, new DateTime(2026, 8, 31))).IsBalanced);
+
+        await loans.UpdateTransactionAsync(loan.Id, repayment.Id, new SaveLoanTransactionDto
+        {
+            Type = LoanTransactionType.Repayment, PrincipalAmount = 400m, InterestAmount = 40m,
+            Date = new DateTime(2026, 8, 10), FinanceAccountId = bank.Id,
+            ConcurrencyToken = repayment.ConcurrencyToken
+        }, 2);
+        Assert.Equal(4_600m, Assert.Single(await loans.GetAllAsync(false)).CurrentBalance);
+        Assert.Equal(40m, (await finance.GetProfitAndLossAsync(null,
+            new DateTime(2026, 8, 1), new DateTime(2026, 8, 31))).TotalExpenses);
     }
 
     private static BookingCommission Commission(int bookingId, int partnerId, BookingCommissionStatus status,

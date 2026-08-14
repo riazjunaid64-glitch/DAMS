@@ -38,6 +38,11 @@ namespace DAMS.Application.Interfaces
         /// saved. The single point where an <see cref="Domain.Entities.Expense"/> gets its tax.</summary>
         Task ApplyToExpenseAsync(Domain.Entities.Expense expense, decimal? requestedRate, decimal? requestedAmount, string? overrideReason, CancellationToken cancellationToken = default);
 
+        /// <summary>The same, for a fixed-asset purchase. Shares the expense rate table and the
+        /// per-vendor annual allowance, because to FBR both are money paid to a supplier under a
+        /// tax section — only the accounting treatment differs.</summary>
+        Task ApplyToAssetPurchaseAsync(Domain.Entities.AssetPurchase purchase, decimal? requestedRate, decimal? requestedAmount, string? overrideReason, CancellationToken cancellationToken = default);
+
         Task<FinanceSettingsDto> GetSettingsAsync(CancellationToken cancellationToken = default);
         Task<FinanceSettingsDto> UpdateSettingsAsync(SaveFinanceSettingsDto dto, string? actorName, CancellationToken cancellationToken = default);
 

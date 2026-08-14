@@ -233,18 +233,86 @@ public sealed class FinanceReportingAndCapitalTests
     }
 
     [Fact]
-    public async Task RevenueCategories_AreAlwaysSoftRetired()
+    public async Task AUsedRevenueCategory_IsRetiredRatherThanDeleted_SoHistoricIncomeKeepsItsLabel()
     {
         await using var context = Context();
-        var category = new RevenueCategory { Name = "Temporary", Code = "temporary", IsActive = true };
-        context.RevenueCategories.Add(category);
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var category = new RevenueCategory { Name = "Consultancy", Code = "consultancy", IsActive = true };
+        context.AddRange(bank, category);
         await context.SaveChangesAsync();
+        context.ManualRevenues.Add(new ManualRevenue
+        {
+            FinanceAccountId = bank.Id, RevenueCategoryId = category.Id,
+            RevenueType = "Consultancy", RevenueTypeName = "Consultancy", Amount = 5_000m,
+            Date = new DateTime(2026, 8, 1)
+        });
+        await context.SaveChangesAsync();
+        var service = new RevenueCategoryService(context);
 
-        var retired = await new RevenueCategoryService(context).DeleteAsync(category.Id);
+        var retired = await service.DeleteAsync(category.Id);
 
         Assert.NotNull(retired);
         Assert.False(retired.IsActive);
         Assert.True(await context.RevenueCategories.AnyAsync(c => c.Id == category.Id));
+        // The revenue keeps the name it was filed under, which is the point of retiring.
+        Assert.Equal("Consultancy", await context.ManualRevenues.Select(r => r.RevenueTypeName).SingleAsync());
+
+        // Retiring an already retired category is a no-op, not an error.
+        Assert.False((await service.DeleteAsync(category.Id))!.IsActive);
+    }
+
+    [Fact]
+    public async Task ANeverUsedRevenueCategory_IsDeletedOutright_LikeAnExpenseCategory()
+    {
+        await using var context = Context();
+        var category = new RevenueCategory { Name = "Mistyped", Code = "mistyped", IsActive = true };
+        context.RevenueCategories.Add(category);
+        await context.SaveChangesAsync();
+
+        Assert.Null(await new RevenueCategoryService(context).DeleteAsync(category.Id));
+        Assert.False(await context.RevenueCategories.AnyAsync(c => c.Id == category.Id));
+    }
+
+    [Fact]
+    public async Task RenamingARevenueCategory_LeavesTheNameAlreadyRecordedOnRevenue()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var category = new RevenueCategory { Name = "Rentl Incom", Code = "rental", DisplayOrder = 10, IsActive = true };
+        context.AddRange(bank, category);
+        await context.SaveChangesAsync();
+        context.ManualRevenues.Add(new ManualRevenue
+        {
+            FinanceAccountId = bank.Id, RevenueCategoryId = category.Id,
+            RevenueType = "Rentl Incom", RevenueTypeName = "Rentl Incom", Amount = 900m,
+            Date = new DateTime(2026, 8, 1)
+        });
+        await context.SaveChangesAsync();
+
+        var renamed = await new RevenueCategoryService(context).UpdateAsync(category.Id, new SaveRevenueCategoryDto
+        {
+            Name = "Rental Income", Code = category.Code, DisplayOrder = 20, IsActive = true,
+            ConcurrencyToken = Convert.ToBase64String(category.RowVersion)
+        });
+
+        Assert.Equal("Rental Income", renamed.Name);
+        Assert.Equal(20, renamed.DisplayOrder);
+        // Correcting the spelling must not restate a filed income statement.
+        Assert.Equal("Rentl Incom", await context.ManualRevenues.Select(r => r.RevenueTypeName).SingleAsync());
+    }
+
+    [Fact]
+    public async Task ARetiredRevenueCategory_IsOfferedToNobodyNew_ButStaysOnTheRowThatUsesIt()
+    {
+        await using var context = Context();
+        context.RevenueCategories.AddRange(
+            new RevenueCategory { Name = "Live", Code = "live", DisplayOrder = 10, IsActive = true },
+            new RevenueCategory { Name = "Retired", Code = "retired", DisplayOrder = 20, IsActive = false });
+        await context.SaveChangesAsync();
+        var service = new RevenueCategoryService(context);
+
+        Assert.Equal(["Live"], (await service.GetAllAsync(false)).Select(c => c.Name));
+        Assert.Equal(["Live", "Retired"], (await service.GetAllAsync(true)).Select(c => c.Name));
     }
 
     [Fact]

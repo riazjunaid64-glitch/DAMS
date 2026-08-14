@@ -13,11 +13,15 @@ import {
 import { formatRs, type WhtCalculation, type WhtFormValue } from "../features/finance/whtTypes.ts";
 
 /**
- * The withholding block on the expense form.
+ * The withholding block, shared by the expense form and the fixed-asset purchase form.
  *
  * Rate and tax are both editable and kept consistent with each other: editing the rate recomputes
  * the tax, editing the tax back-computes the rate. Net paid is always derived and never editable,
  * because gross must equal tax plus net or the account balance stops reconciling.
+ *
+ * Both forms use it unchanged because the tax is genuinely the same calculation — the same rate
+ * table, the same filer status, and the same annual allowance shared across both. Only the wording
+ * differs, since an asset is capitalised at the gross figure rather than expensed at it.
  */
 export default function ExpenseWhtFields({
   categoryId,
@@ -25,6 +29,8 @@ export default function ExpenseWhtFields({
   grossAmount,
   date,
   excludeExpenseId,
+  excludeAssetPurchaseId = null,
+  capitalised = false,
   value,
   onChange,
   disabled,
@@ -34,6 +40,9 @@ export default function ExpenseWhtFields({
   grossAmount: string;
   date: string;
   excludeExpenseId: number | null;
+  excludeAssetPurchaseId?: number | null;
+  /** True on the asset-purchase form: the gross is what the asset is carried at, not a cost. */
+  capitalised?: boolean;
   value: WhtFormValue;
   onChange: (next: WhtFormValue) => void;
   disabled?: boolean;
@@ -72,6 +81,7 @@ export default function ExpenseWhtFields({
         grossAmount: gross,
         date: date || undefined,
         excludeExpenseId,
+        excludeAssetPurchaseId,
       })
         .then((result) => {
           if (controller.signal.aborted) return;
@@ -91,7 +101,7 @@ export default function ExpenseWhtFields({
     // onChange is intentionally excluded: it is recreated every render by the parent, and
     // including it would refire the preview on every keystroke anywhere in the form.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryId, vendorId, gross, date, excludeExpenseId, key]);
+  }, [categoryId, vendorId, gross, date, excludeExpenseId, excludeAssetPurchaseId, key]);
 
   if (!categoryId) {
     return (
@@ -154,12 +164,15 @@ export default function ExpenseWhtFields({
       </div>
 
       <div className="flex items-baseline justify-between rounded-lg border border-[var(--border)] px-3 py-2.5">
-        <span className="text-xs font-medium text-[var(--text-secondary)]">Net paid to vendor</span>
+        <span className="text-xs font-medium text-[var(--text-secondary)]">
+          Net paid to {capitalised ? "supplier" : "vendor"}
+        </span>
         <span className="text-sm font-bold text-[var(--text-heading)]">{formatRs(netPaid)}</span>
       </div>
       <p className="text-[11px] text-[var(--text-muted)]">
-        The expense is recorded at the full {formatRs(Number.isFinite(gross) ? gross : 0)}; only the net
-        leaves the account. The rest is owed to FBR.
+        {capitalised
+          ? `The asset is recorded at the full ${formatRs(Number.isFinite(gross) ? gross : 0)}; only the net leaves the account. The rest is owed to FBR.`
+          : `The expense is recorded at the full ${formatRs(Number.isFinite(gross) ? gross : 0)}; only the net leaves the account. The rest is owed to FBR.`}
       </p>
 
       {overridden && (

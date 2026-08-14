@@ -11,12 +11,12 @@ type Transaction = { kind:string; recordId:number; date:string; label:string; re
 type Overview = { activeAccounts:number; inactiveAccounts:number; totalBalance:number; holderBalances:{accountHolderName:string;accountCount:number;currentBalance:number}[] };
 type Form = { id:number|null; name:string; type:string; accountHolderName:string; openingBalance:string; ledgerCode:string; displayOrder:string; bankOrWalletName:string; description:string; concurrencyToken:string; isSystemAccount:boolean };
 type TransactionWithBalance = { t:Transaction; balance:number };
-const types:Record<number,string> = {1:"Cash",2:"Bank",3:"Mobile Wallet",4:"Other",5:"Liability",6:"Capital",7:"Fixed Asset",8:"Receivable",9:"Work in Progress"};
-const enumValues:Record<string,number>={Cash:1,Bank:2,MobileWallet:3,Other:4,Liability:5,Capital:6,FixedAsset:7,Receivable:8,WorkInProgress:9};
+const types:Record<number,string> = {1:"Cash",2:"Bank",3:"Mobile Wallet",4:"Other",5:"Liability",6:"Capital",7:"Fixed Asset",8:"Receivable",9:"Work in Progress",10:"Staff Float"};
+const enumValues:Record<string,number>={Cash:1,Bank:2,MobileWallet:3,Other:4,Liability:5,Capital:6,FixedAsset:7,Receivable:8,WorkInProgress:9,StaffFloat:10};
 const typeValue=(value:number|string)=>typeof value==="number"?value:(enumValues[value]??Number(value));
 const typeName=(value:number|string)=>types[typeValue(value)]??"—";
 const isCashLike=(value:number|string)=>typeValue(value)<=4;
-const groups:[string,number[]][]=[["Cash & Bank",[1,2,3,4]],["Fixed Assets",[7]],["Work in Progress",[9]],["Receivables",[8]],["Liabilities",[5]],["Capital",[6]]];
+const groups:[string,number[]][]=[["Cash & Bank",[1,2,3,4]],["Cash held by staff",[10]],["Fixed Assets",[7]],["Work in Progress",[9]],["Receivables",[8]],["Liabilities",[5]],["Capital",[6]]];
 const emptyForm = ():Form => ({ id:null, name:"", type:"1", accountHolderName:"", openingBalance:"0", ledgerCode:"", displayOrder:"0", bankOrWalletName:"", description:"", concurrencyToken:"", isSystemAccount:false });
 const money = (n:number) => `Rs ${n.toLocaleString("en-PK", { maximumFractionDigits:2 })}`;
 
@@ -57,7 +57,7 @@ function DetailModal({account,transactions,close}:{account:Account;transactions:
   const rows = withRunningBalances(orderedAsc, account.openingBalance);
   return <Modal title={account.name} close={close}>
     <p className="mb-3 text-sm text-[var(--text-muted)]">{typeName(account.type)} · {account.accountHolderName}{account.bankOrWalletName?` · ${account.bankOrWalletName}`:""}{account.isActive?"":" · Inactive"}</p>
-    <div className="mb-4 grid grid-cols-2 gap-3"><Stat label="Opening balance" value={money(account.openingBalance)}/><Stat label="Current balance" value={money(account.currentBalance)}/><Stat label={isCashLike(account.type)?"Revenue received":"Increases"} value={money(account.revenueReceived)}/><Stat label={isCashLike(account.type)?"Cash paid out":"Decreases"} value={money(account.expensesPaid)}/></div>
+    <div className="mb-4 grid grid-cols-2 gap-3"><Stat label="Opening balance" value={money(account.openingBalance)}/><Stat label="Current balance" value={money(account.currentBalance)}/><Stat label={isCashLike(account.type)?"Money in":"Increases"} value={money(account.revenueReceived)}/><Stat label={isCashLike(account.type)?"Money out":"Decreases"} value={money(account.expensesPaid)}/></div>
     {/* Tax withheld from suppliers is sitting inside the balance above but is not the company's
         money — it is owed to FBR until a challan is recorded. */}
     {account.whtWithheld > 0 && <p className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/[0.07] px-4 py-3 text-sm text-amber-200">Includes {money(account.whtWithheld - account.whtDeposited)} of withholding tax held for FBR ({money(account.whtWithheld)} withheld, {money(account.whtDeposited)} deposited). <Link to="/finance/settings" className="underline">Record a deposit</Link></p>}

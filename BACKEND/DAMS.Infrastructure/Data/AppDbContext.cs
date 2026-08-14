@@ -31,6 +31,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<EmployeeSalary> EmployeeSalaries { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<AssetPurchase> AssetPurchases { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<Vendor> Vendors { get; set; }
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
@@ -44,6 +45,9 @@ namespace DAMS.Infrastructure.Data
         public DbSet<OpeningBalanceAuditEntry> OpeningBalanceAuditEntries { get; set; }
         public DbSet<CapitalPartner> CapitalPartners { get; set; }
         public DbSet<CapitalTransaction> CapitalTransactions { get; set; }
+        public DbSet<Loan> Loans { get; set; }
+        public DbSet<LoanTransaction> LoanTransactions { get; set; }
+        public DbSet<StaffCashTransfer> StaffCashTransfers { get; set; }
         public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
         public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
         public DbSet<CommissionRule> CommissionRules { get; set; }
@@ -655,6 +659,59 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<AssetPurchase>(entity =>
+            {
+                entity.Property(p => p.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.ItemName).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.Category).IsRequired().HasMaxLength(100);
+                entity.Property(p => p.Description).HasMaxLength(1000);
+                entity.Property(p => p.Vendor).HasMaxLength(200);
+
+                entity.Property(p => p.WhtRate).HasColumnType("decimal(9,4)");
+                entity.Property(p => p.WhtAmount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.WhtOverrideReason).HasMaxLength(500);
+                entity.Property(p => p.WhtTaxSection).HasMaxLength(30);
+                entity.Property(p => p.VendorFilerStatusAtEntry).HasConversion<int>();
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.Ignore(p => p.NetPaid);
+
+                entity.HasIndex(p => p.ProjectId);
+                entity.HasIndex(p => p.Date);
+                entity.HasIndex(p => p.FinanceAccountId);
+                // The asset ledger's own drill-down and running total read by this.
+                entity.HasIndex(p => new { p.AssetAccountId, p.Date });
+                entity.HasIndex(p => p.CategoryId);
+                entity.HasIndex(p => new { p.VendorId, p.Date });
+
+                entity.HasOne(p => p.Project)
+                      .WithMany()
+                      .HasForeignKey(p => p.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                // Two accounts, both Restrict. Deleting either side would leave a purchase that
+                // debits an asset without crediting cash, or vice versa — a silently unbalanced
+                // balance sheet. FinanceAccountService refuses the delete before it gets here.
+                entity.HasOne(p => p.AssetAccount)
+                      .WithMany(a => a.AssetPurchasesReceived)
+                      .HasForeignKey(p => p.AssetAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.FinanceAccount)
+                      .WithMany(a => a.AssetPurchasesPaid)
+                      .HasForeignKey(p => p.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.ExpenseCategory)
+                      .WithMany(c => c.AssetPurchases)
+                      .HasForeignKey(p => p.CategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.VendorAccount)
+                      .WithMany(v => v.AssetPurchases)
+                      .HasForeignKey(p => p.VendorId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
             ConfigureWithholdingTax(modelBuilder);
 
             modelBuilder.Entity<ManualRevenue>(entity =>
@@ -689,6 +746,10 @@ namespace DAMS.Infrastructure.Data
 
             ConfigureFinanceReporting(modelBuilder);
 
+            ConfigureLoans(modelBuilder);
+
+            ConfigureStaffCash(modelBuilder);
+
             modelBuilder.Entity<FinanceAccount>(entity =>
             {
                 entity.Property(a => a.Name).IsRequired().HasMaxLength(120);
@@ -703,6 +764,9 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.Name).IsUnique();
                 entity.HasIndex(a => new { a.IsActive, a.Type });
                 entity.HasIndex(a => a.AccountHolderName);
+                entity.HasIndex(a => new { a.Type, a.AccountHolderName })
+                      .IsUnique()
+                      .HasFilter("[Type] = 10");
                 entity.HasIndex(a => new { a.Type, a.DisplayOrder });
                 entity.HasIndex(a => a.LedgerCode);
                 entity.HasIndex(a => a.SystemRole)
@@ -728,10 +792,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.ExpenseId)
                       .IsUnique()
                       .HasFilter("[ExpenseId] IS NOT NULL");
+                entity.HasIndex(a => a.AssetPurchaseId)
+                      .IsUnique()
+                      .HasFilter("[AssetPurchaseId] IS NOT NULL");
 
+                // Counted rather than enumerated as pairs: with three owners the pairwise form
+                // needs six clauses and gains one more every time a record type is added.
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_FinanceAttachments_ExactlyOneOwner",
-                    "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)"));
+                    "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1"));
 
                 entity.HasOne(a => a.ManualRevenue)
                       .WithOne(r => r.Attachment)
@@ -741,6 +812,11 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.Expense)
                       .WithOne(e => e.Attachment)
                       .HasForeignKey<FinanceAttachment>(a => a.ExpenseId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.AssetPurchase)
+                      .WithOne(p => p.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.AssetPurchaseId)
                       .OnDelete(DeleteBehavior.Cascade);
             });
 
@@ -833,6 +909,72 @@ namespace DAMS.Infrastructure.Data
                     .HasForeignKey(t => t.CapitalPartnerId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(t => t.FinanceAccount).WithMany(a => a.CapitalCashTransactions)
                     .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureLoans(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Loan>(entity =>
+            {
+                entity.Property(l => l.Name).IsRequired().HasMaxLength(200);
+                entity.Property(l => l.LenderName).HasMaxLength(200);
+                entity.Property(l => l.RowVersion).IsRowVersion();
+                entity.HasIndex(l => l.Name).IsUnique();
+                entity.HasIndex(l => l.FinanceAccountId).IsUnique();
+                entity.HasIndex(l => new { l.IsActive, l.Name });
+                entity.HasOne(l => l.FinanceAccount).WithMany(a => a.Loans)
+                    .HasForeignKey(l => l.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LoanTransaction>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.PrincipalAmount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.InterestAmount).HasColumnType("decimal(18,2)");
+                entity.Ignore(t => t.TotalPaid);
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.Property(t => t.RowVersion).IsRowVersion();
+                entity.HasIndex(t => t.OperationId).IsUnique();
+                entity.HasIndex(t => new { t.LoanId, t.Date, t.CreatedAt });
+                entity.HasIndex(t => new { t.FinanceAccountId, t.Date });
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_LoanTransactions_Type", "[Type] IN (1, 2)");
+                    t.HasCheckConstraint("CK_LoanTransactions_Amounts", "[PrincipalAmount] >= 0 AND [InterestAmount] >= 0");
+                    t.HasCheckConstraint("CK_LoanTransactions_Shape",
+                        "([Type] = 1 AND [PrincipalAmount] > 0 AND [InterestAmount] = 0) OR " +
+                        "([Type] = 2 AND ([PrincipalAmount] > 0 OR [InterestAmount] > 0))");
+                });
+                entity.HasOne(t => t.Loan).WithMany(l => l.Transactions)
+                    .HasForeignKey(t => t.LoanId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.FinanceAccount).WithMany(a => a.LoanCashTransactions)
+                    .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureStaffCash(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StaffCashTransfer>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.Property(t => t.RowVersion).IsRowVersion();
+                entity.HasIndex(t => new { t.StaffFinanceAccountId, t.Date, t.CreatedAt });
+                entity.HasIndex(t => new { t.CounterpartyFinanceAccountId, t.Date });
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_StaffCashTransfers_Type", "[Type] IN (1, 2)");
+                    t.HasCheckConstraint("CK_StaffCashTransfers_Amount", "[Amount] > 0");
+                    t.HasCheckConstraint("CK_StaffCashTransfers_DifferentAccounts",
+                        "[StaffFinanceAccountId] <> [CounterpartyFinanceAccountId]");
+                });
+                entity.HasOne(t => t.StaffFinanceAccount).WithMany(a => a.StaffCashTransfers)
+                    .HasForeignKey(t => t.StaffFinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.CounterpartyFinanceAccount).WithMany(a => a.StaffCashCounterpartyTransfers)
+                    .HasForeignKey(t => t.CounterpartyFinanceAccountId).OnDelete(DeleteBehavior.Restrict);
             });
         }
 

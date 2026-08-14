@@ -66,6 +66,9 @@ export const calculateWht = (body: {
   grossAmount: number;
   date?: string;
   excludeExpenseId?: number | null;
+  /** The asset-purchase equivalent. Both exist because expenses and purchases share one annual
+   *  allowance but number their rows independently. */
+  excludeAssetPurchaseId?: number | null;
 }) => apiJson<WhtCalculation>("/api/finance/wht/calculate", jsonRequest("POST", body));
 
 /** Streams the s.165 statement to a file. Uses the raw fetch wrapper because the response is

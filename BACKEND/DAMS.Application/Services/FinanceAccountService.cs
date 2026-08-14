@@ -39,11 +39,15 @@ namespace DAMS.Application.Services
             };
         }
 
-        public Task<List<FinanceAccountOptionDto>> GetOptionsAsync(bool includeInactive, bool cashLikeOnly = true, CancellationToken cancellationToken = default) =>
+        public Task<List<FinanceAccountOptionDto>> GetOptionsAsync(bool includeInactive, bool cashLikeOnly = true, FinanceAccountType? type = null, CancellationToken cancellationToken = default) =>
             _context.FinanceAccounts.AsNoTracking()
                 .Where(a => includeInactive || a.IsActive)
-                .Where(a => !cashLikeOnly || a.Type == FinanceAccountType.Cash || a.Type == FinanceAccountType.Bank
-                    || a.Type == FinanceAccountType.MobileWallet || a.Type == FinanceAccountType.Other)
+                // An explicit type wins over the cash-like default, so the asset-purchase form can
+                // ask for the fixed-asset accounts without also being handed every liability.
+                .Where(a => type.HasValue
+                    ? a.Type == type.Value
+                    : !cashLikeOnly || a.Type == FinanceAccountType.Cash || a.Type == FinanceAccountType.Bank
+                        || a.Type == FinanceAccountType.MobileWallet || a.Type == FinanceAccountType.Other)
                 .OrderByDescending(a => a.IsActive).ThenBy(a => a.DisplayOrder).ThenBy(a => a.Name)
                 .Select(a => new FinanceAccountOptionDto
                 {
@@ -85,6 +89,22 @@ namespace DAMS.Application.Services
                     Kind = "Expense", RecordId = e.Id, Date = e.Date, Label = e.Category,
                     Reference = e.Vendor, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
                     Amount = -(e.Amount - e.WhtAmount), GrossAmount = e.Amount, WhtAmount = e.WhtAmount
+                });
+            // A purchase appears twice, once on each account it moved, with opposite signs — the
+            // bank sees net cash leaving, the asset ledger sees the full price arriving.
+            var assetPurchasesPaid = _context.AssetPurchases.AsNoTracking().Where(p => p.FinanceAccountId == id)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Asset purchase", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
+                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = -(p.Amount - p.WhtAmount), GrossAmount = p.Amount, WhtAmount = p.WhtAmount
+                });
+            var assetPurchasesCapitalised = _context.AssetPurchases.AsNoTracking().Where(p => p.AssetAccountId == id)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Asset acquired", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
+                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount
                 });
             var whtDeposits = _context.WhtDeposits.AsNoTracking().Where(d => d.FinanceAccountId == id)
                 .Select(d => new FinanceAccountTransactionDto
@@ -148,6 +168,13 @@ namespace DAMS.Application.Services
                     Reference = e.Vendor, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
                     Amount = e.WhtAmount, GrossAmount = e.Amount, WhtAmount = e.WhtAmount
                 });
+            var payableWithheldOnAssets = _context.AssetPurchases.AsNoTracking().Where(p => account.IsTaxPayable && p.WhtAmount != 0m)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "WHT withheld", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
+                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = p.WhtAmount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount
+                });
             var payableDeposited = _context.WhtDeposits.AsNoTracking().Where(d => account.IsTaxPayable)
                 .Select(d => new FinanceAccountTransactionDto
                 {
@@ -178,9 +205,58 @@ namespace DAMS.Application.Services
                         ? -t.Amount : t.Amount,
                     GrossAmount = t.Amount, WhtAmount = 0m
                 });
+            var loanCash = _context.LoanTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == LoanTransactionType.Drawdown ? "Loan drawdown" : "Loan repayment",
+                    RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
+                    ProjectName = "General",
+                    Amount = t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount),
+                    GrossAmount = t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : t.PrincipalAmount + t.InterestAmount,
+                    WhtAmount = 0m
+                });
+            var loanLiability = _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.Loan.FinanceAccountId == id && t.PrincipalAmount != 0m)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == LoanTransactionType.Drawdown ? "Loan principal drawn" : "Loan principal repaid",
+                    RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
+                    ProjectName = "General",
+                    Amount = t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount,
+                    GrossAmount = t.PrincipalAmount, WhtAmount = 0m
+                });
+            var staffTransfers = _context.StaffCashTransfers.AsNoTracking()
+                .Where(t => t.StaffFinanceAccountId == id)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == StaffCashMovementType.FundsGiven ? "Staff cash received" : "Staff cash returned",
+                    RecordId = t.Id, Date = t.Date,
+                    Label = t.Type == StaffCashMovementType.FundsGiven
+                        ? "Received from " + t.CounterpartyFinanceAccount.Name
+                        : "Returned to " + t.CounterpartyFinanceAccount.Name,
+                    Reference = t.Reference, ProjectName = "General",
+                    Amount = t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount,
+                    GrossAmount = t.Amount, WhtAmount = 0m
+                });
+            var staffCounterpartyTransfers = _context.StaffCashTransfers.AsNoTracking()
+                .Where(t => t.CounterpartyFinanceAccountId == id)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == StaffCashMovementType.FundsGiven ? "Cash given to staff" : "Cash returned by staff",
+                    RecordId = t.Id, Date = t.Date, Label = t.StaffFinanceAccount.AccountHolderName,
+                    Reference = t.Reference, ProjectName = "General",
+                    Amount = t.Type == StaffCashMovementType.FundsGiven ? -t.Amount : t.Amount,
+                    GrossAmount = t.Amount, WhtAmount = 0m
+                });
             var rows = await revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
-                .Concat(capitalCash).Concat(partnerCapital).Concat(payableWithheld).Concat(payableDeposited)
+                .Concat(assetPurchasesPaid).Concat(assetPurchasesCapitalised)
+                .Concat(capitalCash).Concat(partnerCapital)
+                .Concat(loanCash).Concat(loanLiability)
+                .Concat(staffTransfers).Concat(staffCounterpartyTransfers)
+                .Concat(payableWithheld).Concat(payableWithheldOnAssets).Concat(payableDeposited)
                 .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<FinanceAccountTransactionDto>
@@ -214,6 +290,7 @@ namespace DAMS.Application.Services
             if (dto.OpeningBalance != 0m && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
                 throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to add this amount.");
             await EnsureUniqueName(dto.Name, null, cancellationToken);
+            await EnsureUniqueStaffHolderAsync(dto, null, cancellationToken);
             var account = new FinanceAccount
             {
                 Name = dto.Name.Trim(), Type = dto.Type,
@@ -236,9 +313,11 @@ namespace DAMS.Application.Services
             if (dto.OpeningBalance != account.OpeningBalance && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
                 throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to change this amount.");
             EnsureSystemIdentityIsPreserved(account, dto);
+            await ValidateLinkedLoanAccountAsync(id, dto.Type, dto.OpeningBalance, cancellationToken);
             if (dto.Type != account.Type && await HasDependenciesAsync(id, cancellationToken))
                 throw new InvalidOperationException("An account with financial history cannot change type. Create a correctly typed account and keep this one for reconciliation.");
             await EnsureUniqueName(dto.Name, id, cancellationToken);
+            await EnsureUniqueStaffHolderAsync(dto, id, cancellationToken);
             account.Name = dto.Name.Trim();
             account.Type = dto.Type;
             account.AccountHolderName = dto.AccountHolderName.Trim();
@@ -260,6 +339,15 @@ namespace DAMS.Application.Services
             ApplyConcurrencyToken(account, concurrencyToken);
             if (account.SystemRole != FinanceSystemAccountRole.None && !isActive)
                 throw new InvalidOperationException("System finance accounts cannot be deactivated because financial statements depend on them.");
+            if (!isActive && await _context.Loans.AnyAsync(l => l.FinanceAccountId == id && l.IsActive, cancellationToken))
+                throw new InvalidOperationException("Deactivate the linked loan before deactivating its liability account.");
+            if (!isActive && account.Type == FinanceAccountType.StaffFloat)
+            {
+                var balance = await Project(_context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id))
+                    .Select(a => a.CurrentBalance).SingleAsync(cancellationToken);
+                if (balance != 0m)
+                    throw new InvalidOperationException("A staff float can only be deactivated after its balance reaches zero.");
+            }
             account.IsActive = isActive;
             account.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync(cancellationToken);
@@ -289,6 +377,42 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Selected finance account is inactive. Choose an active account.");
             if (!AccountBalanceDirection.IsCashLike(account.Type))
                 throw new InvalidOperationException("Only a cash, bank, mobile wallet or other cash-like account can be used for payments.");
+        }
+
+        public async Task EnsureExpenseSourceAsync(
+            int accountId,
+            int? currentAccountId = null,
+            CancellationToken cancellationToken = default)
+        {
+            var account = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Id == accountId)
+                .Select(a => new { a.IsActive, a.Type })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (account == null) throw new InvalidOperationException("Selected finance account does not exist.");
+            if (!account.IsActive && currentAccountId != accountId)
+                throw new InvalidOperationException("Selected finance account is inactive. Choose an active account.");
+            if (!AccountBalanceDirection.CanPayExpense(account.Type))
+                throw new InvalidOperationException(
+                    "Expenses can only be paid from cash, bank, mobile wallet, other cash-like accounts, or a staff float.");
+        }
+
+        /// <summary>
+        /// Validates the destination of a fixed-asset purchase. The mirror of
+        /// <see cref="EnsureSelectableAsync"/>: that one insists on cash going out, this one insists
+        /// the value lands somewhere it is actually held. Booking a purchase into a bank account
+        /// would count the money twice, and into a liability would invert its sign.
+        /// </summary>
+        public async Task EnsureAssetAccountAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default)
+        {
+            var account = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Id == accountId)
+                .Select(a => new { a.IsActive, a.Type })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (account == null) throw new InvalidOperationException("Selected asset account does not exist.");
+            if (!account.IsActive && currentAccountId != accountId)
+                throw new InvalidOperationException("Selected asset account is inactive. Choose an active account.");
+            if (account.Type != FinanceAccountType.FixedAsset)
+                throw new InvalidOperationException("Purchases can only be capitalised into a fixed-asset account.");
         }
 
         public async Task<List<FinanceAccountResponseDto>> SetupClientChartAsync(CancellationToken cancellationToken = default)
@@ -403,7 +527,12 @@ namespace DAMS.Application.Services
             from a in query
             let genericIn = (a.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
                 + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
+            // Gross, not net. The asset is worth what it cost; the tax withheld from the supplier
+            // is a debt to FBR, not a discount on the desk.
+            let capitalisedIn = a.AssetPurchasesReceived.Sum(p => (decimal?)p.Amount) ?? 0m
             let genericOut = (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
+                // Net, like expenses: only this much actually left the bank.
+                + (a.AssetPurchasesPaid.Sum(p => (decimal?)(p.Amount - p.WhtAmount)) ?? 0m)
                 + (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
                 - (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                 + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
@@ -421,33 +550,67 @@ namespace DAMS.Application.Services
             let partnerOut = a.CapitalPartners.SelectMany(p => p.Transactions)
                 .Where(t => t.Type == CapitalTransactionType.Withdrawal || t.Type == CapitalTransactionType.LossShare)
                 .Sum(t => (decimal?)t.Amount) ?? 0m
+            let loanCashIn = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Drawdown)
+                .Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
+            let loanCashOut = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Repayment)
+                .Sum(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m
+            let loanLiabilityIn = a.Loans.SelectMany(l => l.Transactions)
+                .Where(t => t.Type == LoanTransactionType.Drawdown).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
+            let loanLiabilityOut = a.Loans.SelectMany(l => l.Transactions)
+                .Where(t => t.Type == LoanTransactionType.Repayment).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
+            let staffFloatIn = a.StaffCashTransfers.Where(t => t.Type == StaffCashMovementType.FundsGiven)
+                .Sum(t => (decimal?)t.Amount) ?? 0m
+            let staffFloatOut = a.StaffCashTransfers.Where(t => t.Type == StaffCashMovementType.FundsReturned)
+                .Sum(t => (decimal?)t.Amount) ?? 0m
+            let staffCounterpartyIn = a.StaffCashCounterpartyTransfers
+                .Where(t => t.Type == StaffCashMovementType.FundsReturned).Sum(t => (decimal?)t.Amount) ?? 0m
+            let staffCounterpartyOut = a.StaffCashCounterpartyTransfers
+                .Where(t => t.Type == StaffCashMovementType.FundsGiven).Sum(t => (decimal?)t.Amount) ?? 0m
             let isTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
-            let taxPayableIn = isTaxPayable ? (_context.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m) : 0m
+            // Tax withheld from asset suppliers is owed to FBR on identical terms, so the payable
+            // counts it too — otherwise the liability is short by whatever capital suppliers lost.
+            let taxPayableIn = isTaxPayable
+                ? (_context.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
+                    + (_context.AssetPurchases.Sum(p => (decimal?)p.WhtAmount) ?? 0m)
+                : 0m
             let taxPayableOut = isTaxPayable ? (_context.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m) : 0m
-            let debitMovement = genericIn + cashCapitalIn - genericOut - cashCapitalOut
+            let debitMovement = genericIn + capitalisedIn + cashCapitalIn + loanCashIn
+                + staffFloatIn + staffCounterpartyIn
+                - genericOut - cashCapitalOut - loanCashOut - staffFloatOut - staffCounterpartyOut
             let movement = a.Type == FinanceAccountType.Capital
                 ? partnerIn - partnerOut
-                : (isTaxPayable ? taxPayableIn - taxPayableOut : debitMovement)
+                : (isTaxPayable ? taxPayableIn - taxPayableOut : debitMovement + loanLiabilityIn - loanLiabilityOut)
             select new FinanceAccountResponseDto
             {
                 Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
                 OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
                 SystemRole = a.SystemRole,
                 BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + cashCapitalIn),
-                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut),
-                WhtWithheld = isTaxPayable ? taxPayableIn : a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
+                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
+                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
+                WhtWithheld = isTaxPayable
+                    ? taxPayableIn
+                    : (a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
+                        + (a.AssetPurchasesPaid.Sum(p => (decimal?)p.WhtAmount) ?? 0m),
                 WhtDeposited = isTaxPayable ? taxPayableOut : a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
                 NetMovement = movement,
                 CurrentBalance = a.OpeningBalance + movement,
-                TransactionCount = a.Payments.Count + a.ManualRevenues.Count + a.Expenses.Count + a.CommissionPayouts.Count
+                TransactionCount = a.Payments.Count + a.ManualRevenues.Count + a.Expenses.Count
+                    + a.AssetPurchasesPaid.Count + a.AssetPurchasesReceived.Count + a.CommissionPayouts.Count
                     + a.CommissionPayouts.SelectMany(p => p.Reversals).Count()
                     + a.RebateDisbursements.Count(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                     + a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                         .SelectMany(d => d.Reversals).Count()
                     + a.WhtDeposits.Count + a.CapitalCashTransactions.Count
                     + a.CapitalPartners.SelectMany(p => p.Transactions).Count()
-                    + (isTaxPayable ? _context.Expenses.Count(e => e.WhtAmount != 0m) + _context.WhtDeposits.Count() : 0),
+                    + a.LoanCashTransactions.Count
+                    + a.Loans.SelectMany(l => l.Transactions).Count(t => t.PrincipalAmount != 0m)
+                    + a.StaffCashTransfers.Count + a.StaffCashCounterpartyTransfers.Count
+                    + (isTaxPayable
+                        ? _context.Expenses.Count(e => e.WhtAmount != 0m)
+                            + _context.AssetPurchases.Count(p => p.WhtAmount != 0m)
+                            + _context.WhtDeposits.Count()
+                        : 0),
                 CreatedAt = a.CreatedAt, UpdatedAt = a.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
             };
@@ -457,6 +620,20 @@ namespace DAMS.Application.Services
             var normalized = name.Trim();
             if (await _context.FinanceAccounts.AnyAsync(a => a.Name == normalized && (!excludingId.HasValue || a.Id != excludingId), cancellationToken))
                 throw new InvalidOperationException("A finance account with this name already exists.");
+        }
+
+        private async Task EnsureUniqueStaffHolderAsync(
+            CreateFinanceAccountDto dto,
+            int? excludingId,
+            CancellationToken cancellationToken)
+        {
+            if (dto.Type != FinanceAccountType.StaffFloat) return;
+            var holder = dto.AccountHolderName.Trim();
+            if (await _context.FinanceAccounts.AnyAsync(a =>
+                    a.Type == FinanceAccountType.StaffFloat
+                    && a.AccountHolderName == holder
+                    && (!excludingId.HasValue || a.Id != excludingId.Value), cancellationToken))
+                throw new InvalidOperationException("This person already has a staff float.");
         }
 
         private static void EnsureSystemIdentityIsPreserved(FinanceAccount account, UpdateFinanceAccountDto dto)
@@ -472,12 +649,42 @@ namespace DAMS.Application.Services
             await _context.Payments.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.ManualRevenues.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
             || await _context.Expenses.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
+            || await _context.AssetPurchases.AnyAsync(p => p.FinanceAccountId == id || p.AssetAccountId == id, cancellationToken)
             || await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
             || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
             || await _context.OpeningBalanceEntries.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
             || await _context.CapitalPartners.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
-            || await _context.CapitalTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken);
+            || await _context.CapitalTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken)
+            || await _context.Loans.AnyAsync(l => l.FinanceAccountId == id, cancellationToken)
+            || await _context.LoanTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken)
+            || await _context.StaffCashTransfers.AnyAsync(
+                t => t.StaffFinanceAccountId == id || t.CounterpartyFinanceAccountId == id, cancellationToken);
+
+        private async Task ValidateLinkedLoanAccountAsync(int accountId, FinanceAccountType type, decimal openingBalance,
+            CancellationToken cancellationToken)
+        {
+            var loanId = await _context.Loans.AsNoTracking().Where(l => l.FinanceAccountId == accountId)
+                .Select(l => (int?)l.Id).SingleOrDefaultAsync(cancellationToken);
+            if (!loanId.HasValue) return;
+            if (type != FinanceAccountType.Liability)
+                throw new InvalidOperationException("An account linked to a loan must remain a Liability account.");
+            if (openingBalance < 0m)
+                throw new InvalidOperationException("A loan liability cannot have a negative opening balance.");
+            var movements = await _context.LoanTransactions.AsNoTracking().Where(t => t.LoanId == loanId.Value)
+                .GroupBy(t => t.Date).Select(g => new
+                {
+                    Date = g.Key,
+                    Amount = g.Sum(t => t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount)
+                }).OrderBy(x => x.Date).ToListAsync(cancellationToken);
+            var running = openingBalance;
+            foreach (var movement in movements)
+            {
+                running += movement.Amount;
+                if (running < 0m)
+                    throw new InvalidOperationException($"This opening balance would make the loan negative on {movement.Date:dd MMM yyyy}.");
+            }
+        }
 
         private static void Validate(CreateFinanceAccountDto dto)
         {

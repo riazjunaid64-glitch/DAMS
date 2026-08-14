@@ -58,22 +58,27 @@ namespace DAMS.Application.Services
             var assetGroups = new[]
             {
                 Group("Current Assets", snapshots, FinanceAccountType.Cash, FinanceAccountType.Bank, FinanceAccountType.MobileWallet, FinanceAccountType.Other),
+                StaffFloatGroup("Cash held by staff", snapshots, positive: true),
                 Group("Fixed Assets", snapshots, FinanceAccountType.FixedAsset),
                 Group("Work in Progress", snapshots, FinanceAccountType.WorkInProgress),
                 Group("Receivables", snapshots, FinanceAccountType.Receivable)
             }.Where(g => g.Lines.Count > 0).ToList();
-            var liabilityGroup = Group("Liabilities", snapshots, FinanceAccountType.Liability);
+            var liabilityGroups = new[]
+            {
+                Group("Liabilities", snapshots, FinanceAccountType.Liability),
+                StaffFloatGroup("Due to staff", snapshots, positive: false)
+            }.Where(g => g.Lines.Count > 0).ToList();
             var capitalLines = snapshots.Where(s => s.Type == FinanceAccountType.Capital)
                 .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(ToBsLine).ToList();
             var totalAssets = Money(assetGroups.Sum(g => g.Total));
-            var totalLiabilities = Money(liabilityGroup.Total);
+            var totalLiabilities = Money(liabilityGroups.Sum(g => g.Total));
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
             var imbalance = Money(totalAssets - rhs);
             var result = new BalanceSheetDto
             {
                 AsAt = date, AssetGroups = assetGroups, TotalAssets = totalAssets,
-                LiabilityGroups = liabilityGroup.Lines.Count == 0 ? [] : [liabilityGroup],
+                LiabilityGroups = liabilityGroups,
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
@@ -282,6 +287,15 @@ namespace DAMS.Application.Services
             var rebateCount = await CashRebateQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
                 + await CashRebateReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
             if (rebate != 0m) expenses.Add(new ReportLine { Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue, Amount = rebate, Count = rebateCount });
+            var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
+                .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (loanInterest is { Amount: not 0m })
+                expenses.Add(new ReportLine
+                {
+                    Key = "loan-interest", Name = "Loan Interest", Order = int.MaxValue - 2,
+                    Amount = loanInterest.Amount, Count = loanInterest.Count
+                });
             return new PnlPeriod(income.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList(),
                 expenses.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList());
         }
@@ -300,6 +314,13 @@ namespace DAMS.Application.Services
                 .GroupBy(r => r.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
             var expense = await SumByAccount(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
                 .GroupBy(e => e.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(e => e.Amount - e.WhtAmount))), cancellationToken);
+            // A purchase moves two accounts and touches no income statement line. Cash falls by the
+            // net paid; the asset account rises by the gross. The gap between them is the withheld
+            // tax, which lands on the payable below — which is exactly why the sheet still balances.
+            var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
+            var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .GroupBy(p => p.AssetAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
             var commission = await SumByAccount(CommissionPayoutQuery(projectId, null, end, null, false)
                 .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
             var commissionReversal = await SumByAccount(CommissionReversalQuery(projectId, null, end, null, false)
@@ -321,7 +342,33 @@ namespace DAMS.Application.Services
                 ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.CapitalPartner.FinanceAccountId != null)
                     .GroupBy(t => new { Id = t.CapitalPartner.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
                 : [];
-            var wht = await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            var loanCash = !projectId.HasValue
+                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .GroupBy(t => t.FinanceAccountId)
+                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount))))
+                    .ToListAsync(cancellationToken)
+                : [];
+            var loanLiability = !projectId.HasValue
+                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .GroupBy(t => t.Loan.FinanceAccountId)
+                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -t.PrincipalAmount)))
+                    .ToListAsync(cancellationToken)
+                : [];
+            var staffTransfers = !projectId.HasValue
+                ? await _context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                    .Select(t => new
+                    {
+                        StaffId = t.StaffFinanceAccountId,
+                        CounterpartyId = t.CounterpartyFinanceAccountId,
+                        t.Type,
+                        t.Amount
+                    }).ToListAsync(cancellationToken)
+                : [];
+            var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = deposits.Sum(d => d.Amount);
 
             foreach (var account in accounts)
@@ -333,13 +380,19 @@ namespace DAMS.Application.Services
                     continue;
                 }
                 var debitMovement = Amount(payments, account.Id) + Amount(manual, account.Id) - Amount(expense, account.Id)
+                    - Amount(assetPaid, account.Id) + Amount(assetCapitalised, account.Id)
                     - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
                     - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
-                    + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount);
+                    + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount)
+                    + Amount(loanCash, account.Id)
+                    + staffTransfers.Where(t => t.StaffId == account.Id).Sum(t =>
+                        t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount)
+                    + staffTransfers.Where(t => t.CounterpartyId == account.Id).Sum(t =>
+                        t.Type == StaffCashMovementType.FundsReturned ? t.Amount : -t.Amount);
                 // These sources are expressed as business increases minus decreases, not raw
                 // journal debits. The normal-balance direction is applied later when the trial
                 // balance places the positive amount in a Debit or Credit column.
-                account.Balance += debitMovement;
+                account.Balance += debitMovement + Amount(loanLiability, account.Id);
                 if (account.SystemRole == FinanceSystemAccountRole.TaxPayable)
                     account.Balance += Money(wht - deposited);
                 account.Balance = Money(account.Balance);
@@ -363,7 +416,11 @@ namespace DAMS.Application.Services
             if (await PaymentsQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned customer payments");
             if (await ManualQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned manual revenue");
             if (await ExpenseQuery(projectId, null, end, null, true).AnyAsync(cancellationToken)) issues.Add("Unassigned expenses");
-            var wht = await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            // No "unassigned asset purchases" check: both accounts are required on every purchase,
+            // so the row that would cause this imbalance cannot be saved in the first place.
+            var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = projectId.HasValue
                 ? 0m
                 : await _context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
@@ -398,6 +455,23 @@ namespace DAMS.Application.Services
         private static BsGroupDto Group(string name, IEnumerable<AccountSnapshot> accounts, params FinanceAccountType[] types)
         {
             var lines = accounts.Where(a => types.Contains(a.Type)).OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name).Select(ToBsLine).ToList();
+            return new BsGroupDto { Name = name, Lines = lines, Total = Money(lines.Sum(l => l.Amount)) };
+        }
+
+        private static BsGroupDto StaffFloatGroup(
+            string name,
+            IEnumerable<AccountSnapshot> accounts,
+            bool positive)
+        {
+            var lines = accounts
+                .Where(a => a.Type == FinanceAccountType.StaffFloat
+                    && (positive ? a.Balance > 0m : a.Balance < 0m))
+                .OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name)
+                .Select(a => new BsLineDto
+                {
+                    AccountId = a.Id, LedgerCode = a.LedgerCode, Name = a.Name,
+                    Amount = Money(positive ? a.Balance : -a.Balance)
+                }).ToList();
             return new BsGroupDto { Name = name, Lines = lines, Total = Money(lines.Sum(l => l.Amount)) };
         }
 

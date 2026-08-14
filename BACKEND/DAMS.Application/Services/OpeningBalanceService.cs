@@ -93,6 +93,20 @@ namespace DAMS.Application.Services
                 account.OpeningBalance = Money(AccountBalanceDirection.ToNormalBalance(
                     account.Type, entry.DebitAmount, entry.CreditAmount));
             }
+            var loans = await _context.Loans.AsNoTracking().Include(l => l.Transactions).ToListAsync(cancellationToken);
+            foreach (var loan in loans)
+            {
+                var opening = accounts.Single(a => a.Id == loan.FinanceAccountId).OpeningBalance;
+                if (opening < 0m) throw new InvalidOperationException($"{loan.Name} cannot have a negative opening balance.");
+                var running = opening;
+                foreach (var day in loan.Transactions.GroupBy(t => t.Date.Date).OrderBy(g => g.Key))
+                {
+                    running += day.Sum(t => t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -t.PrincipalAmount);
+                    if (running < 0m)
+                        throw new InvalidOperationException($"The opening balance would make {loan.Name} negative on {day.Key:dd MMM yyyy}.");
+                }
+            }
             set.IsCommitted = true;
             set.CommittedAt = DateTime.UtcNow;
             set.CommittedByUserId = userId;

@@ -33,7 +33,13 @@ namespace DAMS.Api.Controllers
             try
             {
                 var row = await _service.DeleteAsync(id, cancellationToken);
-                return Ok(new { message = "Revenue category retired.", category = row });
+                return Ok(new
+                {
+                    message = row == null
+                        ? "Revenue category deleted."
+                        : "Revenue category has recorded revenue, so it was retired instead of deleted.",
+                    category = row
+                });
             }
             catch (DbUpdateException) { return Conflict(new { message = "The revenue category changed while it was being retired. Refresh and try again." }); }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }

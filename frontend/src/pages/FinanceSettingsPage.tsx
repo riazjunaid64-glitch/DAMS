@@ -7,6 +7,7 @@ import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from ".
 import * as whtApi from "../features/finance/whtApi.ts";
 import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
 import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
+import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
 import {
   FILER_STATUSES,
   MONTHS,
@@ -39,18 +40,21 @@ function SettingsWorkspace() {
   const [tab, setTab] = useState<Tab>("rates");
   const [settings, setSettings] = useState<FinanceSettings | null>(null);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadShared = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [settingRow, categoryRows] = await Promise.all([
+      const [settingRow, categoryRows, revenueRows] = await Promise.all([
         whtApi.getSettings(),
         whtApi.listCategories(true),
+        listRevenueCategories(true),
       ]);
       setSettings(settingRow);
       setCategories(categoryRows);
+      setRevenueCategories(revenueRows);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Finance settings could not be loaded.");
     } finally {
@@ -73,8 +77,8 @@ function SettingsWorkspace() {
             </div>
             <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Finance settings</h1>
             <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
-              Expense heads and the withholding tax deducted from supplier payments, the vendors those
-              rates depend on, and what is owed to FBR.
+              The heads income and spending are recorded under, the withholding tax deducted from
+              supplier payments, the vendors those rates depend on, and what is owed to FBR.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -104,7 +108,7 @@ function SettingsWorkspace() {
           onChange={(id) => setTab(id as Tab)}
           items={[
             { id: "rates", label: "Expense categories & WHT rates", count: categories.length },
-            { id: "revenue", label: "Revenue categories" },
+            { id: "revenue", label: "Revenue categories", count: revenueCategories.length },
             { id: "vendors", label: "Vendors" },
             { id: "payable", label: "WHT payable" },
             { id: "opening", label: "Opening balances" },
@@ -118,7 +122,7 @@ function SettingsWorkspace() {
           ) : (
             <>
               {tab === "rates" && <RatesTab categories={categories} onChanged={loadShared} />}
-              {tab === "revenue" && <RevenueCategoriesPanel />}
+              {tab === "revenue" && <RevenueCategoriesPanel categories={revenueCategories} onChanged={loadShared} />}
               {tab === "vendors" && <VendorsTab />}
               {tab === "payable" && <PayableTab />}
               {tab === "opening" && <OpeningBalancesPanel />}
@@ -144,9 +148,9 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
     [categories, showInactive]);
 
   const retire = async (category: ExpenseCategory) => {
-    const used = category.expenseCount > 0;
+    const used = category.usageCount > 0;
     const message = used
-      ? `"${category.name}" is used by ${category.expenseCount} expense(s), so it will be retired rather than deleted — the rate those expenses were entered at is kept. Continue?`
+      ? `"${category.name}" is used by ${category.usageCount} payment record(s), so it will be retired rather than deleted — the rate those records were entered at is kept. Continue?`
       : `Delete "${category.name}"? It has never been used.`;
     if (!window.confirm(message)) return;
     setBusy(true); setError(null);
@@ -220,7 +224,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       ? category.annualThreshold.toLocaleString("en-PK")
                       : <span className="text-[var(--text-muted)]">From Rs 1</span>}
                 </td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.usageCount}</td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => setEditing(category)}>Edit</Button>
@@ -230,7 +234,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       onClick={() => void retire(category)}
                       className="text-xs font-semibold text-[var(--text-muted)] hover:text-rose-400 disabled:opacity-50"
                     >
-                      {category.expenseCount > 0 ? "Retire" : "Delete"}
+                      {category.usageCount > 0 ? "Retire" : "Delete"}
                     </button>
                   </div>
                 </td>
@@ -304,8 +308,8 @@ function CategoryModal({ item, onClose, onSaved }: {
     <CrmModal
       open
       title={item ? `Edit ${item.name}` : "Add expense category"}
-      subtitle={item && item.expenseCount > 0
-        ? `${item.expenseCount} expense(s) already use this head. They keep the rate they were entered at.`
+      subtitle={item && item.usageCount > 0
+        ? `${item.usageCount} payment record(s) already use this head. They keep the rate they were entered at.`
         : "Rates are percentages: enter 7.5 for 7.5%."}
       onClose={onClose}
       footer={
@@ -458,7 +462,7 @@ function VendorsTab() {
               <th className="px-3 py-3">NTN / CNIC</th>
               <th className="px-3 py-3 text-right">Paid this year</th>
               <th className="px-3 py-3 text-right">Tax withheld</th>
-              <th className="px-3 py-3 text-right">Expenses</th>
+              <th className="px-3 py-3 text-right">Payments</th>
               <th className="px-3 py-3" />
             </tr>
           </thead>
@@ -476,7 +480,7 @@ function VendorsTab() {
                 </td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateGross)}</td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateWht)}</td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.paymentCount}</td>
                 <td className="px-3 py-3 text-right">
                   <Button size="sm" variant="outline" onClick={() => setEditing(vendor)}>Edit</Button>
                 </td>
@@ -699,7 +703,7 @@ function PayableTab() {
             <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
               hint="All time, withheld less deposited" />
             <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
-              hint={`${summary.expenseCount} expense(s), ${summary.vendorCount} vendor(s)`} />
+              hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
             <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />
             <Stat label="Withheld all time" value={formatRs(summary.totalWithheldAllTime)}
               hint={`${formatRs(summary.totalDepositedAllTime)} deposited`} />

@@ -37,5 +37,10 @@ namespace DAMS.Domain.Entities
         public byte[] RowVersion { get; set; } = [];
 
         public ICollection<Expense> Expenses { get; set; } = new List<Expense>();
+
+        /// <summary>Fixed-asset purchases classified under this head. Purchases share the expense
+        /// rate table because the statutory threshold is one allowance per supplier per section,
+        /// covering everything they were paid — capital and revenue alike.</summary>
+        public ICollection<AssetPurchase> AssetPurchases { get; set; } = new List<AssetPurchase>();
     }
 }

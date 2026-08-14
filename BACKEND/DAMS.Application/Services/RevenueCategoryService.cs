@@ -57,12 +57,27 @@ namespace DAMS.Application.Services
         {
             var category = await _context.RevenueCategories.SingleOrDefaultAsync(c => c.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Revenue category not found.");
-            // Configuration is historical data, so DELETE always means retire. A physical delete
-            // could race with a revenue entry and makes accidental removal unrecoverable.
-            category.IsActive = false;
-            category.UpdatedAt = DateTime.UtcNow;
+
+            if (await _context.ManualRevenues.AnyAsync(r => r.RevenueCategoryId == id, cancellationToken))
+            {
+                // Revenue already recorded under this head keeps the name it was filed under, so the
+                // row cannot go: deleting it would leave historic income statements without labels.
+                // Retiring takes it off new entries and leaves every past report intact. Retiring
+                // one that is already retired is a no-op rather than an error.
+                if (!category.IsActive)
+                    return await GetByIdAsync(id, cancellationToken);
+                category.IsActive = false;
+                category.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync(cancellationToken);
+                return await GetByIdAsync(id, cancellationToken);
+            }
+
+            // Never used, so no report depends on its name — remove it outright rather than leave a
+            // mistyped category retired in the list forever. A revenue entry racing this delete is
+            // refused by the foreign key, which surfaces as a conflict instead of orphaning a row.
+            _context.RevenueCategories.Remove(category);
             await _context.SaveChangesAsync(cancellationToken);
-            return await GetByIdAsync(id, cancellationToken);
+            return null;
         }
 
         private static IQueryable<RevenueCategoryDto> Project(IQueryable<RevenueCategory> query) => query.Select(c => new RevenueCategoryDto

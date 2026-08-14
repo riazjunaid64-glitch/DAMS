@@ -87,7 +87,8 @@ namespace DAMS.Api.Controllers
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
                 "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, outstanding, overdue or netProfit." })
+                "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned)),
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, outstanding, overdue or netProfit." })
             };
         }
 
@@ -298,6 +299,85 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // ── Fixed-asset purchases ──
+        [HttpPost("asset-purchases")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> CreateAssetPurchase([FromBody] CreateAssetPurchaseDto dto, CancellationToken cancellationToken)
+        {
+            try { return Ok(await _financeService.CreateAssetPurchaseAsync(dto, GetUserId(), null, cancellationToken)); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        [HttpPost("asset-purchases/form")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
+        public async Task<IActionResult> CreateAssetPurchaseWithAttachment(
+            [FromForm] CreateAssetPurchaseDto dto,
+            [FromForm] IFormFile? attachment,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var stream = attachment?.OpenReadStream();
+                return Ok(await _financeService.CreateAssetPurchaseAsync(
+                    dto, GetUserId(), ToUpload(attachment, stream), cancellationToken));
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        [HttpPut("asset-purchases/{id:int}")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> UpdateAssetPurchase(int id, [FromBody] UpdateAssetPurchaseDto dto, CancellationToken cancellationToken)
+        {
+            try { return Ok(await _financeService.UpdateAssetPurchaseAsync(id, dto, null, false, cancellationToken)); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
+        }
+
+        [HttpPut("asset-purchases/{id:int}/form")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
+        public async Task<IActionResult> UpdateAssetPurchaseWithAttachment(
+            int id,
+            [FromForm] UpdateAssetPurchaseDto dto,
+            [FromForm] IFormFile? attachment,
+            [FromForm] bool removeAttachment,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var stream = attachment?.OpenReadStream();
+                return Ok(await _financeService.UpdateAssetPurchaseAsync(
+                    id, dto, ToUpload(attachment, stream), removeAttachment, cancellationToken));
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
+        }
+
+        [HttpDelete("asset-purchases/{id:int}")]
+        public async Task<IActionResult> DeleteAssetPurchase(
+            int id,
+            [FromQuery] string concurrencyToken,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _financeService.DeleteAssetPurchaseAsync(id, concurrencyToken, cancellationToken);
+                return Ok(new { message = "Asset purchase deleted." });
+            }
+            catch (InvalidOperationException ex) { return NotFound(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
+        }
+
         [HttpGet("revenue/{id:int}/attachment")]
         public Task<IActionResult> GetRevenueAttachment(int id, [FromQuery] bool download, CancellationToken cancellationToken) =>
             GetAttachment(FinanceRecordKind.Revenue, id, download, cancellationToken);
@@ -305,6 +385,14 @@ namespace DAMS.Api.Controllers
         [HttpGet("expenses/{id:int}/attachment")]
         public Task<IActionResult> GetExpenseAttachment(int id, [FromQuery] bool download, CancellationToken cancellationToken) =>
             GetAttachment(FinanceRecordKind.Expense, id, download, cancellationToken);
+
+        [HttpGet("asset-purchases/{id:int}/attachment")]
+        public Task<IActionResult> GetAssetPurchaseAttachment(int id, [FromQuery] bool download, CancellationToken cancellationToken) =>
+            GetAttachment(FinanceRecordKind.AssetPurchase, id, download, cancellationToken);
+
+        [HttpDelete("asset-purchases/{id:int}/attachment")]
+        public Task<IActionResult> RemoveAssetPurchaseAttachment(int id, CancellationToken cancellationToken) =>
+            RemoveAttachment(FinanceRecordKind.AssetPurchase, id, cancellationToken);
 
         [HttpDelete("revenue/{id:int}/attachment")]
         public Task<IActionResult> RemoveRevenueAttachment(int id, CancellationToken cancellationToken) =>

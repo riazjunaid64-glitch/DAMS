@@ -22,6 +22,104 @@ namespace DAMS.Infrastructure.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("DAMS.Domain.Entities.AssetPurchase", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("AssetAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("CategoryId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ItemName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ProjectId")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("Vendor")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("VendorFilerStatusAtEntry")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("VendorId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("WhtAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("WhtApplied")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("WhtOverrideReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<decimal>("WhtRate")
+                        .HasColumnType("decimal(9,4)");
+
+                    b.Property<bool>("WhtRateOverridden")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("WhtTaxSection")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CategoryId");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("FinanceAccountId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("AssetAccountId", "Date");
+
+                    b.HasIndex("VendorId", "Date");
+
+                    b.ToTable("AssetPurchases");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
                 {
                     b.Property<int>("Id")
@@ -2678,6 +2776,10 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("IsActive", "Type");
 
+                    b.HasIndex("Type", "AccountHolderName")
+                        .IsUnique()
+                        .HasFilter("[Type] = 10");
+
                     b.HasIndex("Type", "DisplayOrder");
 
                     b.ToTable("FinanceAccounts", t =>
@@ -2695,6 +2797,9 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("int");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("AssetPurchaseId")
+                        .HasColumnType("int");
 
                     b.Property<string>("ContentType")
                         .IsRequired()
@@ -2725,6 +2830,10 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AssetPurchaseId")
+                        .IsUnique()
+                        .HasFilter("[AssetPurchaseId] IS NOT NULL");
+
                     b.HasIndex("ExpenseId")
                         .IsUnique()
                         .HasFilter("[ExpenseId] IS NOT NULL");
@@ -2735,7 +2844,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.ToTable("FinanceAttachments", t =>
                         {
-                            t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)");
+                            t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1");
                         });
                 });
 
@@ -4114,6 +4223,128 @@ namespace DAMS.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Loan", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("LenderName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FinanceAccountId")
+                        .IsUnique();
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.HasIndex("IsActive", "Name");
+
+                    b.ToTable("Loans");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LoanTransaction", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("FinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("InterestAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("LoanId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("PrincipalAmount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("UpdatedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OperationId")
+                        .IsUnique();
+
+                    b.HasIndex("FinanceAccountId", "Date");
+
+                    b.HasIndex("LoanId", "Date", "CreatedAt");
+
+                    b.ToTable("LoanTransactions", t =>
+                        {
+                            t.HasCheckConstraint("CK_LoanTransactions_Amounts", "[PrincipalAmount] >= 0 AND [InterestAmount] >= 0");
+
+                            t.HasCheckConstraint("CK_LoanTransactions_Shape", "([Type] = 1 AND [PrincipalAmount] > 0 AND [InterestAmount] = 0) OR ([Type] = 2 AND ([PrincipalAmount] > 0 OR [InterestAmount] > 0))");
+
+                            t.HasCheckConstraint("CK_LoanTransactions_Type", "[Type] IN (1, 2)");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
                 {
                     b.Property<int>("Id")
@@ -5430,6 +5661,71 @@ namespace DAMS.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.StaffCashTransfer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("CounterpartyFinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("Date")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("StaffFinanceAccountId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("UpdatedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CounterpartyFinanceAccountId", "Date");
+
+                    b.HasIndex("StaffFinanceAccountId", "Date", "CreatedAt");
+
+                    b.ToTable("StaffCashTransfers", t =>
+                        {
+                            t.HasCheckConstraint("CK_StaffCashTransfers_Amount", "[Amount] > 0");
+
+                            t.HasCheckConstraint("CK_StaffCashTransfers_DifferentAccounts", "[StaffFinanceAccountId] <> [CounterpartyFinanceAccountId]");
+
+                            t.HasCheckConstraint("CK_StaffCashTransfers_Type", "[Type] IN (1, 2)");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
                 {
                     b.Property<int>("Id")
@@ -5966,6 +6262,46 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("WhtDeposits");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.AssetPurchase", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "AssetAccount")
+                        .WithMany("AssetPurchasesReceived")
+                        .HasForeignKey("AssetAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.ExpenseCategory", "ExpenseCategory")
+                        .WithMany("AssetPurchases")
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("AssetPurchasesPaid")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("DAMS.Domain.Entities.Vendor", "VendorAccount")
+                        .WithMany("AssetPurchases")
+                        .HasForeignKey("VendorId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AssetAccount");
+
+                    b.Navigation("ExpenseCategory");
+
+                    b.Navigation("FinanceAccount");
+
+                    b.Navigation("Project");
+
+                    b.Navigation("VendorAccount");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.BookingRequest", "BookingRequest")
@@ -6357,6 +6693,11 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAttachment", b =>
                 {
+                    b.HasOne("DAMS.Domain.Entities.AssetPurchase", "AssetPurchase")
+                        .WithOne("Attachment")
+                        .HasForeignKey("DAMS.Domain.Entities.FinanceAttachment", "AssetPurchaseId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
                     b.HasOne("DAMS.Domain.Entities.Expense", "Expense")
                         .WithOne("Attachment")
                         .HasForeignKey("DAMS.Domain.Entities.FinanceAttachment", "ExpenseId")
@@ -6366,6 +6707,8 @@ namespace DAMS.Infrastructure.Migrations
                         .WithOne("Attachment")
                         .HasForeignKey("DAMS.Domain.Entities.FinanceAttachment", "ManualRevenueId")
                         .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("AssetPurchase");
 
                     b.Navigation("Expense");
 
@@ -6698,6 +7041,36 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Unit");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.Loan", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("Loans")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("FinanceAccount");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.LoanTransaction", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
+                        .WithMany("LoanCashTransactions")
+                        .HasForeignKey("FinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.Loan", "Loan")
+                        .WithMany("Transactions")
+                        .HasForeignKey("LoanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("FinanceAccount");
+
+                    b.Navigation("Loan");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
@@ -6874,6 +7247,25 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Disbursement");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.StaffCashTransfer", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "CounterpartyFinanceAccount")
+                        .WithMany("StaffCashCounterpartyTransfers")
+                        .HasForeignKey("CounterpartyFinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DAMS.Domain.Entities.FinanceAccount", "StaffFinanceAccount")
+                        .WithMany("StaffCashTransfers")
+                        .HasForeignKey("StaffFinanceAccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CounterpartyFinanceAccount");
+
+                    b.Navigation("StaffFinanceAccount");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Employee", "ManagerEmployee")
@@ -6958,6 +7350,11 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("FinanceAccount");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.AssetPurchase", b =>
+                {
+                    b.Navigation("Attachment");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Booking", b =>
@@ -7050,11 +7447,17 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.ExpenseCategory", b =>
                 {
+                    b.Navigation("AssetPurchases");
+
                     b.Navigation("Expenses");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAccount", b =>
                 {
+                    b.Navigation("AssetPurchasesPaid");
+
+                    b.Navigation("AssetPurchasesReceived");
+
                     b.Navigation("CapitalCashTransactions");
 
                     b.Navigation("CapitalPartners");
@@ -7063,6 +7466,10 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Navigation("Expenses");
 
+                    b.Navigation("LoanCashTransactions");
+
+                    b.Navigation("Loans");
+
                     b.Navigation("ManualRevenues");
 
                     b.Navigation("OpeningBalanceEntries");
@@ -7070,6 +7477,10 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Payments");
 
                     b.Navigation("RebateDisbursements");
+
+                    b.Navigation("StaffCashCounterpartyTransfers");
+
+                    b.Navigation("StaffCashTransfers");
 
                     b.Navigation("WhtDeposits");
                 });
@@ -7106,6 +7517,11 @@ namespace DAMS.Infrastructure.Migrations
             modelBuilder.Entity("DAMS.Domain.Entities.LeadCommunication", b =>
                 {
                     b.Navigation("Attachments");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.Loan", b =>
+                {
+                    b.Navigation("Transactions");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ManualRevenue", b =>
@@ -7172,6 +7588,8 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.Vendor", b =>
                 {
+                    b.Navigation("AssetPurchases");
+
                     b.Navigation("Expenses");
                 });
 #pragma warning restore 612, 618
