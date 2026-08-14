@@ -979,11 +979,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "amount", header: "Cost", width: "120px", align: "right", render: (r) => money((r as AssetPurchaseLine).amount, "text-sky-300") },
             { key: "wht", header: "WHT", width: "120px", align: "right", render: (r) => {
               const x = r as AssetPurchaseLine;
-              if (x.whtAmount <= 0) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+              // Positive-test rather than `<= 0`: a missing amount must fall to the dash, and
+              // `undefined <= 0` is false, which used to let it through to the rate below.
+              if (!(x.whtAmount > 0)) return <span className="text-xs text-[var(--text-muted)]">—</span>;
               return (
                 <span className="whitespace-nowrap">
                   {money(x.whtAmount, "text-amber-400")}
-                  <small className="block text-[var(--text-muted)]">{Number(x.whtRate.toFixed(4))}%</small>
+                  <small className="block text-[var(--text-muted)]">{Number((x.whtRate ?? 0).toFixed(4))}%</small>
                 </span>
               );
             } },
