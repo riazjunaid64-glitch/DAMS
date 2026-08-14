@@ -82,7 +82,12 @@ namespace DAMS.Application.Services
             var category = await _context.ExpenseCategories.SingleOrDefaultAsync(c => c.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Expense category not found.");
 
-            if (await _context.Expenses.AnyAsync(e => e.CategoryId == id, cancellationToken))
+            // Asset purchases count as usage exactly as expenses do. They are filed under the same
+            // heads and hold the same Restrict foreign key, so a head used only by a purchase is
+            // still undeletable at the database — treating it as unused would turn this into a
+            // failed hard delete instead of the retire the caller asked for.
+            if (await _context.Expenses.AnyAsync(e => e.CategoryId == id, cancellationToken)
+                || await _context.AssetPurchases.AnyAsync(p => p.CategoryId == id, cancellationToken))
             {
                 if (!category.IsActive)
                     return await GetByIdAsync(id, cancellationToken);
@@ -113,7 +118,7 @@ namespace DAMS.Application.Services
                 TaxSection = c.TaxSection,
                 DisplayOrder = c.DisplayOrder,
                 IsActive = c.IsActive,
-                ExpenseCount = c.Expenses.Count,
+                ExpenseCount = c.Expenses.Count + c.AssetPurchases.Count,
                 CreatedAt = c.CreatedAt,
                 UpdatedAt = c.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(c.RowVersion)

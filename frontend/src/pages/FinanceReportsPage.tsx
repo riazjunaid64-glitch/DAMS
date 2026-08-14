@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
-import { getSettings } from "../features/finance/whtApi";
+import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import { buildPeriodRange, financePeriodLabel } from "../lib/financePeriods";
@@ -32,7 +32,8 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [to, setTo] = useState("");
   const [asAt, setAsAt] = useState(localDate());
   const [monthsBack, setMonthsBack] = useState("12");
-  const [startMonth, setStartMonth] = useState(7);
+  // null until read back — a P&L preset must not name a financial year the client has not set.
+  const { startMonth, failed: startMonthFailed } = useFinancialYearStartMonth(user?.role === "Admin");
   const [pnl, setPnl] = useState<Pnl | null>(null);
   const [trial, setTrial] = useState<Trial | null>(null);
   const [balance, setBalance] = useState<BalanceSheet | null>(null);
@@ -47,7 +48,6 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         const rows = await response.json() as Project[];
         setProjects(Array.isArray(rows) ? rows : []);
       }),
-      getSettings().then((settings) => setStartMonth(settings.financialYearStartMonth)).catch(() => setStartMonth(7)),
     ]);
   }, [user, navigate]);
 
@@ -117,8 +117,11 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     <div className="mb-5 flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
       <label className="text-xs text-[var(--text-muted)]">Project<select className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label>
       {tab === "pnl" ? <>
-        <Button variant="outline" onClick={() => applyYearPreset("year")}>{financePeriodLabel("year", startMonth)}</Button>
-        <Button variant="outline" onClick={() => applyYearPreset("lastYear")}>{financePeriodLabel("lastYear", startMonth)}</Button>
+        {/* Disabled until the configured year start is known: the button both names a range and
+            applies it, so an unresolved setting would make it wrong on both counts. */}
+        <Button variant="outline" disabled={startMonth === null} onClick={() => applyYearPreset("year")}>{financePeriodLabel("year", startMonth)}</Button>
+        <Button variant="outline" disabled={startMonth === null} onClick={() => applyYearPreset("lastYear")}>{financePeriodLabel("lastYear", startMonth)}</Button>
+        {startMonthFailed && <p role="alert" className="text-xs text-amber-300">Financial year setting unavailable — use From/To.</p>}
         <DateField label="From" value={from} onChange={setFrom}/><DateField label="To" value={to} onChange={setTo}/>
       </> : <>
         <DateField label="As at" value={asAt} onChange={setAsAt}/>

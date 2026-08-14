@@ -41,6 +41,10 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// decide whether the next payment crosses a threshold.</summary>
         public decimal YearToDateGross { get; set; }
         public decimal YearToDateWht { get; set; }
+
+        /// <summary>Payments recorded against this supplier, capital and revenue alike. Fixed-asset
+        /// purchases are included because they feed the same annual threshold the totals above are
+        /// judged on — a supplier paid only for assets is not a supplier with no history.</summary>
         public int ExpenseCount { get; set; }
 
         public DateTime CreatedAt { get; set; }

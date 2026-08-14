@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
+import { pakistanToday } from "../lib/financePeriods";
 
 type Loan = {
   id:number; name:string; lenderName:string|null; financeAccountId:number; financeAccountName:string;
@@ -25,10 +26,7 @@ type TransactionForm = {
 };
 
 const money = (value:number) => `Rs ${value.toLocaleString("en-PK", { minimumFractionDigits:2, maximumFractionDigits:2 })}`;
-const today = () => {
-  const value=new Date(), pad=(part:number)=>String(part).padStart(2,"0");
-  return `${value.getFullYear()}-${pad(value.getMonth()+1)}-${pad(value.getDate())}`;
-};
+const today = pakistanToday;
 const emptyLoan = ():LoanForm => ({id:null,name:"",lenderName:"",financeAccountId:"",isActive:true,concurrencyToken:""});
 const emptyTransaction = (type:"Drawdown"|"Repayment"):TransactionForm => ({
   id:null,type,principalAmount:"",interestAmount:"",date:today(),financeAccountId:"",reference:"",note:"",concurrencyToken:""
@@ -67,22 +65,39 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
     } finally { setLoading(false); }
   },[]);
 
+  // Which loan the newest statement request was for. Responses arrive in whatever order the
+  // network gives them, so a slow request for loan A must not be allowed to land after a fast one
+  // for loan B and leave the screen showing A while the sidebar highlights B.
+  const statementRequest=useRef(0);
+
   const loadStatement=useCallback(async(id:number,skip=0)=>{
+    const request=++statementRequest.current;
     setLoadingStatement(true);setError(null);
     try {
       const response=await api(`/api/finance/loans/${id}/statement?skip=${skip}&take=100`);
+      if(request!==statementRequest.current)return;
       if(!response.ok)throw new Error((await response.json().catch(()=>null))?.message??"Loan statement could not be loaded.");
       const next=await response.json() as Statement;
+      if(request!==statementRequest.current)return;
       setStatement(current=>skip>0&&current?.loan.id===id?{...next,items:[...current.items,...next.items]}:next);
     } catch(caught) {
+      if(request!==statementRequest.current)return;
       setError(caught instanceof Error?caught.message:"Loan statement could not be loaded.");
-    } finally { setLoadingStatement(false); }
+    } finally { if(request===statementRequest.current)setLoadingStatement(false); }
   },[]);
 
   useEffect(()=>{if(user?.role!=="Admin"){navigate("/");return;}void loadLoans();},[user,navigate,loadLoans]);
   useEffect(()=>{if(selectedId)void loadStatement(selectedId);else setStatement(null);},[selectedId,loadStatement]);
 
-  const selected=statement?.loan??loans.find(row=>row.id===selectedId)??null;
+  // Read from the loan list, not from the statement. The list is keyed by the same id the sidebar
+  // highlights and is refetched after every save, so the loan on screen, the loan its buttons act
+  // on, and the loan whose concurrency token an edit submits are the same row by construction —
+  // rather than three things that happen to agree until a response arrives out of order or an edit
+  // leaves the statement's copy stale.
+  const selected=loans.find(row=>row.id===selectedId)??null;
+  // The statement is only this loan's while its id matches; otherwise it is a stale response or
+  // one still in flight, and showing its rows under this loan's heading would be a lie.
+  const shownStatement=statement&&statement.loan.id===selectedId?statement:null;
   const totalLeaving=useMemo(()=>{
     if(!transactionForm||transactionForm.type!=="Repayment")return 0;
     return (Number(transactionForm.principalAmount)||0)+(Number(transactionForm.interestAmount)||0);
@@ -168,10 +183,10 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
           </section>
           <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
             <div className="border-b border-[var(--border)] p-4"><h3 className="font-semibold text-[var(--text-heading)]">Movement history</h3><p className="text-xs text-[var(--text-muted)]">Running balance is principal still owed after each movement. Interest never changes it.</p></div>
-            <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement","Principal","Interest","Bank movement","Running balance","Actions"].map(label=><th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{statement?.items.map(row=><tr key={row.id} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className={`font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-[var(--text-heading)]"}`}>{row.type==="Drawdown"?"Money received":"Repayment"}</p><p className="text-xs text-[var(--text-muted)]">{new Date(row.date).toLocaleDateString("en-GB")} · {row.financeAccountName}</p>{row.reference&&<p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.note&&<p className="mt-1 max-w-sm text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3">{money(row.principalAmount)}<p className="text-xs text-[var(--text-muted)]">{row.type==="Drawdown"?"owed ↑":"owed ↓"}</p></td><td className="p-3">{row.interestAmount?money(row.interestAmount):"—"}{row.interestAmount>0&&<p className="text-xs text-amber-300">P&L cost</p>}</td><td className={`p-3 font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-rose-300"}`}>{row.type==="Drawdown"?"+":"−"}{money(row.totalCashMovement)}</td><td className="p-3 font-bold">{money(row.runningBalance)}</td><td className="p-3"><div className="flex gap-3"><button className="text-[var(--accent)]" onClick={()=>editTransaction(row)}>Correct</button><button className="text-rose-300" onClick={()=>void removeTransaction(row)}>Delete</button></div></td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement","Principal","Interest","Bank movement","Running balance","Actions"].map(label=><th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement?.items.map(row=><tr key={row.id} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className={`font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-[var(--text-heading)]"}`}>{row.type==="Drawdown"?"Money received":"Repayment"}</p><p className="text-xs text-[var(--text-muted)]">{new Date(row.date).toLocaleDateString("en-GB")} · {row.financeAccountName}</p>{row.reference&&<p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.note&&<p className="mt-1 max-w-sm text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3">{money(row.principalAmount)}<p className="text-xs text-[var(--text-muted)]">{row.type==="Drawdown"?"owed ↑":"owed ↓"}</p></td><td className="p-3">{row.interestAmount?money(row.interestAmount):"—"}{row.interestAmount>0&&<p className="text-xs text-amber-300">P&L cost</p>}</td><td className={`p-3 font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-rose-300"}`}>{row.type==="Drawdown"?"+":"−"}{money(row.totalCashMovement)}</td><td className="p-3 font-bold">{money(row.runningBalance)}</td><td className="p-3"><div className="flex gap-3"><button className="text-[var(--accent)]" onClick={()=>editTransaction(row)}>Correct</button><button className="text-rose-300" onClick={()=>void removeTransaction(row)}>Delete</button></div></td></tr>)}</tbody></table></div>
             {loadingStatement&&<p className="p-6 text-center text-sm text-[var(--text-muted)]">Loading statement…</p>}
-            {!loadingStatement&&!statement?.items.length&&<p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements recorded for this loan.</p>}
-            {statement?.hasMore&&<div className="p-4 text-center"><Button variant="outline" disabled={loadingStatement} onClick={()=>void loadStatement(selected.id,statement.items.length)}>Load older movements</Button></div>}
+            {!loadingStatement&&!shownStatement?.items.length&&<p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements recorded for this loan.</p>}
+            {shownStatement?.hasMore&&<div className="p-4 text-center"><Button variant="outline" disabled={loadingStatement} onClick={()=>void loadStatement(selected.id,shownStatement.items.length)}>Load older movements</Button></div>}
           </section>
         </>:<div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-[var(--text-muted)]">Select a loan to view its statement.</div>}
       </main>

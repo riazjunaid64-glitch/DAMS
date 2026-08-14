@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -271,6 +272,61 @@ public sealed class FixedAssetPurchaseTests
         // Both ends are load-bearing: dropping either would leave a one-sided entry.
         await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.DeleteUnusedAsync(world.Furniture.Id));
         await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.DeleteUnusedAsync(world.Hbl.Id));
+    }
+
+    [Fact]
+    public async Task AHeadUsedOnlyByAnAssetPurchase_CountsAsUsed_AndIsRetiredRatherThanDeleted()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+
+        await Finance(context).CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            AssetAccountId = world.Furniture.Id, FinanceAccountId = world.Hbl.Id,
+            Amount = 200_000m, ItemName = "3 office desks", CategoryId = world.NoTaxHead.Id
+        }, adminUserId: 1);
+
+        var categories = new ExpenseCategoryService(context);
+
+        // The settings screen offers Retire or Delete based on this count. Counting expenses alone
+        // would offer Delete on a head the database is bound to refuse to drop.
+        var listed = (await categories.GetAllAsync(true)).Single(c => c.Id == world.NoTaxHead.Id);
+        Assert.Equal(1, listed.ExpenseCount);
+
+        var outcome = await categories.DeleteAsync(world.NoTaxHead.Id);
+
+        // Retired, not deleted — the purchase filed under it still needs the name on old reports.
+        Assert.NotNull(outcome);
+        Assert.False(outcome!.IsActive);
+        Assert.True(await context.ExpenseCategories.AnyAsync(c => c.Id == world.NoTaxHead.Id));
+    }
+
+    [Fact]
+    public async Task ASupplierPaidOnlyForAssets_ShowsRealYearToDateTotals_NotZero()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+
+        await Finance(context).CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            AssetAccountId = world.Equipment.Id, FinanceAccountId = world.Hbl.Id,
+            Amount = 100_000m, ItemName = "Dell Latitude laptop",
+            CategoryId = world.GoodsHead.Id, VendorId = world.Supplier.Id,
+            Date = PakistanTime.Today
+        }, adminUserId: 1);
+
+        var vendors = new VendorService(context);
+        var listed = (await vendors.GetPageAsync(null, false, 0, 50)).Items.Single(v => v.Id == world.Supplier.Id);
+
+        Assert.Equal(100_000m, listed.YearToDateGross);
+        Assert.Equal(10_000m, listed.YearToDateWht);
+        Assert.Equal(1, listed.ExpenseCount);
+
+        // The list and the supplier's own breakdown are two views of the same payments. If they
+        // disagree, one of them is telling an admin the threshold has room it does not have.
+        var breakdown = await vendors.GetYearToDateAsync(world.Supplier.Id, null);
+        Assert.Equal(breakdown.Sum(line => line.GrossPaid), listed.YearToDateGross);
+        Assert.Equal(breakdown.Sum(line => line.WhtWithheld), listed.YearToDateWht);
     }
 
     [Fact]

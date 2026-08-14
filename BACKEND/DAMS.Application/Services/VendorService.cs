@@ -212,11 +212,20 @@ namespace DAMS.Application.Services
                 FilerStatus = v.FilerStatus,
                 FilerStatusCheckedAt = v.FilerStatusCheckedAt,
                 IsActive = v.IsActive,
-                YearToDateGross = v.Expenses.Where(e => e.Date >= yearStart && e.Date < yearEnd)
-                    .Sum(e => (decimal?)e.Amount) ?? 0m,
-                YearToDateWht = v.Expenses.Where(e => e.Date >= yearStart && e.Date < yearEnd)
-                    .Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                ExpenseCount = v.Expenses.Count,
+                // Asset purchases are added to both totals for the same reason the detail panel
+                // adds them: the annual threshold is one allowance per supplier per section over
+                // everything they were paid. Summing only expenses here would report Rs 0 for a
+                // supplier who has only ever sold us equipment, and disagree with the breakdown
+                // GetYearToDateAsync shows for that same vendor.
+                YearToDateGross = (v.Expenses.Where(e => e.Date >= yearStart && e.Date < yearEnd)
+                        .Sum(e => (decimal?)e.Amount) ?? 0m)
+                    + (v.AssetPurchases.Where(p => p.Date >= yearStart && p.Date < yearEnd)
+                        .Sum(p => (decimal?)p.Amount) ?? 0m),
+                YearToDateWht = (v.Expenses.Where(e => e.Date >= yearStart && e.Date < yearEnd)
+                        .Sum(e => (decimal?)e.WhtAmount) ?? 0m)
+                    + (v.AssetPurchases.Where(p => p.Date >= yearStart && p.Date < yearEnd)
+                        .Sum(p => (decimal?)p.WhtAmount) ?? 0m),
+                ExpenseCount = v.Expenses.Count + v.AssetPurchases.Count,
                 CreatedAt = v.CreatedAt,
                 UpdatedAt = v.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(v.RowVersion)

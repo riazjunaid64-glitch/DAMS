@@ -183,6 +183,74 @@ public sealed class StaffCashTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.EnsureSelectableAsync(a.FinanceAccountId));
     }
 
+    [Fact]
+    public async Task TheStatementPagesInOrder_AndEveryPageAgreesWithTheWholeLedger()
+    {
+        await using var context = Context();
+        var cash = new FinanceAccount
+        {
+            Name = "Cash", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Cash, OpeningBalance = 1_000_000m, IsActive = true
+        };
+        context.FinanceAccounts.AddRange(cash, new FinanceAccount
+        {
+            Name = "Capital", AccountHolderName = "Owners",
+            Type = FinanceAccountType.Capital, OpeningBalance = 1_000_000m, IsActive = true
+        });
+        var category = Category(1, "Site expense");
+        context.ExpenseCategories.Add(category);
+        await context.SaveChangesAsync();
+
+        var accounts = new FinanceAccountService(context);
+        var staff = new StaffCashService(context, accounts);
+        var finance = Finance(context, accounts);
+        var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Bilal" });
+        var start = PakistanTime.Today.AddDays(-20);
+
+        // Cash out and cash spent on alternating days, so the balance moves in both directions.
+        for (var i = 0; i < 6; i++)
+        {
+            await staff.RecordTransferAsync(holder.FinanceAccountId, new SaveStaffCashTransferDto
+            {
+                Type = StaffCashMovementType.FundsGiven, Amount = 1_000m,
+                Date = start.AddDays(i * 2), CounterpartyFinanceAccountId = cash.Id
+            }, 1);
+            await finance.CreateExpenseAsync(new CreateExpenseDto
+            {
+                FinanceAccountId = holder.FinanceAccountId, CategoryId = category.Id,
+                Amount = 400m, Date = start.AddDays(i * 2 + 1)
+            }, 1);
+        }
+
+        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 200);
+        Assert.Equal(12, whole.Items.Count);
+        Assert.False(whole.HasMore);
+        Assert.Equal(3_600m, whole.Holder.CurrentBalance);
+        Assert.Equal(12, whole.Holder.TransactionCount);
+        Assert.Equal(start, whole.Holder.OutstandingSince);
+
+        // Newest first, and each row's balance is the previous row's with that movement undone.
+        Assert.Equal(whole.Holder.CurrentBalance, whole.Items[0].RunningBalance);
+        for (var i = 1; i < whole.Items.Count; i++)
+            Assert.Equal(
+                whole.Items[i - 1].RunningBalance - whole.Items[i - 1].Amount,
+                whole.Items[i].RunningBalance);
+
+        // A page is a window onto that statement, not a different one. Balances on page three are
+        // only right if the rows above it were accounted for without being fetched.
+        var first = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 5);
+        var second = await staff.GetStatementAsync(holder.FinanceAccountId, 5, 5);
+        var third = await staff.GetStatementAsync(holder.FinanceAccountId, 10, 5);
+        Assert.True(first.HasMore);
+        Assert.True(second.HasMore);
+        Assert.False(third.HasMore);
+
+        Assert.Equal(
+            whole.Items.Select(row => (row.RecordType, row.RecordId, row.RunningBalance)),
+            first.Items.Concat(second.Items).Concat(third.Items)
+                .Select(row => (row.RecordType, row.RecordId, row.RunningBalance)));
+    }
+
     private static ExpenseCategory Category(int id, string name) => new()
     {
         Id = id, Name = name, Code = $"category-{id}", IsActive = true,

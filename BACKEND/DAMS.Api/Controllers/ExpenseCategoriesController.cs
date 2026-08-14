@@ -46,6 +46,10 @@ namespace DAMS.Api.Controllers
             {
                 return Conflict(new { message = "This category was changed by someone else. Refresh and try again." });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException)
+            {
+                return Conflict(new { message = "The category could not be saved because its name or code is already in use." });
+            }
         }
 
         [HttpDelete("{id:int}")]
@@ -63,6 +67,13 @@ namespace DAMS.Api.Controllers
                 });
             }
             catch (InvalidOperationException ex) { return NotFound(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException)
+            {
+                // The service only hard-deletes heads nothing referenced, but an expense or asset
+                // purchase filed against this head between that check and the delete is refused by
+                // the Restrict foreign key. Say so, rather than letting it surface as a 500.
+                return Conflict(new { message = "Something was recorded against this category. Refresh and try again." });
+            }
         }
 
         private int? GetUserId()

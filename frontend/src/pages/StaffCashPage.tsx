@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
+import { pakistanToday } from "../lib/financePeriods";
 
 type Props = { user: User | null };
 
@@ -64,7 +65,9 @@ type TransferForm = {
   concurrencyToken: string;
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = pakistanToday;
+/** How many movements one page of a person's history holds. */
+const PAGE_SIZE = 100;
 const money = (value: number) => {
   const sign = value < 0 ? "−" : "";
   return `${sign}Rs ${Math.abs(value).toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
@@ -84,15 +87,38 @@ export default function StaffCashPage({ user }: Props) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [statement, setStatement] = useState<Statement | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingStatement, setLoadingStatement] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [holderName, setHolderName] = useState<string | null>(null);
   const [transfer, setTransfer] = useState<TransferForm | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const loadStatement = useCallback(async (id: number) => {
-    const response = await api(`/api/finance/staff-cash/${id}?take=200`);
-    if (!response.ok) throw new Error(await message(response, "Could not load this person's history."));
-    setStatement(await response.json());
+  // Mirrors selectedId so `load` can read the current selection without listing it as a dependency.
+  const selectedRef = useRef<number | null>(null);
+  useEffect(() => { selectedRef.current = selectedId; }, [selectedId]);
+
+  // Which person the newest history request was for. Without this, selecting A then B can let A's
+  // slower response land last: the panel would then name A while every button on it still posts to
+  // B, which is how company cash ends up recorded against the wrong employee.
+  const statementRequest = useRef(0);
+
+  const loadStatement = useCallback(async (id: number, skip = 0) => {
+    const request = ++statementRequest.current;
+    setLoadingStatement(true);
+    try {
+      const response = await api(`/api/finance/staff-cash/${id}?skip=${skip}&take=${PAGE_SIZE}`);
+      if (request !== statementRequest.current) return;
+      if (!response.ok) throw new Error(await message(response, "Could not load this person's history."));
+      const next = await response.json() as Statement;
+      if (request !== statementRequest.current) return;
+      // Older pages append; anything else replaces. The id check is what keeps a page of one
+      // person's movements from being appended to another person's statement.
+      setStatement((current) => skip > 0 && current?.holder.financeAccountId === id
+        ? { ...next, items: [...current.items, ...next.items] }
+        : next);
+    } finally {
+      if (request === statementRequest.current) setLoadingStatement(false);
+    }
   }, []);
 
   const load = useCallback(async (keepSelected = true) => {
@@ -107,8 +133,12 @@ export default function StaffCashPage({ user }: Props) {
       const nextOverview = await overviewResponse.json() as Overview;
       setOverview(nextOverview);
       if (accountsResponse.ok) setAccounts(await accountsResponse.json());
-      if (keepSelected && selectedId && nextOverview.holders.some((h) => h.financeAccountId === selectedId)) {
-        await loadStatement(selectedId);
+      // Read through a ref rather than a dependency: naming selectedId as one would rebuild this
+      // callback on every selection and re-run the mount effect below, refetching the whole
+      // overview each time somebody clicked a name.
+      const current = selectedRef.current;
+      if (keepSelected && current && nextOverview.holders.some((h) => h.financeAccountId === current)) {
+        await loadStatement(current);
       } else if (!keepSelected) {
         setSelectedId(null);
         setStatement(null);
@@ -118,7 +148,7 @@ export default function StaffCashPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [loadStatement, selectedId]);
+  }, [loadStatement]);
 
   useEffect(() => {
     if (user && user.role !== "Admin") { navigate("/"); return; }
@@ -130,6 +160,15 @@ export default function StaffCashPage({ user }: Props) {
     setError(null);
     try { await loadStatement(holder.financeAccountId); }
     catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Could not load history."); }
+  };
+
+  const loadOlder = async () => {
+    // Page from the statement that belongs to the current selection, never from one left on screen
+    // by a previous person — the skip would be counted against the wrong history.
+    if (!selectedId || loadingStatement) return;
+    if (!statement || statement.holder.financeAccountId !== selectedId) return;
+    try { await loadStatement(selectedId, statement.items.length); }
+    catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Could not load older movements."); }
   };
 
   const createHolder = async () => {
@@ -199,7 +238,10 @@ export default function StaffCashPage({ user }: Props) {
   };
 
   if (!user || user.role !== "Admin") return null;
-  const selected = statement?.holder;
+  // The person named on this panel is looked up by the same id every button on it posts to, so the
+  // heading and the mutation target cannot disagree — whatever order responses arrived in.
+  const selected = overview?.holders.find((h) => h.financeAccountId === selectedId) ?? null;
+  const shownStatement = statement && statement.holder.financeAccountId === selectedId ? statement : null;
 
   return <Container className="py-8">
     <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
@@ -243,7 +285,7 @@ export default function StaffCashPage({ user }: Props) {
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
-        {selected && statement ? <>
+        {selected && shownStatement ? <>
           <div className="border-b border-[var(--border)] p-5">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-wider text-[var(--text-muted)]">Staff float</p><h2 className="text-2xl font-bold text-[var(--text-heading)]">{selected.personName}</h2><p className="text-sm text-[var(--text-muted)]">Open since {date(selected.outstandingSince)}{selected.daysOutstanding != null ? ` · ${selected.daysOutstanding} days` : " · Fully settled"}</p></div><div className="text-right"><p className="text-xs text-[var(--text-muted)]">Current balance</p><p className={`text-2xl font-bold ${selected.currentBalance >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{money(selected.currentBalance)}</p><p className="text-xs text-[var(--text-muted)]">{selected.currentBalance < 0 ? "Payable to staff" : "Company asset"}</p></div></div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -253,9 +295,15 @@ export default function StaffCashPage({ user }: Props) {
             </div>
             <p className="mt-2 text-xs text-[var(--text-muted)]">On the expense form, choose “{selected.accountName}” under Paid From Account.</p>
           </div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement", "Account / project", "Amount", "Running balance", "Actions"].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{statement.items.map((row) => <tr key={`${row.recordType}-${row.recordId}`} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className="font-semibold text-[var(--text-heading)]">{row.kind}</p><p className="text-xs text-[var(--text-muted)]">{date(row.date)}</p>{row.description && <p className="mt-1 text-xs text-[var(--text-muted)]">{row.description}</p>}{row.note && <p className="mt-1 max-w-xs text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3"><p>{row.counterpartyFinanceAccountName ?? row.projectName ?? "General"}</p>{row.reference && <p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.recordType === "Expense" && row.whtAmount > 0 && <p className="text-xs text-amber-300">Gross {money(row.grossAmount)} · WHT {money(row.whtAmount)}</p>}</td><td className={`p-3 font-bold ${row.amount >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.amount >= 0 ? "+" : "−"}{money(Math.abs(row.amount))}</td><td className={`p-3 font-bold ${row.runningBalance < 0 ? "text-rose-300" : "text-[var(--text-heading)]"}`}>{money(row.runningBalance)}</td><td className="p-3">{row.recordType === "Transfer" ? <div className="flex gap-3"><button className="text-[var(--accent)]" onClick={() => editTransfer(row)}>Correct</button><button className="text-rose-300" onClick={() => void deleteTransfer(row)}>Delete</button></div> : <Link to="/finance" className="text-[var(--accent)]">View expenses</Link>}</td></tr>)}</tbody></table></div>
-          {!statement.items.length && <p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements yet. Record money given to begin this float.</p>}
-          {statement.hasMore && <p className="border-t border-[var(--border)] p-3 text-center text-xs text-amber-300">Showing the latest 200 entries. Use the finance account ledger for older history.</p>}
+          <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement", "Account / project", "Amount", "Running balance", "Actions"].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement.items.map((row) => <tr key={`${row.recordType}-${row.recordId}`} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className="font-semibold text-[var(--text-heading)]">{row.kind}</p><p className="text-xs text-[var(--text-muted)]">{date(row.date)}</p>{row.description && <p className="mt-1 text-xs text-[var(--text-muted)]">{row.description}</p>}{row.note && <p className="mt-1 max-w-xs text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3"><p>{row.counterpartyFinanceAccountName ?? row.projectName ?? "General"}</p>{row.reference && <p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.recordType === "Expense" && row.whtAmount > 0 && <p className="text-xs text-amber-300">Gross {money(row.grossAmount)} · WHT {money(row.whtAmount)}</p>}</td><td className={`p-3 font-bold ${row.amount >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.amount >= 0 ? "+" : "−"}{money(Math.abs(row.amount))}</td><td className={`p-3 font-bold ${row.runningBalance < 0 ? "text-rose-300" : "text-[var(--text-heading)]"}`}>{money(row.runningBalance)}</td><td className="p-3">{row.recordType === "Transfer" ? <div className="flex gap-3"><button className="text-[var(--accent)]" onClick={() => editTransfer(row)}>Correct</button><button className="text-rose-300" onClick={() => void deleteTransfer(row)}>Delete</button></div> : <Link to="/finance" className="text-[var(--accent)]">View expenses</Link>}</td></tr>)}</tbody></table></div>
+          {!shownStatement.items.length && !loadingStatement && <p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements yet. Record money given to begin this float.</p>}
+          {loadingStatement && <p className="border-t border-[var(--border)] p-4 text-center text-sm text-[var(--text-muted)]">Loading movements…</p>}
+          {shownStatement.hasMore && (
+            <div className="border-t border-[var(--border)] p-4 text-center">
+              <Button variant="outline" disabled={loadingStatement} onClick={() => void loadOlder()}>Load older movements</Button>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">Showing the {shownStatement.items.length} most recent movements.</p>
+            </div>
+          )}
         </> : <div className="flex min-h-80 items-center justify-center p-8 text-center text-sm text-[var(--text-muted)]">Select a person to see every receipt-backed expense, transfer, and running balance.</div>}
       </section>
     </div>

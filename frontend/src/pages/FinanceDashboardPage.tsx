@@ -8,11 +8,12 @@ import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
-import { buildPeriodRange, financePeriodLabel } from "../lib/financePeriods.ts";
+import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
-import { getSettings, listCategories, vendorOptions } from "../features/finance/whtApi.ts";
+import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
+import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
 import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
 import {
   financeApiError,
@@ -222,9 +223,9 @@ function formatDate(date: string) {
   return parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function todayInput() {
-  return new Date().toISOString().slice(0, 10);
-}
+// Every form on this page — revenue, expense and asset purchase — defaults its date from here,
+// and the server judges all three against the Pakistani calendar. See pakistanToday.
+const todayInput = pakistanToday;
 
 type Period = "today" | "month" | "year" | "lastYear" | "all" | "custom";
 
@@ -359,7 +360,10 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
-  const [financialYearStartMonth, setFinancialYearStartMonth] = useState<number>(7);
+  // null until the client's configured year start is read back. Nothing that depends on the
+  // financial year may be stated or applied before then — see useFinancialYearStartMonth.
+  const { startMonth: financialYearStartMonth, failed: financialYearFailed } =
+    useFinancialYearStartMonth(isAdmin);
 
   const [summary, setSummary] = useState<FinancialSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -449,17 +453,6 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
-  const loadFinanceSettings = useCallback(async () => {
-    try {
-      const settings = await getSettings();
-      setFinancialYearStartMonth(Number.isFinite(settings.financialYearStartMonth)
-        ? settings.financialYearStartMonth
-        : 7);
-    } catch {
-      setFinancialYearStartMonth(7);
-    }
-  }, []);
-
   const loadSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
@@ -494,10 +487,9 @@ export default function FinanceDashboardPage({ user }: Props) {
     loadProjects();
     loadFinanceAccounts();
     void loadAssetAccounts();
-    void loadFinanceSettings();
     void loadWhtLookups();
     void loadRevenueCategories();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadFinanceSettings, loadWhtLookups, loadRevenueCategories]);
+  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadWhtLookups, loadRevenueCategories]);
 
   useEffect(() => {
     if (isAdmin) loadSummary();
@@ -534,7 +526,9 @@ export default function FinanceDashboardPage({ user }: Props) {
         to: toDate,
         account: accountFilter,
         period: activePeriod as FinancePeriod,
-        financialYearStartMonth,
+        // Only decides bucket boundaries when no explicit range is set, and never labels itself
+        // with a financial year. The effect re-runs when the real value arrives.
+        financialYearStartMonth: financialYearStartMonth ?? 7,
         projects: projects.map((p) => ({ id: p.id, projectName: p.projectName })),
       },
       controller.signal,
@@ -1091,17 +1085,35 @@ export default function FinanceDashboardPage({ user }: Props) {
           {/* Filters: period pills on the left, project / account / date range on the right */}
           <div className="fin-filters">
             <div className="fin-periods">
-              {PERIODS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => applyPeriod(preset)}
-                  className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""}`}
-                >
-                  {financePeriodLabel(preset, financialYearStartMonth)}
-                </button>
-              ))}
+              {PERIODS.map((preset) => {
+                // A financial-year chip is offered only once the client's year start is known.
+                // Until then it could neither name nor filter the right months.
+                const needsFinancialYear = preset === "year" || preset === "lastYear";
+                const unavailable = needsFinancialYear && financialYearStartMonth === null;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={unavailable}
+                    title={unavailable
+                      ? (financialYearFailed
+                        ? "The financial year setting could not be loaded, so this range cannot be applied."
+                        : "Loading the configured financial year…")
+                      : undefined}
+                    onClick={() => applyPeriod(preset)}
+                    className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""} ${unavailable ? "opacity-50" : ""}`}
+                  >
+                    {financePeriodLabel(preset, financialYearStartMonth)}
+                  </button>
+                );
+              })}
             </div>
+            {financialYearFailed && (
+              <p role="alert" className="w-full text-xs text-amber-300">
+                The financial year setting could not be loaded, so the year filters are unavailable.
+                Everything else still works, and a custom From/To range is unaffected.
+              </p>
+            )}
 
             <div className="fin-controls">
               <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="fin-control" aria-label="Project">

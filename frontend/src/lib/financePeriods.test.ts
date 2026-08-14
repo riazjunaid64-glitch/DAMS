@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildPeriodRange, financePeriodLabel, financialYearWindow } from "./financePeriods";
+import { describe, expect, it, vi } from "vitest";
+import { buildPeriodRange, financePeriodLabel, financialYearWindow, pakistanToday } from "./financePeriods";
 
 describe("finance period ranges", () => {
   it("uses the configured financial year for the annual preset", () => {
@@ -91,6 +91,49 @@ describe("finance period ranges", () => {
       const label = financePeriodLabel(preset, 7, now);
       expect(label).toContain(`${new Date(`${range.from}T00:00:00`).getFullYear()}`);
       expect(label).toMatch(/\(.+\)$/);
+    }
+  });
+
+  it("states no financial year until the configured start month is known", () => {
+    // July is right for most Pakistani clients and wrong for the rest. Naming a range before the
+    // setting has been read would tell an admin with a January year that a figure covers months it
+    // does not — so while it is unresolved the presets say only what they can stand behind.
+    const now = new Date(2026, 7, 12);
+    expect(financePeriodLabel("year", null, now)).toBe("This Year");
+    expect(financePeriodLabel("lastYear", null, now)).toBe("Last Year");
+  });
+
+  it("refuses to build a financial year range from an unknown start month", () => {
+    // An empty range reads as "All" rather than as a silently July-based year, so a filter applied
+    // before the setting resolves can never quietly report the wrong twelve months.
+    const now = new Date(2026, 7, 12);
+    expect(buildPeriodRange("year", null, now)).toEqual({ from: "", to: "" });
+    expect(buildPeriodRange("lastYear", null, now)).toEqual({ from: "", to: "" });
+  });
+
+  it("keeps the presets that do not depend on the financial year fully usable", () => {
+    const now = new Date(2026, 7, 12);
+    expect(financePeriodLabel("month", null, now)).toBe("This Month (Aug 2026)");
+    expect(financePeriodLabel("today", null, now)).toBe("Today");
+    expect(buildPeriodRange("month", null, now)).toEqual({ from: "2026-08-01", to: "2026-08-31" });
+    expect(buildPeriodRange("today", null, now)).toEqual({ from: "2026-08-12", to: "2026-08-12" });
+  });
+});
+
+describe("pakistanToday", () => {
+  it("returns the Pakistani calendar date, not the browser's and not UTC", () => {
+    // 23:30 UTC on 13 Aug is already 04:30 on 14 Aug in Pakistan. Reading the UTC date would file
+    // an entry a day early; the server, which judges against PKT, would accept it silently.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-13T23:30:00Z"));
+      expect(pakistanToday()).toBe("2026-08-14");
+
+      // And just before PKT midnight it must still be the earlier day.
+      vi.setSystemTime(new Date("2026-08-13T18:00:00Z"));
+      expect(pakistanToday()).toBe("2026-08-13");
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
