@@ -24,6 +24,7 @@ const FinanceAccountsPage = lazy(() => import("./pages/FinanceAccountsPage.tsx")
 const FinanceSettingsPage = lazy(() => import("./pages/FinanceSettingsPage.tsx"));
 const FinanceReportsPage = lazy(() => import("./pages/FinanceReportsPage.tsx"));
 const FinancePartnersPage = lazy(() => import("./pages/FinancePartnersPage.tsx"));
+const FinanceLoansPage = lazy(() => import("./pages/FinanceLoansPage.tsx"));
 const CommissionRebatesPage = lazy(() => import("./pages/CommissionRebatesPage.tsx"));
 const BookingDetailPage = lazy(() => import("./pages/BookingDetailPage.tsx"));
 const ReceiptPage = lazy(() => import("./pages/ReceiptPage.tsx"));
@@ -201,6 +202,7 @@ function App() {
             <Route path="/finance/settings" element={<FinanceSettingsPage user={user} />} />
             <Route path="/finance/reports" element={<FinanceReportsPage user={user} />} />
             <Route path="/finance/partners" element={<FinancePartnersPage user={user} />} />
+            <Route path="/finance/loans" element={<FinanceLoansPage user={user} />} />
             <Route path="/finance/commissions-rebates" element={<CommissionRebatesPage user={user} />} />
             <Route path="/crm" element={<LeadsPage user={user} />} />
             <Route path="/crm/leads/:id" element={<LeadDetailPage user={user} />} />

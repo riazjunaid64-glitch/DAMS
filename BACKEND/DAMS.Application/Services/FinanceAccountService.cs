@@ -205,10 +205,33 @@ namespace DAMS.Application.Services
                         ? -t.Amount : t.Amount,
                     GrossAmount = t.Amount, WhtAmount = 0m
                 });
+            var loanCash = _context.LoanTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == LoanTransactionType.Drawdown ? "Loan drawdown" : "Loan repayment",
+                    RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
+                    ProjectName = "General",
+                    Amount = t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount),
+                    GrossAmount = t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : t.PrincipalAmount + t.InterestAmount,
+                    WhtAmount = 0m
+                });
+            var loanLiability = _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.Loan.FinanceAccountId == id && t.PrincipalAmount != 0m)
+                .Select(t => new FinanceAccountTransactionDto
+                {
+                    Kind = t.Type == LoanTransactionType.Drawdown ? "Loan principal drawn" : "Loan principal repaid",
+                    RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
+                    ProjectName = "General",
+                    Amount = t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount,
+                    GrossAmount = t.PrincipalAmount, WhtAmount = 0m
+                });
             var rows = await revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .Concat(assetPurchasesPaid).Concat(assetPurchasesCapitalised)
                 .Concat(capitalCash).Concat(partnerCapital)
+                .Concat(loanCash).Concat(loanLiability)
                 .Concat(payableWithheld).Concat(payableWithheldOnAssets).Concat(payableDeposited)
                 .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
@@ -265,6 +288,7 @@ namespace DAMS.Application.Services
             if (dto.OpeningBalance != account.OpeningBalance && await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
                 throw new InvalidOperationException("Opening balances are controlled in Finance settings. Reopen the baseline to change this amount.");
             EnsureSystemIdentityIsPreserved(account, dto);
+            await ValidateLinkedLoanAccountAsync(id, dto.Type, dto.OpeningBalance, cancellationToken);
             if (dto.Type != account.Type && await HasDependenciesAsync(id, cancellationToken))
                 throw new InvalidOperationException("An account with financial history cannot change type. Create a correctly typed account and keep this one for reconciliation.");
             await EnsureUniqueName(dto.Name, id, cancellationToken);
@@ -289,6 +313,8 @@ namespace DAMS.Application.Services
             ApplyConcurrencyToken(account, concurrencyToken);
             if (account.SystemRole != FinanceSystemAccountRole.None && !isActive)
                 throw new InvalidOperationException("System finance accounts cannot be deactivated because financial statements depend on them.");
+            if (!isActive && await _context.Loans.AnyAsync(l => l.FinanceAccountId == id && l.IsActive, cancellationToken))
+                throw new InvalidOperationException("Deactivate the linked loan before deactivating its liability account.");
             account.IsActive = isActive;
             account.UpdatedAt = DateTime.UtcNow;
             await _context.SaveChangesAsync(cancellationToken);
@@ -474,6 +500,14 @@ namespace DAMS.Application.Services
             let partnerOut = a.CapitalPartners.SelectMany(p => p.Transactions)
                 .Where(t => t.Type == CapitalTransactionType.Withdrawal || t.Type == CapitalTransactionType.LossShare)
                 .Sum(t => (decimal?)t.Amount) ?? 0m
+            let loanCashIn = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Drawdown)
+                .Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
+            let loanCashOut = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Repayment)
+                .Sum(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m
+            let loanLiabilityIn = a.Loans.SelectMany(l => l.Transactions)
+                .Where(t => t.Type == LoanTransactionType.Drawdown).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
+            let loanLiabilityOut = a.Loans.SelectMany(l => l.Transactions)
+                .Where(t => t.Type == LoanTransactionType.Repayment).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
             let isTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
             // Tax withheld from asset suppliers is owed to FBR on identical terms, so the payable
             // counts it too — otherwise the liability is short by whatever capital suppliers lost.
@@ -482,18 +516,19 @@ namespace DAMS.Application.Services
                     + (_context.AssetPurchases.Sum(p => (decimal?)p.WhtAmount) ?? 0m)
                 : 0m
             let taxPayableOut = isTaxPayable ? (_context.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m) : 0m
-            let debitMovement = genericIn + capitalisedIn + cashCapitalIn - genericOut - cashCapitalOut
+            let debitMovement = genericIn + capitalisedIn + cashCapitalIn + loanCashIn
+                - genericOut - cashCapitalOut - loanCashOut
             let movement = a.Type == FinanceAccountType.Capital
                 ? partnerIn - partnerOut
-                : (isTaxPayable ? taxPayableIn - taxPayableOut : debitMovement)
+                : (isTaxPayable ? taxPayableIn - taxPayableOut : debitMovement + loanLiabilityIn - loanLiabilityOut)
             select new FinanceAccountResponseDto
             {
                 Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
                 OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
                 SystemRole = a.SystemRole,
                 BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + capitalisedIn + cashCapitalIn),
-                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut),
+                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn),
+                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut),
                 WhtWithheld = isTaxPayable
                     ? taxPayableIn
                     : (a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
@@ -509,6 +544,8 @@ namespace DAMS.Application.Services
                         .SelectMany(d => d.Reversals).Count()
                     + a.WhtDeposits.Count + a.CapitalCashTransactions.Count
                     + a.CapitalPartners.SelectMany(p => p.Transactions).Count()
+                    + a.LoanCashTransactions.Count
+                    + a.Loans.SelectMany(l => l.Transactions).Count(t => t.PrincipalAmount != 0m)
                     + (isTaxPayable
                         ? _context.Expenses.Count(e => e.WhtAmount != 0m)
                             + _context.AssetPurchases.Count(p => p.WhtAmount != 0m)
@@ -544,7 +581,34 @@ namespace DAMS.Application.Services
             || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
             || await _context.OpeningBalanceEntries.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
             || await _context.CapitalPartners.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
-            || await _context.CapitalTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken);
+            || await _context.CapitalTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken)
+            || await _context.Loans.AnyAsync(l => l.FinanceAccountId == id, cancellationToken)
+            || await _context.LoanTransactions.AnyAsync(t => t.FinanceAccountId == id, cancellationToken);
+
+        private async Task ValidateLinkedLoanAccountAsync(int accountId, FinanceAccountType type, decimal openingBalance,
+            CancellationToken cancellationToken)
+        {
+            var loanId = await _context.Loans.AsNoTracking().Where(l => l.FinanceAccountId == accountId)
+                .Select(l => (int?)l.Id).SingleOrDefaultAsync(cancellationToken);
+            if (!loanId.HasValue) return;
+            if (type != FinanceAccountType.Liability)
+                throw new InvalidOperationException("An account linked to a loan must remain a Liability account.");
+            if (openingBalance < 0m)
+                throw new InvalidOperationException("A loan liability cannot have a negative opening balance.");
+            var movements = await _context.LoanTransactions.AsNoTracking().Where(t => t.LoanId == loanId.Value)
+                .GroupBy(t => t.Date).Select(g => new
+                {
+                    Date = g.Key,
+                    Amount = g.Sum(t => t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount)
+                }).OrderBy(x => x.Date).ToListAsync(cancellationToken);
+            var running = openingBalance;
+            foreach (var movement in movements)
+            {
+                running += movement.Amount;
+                if (running < 0m)
+                    throw new InvalidOperationException($"This opening balance would make the loan negative on {movement.Date:dd MMM yyyy}.");
+            }
+        }
 
         private static void Validate(CreateFinanceAccountDto dto)
         {

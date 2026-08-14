@@ -282,6 +282,15 @@ namespace DAMS.Application.Services
             var rebateCount = await CashRebateQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
                 + await CashRebateReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
             if (rebate != 0m) expenses.Add(new ReportLine { Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue, Amount = rebate, Count = rebateCount });
+            var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
+                .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (loanInterest is { Amount: not 0m })
+                expenses.Add(new ReportLine
+                {
+                    Key = "loan-interest", Name = "Loan Interest", Order = int.MaxValue - 2,
+                    Amount = loanInterest.Amount, Count = loanInterest.Count
+                });
             return new PnlPeriod(income.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList(),
                 expenses.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList());
         }
@@ -328,6 +337,20 @@ namespace DAMS.Application.Services
                 ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.CapitalPartner.FinanceAccountId != null)
                     .GroupBy(t => new { Id = t.CapitalPartner.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
                 : [];
+            var loanCash = !projectId.HasValue
+                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .GroupBy(t => t.FinanceAccountId)
+                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount))))
+                    .ToListAsync(cancellationToken)
+                : [];
+            var loanLiability = !projectId.HasValue
+                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .GroupBy(t => t.Loan.FinanceAccountId)
+                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
+                        ? t.PrincipalAmount : -t.PrincipalAmount)))
+                    .ToListAsync(cancellationToken)
+                : [];
             var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
                 + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
                     .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
@@ -345,11 +368,12 @@ namespace DAMS.Application.Services
                     - Amount(assetPaid, account.Id) + Amount(assetCapitalised, account.Id)
                     - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
                     - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
-                    + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount);
+                    + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount)
+                    + Amount(loanCash, account.Id);
                 // These sources are expressed as business increases minus decreases, not raw
                 // journal debits. The normal-balance direction is applied later when the trial
                 // balance places the positive amount in a Debit or Credit column.
-                account.Balance += debitMovement;
+                account.Balance += debitMovement + Amount(loanLiability, account.Id);
                 if (account.SystemRole == FinanceSystemAccountRole.TaxPayable)
                     account.Balance += Money(wht - deposited);
                 account.Balance = Money(account.Balance);

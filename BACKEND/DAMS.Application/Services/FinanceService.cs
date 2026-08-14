@@ -52,7 +52,10 @@ namespace DAMS.Application.Services
                 .SumAsync(d => (decimal?)d.Amount) ?? 0m;
             var rebateReversals = await CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-            var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals + rebatePayments - rebateReversals;
+            var loanInterest = await LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(t => (decimal?)t.InterestAmount) ?? 0m;
+            var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals
+                + rebatePayments - rebateReversals + loanInterest;
             // Reported alongside the expense total, never inside it. Capitalising a purchase is the
             // whole point: the money changed form rather than being consumed, so it must not reach
             // NetProfit by any route.
@@ -392,8 +395,17 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Customer rebate reversal"
                 });
 
+            var loanInterest = LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(t => new NetProfitRow
+                {
+                    SortId = t.Id, Date = t.Date, ProjectName = "General", Kind = "expense",
+                    Amount = t.InterestAmount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Loan Interest"
+                });
+
             var raw = await payments.Concat(manual).Concat(expenses).Concat(commissionPayouts)
                 .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
+                .Concat(loanInterest)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -430,7 +442,11 @@ namespace DAMS.Application.Services
             // fixed-asset account, where it is the only thing that moves the balance at all.
             var capitalised = await AssetPurchaseQuery(null, null, toExclusive, accountId, null, false)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            return payments + manual + capitalised;
+            var loanDrawdowns = await _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Drawdown
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)t.PrincipalAmount) ?? 0m;
+            return payments + manual + capitalised + loanDrawdowns;
         }
 
         /// <summary>
@@ -460,7 +476,11 @@ namespace DAMS.Application.Services
             // Net, for the same reason expenses are: the withheld portion is still sitting here.
             var assetPurchases = await AssetPurchaseQuery(null, null, toExclusive, null, accountId, false)
                 .SumAsync(p => (decimal?)(p.Amount - p.WhtAmount)) ?? 0m;
-            return expenses + commissions + rebates + whtDeposits + assetPurchases;
+            var loanRepayments = await _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Repayment
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments;
         }
 
         private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
@@ -504,6 +524,20 @@ namespace DAMS.Application.Services
             if (toExclusive.HasValue) q = q.Where(e => e.Date < toExclusive.Value);
             if (accountId.HasValue) q = q.Where(e => e.FinanceAccountId == accountId.Value);
             else if (unassigned) q = q.Where(e => e.FinanceAccountId == null);
+            return q;
+        }
+
+        private IQueryable<LoanTransaction> LoanInterestQuery(int? projectId, DateTime? fromValue, DateTime? toExclusive,
+            int? accountId = null, bool unassigned = false)
+        {
+            var q = _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.Type == LoanTransactionType.Repayment && t.InterestAmount != 0m);
+            // Loans are company-wide until project attribution is explicitly designed. They must
+            // not leak into a selected project's profitability.
+            if (projectId.HasValue || unassigned) q = q.Where(_ => false);
+            if (fromValue.HasValue) q = q.Where(t => t.Date >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(t => t.Date < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(t => t.FinanceAccountId == accountId.Value);
             return q;
         }
 

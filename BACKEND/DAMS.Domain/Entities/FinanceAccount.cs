@@ -34,5 +34,7 @@ namespace DAMS.Domain.Entities
         public ICollection<OpeningBalanceEntry> OpeningBalanceEntries { get; set; } = new List<OpeningBalanceEntry>();
         public ICollection<CapitalPartner> CapitalPartners { get; set; } = new List<CapitalPartner>();
         public ICollection<CapitalTransaction> CapitalCashTransactions { get; set; } = new List<CapitalTransaction>();
+        public ICollection<Loan> Loans { get; set; } = new List<Loan>();
+        public ICollection<LoanTransaction> LoanCashTransactions { get; set; } = new List<LoanTransaction>();
     }
 }

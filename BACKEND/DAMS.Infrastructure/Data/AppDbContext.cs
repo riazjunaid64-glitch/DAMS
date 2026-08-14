@@ -45,6 +45,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<OpeningBalanceAuditEntry> OpeningBalanceAuditEntries { get; set; }
         public DbSet<CapitalPartner> CapitalPartners { get; set; }
         public DbSet<CapitalTransaction> CapitalTransactions { get; set; }
+        public DbSet<Loan> Loans { get; set; }
+        public DbSet<LoanTransaction> LoanTransactions { get; set; }
         public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
         public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
         public DbSet<CommissionRule> CommissionRules { get; set; }
@@ -742,6 +744,8 @@ namespace DAMS.Infrastructure.Data
 
             ConfigureFinanceReporting(modelBuilder);
 
+            ConfigureLoans(modelBuilder);
+
             modelBuilder.Entity<FinanceAccount>(entity =>
             {
                 entity.Property(a => a.Name).IsRequired().HasMaxLength(120);
@@ -897,6 +901,47 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(t => t.CapitalPartner).WithMany(p => p.Transactions)
                     .HasForeignKey(t => t.CapitalPartnerId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(t => t.FinanceAccount).WithMany(a => a.CapitalCashTransactions)
+                    .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureLoans(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Loan>(entity =>
+            {
+                entity.Property(l => l.Name).IsRequired().HasMaxLength(200);
+                entity.Property(l => l.LenderName).HasMaxLength(200);
+                entity.Property(l => l.RowVersion).IsRowVersion();
+                entity.HasIndex(l => l.Name).IsUnique();
+                entity.HasIndex(l => l.FinanceAccountId).IsUnique();
+                entity.HasIndex(l => new { l.IsActive, l.Name });
+                entity.HasOne(l => l.FinanceAccount).WithMany(a => a.Loans)
+                    .HasForeignKey(l => l.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LoanTransaction>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.PrincipalAmount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.InterestAmount).HasColumnType("decimal(18,2)");
+                entity.Ignore(t => t.TotalPaid);
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.Property(t => t.RowVersion).IsRowVersion();
+                entity.HasIndex(t => t.OperationId).IsUnique();
+                entity.HasIndex(t => new { t.LoanId, t.Date, t.CreatedAt });
+                entity.HasIndex(t => new { t.FinanceAccountId, t.Date });
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_LoanTransactions_Type", "[Type] IN (1, 2)");
+                    t.HasCheckConstraint("CK_LoanTransactions_Amounts", "[PrincipalAmount] >= 0 AND [InterestAmount] >= 0");
+                    t.HasCheckConstraint("CK_LoanTransactions_Shape",
+                        "([Type] = 1 AND [PrincipalAmount] > 0 AND [InterestAmount] = 0) OR " +
+                        "([Type] = 2 AND ([PrincipalAmount] > 0 OR [InterestAmount] > 0))");
+                });
+                entity.HasOne(t => t.Loan).WithMany(l => l.Transactions)
+                    .HasForeignKey(t => t.LoanId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.FinanceAccount).WithMany(a => a.LoanCashTransactions)
                     .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
             });
         }

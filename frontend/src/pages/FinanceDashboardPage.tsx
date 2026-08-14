@@ -1196,6 +1196,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           <div className="flex flex-wrap gap-2.5">
             <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
             <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
+            <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
             <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
             <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>

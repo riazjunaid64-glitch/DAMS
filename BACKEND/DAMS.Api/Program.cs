@@ -166,6 +166,7 @@ builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
 builder.Services.AddScoped<IRevenueCategoryService, RevenueCategoryService>();
 builder.Services.AddScoped<IOpeningBalanceService, OpeningBalanceService>();
 builder.Services.AddScoped<ICapitalPartnerService, CapitalPartnerService>();
+builder.Services.AddScoped<ILoanService, LoanService>();
 builder.Services.AddScoped<IExpenseCategoryService, ExpenseCategoryService>();
 builder.Services.AddScoped<IVendorService, VendorService>();
 builder.Services.AddScoped<IWhtService, WhtService>();
