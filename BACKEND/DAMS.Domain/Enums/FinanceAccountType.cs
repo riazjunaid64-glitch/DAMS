@@ -10,7 +10,13 @@ namespace DAMS.Domain.Enums
         Capital = 6,
         FixedAsset = 7,
         Receivable = 8,
-        WorkInProgress = 9
+        WorkInProgress = 9,
+
+        /// <summary>
+        /// Company money temporarily held by a staff member. It remains a debit-normal current
+        /// asset while positive; a negative balance means the company owes that person.
+        /// </summary>
+        StaffFloat = 10
     }
 
     public enum FinanceSystemAccountRole
@@ -30,6 +36,9 @@ namespace DAMS.Domain.Enums
         public static bool IsCashLike(FinanceAccountType type) => type is
             FinanceAccountType.Cash or FinanceAccountType.Bank or
             FinanceAccountType.MobileWallet or FinanceAccountType.Other;
+
+        public static bool CanPayExpense(FinanceAccountType type) =>
+            IsCashLike(type) || type == FinanceAccountType.StaffFloat;
 
         public static decimal ToNormalBalance(FinanceAccountType type, decimal debit, decimal credit) =>
             IsDebitNormal(type) ? debit - credit : credit - debit;

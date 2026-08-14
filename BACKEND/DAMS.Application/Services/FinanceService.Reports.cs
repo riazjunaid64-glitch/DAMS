@@ -58,22 +58,27 @@ namespace DAMS.Application.Services
             var assetGroups = new[]
             {
                 Group("Current Assets", snapshots, FinanceAccountType.Cash, FinanceAccountType.Bank, FinanceAccountType.MobileWallet, FinanceAccountType.Other),
+                StaffFloatGroup("Cash held by staff", snapshots, positive: true),
                 Group("Fixed Assets", snapshots, FinanceAccountType.FixedAsset),
                 Group("Work in Progress", snapshots, FinanceAccountType.WorkInProgress),
                 Group("Receivables", snapshots, FinanceAccountType.Receivable)
             }.Where(g => g.Lines.Count > 0).ToList();
-            var liabilityGroup = Group("Liabilities", snapshots, FinanceAccountType.Liability);
+            var liabilityGroups = new[]
+            {
+                Group("Liabilities", snapshots, FinanceAccountType.Liability),
+                StaffFloatGroup("Due to staff", snapshots, positive: false)
+            }.Where(g => g.Lines.Count > 0).ToList();
             var capitalLines = snapshots.Where(s => s.Type == FinanceAccountType.Capital)
                 .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(ToBsLine).ToList();
             var totalAssets = Money(assetGroups.Sum(g => g.Total));
-            var totalLiabilities = Money(liabilityGroup.Total);
+            var totalLiabilities = Money(liabilityGroups.Sum(g => g.Total));
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
             var imbalance = Money(totalAssets - rhs);
             var result = new BalanceSheetDto
             {
                 AsAt = date, AssetGroups = assetGroups, TotalAssets = totalAssets,
-                LiabilityGroups = liabilityGroup.Lines.Count == 0 ? [] : [liabilityGroup],
+                LiabilityGroups = liabilityGroups,
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
@@ -351,6 +356,16 @@ namespace DAMS.Application.Services
                         ? t.PrincipalAmount : -t.PrincipalAmount)))
                     .ToListAsync(cancellationToken)
                 : [];
+            var staffTransfers = !projectId.HasValue
+                ? await _context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                    .Select(t => new
+                    {
+                        StaffId = t.StaffFinanceAccountId,
+                        CounterpartyId = t.CounterpartyFinanceAccountId,
+                        t.Type,
+                        t.Amount
+                    }).ToListAsync(cancellationToken)
+                : [];
             var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
                 + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
                     .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
@@ -369,7 +384,11 @@ namespace DAMS.Application.Services
                     - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
                     - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
                     + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount)
-                    + Amount(loanCash, account.Id);
+                    + Amount(loanCash, account.Id)
+                    + staffTransfers.Where(t => t.StaffId == account.Id).Sum(t =>
+                        t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount)
+                    + staffTransfers.Where(t => t.CounterpartyId == account.Id).Sum(t =>
+                        t.Type == StaffCashMovementType.FundsReturned ? t.Amount : -t.Amount);
                 // These sources are expressed as business increases minus decreases, not raw
                 // journal debits. The normal-balance direction is applied later when the trial
                 // balance places the positive amount in a Debit or Credit column.
@@ -436,6 +455,23 @@ namespace DAMS.Application.Services
         private static BsGroupDto Group(string name, IEnumerable<AccountSnapshot> accounts, params FinanceAccountType[] types)
         {
             var lines = accounts.Where(a => types.Contains(a.Type)).OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name).Select(ToBsLine).ToList();
+            return new BsGroupDto { Name = name, Lines = lines, Total = Money(lines.Sum(l => l.Amount)) };
+        }
+
+        private static BsGroupDto StaffFloatGroup(
+            string name,
+            IEnumerable<AccountSnapshot> accounts,
+            bool positive)
+        {
+            var lines = accounts
+                .Where(a => a.Type == FinanceAccountType.StaffFloat
+                    && (positive ? a.Balance > 0m : a.Balance < 0m))
+                .OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name)
+                .Select(a => new BsLineDto
+                {
+                    AccountId = a.Id, LedgerCode = a.LedgerCode, Name = a.Name,
+                    Amount = Money(positive ? a.Balance : -a.Balance)
+                }).ToList();
             return new BsGroupDto { Name = name, Lines = lines, Total = Money(lines.Sum(l => l.Amount)) };
         }
 

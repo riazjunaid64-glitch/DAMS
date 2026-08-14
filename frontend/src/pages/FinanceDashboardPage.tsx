@@ -31,9 +31,13 @@ interface ProjectOption {
 interface FinanceAccountOption {
   id: number;
   name: string;
+  type: number | string;
   accountHolderName: string;
   isActive: boolean;
 }
+
+const isStaffFloat = (account: FinanceAccountOption) =>
+  account.type === 10 || account.type === "StaffFloat" || Number(account.type) === 10;
 
 /** A fixed-asset purchase row: what was bought, where the value landed, and what paid for it. */
 interface AssetPurchaseLine {
@@ -402,8 +406,16 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const loadFinanceAccounts = useCallback(async () => {
     try {
-      const res = await api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true");
-      if (res.ok) setFinanceAccounts(await res.json());
+      const [regular, staff] = await Promise.all([
+        api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true"),
+        api("/api/finance/accounts/options?includeInactive=true&type=10"),
+      ]);
+      if (regular.ok || staff.ok) {
+        const regularRows = regular.ok ? await regular.json() as FinanceAccountOption[] : [];
+        const staffRows = staff.ok ? await staff.json() as FinanceAccountOption[] : [];
+        const rows = [...regularRows, ...staffRows];
+        setFinanceAccounts(rows.filter((row, index) => rows.findIndex((x) => x.id === row.id) === index));
+      }
     } catch {
       /* The form will retain its validation message if accounts cannot be loaded. */
     }
@@ -1197,6 +1209,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
             <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
             <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
+            <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
             <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
             <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
             <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
@@ -1253,7 +1266,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               </FormSelect>
               <FormSelect label="Received In Account" value={revenueForm.financeAccountId} onChange={(v) => setRevenueForm({ ...revenueForm, financeAccountId: v })}>
                 <option value="">Select account</option>
-                {financeAccounts.filter((a) => a.isActive || String(a.id) === revenueForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
+                {financeAccounts.filter((a) => !isStaffFloat(a) && (a.isActive || String(a.id) === revenueForm.financeAccountId)).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
               </FormSelect>
               <FormSelect
                 label="Revenue Category"
@@ -1315,7 +1328,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               </FormSelect>
               <FormSelect label="Paid From Account" value={assetForm.financeAccountId} onChange={(v) => setAssetForm({ ...assetForm, financeAccountId: v })}>
                 <option value="">Select account</option>
-                {financeAccounts.filter((a) => a.isActive || String(a.id) === assetForm.financeAccountId).map((a) => (
+                {financeAccounts.filter((a) => !isStaffFloat(a) && (a.isActive || String(a.id) === assetForm.financeAccountId)).map((a) => (
                   <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>
                 ))}
               </FormSelect>
@@ -1425,7 +1438,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               </FormSelect>
               <FormSelect label="Paid From Account" value={expenseForm.financeAccountId} onChange={(v) => setExpenseForm({ ...expenseForm, financeAccountId: v })}>
                 <option value="">Select account</option>
-                {financeAccounts.filter((a) => a.isActive || String(a.id) === expenseForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>)}
+                {financeAccounts.filter((a) => a.isActive || String(a.id) === expenseForm.financeAccountId).map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{isStaffFloat(a) ? " · Staff float" : ""}{a.isActive ? "" : " (Inactive)"}</option>)}
               </FormSelect>
               <FormSelect
                 label="Category"

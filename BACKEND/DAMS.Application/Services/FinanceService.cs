@@ -446,7 +446,12 @@ namespace DAMS.Application.Services
                 .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Drawdown
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
                 .SumAsync(t => (decimal?)t.PrincipalAmount) ?? 0m;
-            return payments + manual + capitalised + loanDrawdowns;
+            var staffCashIn = await _context.StaffCashTransfers.AsNoTracking()
+                .Where(t => ((t.StaffFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsGiven)
+                        || (t.CounterpartyFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsReturned))
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)t.Amount) ?? 0m;
+            return payments + manual + capitalised + loanDrawdowns + staffCashIn;
         }
 
         /// <summary>
@@ -480,7 +485,12 @@ namespace DAMS.Application.Services
                 .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Repayment
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
                 .SumAsync(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m;
-            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments;
+            var staffCashOut = await _context.StaffCashTransfers.AsNoTracking()
+                .Where(t => ((t.StaffFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsReturned)
+                        || (t.CounterpartyFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsGiven))
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)t.Amount) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments + staffCashOut;
         }
 
         private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
@@ -914,7 +924,7 @@ namespace DAMS.Application.Services
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
+            await _accountService.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
             // Held until after SaveChanges so the year-to-date read and the insert that depends on
             // it cannot be interleaved with another save for the same vendor.
@@ -980,7 +990,7 @@ namespace DAMS.Application.Services
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
+            await _accountService.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
 
             // Editing re-decides the threshold too, so it needs the same protection as creating —
             // for the vendor being left as well as the one being joined.

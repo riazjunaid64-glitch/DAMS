@@ -11,12 +11,12 @@ type Transaction = { kind:string; recordId:number; date:string; label:string; re
 type Overview = { activeAccounts:number; inactiveAccounts:number; totalBalance:number; holderBalances:{accountHolderName:string;accountCount:number;currentBalance:number}[] };
 type Form = { id:number|null; name:string; type:string; accountHolderName:string; openingBalance:string; ledgerCode:string; displayOrder:string; bankOrWalletName:string; description:string; concurrencyToken:string; isSystemAccount:boolean };
 type TransactionWithBalance = { t:Transaction; balance:number };
-const types:Record<number,string> = {1:"Cash",2:"Bank",3:"Mobile Wallet",4:"Other",5:"Liability",6:"Capital",7:"Fixed Asset",8:"Receivable",9:"Work in Progress"};
-const enumValues:Record<string,number>={Cash:1,Bank:2,MobileWallet:3,Other:4,Liability:5,Capital:6,FixedAsset:7,Receivable:8,WorkInProgress:9};
+const types:Record<number,string> = {1:"Cash",2:"Bank",3:"Mobile Wallet",4:"Other",5:"Liability",6:"Capital",7:"Fixed Asset",8:"Receivable",9:"Work in Progress",10:"Staff Float"};
+const enumValues:Record<string,number>={Cash:1,Bank:2,MobileWallet:3,Other:4,Liability:5,Capital:6,FixedAsset:7,Receivable:8,WorkInProgress:9,StaffFloat:10};
 const typeValue=(value:number|string)=>typeof value==="number"?value:(enumValues[value]??Number(value));
 const typeName=(value:number|string)=>types[typeValue(value)]??"—";
 const isCashLike=(value:number|string)=>typeValue(value)<=4;
-const groups:[string,number[]][]=[["Cash & Bank",[1,2,3,4]],["Fixed Assets",[7]],["Work in Progress",[9]],["Receivables",[8]],["Liabilities",[5]],["Capital",[6]]];
+const groups:[string,number[]][]=[["Cash & Bank",[1,2,3,4]],["Cash held by staff",[10]],["Fixed Assets",[7]],["Work in Progress",[9]],["Receivables",[8]],["Liabilities",[5]],["Capital",[6]]];
 const emptyForm = ():Form => ({ id:null, name:"", type:"1", accountHolderName:"", openingBalance:"0", ledgerCode:"", displayOrder:"0", bankOrWalletName:"", description:"", concurrencyToken:"", isSystemAccount:false });
 const money = (n:number) => `Rs ${n.toLocaleString("en-PK", { maximumFractionDigits:2 })}`;
 

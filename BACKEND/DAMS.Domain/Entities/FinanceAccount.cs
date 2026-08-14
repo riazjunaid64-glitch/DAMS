@@ -36,5 +36,7 @@ namespace DAMS.Domain.Entities
         public ICollection<CapitalTransaction> CapitalCashTransactions { get; set; } = new List<CapitalTransaction>();
         public ICollection<Loan> Loans { get; set; } = new List<Loan>();
         public ICollection<LoanTransaction> LoanCashTransactions { get; set; } = new List<LoanTransaction>();
+        public ICollection<StaffCashTransfer> StaffCashTransfers { get; set; } = new List<StaffCashTransfer>();
+        public ICollection<StaffCashTransfer> StaffCashCounterpartyTransfers { get; set; } = new List<StaffCashTransfer>();
     }
 }

@@ -15,6 +15,7 @@ namespace DAMS.Application.Interfaces
         Task<FinanceAccountResponseDto> SetActiveAsync(int id, bool isActive, string concurrencyToken, CancellationToken cancellationToken = default);
         Task DeleteUnusedAsync(int id, CancellationToken cancellationToken = default);
         Task EnsureSelectableAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default);
+        Task EnsureExpenseSourceAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default);
 
         /// <summary>Validates that an account can receive a capitalised purchase — active, and typed
         /// FixedAsset.</summary>
