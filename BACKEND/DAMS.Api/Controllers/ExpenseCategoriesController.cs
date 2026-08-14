@@ -35,6 +35,10 @@ namespace DAMS.Api.Controllers
         {
             try { return Ok(await _categories.CreateAsync(dto, GetUserId(), cancellationToken)); }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateException)
+            {
+                return Conflict(new { message = "The category could not be saved because its name or code is already in use." });
+            }
         }
 
         [HttpPut("{id:int}")]

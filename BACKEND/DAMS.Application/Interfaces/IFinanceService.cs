@@ -39,7 +39,7 @@ namespace DAMS.Application.Interfaces
         // Fixed-asset purchase CRUD. Same shape as expenses; the difference is where the value goes.
         Task<AssetPurchaseResponseDto> CreateAssetPurchaseAsync(CreateAssetPurchaseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
         Task<AssetPurchaseResponseDto> UpdateAssetPurchaseAsync(int id, UpdateAssetPurchaseDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
-        Task DeleteAssetPurchaseAsync(int id, CancellationToken cancellationToken = default);
+        Task DeleteAssetPurchaseAsync(int id, string concurrencyToken, CancellationToken cancellationToken = default);
 
         Task<FinanceAttachmentDownload> GetAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);
         Task RemoveAttachmentAsync(FinanceRecordKind kind, int recordId, CancellationToken cancellationToken = default);

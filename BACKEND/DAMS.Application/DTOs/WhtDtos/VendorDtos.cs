@@ -45,7 +45,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// <summary>Payments recorded against this supplier, capital and revenue alike. Fixed-asset
         /// purchases are included because they feed the same annual threshold the totals above are
         /// judged on — a supplier paid only for assets is not a supplier with no history.</summary>
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
 
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
@@ -60,6 +60,6 @@ namespace DAMS.Application.DTOs.WhtDtos
         public string FinancialYear { get; set; } = string.Empty;
         public decimal GrossPaid { get; set; }
         public decimal WhtWithheld { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
     }
 }

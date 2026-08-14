@@ -89,6 +89,8 @@ namespace DAMS.Domain.Entities
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        public byte[] RowVersion { get; set; } = [];
+
         // Navigation
         public Project? Project { get; set; }
 

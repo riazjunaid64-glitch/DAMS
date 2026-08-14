@@ -70,7 +70,7 @@ namespace DAMS.Application.DTOs.WhtDtos
 
         public decimal TotalWithheldAllTime { get; set; }
         public decimal TotalDepositedAllTime { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
         public int VendorCount { get; set; }
         public List<WhtSectionTotalDto> BySection { get; set; } = new();
     }
@@ -80,7 +80,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         public string TaxSection { get; set; } = string.Empty;
         public decimal GrossAmount { get; set; }
         public decimal WhtAmount { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
     }
 
     /// <summary>One line of the s.165 withholding statement / vendor certificate.</summary>
@@ -95,7 +95,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         public decimal GrossAmount { get; set; }
         public decimal WhtAmount { get; set; }
         public decimal NetPaid { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
     }
 
     public class SaveWhtDepositDto

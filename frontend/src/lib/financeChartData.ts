@@ -1,5 +1,5 @@
 import { api } from "../api/api.ts";
-import { financialYearWindow } from "./financePeriods.ts";
+import { financialYearWindow, pakistanToday } from "./financePeriods.ts";
 
 /**
  * Finance chart data derived from the authoritative `/api/Finance/summary` endpoint.
@@ -44,7 +44,7 @@ interface ChartFilters {
   to: string; // yyyy-mm-dd or ""
   account: string; // "" = all accounts
   period: FinancePeriod;
-  financialYearStartMonth: number;
+  financialYearStartMonth: number | null;
   projects: ProjectRef[];
 }
 
@@ -87,8 +87,13 @@ async function fetchSummary(
  * Split the active date range into a small number of labelled buckets. The granularity
  * adapts to the span so "This Year" reads as quarters, "This Month" as weeks, etc.
  */
-function buildBuckets(from: string, to: string, startMonth: number): { label: string; from: string; to: string }[] {
-  const now = new Date();
+function buildBuckets(
+  from: string,
+  to: string,
+  period: FinancePeriod,
+  startMonth: number | null,
+): { label: string; from: string; to: string }[] {
+  const now = new Date(`${pakistanToday()}T00:00:00`);
   let start: Date;
   let end: Date;
 
@@ -96,12 +101,17 @@ function buildBuckets(from: string, to: string, startMonth: number): { label: st
     start = new Date(`${from}T00:00:00`);
     end = new Date(`${to}T00:00:00`);
   } else {
+    if (period === "all" || period === "custom") {
+      return [{ label: "All time", from: "", to: "" }];
+    }
+    if (startMonth === null) return [];
     const fiscalYear = financialYearWindow(now, startMonth);
     start = fiscalYear.from;
     end = new Date(fiscalYear.toExclusive.getFullYear(), fiscalYear.toExclusive.getMonth(), 0);
   }
 
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+    if (startMonth === null) return [];
     const fiscalYear = financialYearWindow(now, startMonth);
     start = fiscalYear.from;
     end = new Date(fiscalYear.toExclusive.getFullYear(), fiscalYear.toExclusive.getMonth(), 0);
@@ -201,7 +211,7 @@ export async function fetchFinanceChartData(
   filters: ChartFilters,
   signal?: AbortSignal,
 ): Promise<FinanceChartData> {
-  const buckets = buildBuckets(filters.from, filters.to, filters.financialYearStartMonth);
+  const buckets = buildBuckets(filters.from, filters.to, filters.period, filters.financialYearStartMonth);
 
   // One flaky per-bucket / per-project request must not blank the whole chart. Treat an
   // individual failure as zero for that slice; a real abort re-throws so the effect cancels.

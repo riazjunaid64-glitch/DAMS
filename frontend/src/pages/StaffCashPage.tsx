@@ -52,7 +52,7 @@ type HistoryItem = {
   concurrencyToken: string | null;
 };
 
-type Statement = { holder: Holder; items: HistoryItem[]; hasMore: boolean };
+type Statement = { holder: Holder; items: HistoryItem[]; hasMore: boolean; nextCursor: string | null };
 type AccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
 type TransferForm = {
   id: number | null;
@@ -102,18 +102,20 @@ export default function StaffCashPage({ user }: Props) {
   // B, which is how company cash ends up recorded against the wrong employee.
   const statementRequest = useRef(0);
 
-  const loadStatement = useCallback(async (id: number, skip = 0) => {
+  const loadStatement = useCallback(async (id: number, cursor: string | null = null) => {
     const request = ++statementRequest.current;
     setLoadingStatement(true);
     try {
-      const response = await api(`/api/finance/staff-cash/${id}?skip=${skip}&take=${PAGE_SIZE}`);
+      const params = new URLSearchParams({ take: String(PAGE_SIZE) });
+      if (cursor) params.set("cursor", cursor);
+      const response = await api(`/api/finance/staff-cash/${id}?${params.toString()}`);
       if (request !== statementRequest.current) return;
       if (!response.ok) throw new Error(await message(response, "Could not load this person's history."));
       const next = await response.json() as Statement;
       if (request !== statementRequest.current) return;
       // Older pages append; anything else replaces. The id check is what keeps a page of one
       // person's movements from being appended to another person's statement.
-      setStatement((current) => skip > 0 && current?.holder.financeAccountId === id
+      setStatement((current) => cursor && current?.holder.financeAccountId === id
         ? { ...next, items: [...current.items, ...next.items] }
         : next);
     } finally {
@@ -164,10 +166,11 @@ export default function StaffCashPage({ user }: Props) {
 
   const loadOlder = async () => {
     // Page from the statement that belongs to the current selection, never from one left on screen
-    // by a previous person — the skip would be counted against the wrong history.
+    // by a previous person — the cursor would be counted against the wrong history.
     if (!selectedId || loadingStatement) return;
     if (!statement || statement.holder.financeAccountId !== selectedId) return;
-    try { await loadStatement(selectedId, statement.items.length); }
+    if (!statement.nextCursor) return;
+    try { await loadStatement(selectedId, statement.nextCursor); }
     catch (loadError) { setError(loadError instanceof Error ? loadError.message : "Could not load older movements."); }
   };
 

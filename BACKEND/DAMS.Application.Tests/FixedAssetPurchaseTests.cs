@@ -163,11 +163,12 @@ public sealed class FixedAssetPurchaseTests
         }, adminUserId: 1);
 
         // Typed 200,000, actually 150,000, and it belongs to Office Equipment, paid from cash.
-        await service.UpdateAssetPurchaseAsync(created.Id, new UpdateAssetPurchaseDto
+        var updated = await service.UpdateAssetPurchaseAsync(created.Id, new UpdateAssetPurchaseDto
         {
             AssetAccountId = world.Equipment.Id, FinanceAccountId = world.Cash.Id,
             Amount = 150_000m, ItemName = "3 office desks",
-            CategoryId = world.NoTaxHead.Id, Date = new DateTime(2026, 8, 10)
+            CategoryId = world.NoTaxHead.Id, Date = new DateTime(2026, 8, 10),
+            ConcurrencyToken = created.ConcurrencyToken
         });
 
         Assert.Equal(1_000_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
@@ -176,7 +177,7 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(150_000m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
         Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
 
-        await service.DeleteAssetPurchaseAsync(created.Id);
+        await service.DeleteAssetPurchaseAsync(created.Id, updated.ConcurrencyToken);
 
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Cash.Id)).CurrentBalance);
@@ -291,7 +292,7 @@ public sealed class FixedAssetPurchaseTests
         // The settings screen offers Retire or Delete based on this count. Counting expenses alone
         // would offer Delete on a head the database is bound to refuse to drop.
         var listed = (await categories.GetAllAsync(true)).Single(c => c.Id == world.NoTaxHead.Id);
-        Assert.Equal(1, listed.ExpenseCount);
+        Assert.Equal(1, listed.UsageCount);
 
         var outcome = await categories.DeleteAsync(world.NoTaxHead.Id);
 
@@ -320,7 +321,7 @@ public sealed class FixedAssetPurchaseTests
 
         Assert.Equal(100_000m, listed.YearToDateGross);
         Assert.Equal(10_000m, listed.YearToDateWht);
-        Assert.Equal(1, listed.ExpenseCount);
+        Assert.Equal(1, listed.PaymentCount);
 
         // The list and the supplier's own breakdown are two views of the same payments. If they
         // disagree, one of them is telling an admin the threshold has room it does not have.

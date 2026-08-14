@@ -64,6 +64,7 @@ interface AssetPurchaseLine {
   netPaid: number;
   whtTaxSection: string | null;
   attachment: FinanceAttachmentInfo | null;
+  concurrencyToken: string;
 }
 
 interface RevenueCategory {
@@ -292,6 +293,7 @@ interface AssetPurchaseFormState {
   attachment: FinanceAttachmentInfo | null;
   selectedAttachment: File | null;
   removeAttachment: boolean;
+  concurrencyToken: string;
 }
 
 const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
@@ -311,6 +313,7 @@ const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
   attachment: null,
   selectedAttachment: null,
   removeAttachment: false,
+  concurrencyToken: "",
 });
 
 const emptyRevenueForm = (): RevenueFormState => ({
@@ -526,9 +529,9 @@ export default function FinanceDashboardPage({ user }: Props) {
         to: toDate,
         account: accountFilter,
         period: activePeriod as FinancePeriod,
-        // Only decides bucket boundaries when no explicit range is set, and never labels itself
-        // with a financial year. The effect re-runs when the real value arrives.
-        financialYearStartMonth: financialYearStartMonth ?? 7,
+        // Only decides fiscal bucket boundaries after the configured value is known. The "All"
+        // view uses an all-time bucket instead of guessing a July-based year.
+        financialYearStartMonth,
         projects: projects.map((p) => ({ id: p.id, projectName: p.projectName })),
       },
       controller.signal,
@@ -741,6 +744,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         body.append("whtOverrideReason", assetForm.wht.overrideReason.trim());
       if (assetForm.selectedAttachment) body.append("attachment", assetForm.selectedAttachment);
       if (assetForm.removeAttachment) body.append("removeAttachment", "true");
+      if (assetForm.id) body.append("concurrencyToken", assetForm.concurrencyToken);
       const res = assetForm.id
         ? await api(`/api/Finance/asset-purchases/${assetForm.id}/form`, { method: "PUT", body })
         : await api("/api/Finance/asset-purchases/form", { method: "POST", body });
@@ -771,11 +775,14 @@ export default function FinanceDashboardPage({ user }: Props) {
     else alert("Failed to delete expense.");
   };
 
-  const deleteAssetPurchase = async (id: number) => {
+  const deleteAssetPurchase = async (row: AssetPurchaseLine) => {
     if (!window.confirm("Delete this asset purchase? The bank balance and the asset account both move back.")) return;
-    const res = await api(`/api/Finance/asset-purchases/${id}`, { method: "DELETE" });
+    const res = await api(
+      `/api/Finance/asset-purchases/${row.id}?concurrencyToken=${encodeURIComponent(row.concurrencyToken)}`,
+      { method: "DELETE" },
+    );
     if (res.ok) await refreshAll();
-    else alert("Failed to delete the asset purchase.");
+    else alert(await financeApiError(res, "Failed to delete the asset purchase."));
   };
 
   const editAssetPurchase = (row: AssetPurchaseLine) => {
@@ -805,6 +812,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       attachment: row.attachment,
       selectedAttachment: null,
       removeAttachment: false,
+      concurrencyToken: row.concurrencyToken,
     });
   };
 
@@ -998,7 +1006,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               return (
                 <span className="inline-flex justify-end gap-2">
                   <button type="button" onClick={() => editAssetPurchase(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteAssetPurchase(row.id)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
+                  <button type="button" onClick={() => deleteAssetPurchase(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               );
             } },

@@ -38,7 +38,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// <summary>How many records already reference this category — expenses and fixed-asset
         /// purchases alike, because both are filed under these heads and both block a delete. It is
         /// the warning an admin needs before retiring one, so it must not undercount either kind.</summary>
-        public int ExpenseCount { get; set; }
+        public int UsageCount { get; set; }
 
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }

@@ -222,7 +222,7 @@ public sealed class StaffCashTests
             }, 1);
         }
 
-        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 200);
+        var whole = await staff.GetStatementAsync(holder.FinanceAccountId, null, 200);
         Assert.Equal(12, whole.Items.Count);
         Assert.False(whole.HasMore);
         Assert.Equal(3_600m, whole.Holder.CurrentBalance);
@@ -238,9 +238,11 @@ public sealed class StaffCashTests
 
         // A page is a window onto that statement, not a different one. Balances on page three are
         // only right if the rows above it were accounted for without being fetched.
-        var first = await staff.GetStatementAsync(holder.FinanceAccountId, 0, 5);
-        var second = await staff.GetStatementAsync(holder.FinanceAccountId, 5, 5);
-        var third = await staff.GetStatementAsync(holder.FinanceAccountId, 10, 5);
+        var first = await staff.GetStatementAsync(holder.FinanceAccountId, null, 5);
+        Assert.NotNull(first.NextCursor);
+        var second = await staff.GetStatementAsync(holder.FinanceAccountId, first.NextCursor, 5);
+        Assert.NotNull(second.NextCursor);
+        var third = await staff.GetStatementAsync(holder.FinanceAccountId, second.NextCursor, 5);
         Assert.True(first.HasMore);
         Assert.True(second.HasMore);
         Assert.False(third.HasMore);

@@ -46,6 +46,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
     public sealed class UpdateAssetPurchaseDto : CreateAssetPurchaseDto
     {
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 
     public sealed class AssetPurchaseResponseDto
@@ -86,6 +87,7 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public DateTime CreatedAt { get; set; }
         public FinanceAttachmentDto? Attachment { get; set; }
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 
     /// <summary>One row of the Fixed Assets table on the finance dashboard.</summary>
@@ -112,5 +114,6 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? WhtTaxSection { get; set; }
         public int? ProjectId { get; set; }
         public FinanceAttachmentDto? Attachment { get; set; }
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 }

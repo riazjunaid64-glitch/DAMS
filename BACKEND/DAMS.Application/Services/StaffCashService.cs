@@ -5,6 +5,11 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using System.Data;
+using System.Data.Common;
+using System.Text;
+using System.Text.Json;
 
 namespace DAMS.Application.Services
 {
@@ -33,29 +38,37 @@ namespace DAMS.Application.Services
             var accountRows = await StaffAccounts().ToListAsync(cancellationToken);
             var totals = await TotalsByAccountAsync(accountRows.Select(a => a.Id).ToList(), cancellationToken);
             var openingDate = await OpeningDateAsync(cancellationToken);
+            var balances = accountRows.ToDictionary(
+                a => a.Id,
+                a => Money(a.OpeningBalance + (totals.GetValueOrDefault(a.Id)?.Net ?? 0m)));
+            var outstandingSince = await OutstandingSinceByAccountAsync(
+                accountRows, balances, openingDate, null, cancellationToken);
 
-            // Each holder is built once, from one grouped aggregate rather than a replay of every
-            // receipt they ever handled. Only a float that is still open needs its movements read
-            // at all, and only back as far as the day it last stood at zero.
+            // Each holder is built once, from grouped aggregates plus one set-based aging query.
+            // A permanent running float must not make the overview replay its whole lifetime every
+            // time the page opens.
             var holders = new List<StaffCashHolderDto>(accountRows.Count);
             foreach (var account in accountRows)
-                holders.Add(await BuildHolderAsync(
-                    account, totals.GetValueOrDefault(account.Id), openingDate, cancellationToken));
+                holders.Add(BuildHolder(
+                    account,
+                    totals.GetValueOrDefault(account.Id),
+                    balances[account.Id],
+                    outstandingSince.GetValueOrDefault(account.Id)));
 
             // Every holder counts towards the company totals; includeSettled only decides who is
             // listed. Filtering before summing would hide settled floats from the reconciliation.
-            var balances = holders.Select(h => h.CurrentBalance).ToList();
+            var holderBalances = holders.Select(h => h.CurrentBalance).ToList();
             var cash = (await _accounts.GetOverviewAsync(cancellationToken)).TotalBalance;
-            var net = Money(balances.Sum());
+            var net = Money(holderBalances.Sum());
             return new StaffCashOverviewDto
             {
-                TotalHeldByStaff = Money(balances.Where(x => x > 0m).Sum()),
-                TotalOwedToStaff = Money(-balances.Where(x => x < 0m).Sum()),
+                TotalHeldByStaff = Money(holderBalances.Where(x => x > 0m).Sum()),
+                TotalOwedToStaff = Money(-holderBalances.Where(x => x < 0m).Sum()),
                 NetStaffBalance = net,
                 CashAndBankBalance = Money(cash),
                 TrackedCompanyCash = Money(cash + net),
-                HoldingCount = balances.Count(x => x > 0m),
-                OwedCount = balances.Count(x => x < 0m),
+                HoldingCount = holderBalances.Count(x => x > 0m),
+                OwedCount = holderBalances.Count(x => x < 0m),
                 Holders = holders
                     .Where(h => includeSettled || h.CurrentBalance != 0m)
                     .OrderByDescending(h => h.CurrentBalance > 0m)
@@ -93,50 +106,69 @@ namespace DAMS.Application.Services
             };
             _context.FinanceAccounts.Add(account);
             await _context.SaveChangesAsync(cancellationToken);
-            return await BuildHolderAsync(new StaffAccountRow
+            return BuildHolder(new StaffAccountRow
             {
                 Id = account.Id, Name = account.Name, PersonName = account.AccountHolderName,
                 OpeningBalance = account.OpeningBalance, IsActive = account.IsActive,
                 CreatedAt = account.CreatedAt
-            }, null, await OpeningDateAsync(cancellationToken), cancellationToken);
+            }, null, 0m, null);
         }
 
         public async Task<StaffCashStatementDto> GetStatementAsync(
             int staffFinanceAccountId,
-            int skip,
+            string? cursor,
             int take,
             CancellationToken cancellationToken = default)
         {
-            skip = Math.Max(0, skip);
             take = Math.Clamp(take, 1, 200);
+            var parsedCursor = DecodeCursor(cursor);
+            if (parsedCursor != null && parsedCursor.AccountId != staffFinanceAccountId)
+                throw new InvalidOperationException("The staff cash page cursor belongs to another person. Refresh and try again.");
+            var snapshotUtc = parsedCursor?.SnapshotUtc ?? DateTime.UtcNow;
             var account = await StaffAccounts().SingleOrDefaultAsync(a => a.Id == staffFinanceAccountId, cancellationToken)
                 ?? throw new InvalidOperationException("Staff float not found.");
             var ids = new List<int> { staffFinanceAccountId };
-            var holder = await BuildHolderAsync(
-                account,
-                (await TotalsByAccountAsync(ids, cancellationToken)).GetValueOrDefault(staffFinanceAccountId),
+
+            // A statement page must be internally consistent even if another admin records the
+            // next receipt while this request is in flight. The snapshot boundary makes all reads
+            // talk about the same ledger, and the cursor carries the balance at the next page
+            // boundary so older pages never have to re-count a moving offset window.
+            var totals = await TotalsByAccountAsync(ids, snapshotUtc, cancellationToken);
+            var balance = Money(account.OpeningBalance + (totals.GetValueOrDefault(staffFinanceAccountId)?.Net ?? 0m));
+            var outstandingSince = await OutstandingSinceByAccountAsync(
+                [account],
+                new Dictionary<int, decimal> { [staffFinanceAccountId] = balance },
                 await OpeningDateAsync(cancellationToken),
+                snapshotUtc,
                 cancellationToken);
+            var holder = BuildHolder(
+                account,
+                totals.GetValueOrDefault(staffFinanceAccountId),
+                balance,
+                outstandingSince.GetValueOrDefault(staffFinanceAccountId));
 
-            // Only the requested page is read. A running balance normally needs every earlier
-            // movement, but read newest-first it needs only the later ones: the closing balance
-            // less everything above the page is the balance its first row left behind, and each
-            // step down the page undoes one more movement. So a single SUM stands in for the
-            // history above the page, and nothing below it is touched at all.
-            var newestFirst = NewestFirst(LedgerQuery(ids));
-            var newerSum = skip == 0
-                ? 0m
-                : await newestFirst.Take(skip).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
-            var page = await newestFirst.Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var ledger = LedgerQuery(ids, snapshotUtc);
+            var pageQuery = parsedCursor == null ? NewestFirst(ledger) : NewestFirst(OlderThan(ledger, parsedCursor));
+            var page = await pageQuery.Take(take + 1).ToListAsync(cancellationToken);
 
-            var running = Money(holder.CurrentBalance - newerSum);
+            var running = parsedCursor?.BalanceBeforeCursor ?? holder.CurrentBalance;
             var items = new List<StaffCashHistoryItemDto>(Math.Min(page.Count, take));
             foreach (var row in page.Take(take))
             {
                 items.Add(MapHistory(row, running));
                 running = Money(running - row.Amount);
             }
-            return new StaffCashStatementDto { Holder = holder, Items = items, HasMore = page.Count > take };
+            var last = page.Take(take).LastOrDefault();
+            return new StaffCashStatementDto
+            {
+                Holder = holder,
+                Items = items,
+                HasMore = page.Count > take,
+                NextCursor = page.Count > take && last != null
+                    ? EncodeCursor(new LedgerCursor(staffFinanceAccountId, snapshotUtc, last.Date, last.CreatedAt,
+                        last.SortOrder, last.RecordId, last.TypeOrder, running))
+                    : null
+            };
         }
 
         public async Task<StaffCashHistoryItemDto> RecordTransferAsync(
@@ -227,10 +259,14 @@ namespace DAMS.Application.Services
         /// aggregate, order and page it in the database; a float's history only ever grows, so
         /// nothing here may assume it fits in memory.
         /// </summary>
-        private IQueryable<LedgerRow> LedgerQuery(List<int> accountIds)
+        private IQueryable<LedgerRow> LedgerQuery(List<int> accountIds, DateTime? createdAtOrBefore = null)
         {
             var transfers = _context.StaffCashTransfers.AsNoTracking()
-                .Where(t => accountIds.Contains(t.StaffFinanceAccountId))
+                .Where(t => accountIds.Contains(t.StaffFinanceAccountId));
+            if (createdAtOrBefore.HasValue)
+                transfers = transfers.Where(t => t.CreatedAt <= createdAtOrBefore.Value);
+
+            var transferRows = transfers
                 .Select(t => new LedgerRow
                 {
                     AccountId = t.StaffFinanceAccountId, RecordType = "Transfer", TypeOrder = 0,
@@ -248,7 +284,11 @@ namespace DAMS.Application.Services
                     RowVersion = t.RowVersion
                 });
             var expenses = _context.Expenses.AsNoTracking()
-                .Where(e => e.FinanceAccountId.HasValue && accountIds.Contains(e.FinanceAccountId.Value))
+                .Where(e => e.FinanceAccountId.HasValue && accountIds.Contains(e.FinanceAccountId.Value));
+            if (createdAtOrBefore.HasValue)
+                expenses = expenses.Where(e => e.CreatedAt <= createdAtOrBefore.Value);
+
+            var expenseRows = expenses
                 .Select(e => new LedgerRow
                 {
                     AccountId = e.FinanceAccountId!.Value, RecordType = "Expense", TypeOrder = 1,
@@ -262,7 +302,38 @@ namespace DAMS.Application.Services
                     MovementType = null, CounterpartyFinanceAccountId = null,
                     CounterpartyFinanceAccountName = null, RowVersion = null
                 });
-            return transfers.Concat(expenses);
+            return transferRows.Concat(expenseRows);
+        }
+
+        private async Task<Dictionary<int, DateTime?>> OutstandingSinceByAccountAsync(
+            List<StaffAccountRow> accounts,
+            Dictionary<int, decimal> balances,
+            DateTime? openingDate,
+            DateTime? createdAtOrBefore,
+            CancellationToken cancellationToken)
+        {
+            var openAccounts = accounts.Where(a => balances.GetValueOrDefault(a.Id) != 0m).ToList();
+            var result = accounts.ToDictionary(a => a.Id, _ => (DateTime?)null);
+            if (openAccounts.Count == 0) return result;
+
+            foreach (var account in openAccounts)
+                result[account.Id] = (openingDate ?? account.CreatedAt).Date;
+
+            if (_context.Database.IsSqlServer())
+            {
+                var departures = await OutstandingSinceSqlServerAsync(
+                    openAccounts.Select(a => a.Id).ToList(), createdAtOrBefore, cancellationToken);
+                foreach (var row in departures)
+                    result[row.AccountId] = row.Date.Date;
+                return result;
+            }
+
+            foreach (var account in openAccounts)
+            {
+                result[account.Id] = await OutstandingSinceFallbackAsync(
+                    account, balances[account.Id], openingDate, createdAtOrBefore, cancellationToken);
+            }
+            return result;
         }
 
         /// <summary>
@@ -275,12 +346,48 @@ namespace DAMS.Application.Services
                 .ThenByDescending(r => r.SortOrder).ThenByDescending(r => r.RecordId)
                 .ThenByDescending(r => r.TypeOrder);
 
+        private static IQueryable<LedgerRow> OlderThan(IQueryable<LedgerRow> ledger, LedgerCursor cursor)
+        {
+            var date = cursor.Date;
+            var createdAt = cursor.CreatedAt;
+            var sortOrder = cursor.SortOrder;
+            var recordId = cursor.RecordId;
+            var typeOrder = cursor.TypeOrder;
+            return ledger.Where(r =>
+                r.Date < date
+                || (r.Date == date
+                    && (r.CreatedAt < createdAt
+                        || (r.CreatedAt == createdAt
+                            && (r.SortOrder < sortOrder
+                                || (r.SortOrder == sortOrder
+                                    && (r.RecordId < recordId
+                                        || (r.RecordId == recordId && r.TypeOrder < typeOrder))))))));
+        }
+
+        private static string EncodeCursor(LedgerCursor cursor) =>
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(cursor)));
+
+        private static LedgerCursor? DecodeCursor(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            try
+            {
+                return JsonSerializer.Deserialize<LedgerCursor>(
+                    Encoding.UTF8.GetString(Convert.FromBase64String(value)));
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                throw new InvalidOperationException("The staff cash page cursor is invalid. Refresh and try again.");
+            }
+        }
+
         private async Task<Dictionary<int, LedgerTotals>> TotalsByAccountAsync(
             List<int> accountIds,
+            DateTime? createdAtOrBefore,
             CancellationToken cancellationToken)
         {
             if (accountIds.Count == 0) return [];
-            var rows = await LedgerQuery(accountIds)
+            var rows = await LedgerQuery(accountIds, createdAtOrBefore)
                 .GroupBy(r => r.AccountId)
                 .Select(g => new LedgerTotals
                 {
@@ -293,18 +400,17 @@ namespace DAMS.Application.Services
             return rows.ToDictionary(r => r.AccountId);
         }
 
-        private async Task<StaffCashHolderDto> BuildHolderAsync(
+        private Task<Dictionary<int, LedgerTotals>> TotalsByAccountAsync(
+            List<int> accountIds,
+            CancellationToken cancellationToken) =>
+            TotalsByAccountAsync(accountIds, null, cancellationToken);
+
+        private StaffCashHolderDto BuildHolder(
             StaffAccountRow account,
             LedgerTotals? totals,
-            DateTime? openingDate,
-            CancellationToken cancellationToken)
+            decimal balance,
+            DateTime? outstandingSince)
         {
-            var balance = Money(account.OpeningBalance + (totals?.Net ?? 0m));
-            // A settled float has nothing outstanding by definition, so it never needs its history
-            // walked — which is most of them, most of the time.
-            var outstandingSince = balance == 0m
-                ? null
-                : await OutstandingSinceAsync(account, balance, openingDate, cancellationToken);
             return new StaffCashHolderDto
             {
                 FinanceAccountId = account.Id, PersonName = account.PersonName,
@@ -329,13 +435,14 @@ namespace DAMS.Application.Services
         /// receipts sit behind them.
         /// </para>
         /// </summary>
-        private async Task<DateTime?> OutstandingSinceAsync(
+        private async Task<DateTime?> OutstandingSinceFallbackAsync(
             StaffAccountRow account,
             decimal currentBalance,
             DateTime? openingDate,
+            DateTime? createdAtOrBefore,
             CancellationToken cancellationToken)
         {
-            var newestFirst = NewestFirst(LedgerQuery([account.Id]));
+            var newestFirst = NewestFirst(LedgerQuery([account.Id], createdAtOrBefore));
             var balanceAfter = currentBalance;
             for (var skip = 0; ; skip += AgingPageSize)
             {
@@ -354,6 +461,117 @@ namespace DAMS.Application.Services
             // The balance never came back to zero, so what is outstanding traces to the opening
             // balance the float was set up with.
             return (openingDate ?? account.CreatedAt).Date;
+        }
+
+        private async Task<List<OutstandingSinceRow>> OutstandingSinceSqlServerAsync(
+            List<int> accountIds,
+            DateTime? createdAtOrBefore,
+            CancellationToken cancellationToken)
+        {
+            if (accountIds.Count == 0) return [];
+
+            var names = accountIds.Select((_, index) => $"@id{index}").ToArray();
+            var inList = string.Join(", ", names);
+            var sql = $"""
+                WITH [Staff] AS (
+                    SELECT [Id], [OpeningBalance]
+                    FROM [FinanceAccounts]
+                    WHERE [Id] IN ({inList})
+                ),
+                [Ledger] AS (
+                    SELECT
+                        [StaffFinanceAccountId] AS [AccountId],
+                        [Date],
+                        [CreatedAt],
+                        CAST([Type] AS int) AS [SortOrder],
+                        [Id] AS [RecordId],
+                        CAST(0 AS int) AS [TypeOrder],
+                        CASE WHEN [Type] = 1 THEN [Amount] ELSE -[Amount] END AS [Amount]
+                    FROM [StaffCashTransfers]
+                    WHERE [StaffFinanceAccountId] IN ({inList})
+                        AND (@asOf IS NULL OR [CreatedAt] <= @asOf)
+                    UNION ALL
+                    SELECT
+                        [FinanceAccountId] AS [AccountId],
+                        [Date],
+                        [CreatedAt],
+                        CAST(3 AS int) AS [SortOrder],
+                        [Id] AS [RecordId],
+                        CAST(1 AS int) AS [TypeOrder],
+                        -([Amount] - [WhtAmount]) AS [Amount]
+                    FROM [Expenses]
+                    WHERE [FinanceAccountId] IN ({inList})
+                        AND (@asOf IS NULL OR [CreatedAt] <= @asOf)
+                ),
+                [Ordered] AS (
+                    SELECT
+                        l.[AccountId],
+                        l.[Date],
+                        l.[CreatedAt],
+                        l.[SortOrder],
+                        l.[RecordId],
+                        l.[TypeOrder],
+                        s.[OpeningBalance] + COALESCE(SUM(l.[Amount]) OVER (
+                            PARTITION BY l.[AccountId]
+                            ORDER BY l.[Date], l.[CreatedAt], l.[SortOrder], l.[RecordId], l.[TypeOrder]
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ), 0) AS [BalanceBefore]
+                    FROM [Ledger] l
+                    INNER JOIN [Staff] s ON s.[Id] = l.[AccountId]
+                ),
+                [Departures] AS (
+                    SELECT
+                        [AccountId],
+                        [Date],
+                        ROW_NUMBER() OVER (
+                            PARTITION BY [AccountId]
+                            ORDER BY [Date] DESC, [CreatedAt] DESC, [SortOrder] DESC, [RecordId] DESC, [TypeOrder] DESC
+                        ) AS [Rank]
+                    FROM [Ordered]
+                    WHERE ROUND([BalanceBefore], 2) = 0
+                )
+                SELECT [AccountId], [Date]
+                FROM [Departures]
+                WHERE [Rank] = 1;
+                """;
+
+            var connection = _context.Database.GetDbConnection();
+            var shouldClose = connection.State != ConnectionState.Open;
+            if (shouldClose) await connection.OpenAsync(cancellationToken);
+
+            try
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = sql;
+                command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+                if (_context.Database.GetCommandTimeout() is { } timeout)
+                    command.CommandTimeout = timeout;
+
+                for (var index = 0; index < accountIds.Count; index++)
+                {
+                    var parameter = command.CreateParameter();
+                    parameter.ParameterName = names[index];
+                    parameter.Value = accountIds[index];
+                    parameter.DbType = DbType.Int32;
+                    command.Parameters.Add(parameter);
+                }
+
+                var asOf = command.CreateParameter();
+                asOf.ParameterName = "@asOf";
+                asOf.Value = createdAtOrBefore.HasValue ? createdAtOrBefore.Value : DBNull.Value;
+                asOf.DbType = DbType.DateTime2;
+                command.Parameters.Add(asOf);
+
+                var rows = new List<OutstandingSinceRow>();
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    rows.Add(new OutstandingSinceRow(reader.GetInt32(0), reader.GetDateTime(1)));
+                return rows;
+            }
+            finally
+            {
+                if (shouldClose) await connection.CloseAsync();
+            }
         }
 
         private async Task<StaffCashHistoryItemDto> GetTransferHistoryAsync(
@@ -509,6 +727,18 @@ namespace DAMS.Application.Services
             public string? Note { get; set; }
             public byte[]? RowVersion { get; set; }
         }
+
+        private sealed record LedgerCursor(
+            int AccountId,
+            DateTime SnapshotUtc,
+            DateTime Date,
+            DateTime CreatedAt,
+            int SortOrder,
+            int RecordId,
+            int TypeOrder,
+            decimal BalanceBeforeCursor);
+
+        private sealed record OutstandingSinceRow(int AccountId, DateTime Date);
 
         private sealed class LedgerTotals
         {

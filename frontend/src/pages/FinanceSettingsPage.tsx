@@ -148,9 +148,9 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
     [categories, showInactive]);
 
   const retire = async (category: ExpenseCategory) => {
-    const used = category.expenseCount > 0;
+    const used = category.usageCount > 0;
     const message = used
-      ? `"${category.name}" is used by ${category.expenseCount} expense(s), so it will be retired rather than deleted — the rate those expenses were entered at is kept. Continue?`
+      ? `"${category.name}" is used by ${category.usageCount} payment record(s), so it will be retired rather than deleted — the rate those records were entered at is kept. Continue?`
       : `Delete "${category.name}"? It has never been used.`;
     if (!window.confirm(message)) return;
     setBusy(true); setError(null);
@@ -224,7 +224,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       ? category.annualThreshold.toLocaleString("en-PK")
                       : <span className="text-[var(--text-muted)]">From Rs 1</span>}
                 </td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.usageCount}</td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => setEditing(category)}>Edit</Button>
@@ -234,7 +234,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       onClick={() => void retire(category)}
                       className="text-xs font-semibold text-[var(--text-muted)] hover:text-rose-400 disabled:opacity-50"
                     >
-                      {category.expenseCount > 0 ? "Retire" : "Delete"}
+                      {category.usageCount > 0 ? "Retire" : "Delete"}
                     </button>
                   </div>
                 </td>
@@ -308,8 +308,8 @@ function CategoryModal({ item, onClose, onSaved }: {
     <CrmModal
       open
       title={item ? `Edit ${item.name}` : "Add expense category"}
-      subtitle={item && item.expenseCount > 0
-        ? `${item.expenseCount} expense(s) already use this head. They keep the rate they were entered at.`
+      subtitle={item && item.usageCount > 0
+        ? `${item.usageCount} payment record(s) already use this head. They keep the rate they were entered at.`
         : "Rates are percentages: enter 7.5 for 7.5%."}
       onClose={onClose}
       footer={
@@ -462,7 +462,7 @@ function VendorsTab() {
               <th className="px-3 py-3">NTN / CNIC</th>
               <th className="px-3 py-3 text-right">Paid this year</th>
               <th className="px-3 py-3 text-right">Tax withheld</th>
-              <th className="px-3 py-3 text-right">Expenses</th>
+              <th className="px-3 py-3 text-right">Payments</th>
               <th className="px-3 py-3" />
             </tr>
           </thead>
@@ -480,7 +480,7 @@ function VendorsTab() {
                 </td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateGross)}</td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateWht)}</td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.paymentCount}</td>
                 <td className="px-3 py-3 text-right">
                   <Button size="sm" variant="outline" onClick={() => setEditing(vendor)}>Edit</Button>
                 </td>
@@ -703,7 +703,7 @@ function PayableTab() {
             <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
               hint="All time, withheld less deposited" />
             <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
-              hint={`${summary.expenseCount} expense(s), ${summary.vendorCount} vendor(s)`} />
+              hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
             <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />
             <Stat label="Withheld all time" value={formatRs(summary.totalWithheldAllTime)}
               hint={`${formatRs(summary.totalDepositedAllTime)} deposited`} />

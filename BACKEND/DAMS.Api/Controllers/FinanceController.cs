@@ -331,6 +331,10 @@ namespace DAMS.Api.Controllers
         {
             try { return Ok(await _financeService.UpdateAssetPurchaseAsync(id, dto, null, false, cancellationToken)); }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpPut("asset-purchases/{id:int}/form")]
@@ -350,17 +354,28 @@ namespace DAMS.Api.Controllers
                     id, dto, ToUpload(attachment, stream), removeAttachment, cancellationToken));
             }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpDelete("asset-purchases/{id:int}")]
-        public async Task<IActionResult> DeleteAssetPurchase(int id, CancellationToken cancellationToken)
+        public async Task<IActionResult> DeleteAssetPurchase(
+            int id,
+            [FromQuery] string concurrencyToken,
+            CancellationToken cancellationToken)
         {
             try
             {
-                await _financeService.DeleteAssetPurchaseAsync(id, cancellationToken);
+                await _financeService.DeleteAssetPurchaseAsync(id, concurrencyToken, cancellationToken);
                 return Ok(new { message = "Asset purchase deleted." });
             }
             catch (InvalidOperationException ex) { return NotFound(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpGet("revenue/{id:int}/attachment")]

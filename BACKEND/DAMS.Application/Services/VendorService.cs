@@ -153,7 +153,7 @@ namespace DAMS.Application.Services
                     FinancialYear = label,
                     GrossPaid = g.Sum(x => x.Gross),
                     WhtWithheld = g.Sum(x => x.Wht),
-                    ExpenseCount = g.Sum(x => x.Count)
+                    PaymentCount = g.Sum(x => x.Count)
                 })
                 .OrderByDescending(g => g.GrossPaid)
                 .ToList();
@@ -225,7 +225,7 @@ namespace DAMS.Application.Services
                         .Sum(e => (decimal?)e.WhtAmount) ?? 0m)
                     + (v.AssetPurchases.Where(p => p.Date >= yearStart && p.Date < yearEnd)
                         .Sum(p => (decimal?)p.WhtAmount) ?? 0m),
-                ExpenseCount = v.Expenses.Count + v.AssetPurchases.Count,
+                PaymentCount = v.Expenses.Count + v.AssetPurchases.Count,
                 CreatedAt = v.CreatedAt,
                 UpdatedAt = v.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(v.RowVersion)

@@ -426,7 +426,7 @@ namespace DAMS.Application.Services
                     TaxSection = g.Key ?? string.Empty,
                     GrossAmount = g.Sum(e => (decimal?)e.Amount) ?? 0m,
                     WhtAmount = g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                    ExpenseCount = g.Count()
+                    PaymentCount = g.Count()
                 })
                 .ToListAsync(cancellationToken);
             var purchaseSections = await WithheldPurchases(from, to)
@@ -436,7 +436,7 @@ namespace DAMS.Application.Services
                     TaxSection = g.Key ?? string.Empty,
                     GrossAmount = g.Sum(p => (decimal?)p.Amount) ?? 0m,
                     WhtAmount = g.Sum(p => (decimal?)p.WhtAmount) ?? 0m,
-                    ExpenseCount = g.Count()
+                    PaymentCount = g.Count()
                 })
                 .ToListAsync(cancellationToken);
             var bySection = Merge(expenseSections, purchaseSections);
@@ -462,7 +462,7 @@ namespace DAMS.Application.Services
                 OutstandingPayable = totalWithheldAllTime - totalDepositedAllTime,
                 TotalWithheldAllTime = totalWithheldAllTime,
                 TotalDepositedAllTime = totalDepositedAllTime,
-                ExpenseCount = bySection.Sum(s => s.ExpenseCount),
+                PaymentCount = bySection.Sum(s => s.PaymentCount),
                 VendorCount = vendorIds,
                 BySection = bySection
                     .Select(s => new WhtSectionTotalDto
@@ -470,7 +470,7 @@ namespace DAMS.Application.Services
                         TaxSection = string.IsNullOrWhiteSpace(s.TaxSection) ? "Unspecified" : s.TaxSection,
                         GrossAmount = s.GrossAmount,
                         WhtAmount = s.WhtAmount,
-                        ExpenseCount = s.ExpenseCount
+                        PaymentCount = s.PaymentCount
                     })
                     .OrderByDescending(s => s.WhtAmount)
                     .ToList()
@@ -495,7 +495,7 @@ namespace DAMS.Application.Services
                     TaxSection = g.Key,
                     GrossAmount = g.Sum(s => s.GrossAmount),
                     WhtAmount = g.Sum(s => s.WhtAmount),
-                    ExpenseCount = g.Sum(s => s.ExpenseCount)
+                    PaymentCount = g.Sum(s => s.PaymentCount)
                 })
                 .ToList();
 
@@ -544,7 +544,7 @@ namespace DAMS.Application.Services
                     g.Select(r => r.FallbackName).FirstOrDefault(n => n != null),
                     g.Sum(r => r.GrossAmount),
                     g.Sum(r => r.WhtAmount),
-                    g.Sum(r => r.ExpenseCount)))
+                    g.Sum(r => r.PaymentCount)))
                 .ToList();
 
             var vendorIds = rows.Where(r => r.VendorId.HasValue).Select(r => r.VendorId!.Value).Distinct().ToList();
@@ -571,7 +571,7 @@ namespace DAMS.Application.Services
                         GrossAmount = r.GrossAmount,
                         WhtAmount = r.WhtAmount,
                         NetPaid = r.GrossAmount - r.WhtAmount,
-                        ExpenseCount = r.ExpenseCount
+                        PaymentCount = r.PaymentCount
                     };
                 })
                 .OrderByDescending(r => r.WhtAmount)
@@ -593,14 +593,14 @@ namespace DAMS.Application.Services
                    .Append(Csv(line.Cnic)).Append(',')
                    .Append(Csv(line.FilerStatus.ToString())).Append(',')
                    .Append(Csv(line.TaxSection)).Append(',')
-                   .Append(line.ExpenseCount.ToString(CultureInfo.InvariantCulture)).Append(',')
+                   .Append(line.PaymentCount.ToString(CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.GrossAmount.ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.WhtAmount.ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.NetPaid.ToString("0.00", CultureInfo.InvariantCulture))
                    .AppendLine();
             }
             csv.Append("Total,,,,,")
-               .Append(lines.Sum(l => l.ExpenseCount).ToString(CultureInfo.InvariantCulture)).Append(',')
+               .Append(lines.Sum(l => l.PaymentCount).ToString(CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.GrossAmount).ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.WhtAmount).ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.NetPaid).ToString("0.00", CultureInfo.InvariantCulture))
@@ -627,7 +627,7 @@ namespace DAMS.Application.Services
 
         private sealed record VendorGroup(
             int? VendorId, string? WhtTaxSection, FilerStatus VendorFilerStatusAtEntry,
-            string? FallbackName, decimal GrossAmount, decimal WhtAmount, int ExpenseCount);
+            string? FallbackName, decimal GrossAmount, decimal WhtAmount, int PaymentCount);
 
         private IQueryable<Expense> WithheldExpenses(DateTime? from, DateTime? to)
         {

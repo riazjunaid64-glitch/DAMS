@@ -46,6 +46,7 @@ namespace DAMS.Application.Services
                     WhtRate = p.WhtRate,
                     NetPaid = p.Amount - p.WhtAmount,
                     WhtTaxSection = p.WhtTaxSection,
+                    ConcurrencyToken = Convert.ToBase64String(p.RowVersion),
                     Attachment = p.Attachment == null ? null : new FinanceAttachmentDto
                     {
                         FileName = p.Attachment.OriginalFileName,
@@ -129,6 +130,7 @@ namespace DAMS.Application.Services
                 .Include(p => p.Attachment)
                 .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Asset purchase not found.");
+            ApplyAssetPurchaseToken(purchase, dto.ConcurrencyToken);
 
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, purchase.FinanceAccountId, cancellationToken);
@@ -181,12 +183,13 @@ namespace DAMS.Application.Services
             return await MapAssetPurchaseAsync(purchase);
         }
 
-        public async Task DeleteAssetPurchaseAsync(int id, CancellationToken cancellationToken = default)
+        public async Task DeleteAssetPurchaseAsync(int id, string concurrencyToken, CancellationToken cancellationToken = default)
         {
             var purchase = await _context.AssetPurchases
                 .Include(p => p.Attachment)
                 .FirstOrDefaultAsync(p => p.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Asset purchase not found.");
+            ApplyAssetPurchaseToken(purchase, concurrencyToken);
 
             // Deleting lowers the vendor's year-to-date total, which is the same aggregate a save
             // reads — so it takes the lock for the same reason deleting an expense does.
@@ -309,8 +312,27 @@ namespace DAMS.Application.Services
                 WhtTaxSection = p.WhtTaxSection,
                 VendorFilerStatusAtEntry = p.VendorFilerStatusAtEntry,
                 CreatedAt = p.CreatedAt,
-                Attachment = MapAttachment(p.Attachment)
+                Attachment = MapAttachment(p.Attachment),
+                ConcurrencyToken = Convert.ToBase64String(p.RowVersion)
             };
+        }
+
+        private void ApplyAssetPurchaseToken(AssetPurchase purchase, string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                if (purchase.RowVersion.Length == 0) return;
+                throw new DbUpdateConcurrencyException("The asset purchase version is missing. Refresh and try again.");
+            }
+
+            try
+            {
+                _context.Entry(purchase).Property(p => p.RowVersion).OriginalValue = Convert.FromBase64String(token);
+            }
+            catch (FormatException)
+            {
+                throw new DbUpdateConcurrencyException("The asset purchase version is invalid. Refresh and try again.");
+            }
         }
 
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

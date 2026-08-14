@@ -68,6 +68,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("ProjectId")
                         .HasColumnType("int");
 
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
                     b.Property<string>("Vendor")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");

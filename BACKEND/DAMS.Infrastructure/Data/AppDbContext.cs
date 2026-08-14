@@ -672,6 +672,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(p => p.WhtOverrideReason).HasMaxLength(500);
                 entity.Property(p => p.WhtTaxSection).HasMaxLength(30);
                 entity.Property(p => p.VendorFilerStatusAtEntry).HasConversion<int>();
+                entity.Property(p => p.RowVersion).IsRowVersion();
                 entity.Ignore(p => p.NetPaid);
 
                 entity.HasIndex(p => p.ProjectId);

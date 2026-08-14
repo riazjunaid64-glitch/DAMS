@@ -30,11 +30,19 @@ namespace DAMS.Api.Controllers
         [HttpGet("{staffFinanceAccountId:int}")]
         public Task<IActionResult> Statement(
             int staffFinanceAccountId,
+            [FromQuery] string? cursor = null,
             [FromQuery] int skip = 0,
             [FromQuery] int take = 100,
-            CancellationToken cancellationToken = default) =>
-            Execute(() => _service.GetStatementAsync(
-                staffFinanceAccountId, Math.Max(0, skip), Math.Clamp(take, 1, 200), cancellationToken));
+            CancellationToken cancellationToken = default)
+        {
+            if (skip > 0 && string.IsNullOrWhiteSpace(cursor))
+                return Task.FromResult<IActionResult>(BadRequest(new
+                {
+                    message = "Staff cash history now uses cursor paging. Refresh the page and try again."
+                }));
+            return Execute(() => _service.GetStatementAsync(
+                staffFinanceAccountId, cursor, Math.Clamp(take, 1, 200), cancellationToken));
+        }
 
         [HttpPost("{staffFinanceAccountId:int}/transfers")]
         public Task<IActionResult> RecordTransfer(

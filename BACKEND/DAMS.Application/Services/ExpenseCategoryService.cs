@@ -118,7 +118,7 @@ namespace DAMS.Application.Services
                 TaxSection = c.TaxSection,
                 DisplayOrder = c.DisplayOrder,
                 IsActive = c.IsActive,
-                ExpenseCount = c.Expenses.Count + c.AssetPurchases.Count,
+                UsageCount = c.Expenses.Count + c.AssetPurchases.Count,
                 CreatedAt = c.CreatedAt,
                 UpdatedAt = c.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(c.RowVersion)

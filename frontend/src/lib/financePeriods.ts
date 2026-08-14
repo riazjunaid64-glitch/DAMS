@@ -32,7 +32,7 @@ export function financialYearWindow(date: Date, startMonth: number) {
 export function buildPeriodRange(
   preset: FinancePeriodPreset,
   startMonth: number | null,
-  now = new Date(),
+  now = parseLocal(pakistanToday()),
 ) {
   if ((preset === "year" || preset === "lastYear") && startMonth === null) {
     return { from: "", to: "" };
@@ -96,7 +96,7 @@ const PRESET_NAMES: Record<FinancePeriodPreset, string> = {
 export function financePeriodLabel(
   preset: FinancePeriodPreset,
   startMonth: number | null,
-  now = new Date(),
+  now = parseLocal(pakistanToday()),
 ) {
   const name = PRESET_NAMES[preset] ?? PRESET_NAMES.custom;
 
