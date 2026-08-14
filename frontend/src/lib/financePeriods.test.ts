@@ -63,4 +63,34 @@ describe("finance period ranges", () => {
     expect(financePeriodLabel("year", 7, now)).toBe("This Year (Jul 2026 – Jun 2027)");
     expect(financePeriodLabel("lastYear", 7, now)).toBe("Last Year (Jul 2025 – Jun 2026)");
   });
+
+  it("names the month the monthly preset covers", () => {
+    expect(financePeriodLabel("month", 7, new Date(2026, 7, 12))).toBe("This Month (Aug 2026)");
+    expect(financePeriodLabel("month", 7, new Date(2027, 0, 31))).toBe("This Month (Jan 2027)");
+  });
+
+  it("keeps the monthly label on the calendar month whatever the financial year start", () => {
+    // The month preset is a calendar month, so moving the year start must not shift its label.
+    const now = new Date(2026, 7, 12);
+    expect(financePeriodLabel("month", 1, now)).toBe(financePeriodLabel("month", 7, now));
+  });
+
+  it("names the presets that have no fixed range to state", () => {
+    const now = new Date(2026, 7, 12);
+    expect(financePeriodLabel("today", 7, now)).toBe("Today");
+    expect(financePeriodLabel("all", 7, now)).toBe("All");
+    expect(financePeriodLabel("custom", 7, now)).toBe("Custom");
+  });
+
+  it("states the range it filters on", () => {
+    // The label is what an admin reads before trusting a figure, so it must not be able to drift
+    // from the dates actually sent to the server.
+    const now = new Date(2026, 7, 12);
+    for (const preset of ["month", "year", "lastYear"] as const) {
+      const range = buildPeriodRange(preset, 7, now);
+      const label = financePeriodLabel(preset, 7, now);
+      expect(label).toContain(`${new Date(`${range.from}T00:00:00`).getFullYear()}`);
+      expect(label).toMatch(/\(.+\)$/);
+    }
+  });
 });

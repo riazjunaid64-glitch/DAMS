@@ -1,12 +1,224 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "../../api/api";
-import Button from "../../lib/Button";
+import { useMemo, useState } from "react";
+import Button from "../../lib/Button.tsx";
+import { CrmModal, ErrorBanner, inputClass, Label } from "../leads/CrmUi.tsx";
+import {
+  deleteRevenueCategory,
+  saveRevenueCategory,
+  type RevenueCategory,
+} from "./revenueCategoryApi.ts";
 
-type Category={id:number;name:string;code:string;description:string|null;displayOrder:number;isActive:boolean;revenueCount:number;concurrencyToken:string};
-const blank={id:0,name:"",code:"",description:"",displayOrder:"10",isActive:true,concurrencyToken:""};
-export default function RevenueCategoriesPanel(){const [rows,setRows]=useState<Category[]>([]),[form,setForm]=useState({...blank}),[editing,setEditing]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
-const load=useCallback(async()=>{setError(null);try{const response=await api("/api/finance/revenue-categories?includeInactive=true");if(!response.ok)throw new Error("Revenue categories could not be loaded.");setRows(await response.json());}catch(caught){setError(caught instanceof Error?caught.message:"Revenue categories could not be loaded.");}},[]);useEffect(()=>{void load();},[load]);
-const save=async()=>{if(!form.name.trim()){setError("Category name is required.");return;}setBusy(true);setError(null);try{const response=await api(form.id?`/api/finance/revenue-categories/${form.id}`:"/api/finance/revenue-categories",{method:form.id?"PUT":"POST",body:JSON.stringify({...form,displayOrder:Number(form.displayOrder)})});if(!response.ok)throw new Error((await response.json().catch(()=>null))?.message??"Revenue category could not be saved.");setEditing(false);setForm({...blank});await load();}catch(caught){setError(caught instanceof Error?caught.message:"Revenue category could not be saved.");}finally{setBusy(false);}};
-const retire=async(row:Category)=>{if(!confirm(`Retire ${row.name}? Historic revenue keeps its original name.`))return;const response=await api(`/api/finance/revenue-categories/${row.id}`,{method:"DELETE"});if(!response.ok){setError((await response.json().catch(()=>null))?.message??"Category could not be retired.");return;}await load();};
-return <div><div className="mb-5 flex items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-[var(--text-heading)]">Revenue categories</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Names are snapshotted onto revenue. Renaming a category never rewrites a historical P&amp;L.</p></div><Button onClick={()=>{setForm({...blank});setEditing(true);}}>Add category</Button></div>{error&&<p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}<div className="overflow-x-auto rounded-xl border border-[var(--border)]"><table className="w-full min-w-[700px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]"><th className="p-3">Category</th><th className="p-3">Code</th><th className="p-3">Order</th><th className="p-3">Revenue rows</th><th className="p-3">Status</th><th className="p-3">Actions</th></tr></thead><tbody>{rows.map(row=><tr key={row.id} className="border-b border-[var(--border)]"><td className="p-3 font-medium">{row.name}<p className="text-xs font-normal text-[var(--text-muted)]">{row.description}</p></td><td className="p-3 text-[var(--text-muted)]">{row.code}</td><td className="p-3">{row.displayOrder}</td><td className="p-3">{row.revenueCount}</td><td className="p-3">{row.isActive?"Active":"Retired"}</td><td className="p-3"><div className="flex gap-2"><button className="text-[var(--accent)]" onClick={()=>{setForm({id:row.id,name:row.name,code:row.code,description:row.description??"",displayOrder:String(row.displayOrder),isActive:row.isActive,concurrencyToken:row.concurrencyToken});setEditing(true);}}>Edit</button>{row.isActive&&<button className="text-rose-300" onClick={()=>void retire(row)}>Retire</button>}</div></td></tr>)}</tbody></table></div>{editing&&<div className="fixed inset-0 z-50 flex items-center justify-center p-4"><button className="absolute inset-0 bg-black/60" onClick={()=>!busy&&setEditing(false)}/><div className="relative w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6"><h3 className="mb-4 text-xl font-bold">{form.id?"Edit":"Add"} revenue category</h3><div className="space-y-3"><Field label="Name" value={form.name} set={value=>setForm({...form,name:value})}/><Field label="Code" value={form.code} set={value=>setForm({...form,code:value})} disabled={form.id>0}/><Field label="Display order" type="number" value={form.displayOrder} set={value=>setForm({...form,displayOrder:value})}/><Field label="Description" value={form.description} set={value=>setForm({...form,description:value})}/>{form.id>0&&<label className="flex gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={event=>setForm({...form,isActive:event.target.checked})}/>Active</label>}<div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setEditing(false)}>Cancel</Button><Button disabled={busy} onClick={()=>void save()}>{busy?"Saving…":"Save"}</Button></div></div></div></div>}</div>}
-function Field({label,value,set,type="text",disabled=false}:{label:string;value:string;set:(value:string)=>void;type?:string;disabled?:boolean}){return <label className="block text-sm text-[var(--text-muted)]">{label}<input disabled={disabled} type={type} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" value={value} onChange={event=>set(event.target.value)}/></label>}
+/**
+ * Revenue heads, managed the same way expense heads are on the tab next door — added, renamed,
+ * reordered and retired without a developer.
+ *
+ * The one rule that matters is retiring. A head that revenue has been filed under keeps its row
+ * forever, because the name was copied onto each revenue entry when it was recorded and the
+ * income statements already issued read from that copy. Retiring takes the head off new entries
+ * and leaves every past report exactly as it was published. A head nothing has ever used has no
+ * such history to protect, so it is deleted outright rather than left in the list as clutter.
+ */
+export default function RevenueCategoriesPanel({ categories, onChanged }: {
+  categories: RevenueCategory[];
+  onChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<RevenueCategory | null | "new">(null);
+  const [showInactive, setShowInactive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const visible = useMemo(
+    () => categories.filter((c) => showInactive || c.isActive),
+    [categories, showInactive]);
+
+  const retire = async (category: RevenueCategory) => {
+    const used = category.revenueCount > 0;
+    const message = used
+      ? `"${category.name}" is used by ${category.revenueCount} revenue entr${category.revenueCount === 1 ? "y" : "ies"}, so it will be retired rather than deleted — those entries keep the name they were recorded under. Continue?`
+      : `Delete "${category.name}"? It has never been used.`;
+    if (!window.confirm(message)) return;
+    setBusy(true); setError(null);
+    try {
+      await deleteRevenueCategory(category.id);
+      await onChanged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The category could not be removed.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div>
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-[var(--text-heading)]">Revenue categories</h2>
+          <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
+            The heads income is recorded under, and the order they appear in on the Profit &amp; Loss.
+            The name is copied onto each revenue entry as it is recorded, so correcting a name here
+            changes what future entries are filed under — it never restates a statement already
+            issued.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show retired
+          </label>
+          <Button size="sm" onClick={() => setEditing("new")}>+ Add category</Button>
+        </div>
+      </div>
+
+      {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead>
+            <tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider text-[var(--text-muted)]">
+              <th className="px-3 py-3">Category</th>
+              <th className="px-3 py-3">Description</th>
+              <th className="px-3 py-3 text-right">Order</th>
+              <th className="px-3 py-3 text-right">Used by</th>
+              <th className="px-3 py-3" />
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((category) => (
+              <tr key={category.id} className="border-b border-[var(--border)] last:border-0">
+                <td className="px-3 py-3">
+                  <p className="font-semibold text-[var(--text-heading)]">{category.name}</p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    <code>{category.code}</code>
+                    {!category.isActive && <span className="ml-2 text-amber-400">Retired</span>}
+                  </p>
+                </td>
+                <td className="px-3 py-3 text-[var(--text-secondary)]">
+                  {category.description ?? <span className="text-[var(--text-muted)]">—</span>}
+                </td>
+                <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{category.displayOrder}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.revenueCount}</td>
+                <td className="px-3 py-3">
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setEditing(category)}>Edit</Button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void retire(category)}
+                      className="text-xs font-semibold text-[var(--text-muted)] hover:text-rose-400 disabled:opacity-50"
+                    >
+                      {category.revenueCount > 0 ? "Retire" : "Delete"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {visible.length === 0 && (
+          <p className="rounded-xl border border-dashed border-[var(--border)] py-16 text-center text-sm text-[var(--text-muted)]">
+            No revenue categories configured.
+          </p>
+        )}
+      </div>
+
+      {editing && (
+        <RevenueCategoryModal
+          item={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={async () => { setEditing(null); await onChanged(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function RevenueCategoryModal({ item, onClose, onSaved }: {
+  item: RevenueCategory | null;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    name: item?.name ?? "",
+    code: item?.code ?? "",
+    description: item?.description ?? "",
+    displayOrder: String(item?.displayOrder ?? 900),
+    isActive: item?.isActive ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
+
+  const save = async () => {
+    setSaving(true); setError(null);
+    try {
+      await saveRevenueCategory(item?.id ?? null, {
+        name: form.name,
+        code: form.code || form.name,
+        description: form.description || null,
+        displayOrder: Number(form.displayOrder) || 0,
+        isActive: form.isActive,
+        concurrencyToken: item?.concurrencyToken ?? null,
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The category could not be saved.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <CrmModal
+      open
+      title={item ? `Edit ${item.name}` : "Add revenue category"}
+      subtitle={item && item.revenueCount > 0
+        ? `${item.revenueCount} revenue entr${item.revenueCount === 1 ? "y is" : "ies are"} already filed under this head. They keep the name they were recorded under.`
+        : "The head income is recorded under, and how it is titled on the Profit & Loss."}
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        {error && <ErrorBanner message={error} />}
+        <div>
+          <Label required>Category name</Label>
+          <input className={inputClass} value={form.name} onChange={(e) => set("name", e.target.value)} />
+        </div>
+        <div>
+          <Label required>Code</Label>
+          <input
+            className={inputClass}
+            disabled={Boolean(item)}
+            value={form.code}
+            onChange={(e) => set("code", e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"))}
+          />
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            {item ? "The code is fixed once revenue references it." : "Leave blank to derive it from the name."}
+          </p>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <Label>Display order</Label>
+            <input className={inputClass} type="number"
+              value={form.displayOrder} onChange={(e) => set("displayOrder", e.target.value)} />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Lower numbers come first on the Profit &amp; Loss.
+            </p>
+          </div>
+          <div>
+            <Label>Description</Label>
+            <input className={inputClass} value={form.description} onChange={(e) => set("description", e.target.value)} />
+          </div>
+        </div>
+
+        {item && (
+          <label className="flex items-center gap-3 rounded-xl border border-[var(--border)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+            <input type="checkbox" checked={form.isActive} onChange={(e) => set("isActive", e.target.checked)} />
+            Active — available when recording new revenue
+          </label>
+        )}
+      </div>
+    </CrmModal>
+  );
+}

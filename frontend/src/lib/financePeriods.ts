@@ -40,16 +40,44 @@ export function buildPeriodRange(preset: FinancePeriodPreset, startMonth: number
   }
 }
 
+const PRESET_NAMES: Record<FinancePeriodPreset, string> = {
+  today: "Today",
+  month: "This Month",
+  year: "This Year",
+  lastYear: "Last Year",
+  all: "All",
+  custom: "Custom",
+};
+
+/**
+ * A preset's name together with the dates it actually covers, so a filter never leaves the reader
+ * guessing which months a figure is for.
+ *
+ * The year presets are the reason this exists: they follow the configured financial year rather
+ * than the calendar, so with a July start "This Year" is neither 2026 nor obvious from the name.
+ * Today, All and Custom are named only — Today already states its own range, and the other two
+ * have no fixed range to state.
+ *
+ * Every label is derived from buildPeriodRange, so what a chip says and what it filters on cannot
+ * drift apart.
+ */
 export function financePeriodLabel(preset: FinancePeriodPreset, startMonth: number, now = new Date()) {
-  if (preset !== "year" && preset !== "lastYear") {
-    return preset === "today" ? "Today" : preset === "month" ? "This Month" : preset === "all" ? "All" : "Custom";
-  }
+  const name = PRESET_NAMES[preset] ?? PRESET_NAMES.custom;
+  if (preset !== "month" && preset !== "year" && preset !== "lastYear") return name;
+
   const range = buildPeriodRange(preset, startMonth, now);
-  const from = new Date(`${range.from}T00:00:00`);
-  const to = new Date(`${range.to}T00:00:00`);
-  const month = (date: Date) => date.toLocaleString("en-GB", { month: "short" });
-  const label = `${month(from)} ${from.getFullYear()} – ${month(to)} ${to.getFullYear()}`;
-  return `${preset === "year" ? "This Year" : "Last Year"} (${label})`;
+  const from = parseLocal(range.from);
+  // A month sits inside one named month, so naming it twice would only add noise.
+  if (preset === "month") return `${name} (${monthAndYear(from)})`;
+  return `${name} (${monthAndYear(from)} – ${monthAndYear(parseLocal(range.to))})`;
+}
+
+function monthAndYear(date: Date) {
+  return `${date.toLocaleString("en-GB", { month: "short" })} ${date.getFullYear()}`;
+}
+
+function parseLocal(value: string) {
+  return new Date(`${value}T00:00:00`);
 }
 
 function normalizeMonth(month: number) {

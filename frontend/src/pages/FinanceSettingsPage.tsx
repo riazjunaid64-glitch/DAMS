@@ -7,6 +7,7 @@ import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from ".
 import * as whtApi from "../features/finance/whtApi.ts";
 import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
 import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
+import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
 import {
   FILER_STATUSES,
   MONTHS,
@@ -39,18 +40,21 @@ function SettingsWorkspace() {
   const [tab, setTab] = useState<Tab>("rates");
   const [settings, setSettings] = useState<FinanceSettings | null>(null);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadShared = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [settingRow, categoryRows] = await Promise.all([
+      const [settingRow, categoryRows, revenueRows] = await Promise.all([
         whtApi.getSettings(),
         whtApi.listCategories(true),
+        listRevenueCategories(true),
       ]);
       setSettings(settingRow);
       setCategories(categoryRows);
+      setRevenueCategories(revenueRows);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Finance settings could not be loaded.");
     } finally {
@@ -73,8 +77,8 @@ function SettingsWorkspace() {
             </div>
             <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Finance settings</h1>
             <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
-              Expense heads and the withholding tax deducted from supplier payments, the vendors those
-              rates depend on, and what is owed to FBR.
+              The heads income and spending are recorded under, the withholding tax deducted from
+              supplier payments, the vendors those rates depend on, and what is owed to FBR.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -104,7 +108,7 @@ function SettingsWorkspace() {
           onChange={(id) => setTab(id as Tab)}
           items={[
             { id: "rates", label: "Expense categories & WHT rates", count: categories.length },
-            { id: "revenue", label: "Revenue categories" },
+            { id: "revenue", label: "Revenue categories", count: revenueCategories.length },
             { id: "vendors", label: "Vendors" },
             { id: "payable", label: "WHT payable" },
             { id: "opening", label: "Opening balances" },
@@ -118,7 +122,7 @@ function SettingsWorkspace() {
           ) : (
             <>
               {tab === "rates" && <RatesTab categories={categories} onChanged={loadShared} />}
-              {tab === "revenue" && <RevenueCategoriesPanel />}
+              {tab === "revenue" && <RevenueCategoriesPanel categories={revenueCategories} onChanged={loadShared} />}
               {tab === "vendors" && <VendorsTab />}
               {tab === "payable" && <PayableTab />}
               {tab === "opening" && <OpeningBalancesPanel />}

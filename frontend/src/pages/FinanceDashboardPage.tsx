@@ -228,13 +228,9 @@ function todayInput() {
 
 type Period = "today" | "month" | "year" | "lastYear" | "all" | "custom";
 
-const PERIODS: { value: Exclude<Period, "custom">; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "month", label: "This Month" },
-  { value: "year", label: "This Year" },
-  { value: "lastYear", label: "Last Year" },
-  { value: "all", label: "All" },
-];
+// Order only — every chip takes its wording from financePeriodLabel, so the range a chip states
+// and the range it applies come from the same place.
+const PERIODS: Exclude<Period, "custom">[] = ["today", "month", "year", "lastYear", "all"];
 
 interface RevenueFormState {
   id: number | null;
@@ -510,10 +506,10 @@ export default function FinanceDashboardPage({ user }: Props) {
   // Which quick-period chip (if any) matches the current from/to selection.
   const activePeriod = useMemo<Period>(() => {
     if (!fromDate && !toDate) return "all";
-    for (const p of PERIODS) {
-      if (p.value === "all") continue;
-      const r = buildPeriodRange(p.value, financialYearStartMonth);
-      if (r.from === fromDate && r.to === toDate) return p.value;
+    for (const preset of PERIODS) {
+      if (preset === "all") continue;
+      const r = buildPeriodRange(preset, financialYearStartMonth);
+      if (r.from === fromDate && r.to === toDate) return preset;
     }
     return "custom";
   }, [fromDate, toDate, financialYearStartMonth]);
@@ -1095,14 +1091,14 @@ export default function FinanceDashboardPage({ user }: Props) {
           {/* Filters: period pills on the left, project / account / date range on the right */}
           <div className="fin-filters">
             <div className="fin-periods">
-              {PERIODS.map((p) => (
+              {PERIODS.map((preset) => (
                 <button
-                  key={p.value}
+                  key={preset}
                   type="button"
-                  onClick={() => applyPeriod(p.value)}
-                  className={`fin-pill ${activePeriod === p.value ? "fin-pill--active" : ""}`}
+                  onClick={() => applyPeriod(preset)}
+                  className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""}`}
                 >
-                  {p.value === "year" || p.value === "lastYear" ? financePeriodLabel(p.value, financialYearStartMonth) : p.label}
+                  {financePeriodLabel(preset, financialYearStartMonth)}
                 </button>
               ))}
             </div>
