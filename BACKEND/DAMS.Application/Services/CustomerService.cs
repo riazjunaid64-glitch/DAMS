@@ -200,12 +200,18 @@ namespace DAMS.Application.Services
         {
             if (_context.Database.CurrentTransaction == null)
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-                var resolution = await FindOrCreateCustomerCoreAsync(
-                    fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
-                    fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
-                await transaction.CommitAsync();
-                return resolution;
+                // Wrapped in an execution strategy because the DbContext has retry-on-failure
+                // enabled, which is incompatible with a bare BeginTransactionAsync.
+                var strategy = _context.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                    var resolution = await FindOrCreateCustomerCoreAsync(
+                        fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
+                        fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
+                    await transaction.CommitAsync();
+                    return resolution;
+                });
             }
 
             return await FindOrCreateCustomerCoreAsync(
