@@ -269,7 +269,7 @@ function LeadTable({ leads }: { leads: Lead[] }) {
                 <tr key={lead.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface-glass-hover)]">
                   <td className="px-4 py-4">
                     <Link className="font-semibold text-[var(--accent)] hover:underline" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone}</p>
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone ?? lead.whatsappNumber ?? lead.email ?? "No contact details"}</p>
                     <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
                   </td>
                   <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
@@ -288,7 +288,7 @@ function LeadTable({ leads }: { leads: Lead[] }) {
       <div className="grid gap-3 md:hidden">
         {leads.map((lead) => (
           <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone}</p></div><StageBadge stage={lead.stage} /></div>
+            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone ?? lead.whatsappNumber ?? lead.email ?? "No contact details"}</p></div><StageBadge stage={lead.stage} /></div>
             <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]"><div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div><div><p className="uppercase">Next action</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{formatDateTime(lead.nextActionAt)}</p></div></div>
           </Link>
         ))}
@@ -341,7 +341,15 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   }, [form.interestedProjectId]);
 
   const submit = async (allowDuplicate = false) => {
-    if (!form.firstName.trim() || form.phone.trim().length < 7) { setError("First name and a valid phone number are required."); return; }
+    if (!form.firstName.trim()) { setError("A first name is required."); return; }
+    // Staff capturing a lead by hand have the person in front of them, so require a way to
+    // reach them — but any one channel will do, matching what the API enforces.
+    const hasPhone = form.phone.trim().length >= 7;
+    if (!hasPhone && !form.whatsappNumber.trim() && !form.email.trim()) {
+      setError("Record at least one way to reach this person: a phone number, a WhatsApp number, or an email address.");
+      return;
+    }
+    if (form.phone.trim() && !hasPhone) { setError("That phone number is too short to be usable."); return; }
     setSaving(true); setError(null); setDuplicate(null);
     try {
       const result = await apiJson<{ isDuplicate: boolean; match?: { leadId?: number | null; leadReference?: string | null; matchedOn?: string }; lead?: Lead }>(
@@ -381,7 +389,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
         <FormSection title="Contact">
           <TextField label="First name" required value={form.firstName} onChange={(v) => set("firstName", v)} />
           <TextField label="Last name" value={form.lastName} onChange={(v) => set("lastName", v)} />
-          <TextField label="Phone" required value={form.phone} onChange={(v) => set("phone", v)} inputMode="tel" />
+          <TextField label="Phone" value={form.phone} onChange={(v) => set("phone", v)} inputMode="tel" />
           <TextField label="WhatsApp" value={form.whatsappNumber} onChange={(v) => set("whatsappNumber", v)} inputMode="tel" />
           <TextField label="Email" value={form.email} onChange={(v) => set("email", v)} type="email" />
           <TextField label="City" value={form.city} onChange={(v) => set("city", v)} />

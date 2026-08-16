@@ -219,7 +219,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
 
     public static LeadIntakeDto Intake(
         string firstName = "Bilal",
-        string phone = "0300-1234567",
+        string? phone = "0300-1234567",
         string? email = "bilal@example.com",
         string sourceCode = "walk_in") =>
         new()

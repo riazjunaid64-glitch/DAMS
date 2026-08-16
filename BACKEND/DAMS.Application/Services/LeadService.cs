@@ -43,19 +43,26 @@ namespace DAMS.Application.Services
         public async Task<LeadIntakeResultDto> IngestAsync(
             LeadIntakeDto dto, LeadUserContext? actor, CancellationToken cancellationToken = default)
         {
-            var normalizedPhone = LeadContactNormalizer.NormalizePhone(dto.Phone);
-            if (normalizedPhone.Length < 7)
-                throw new InvalidOperationException("A usable phone number is required to create a lead.");
+            var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
+            var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
+            var isExternal = provider != null && externalId != null;
 
+            var normalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
             var normalizedWhatsapp = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
             var normalizedEmail = LeadContactNormalizer.NormalizeEmail(dto.Email);
+
+            // A number too short to dial is not a contact method. Discard it rather than store
+            // something that would never match anything — the original answer is still kept on
+            // the external submission for whoever wants to look.
+            if (normalizedPhone is { Length: < 7 })
+                normalizedPhone = null;
+
+            EnsureContactable(isExternal, normalizedPhone, normalizedWhatsapp, normalizedEmail, dto.Phone);
 
             var source = await ResolveSourceAsync(dto.SourceCode, cancellationToken);
 
             // 1. Same external submission replayed — return what we already stored.
-            var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
-            var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
-            if (provider != null && externalId != null)
+            if (isExternal)
             {
                 var existingExternal = await _context.LeadExternalSubmissions
                     .AsNoTracking()
@@ -164,10 +171,34 @@ namespace DAMS.Application.Services
             };
         }
 
+        /// <summary>
+        /// A lead must be reachable, but what counts as reachable depends on where it came from.
+        ///
+        /// Someone typing a lead into DAMS has the person in front of them, so requiring a phone,
+        /// WhatsApp or email costs nothing and prevents unusable records. An ad platform, by
+        /// contrast, hands over whatever the person chose to fill in; rejecting those would throw
+        /// away a real enquiry we were paid to receive, and the provider's own id keeps the record
+        /// identifiable regardless.
+        /// </summary>
+        private static void EnsureContactable(
+            bool isExternal, string? normalizedPhone, string? normalizedWhatsapp, string? normalizedEmail, string? suppliedPhone)
+        {
+            if (isExternal)
+                return;
+
+            if (normalizedPhone != null || normalizedWhatsapp != null || normalizedEmail != null)
+                return;
+
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(suppliedPhone)
+                    ? "A lead needs at least one way to reach the person: a phone number, a WhatsApp number, or an email address."
+                    : "That phone number is too short to be usable. Correct it, or record a WhatsApp number or email address instead.");
+        }
+
         private Lead BuildLead(
             LeadIntakeDto dto,
             LeadSource source,
-            string normalizedPhone,
+            string? normalizedPhone,
             string? normalizedWhatsapp,
             string? normalizedEmail,
             LeadUserContext? actor)
@@ -178,7 +209,9 @@ namespace DAMS.Application.Services
             {
                 FirstName = dto.FirstName.Trim(),
                 LastName = LeadContactNormalizer.Clean(dto.LastName),
-                Phone = dto.Phone.Trim(),
+                // Keep the display value only when it normalised to something usable, so a
+                // rejected number never lingers as if it were dialable.
+                Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone),
                 NormalizedPhone = normalizedPhone,
                 WhatsappNumber = LeadContactNormalizer.Clean(dto.WhatsappNumber),
                 NormalizedWhatsapp = normalizedWhatsapp,
@@ -337,6 +370,18 @@ namespace DAMS.Application.Services
             lead.InterestedProjectId ??= dto.InterestedProjectId;
             lead.InterestedUnitId ??= dto.InterestedUnitId;
 
+            // A later enquiry can complete a lead that arrived without a phone number — the
+            // common case being an ad-platform lead the person then follows up on properly.
+            if (lead.NormalizedPhone == null)
+            {
+                var incomingPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
+                if (incomingPhone is { Length: >= 7 })
+                {
+                    lead.Phone = LeadContactNormalizer.Clean(dto.Phone);
+                    lead.NormalizedPhone = incomingPhone;
+                }
+            }
+
             if (lead.WhatsappNumber == null && !string.IsNullOrWhiteSpace(dto.WhatsappNumber))
             {
                 lead.WhatsappNumber = dto.WhatsappNumber.Trim();
@@ -413,15 +458,21 @@ namespace DAMS.Application.Services
         }
 
         private async Task<LeadDuplicateMatchDto?> FindDuplicateAsync(
-            string normalizedPhone, string? normalizedWhatsapp, string? normalizedEmail, CancellationToken cancellationToken)
+            string? normalizedPhone, string? normalizedWhatsapp, string? normalizedEmail, CancellationToken cancellationToken)
         {
+            // Nothing to compare on. Without this guard the null checks below would match this
+            // lead against every other lead that also has no contact details — two anonymous
+            // Meta enquiries are not the same person.
+            if (normalizedPhone == null && normalizedWhatsapp == null && normalizedEmail == null)
+                return null;
+
             // Closed leads are history: a fresh enquiry from someone we lost last year is a
             // genuinely new opportunity, so only open leads count as duplicates.
             var openLead = await _context.Leads
                 .AsNoTracking()
                 .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage))
                 .Where(l =>
-                    l.NormalizedPhone == normalizedPhone
+                    (normalizedPhone != null && l.NormalizedPhone == normalizedPhone)
                     || (normalizedWhatsapp != null && (l.NormalizedWhatsapp == normalizedWhatsapp || l.NormalizedPhone == normalizedWhatsapp))
                     || (normalizedEmail != null && l.NormalizedEmail == normalizedEmail))
                 .OrderByDescending(l => l.CreatedAt)
@@ -439,7 +490,7 @@ namespace DAMS.Application.Services
 
             if (openLead != null)
             {
-                var matchedOn = openLead.NormalizedPhone == normalizedPhone ? "phone"
+                var matchedOn = normalizedPhone != null && openLead.NormalizedPhone == normalizedPhone ? "phone"
                     : normalizedWhatsapp != null && (openLead.NormalizedWhatsapp == normalizedWhatsapp || openLead.NormalizedPhone == normalizedWhatsapp) ? "whatsapp"
                     : "email";
 
@@ -459,7 +510,7 @@ namespace DAMS.Application.Services
             // stored without the trunk/country prefix, so match on the trailing digits.
             var customer = await _context.Customers
                 .AsNoTracking()
-                .Where(c => c.Phone.EndsWith(normalizedPhone)
+                .Where(c => (normalizedPhone != null && c.Phone.EndsWith(normalizedPhone))
                             || (normalizedEmail != null && c.Email == normalizedEmail))
                 .Select(c => new { c.Id, c.FullName, c.Phone, c.Email })
                 .FirstOrDefaultAsync(cancellationToken);
@@ -469,7 +520,7 @@ namespace DAMS.Application.Services
 
             return new LeadDuplicateMatchDto
             {
-                MatchedOn = customer.Phone.EndsWith(normalizedPhone, StringComparison.Ordinal) ? "phone" : "email",
+                MatchedOn = normalizedPhone != null && customer.Phone.EndsWith(normalizedPhone, StringComparison.Ordinal) ? "phone" : "email",
                 CustomerId = customer.Id,
                 CustomerName = customer.FullName
             };
@@ -582,7 +633,7 @@ namespace DAMS.Application.Services
                     || (l.LastName != null && l.LastName.ToLower().Contains(term))
                     || l.LeadReference.ToLower().Contains(term)
                     || (l.NormalizedEmail != null && l.NormalizedEmail.Contains(term))
-                    || (digits != "" && l.NormalizedPhone.Contains(digits))
+                    || (digits != "" && l.NormalizedPhone != null && l.NormalizedPhone.Contains(digits))
                     || (digits != "" && l.NormalizedWhatsapp != null && l.NormalizedWhatsapp.Contains(digits)));
             }
 
@@ -669,16 +720,25 @@ namespace DAMS.Application.Services
                         ? "A converted lead is kept as history and can no longer be edited."
                         : $"This lead is {lead.Stage}. Reopen it before editing.");
 
-            var normalizedPhone = LeadContactNormalizer.NormalizePhone(dto.Phone);
-            if (normalizedPhone.Length < 7)
-                throw new InvalidOperationException("A usable phone number is required.");
+            var normalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
+            if (normalizedPhone is { Length: < 7 })
+                throw new InvalidOperationException("That phone number is too short to be usable.");
+
+            var normalizedWhatsappEdit = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
+            var normalizedEmailEdit = LeadContactNormalizer.NormalizeEmail(dto.Email);
+
+            // Editing must not strand a lead with no way to reach the person, even though a
+            // lead may legitimately have arrived without a phone number.
+            if (normalizedPhone == null && normalizedWhatsappEdit == null && normalizedEmailEdit == null)
+                throw new InvalidOperationException(
+                    "A lead must keep at least one way to reach the person: a phone number, a WhatsApp number, or an email address.");
 
             if (dto.BudgetMin.HasValue && dto.BudgetMax.HasValue && dto.BudgetMin > dto.BudgetMax)
                 throw new InvalidOperationException("The minimum budget cannot be greater than the maximum budget.");
 
             // Editing the number must not achieve what creation refuses: two open leads for
             // the same person.
-            if (normalizedPhone != lead.NormalizedPhone)
+            if (normalizedPhone != null && normalizedPhone != lead.NormalizedPhone)
             {
                 var clash = await _context.Leads.AnyAsync(
                     l => l.Id != lead.Id
@@ -690,12 +750,12 @@ namespace DAMS.Application.Services
             }
 
             var changes = new List<string>();
-            if (lead.Phone != dto.Phone.Trim()) changes.Add("phone");
-            if (lead.Email != LeadContactNormalizer.NormalizeEmail(dto.Email)) changes.Add("email");
+            if (lead.NormalizedPhone != normalizedPhone) changes.Add("phone");
+            if (lead.Email != normalizedEmailEdit) changes.Add("email");
 
             lead.FirstName = dto.FirstName.Trim();
             lead.LastName = LeadContactNormalizer.Clean(dto.LastName);
-            lead.Phone = dto.Phone.Trim();
+            lead.Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone);
             lead.NormalizedPhone = normalizedPhone;
             lead.WhatsappNumber = LeadContactNormalizer.Clean(dto.WhatsappNumber);
             lead.NormalizedWhatsapp = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
@@ -1063,6 +1123,13 @@ namespace DAMS.Application.Services
                 return await BuildExistingConversionAsync(lead, cancellationToken);
 
             LeadStageRules.EnsureCanConvert(lead.Stage);
+
+            // A customer record requires a phone number. A lead that arrived from an ad platform
+            // without one must have it filled in by whoever qualified them, rather than being
+            // converted with a placeholder that would follow the customer forever.
+            if (string.IsNullOrWhiteSpace(lead.Phone))
+                throw new InvalidOperationException(
+                    "Add a phone number to this lead before converting it — a customer record cannot be created without one.");
 
             var source = await _context.LeadSources.FirstAsync(s => s.Id == lead.LeadSourceId, cancellationToken);
 

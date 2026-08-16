@@ -206,7 +206,7 @@ function Overview({ lead }: { lead: Lead }) {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <InfoSection title="Contact">
-        <Info label="Phone" value={lead.phone} href={`tel:${lead.phone}`} />
+        <Info label="Phone" value={lead.phone} href={lead.phone ? `tel:${lead.phone}` : undefined} />
         <Info label="WhatsApp" value={lead.whatsappNumber} />
         <Info label="Email" value={lead.email} href={lead.email ? `mailto:${lead.email}` : undefined} />
         <Info label="Location" value={[lead.address, lead.city].filter(Boolean).join(", ")} />

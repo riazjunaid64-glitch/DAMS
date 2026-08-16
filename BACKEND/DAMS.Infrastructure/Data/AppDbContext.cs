@@ -1636,8 +1636,8 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(l => l.LeadReference).IsRequired().HasMaxLength(50);
                 entity.Property(l => l.FirstName).IsRequired().HasMaxLength(100);
                 entity.Property(l => l.LastName).HasMaxLength(100);
-                entity.Property(l => l.Phone).IsRequired().HasMaxLength(50);
-                entity.Property(l => l.NormalizedPhone).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.Phone).HasMaxLength(50);
+                entity.Property(l => l.NormalizedPhone).HasMaxLength(50);
                 entity.Property(l => l.WhatsappNumber).HasMaxLength(50);
                 entity.Property(l => l.NormalizedWhatsapp).HasMaxLength(50);
                 entity.Property(l => l.Email).HasMaxLength(200);

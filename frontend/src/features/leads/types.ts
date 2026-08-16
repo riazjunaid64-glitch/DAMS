@@ -22,7 +22,8 @@ export interface Lead {
   firstName: string;
   lastName?: string | null;
   fullName: string;
-  phone: string;
+  // Optional: an ad-platform lead may arrive with no phone number at all.
+  phone?: string | null;
   whatsappNumber?: string | null;
   email?: string | null;
   address?: string | null;
