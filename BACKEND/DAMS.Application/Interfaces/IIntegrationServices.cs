@@ -52,7 +52,15 @@ namespace DAMS.Application.Interfaces
     {
         Task<int> ProcessPendingEventsAsync(int batchSize, CancellationToken cancellationToken = default);
 
-        /// <summary>Removes expired OAuth states. Events are never pruned; they are the audit trail.</summary>
+        /// <summary>Removes expired OAuth states.</summary>
         Task<int> PruneOAuthStatesAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Removes finished (Processed/Ignored/Failed) events older than
+        /// MetaIntegration:EventRetentionDays. A no-op while that setting is 0 — events are kept
+        /// forever by default, since how long a raw webhook payload should be kept is a data
+        /// retention decision for the business, not something to default silently.
+        /// </summary>
+        Task<int> PruneOldEventsAsync(CancellationToken cancellationToken = default);
     }
 }

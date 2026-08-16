@@ -449,6 +449,126 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    /// <summary>
+    /// A production database that already has a custom LeadSource occupying the identity value
+    /// the "meta" seed used to hardcode (14) must still be able to apply
+    /// AddExternalIntegrations. A fixed Id = 14 InsertData would fail this with a primary key
+    /// violation; the migration inserts by Code and lets the identity column pick its own value.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AddExternalIntegrationsMigration_SucceedsEvenWhenACustomLeadSourceAlreadyOccupiesId14()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var migrator = db.GetService<IMigrator>();
+            await migrator.MigrateAsync("20260816044115_AddBookingCancellationSettlement");
+        }
+
+        // The 13 system sources already exist at this point, so the next identity value an
+        // admin-created custom source receives is exactly the one the old hardcoded seed
+        // collided with.
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadSources.Add(new LeadSource
+            {
+                Code = "roadshow",
+                Name = "Road Show",
+                DisplayOrder = 99,
+                IsActive = true,
+                IsSystem = false,
+                CustomerSource = CustomerSource.Other,
+                CreatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var customSourceId = await ScalarAsync(database.ConnectionString,
+            "SELECT [Id] FROM [LeadSources] WHERE [Code] = N'roadshow'");
+        Assert.Equal(14, customSourceId);
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [LeadSources] WHERE [Code] = N'meta'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [LeadSources] WHERE [Code] = N'roadshow' AND [Name] = N'Road Show'"));
+    }
+
+    /// <summary>
+    /// Two requests can both pass the in-application duplicate pre-check before either commits.
+    /// The unique index — not the pre-check — is what makes the collision harmless, and it must
+    /// not take an unrelated new event down with it, which is only provable against a provider
+    /// that actually enforces the index.
+    /// </summary>
+    [SqlServerFact]
+    public async Task WebhookIntake_SurvivesAConcurrentDuplicate_WithoutLosingTheOtherEventInTheSameDelivery()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // Simulates a race: another request already committed this exact event before the
+        // in-process pre-check in RecordOneAsync could see it.
+        int connectionId;
+        await using (var db = new AppDbContext(options))
+        {
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-account", DisplayName = "Race Account"
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = "meta", ResourceType = "facebook_page", ExternalId = "page-race",
+                IsEnabled = true, IsActive = true
+            });
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = $"{connectionId}:page-race:lead-race",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var intake = new DAMS.Application.Services.Integrations.MetaWebhookIntakeService(
+                db, NullLogger<DAMS.Application.Services.Integrations.MetaWebhookIntakeService>.Instance);
+
+            var body = """
+                {
+                  "object": "page",
+                  "entry": [{
+                    "id": "page-race",
+                    "changes": [
+                      {"field": "leadgen", "value": {"page_id": "page-race", "leadgen_id": "lead-race", "created_time": 1}},
+                      {"field": "leadgen", "value": {"page_id": "page-race", "leadgen_id": "lead-unique", "created_time": 1}}
+                    ]
+                  }]
+                }
+                """;
+
+            var recorded = await intake.RecordAsync(body);
+
+            // Only the genuinely new event; the colliding one was already there.
+            Assert.Equal(1, recorded);
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-unique%'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-race%'"));
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {

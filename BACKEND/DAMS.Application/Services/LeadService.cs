@@ -133,7 +133,12 @@ namespace DAMS.Application.Services
 
             try
             {
-                await SaveNewLeadAsync(lead, cancellationToken);
+                // Notifications are queued between the two saves inside SaveNewLeadAsync, not
+                // after it returns: a crash between "Lead exists" and "notification exists"
+                // would otherwise leave a real, durably-created lead that a replay can never
+                // re-notify for, because the replay short-circuits at the "already ingested"
+                // check above the moment the Lead is found.
+                await SaveNewLeadAsync(lead, cancellationToken, ct => NotifyNewLeadAsync(lead, ct));
             }
             catch (DbUpdateException ex) when (IsExternalDuplicate(ex))
             {
@@ -158,9 +163,6 @@ namespace DAMS.Application.Services
                     Lead = await LoadResponseAsync(winnerId, cancellationToken)
                 };
             }
-
-            await NotifyNewLeadAsync(lead, cancellationToken);
-            await _context.SaveChangesAsync(cancellationToken);
 
             return new LeadIntakeResultDto
             {
@@ -541,13 +543,22 @@ namespace DAMS.Application.Services
         }
 
         // Reference depends on the generated id, so the row is saved twice behind a unique
-        // placeholder — the same approach Booking uses for BookingReference.
-        private async Task SaveNewLeadAsync(Lead lead, CancellationToken cancellationToken)
+        // placeholder — the same approach Booking uses for BookingReference. Anything queued by
+        // beforeReferenceSaveAsync rides along in the second save: a process that dies after
+        // this method returns has therefore either created the Lead with its notifications
+        // together, or not created it at all — never one without the other, which matters
+        // because a replayed submission short-circuits before ever calling this again.
+        private async Task SaveNewLeadAsync(
+            Lead lead, CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeReferenceSaveAsync = null)
         {
             lead.LeadReference = $"LD-PENDING-{Guid.NewGuid():N}";
             await _context.SaveChangesAsync(cancellationToken);
 
             lead.LeadReference = $"LD-{lead.Id:D6}";
+
+            if (beforeReferenceSaveAsync is not null)
+                await beforeReferenceSaveAsync(cancellationToken);
+
             await _context.SaveChangesAsync(cancellationToken);
         }
 
@@ -798,6 +809,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("That phone number is too short to be usable.");
 
             var normalizedWhatsappEdit = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
+            if (normalizedWhatsappEdit is { Length: < 7 })
+                throw new InvalidOperationException("That WhatsApp number is too short to be usable.");
+
             var normalizedEmailEdit = LeadContactNormalizer.NormalizeEmail(dto.Email);
 
             // Editing must not strand a lead with no way to reach the person, even though a
@@ -809,8 +823,10 @@ namespace DAMS.Application.Services
             if (dto.BudgetMin.HasValue && dto.BudgetMax.HasValue && dto.BudgetMin > dto.BudgetMax)
                 throw new InvalidOperationException("The minimum budget cannot be greater than the maximum budget.");
 
-            // Editing the number must not achieve what creation refuses: two open leads for
-            // the same person.
+            // Editing a contact field must not achieve what creation refuses: two open leads
+            // for the same person. Checked against every channel that changed, not phone alone
+            // — matching FindDuplicateAsync's rule that a WhatsApp number can collide with
+            // either field.
             if (normalizedPhone != null && normalizedPhone != lead.NormalizedPhone)
             {
                 var clash = await _context.Leads.AnyAsync(
@@ -820,6 +836,28 @@ namespace DAMS.Application.Services
 
                 if (clash)
                     throw new InvalidOperationException("Another open lead already uses that phone number.");
+            }
+
+            if (normalizedWhatsappEdit != null && normalizedWhatsappEdit != lead.NormalizedWhatsapp)
+            {
+                var clash = await _context.Leads.AnyAsync(
+                    l => l.Id != lead.Id
+                         && (l.NormalizedWhatsapp == normalizedWhatsappEdit || l.NormalizedPhone == normalizedWhatsappEdit)
+                         && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
+
+                if (clash)
+                    throw new InvalidOperationException("Another open lead already uses that WhatsApp number.");
+            }
+
+            if (normalizedEmailEdit != null && normalizedEmailEdit != lead.NormalizedEmail)
+            {
+                var clash = await _context.Leads.AnyAsync(
+                    l => l.Id != lead.Id
+                         && l.NormalizedEmail == normalizedEmailEdit
+                         && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
+
+                if (clash)
+                    throw new InvalidOperationException("Another open lead already uses that email address.");
             }
 
             var changes = new List<string>();

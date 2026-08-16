@@ -16,15 +16,15 @@ namespace DAMS.Application.Interfaces
         Task<MetaAuthorizationResult> CompleteAuthorizationAsync(string code, CancellationToken cancellationToken = default);
 
         /// <summary>Pages the user administers, each with its own page token and connected Instagram account.</summary>
-        Task<List<MetaDiscoveredResource>> GetPagesAsync(string userAccessToken, CancellationToken cancellationToken = default);
+        Task<MetaDiscoveryPage> GetPagesAsync(string userAccessToken, CancellationToken cancellationToken = default);
 
-        Task<List<MetaDiscoveredResource>> GetAdAccountsAsync(string userAccessToken, CancellationToken cancellationToken = default);
+        Task<MetaDiscoveryPage> GetAdAccountsAsync(string userAccessToken, CancellationToken cancellationToken = default);
 
         /// <summary>Campaigns, ad sets and ads beneath one ad account, in a single flattened list.</summary>
-        Task<List<MetaDiscoveredResource>> GetAdAccountChildrenAsync(
+        Task<MetaDiscoveryPage> GetAdAccountChildrenAsync(
             string adAccountExternalId, string userAccessToken, CancellationToken cancellationToken = default);
 
-        Task<List<MetaDiscoveredResource>> GetLeadFormsAsync(
+        Task<MetaDiscoveryPage> GetLeadFormsAsync(
             string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default);
 
         /// <summary>Retrieves the actual lead behind a leadgen id, preserving the full response.</summary>

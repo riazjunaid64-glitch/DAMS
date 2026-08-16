@@ -251,10 +251,19 @@ namespace DAMS.Infrastructure.Migrations
                         principalColumn: "Id");
                 });
 
-            migrationBuilder.InsertData(
-                table: "LeadSources",
-                columns: new[] { "Id", "Code", "CreatedAt", "CustomerSource", "DisplayOrder", "IsActive", "IsSystem", "Name", "UpdatedAt" },
-                values: new object[] { 14, "meta", new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc), 4, 14, true, true, "Meta (unspecified)", null });
+            // Inserted by Code, not InsertData with a fixed Id: a production database that has
+            // had even one admin-created custom LeadSource since go-live may already have a row
+            // at the next identity value, and a hardcoded Id = 14 would fail that upgrade with a
+            // primary key violation. Letting the identity column assign its own value removes
+            // that collision entirely — LeadService.ResolveSourceAsync looks sources up by Code,
+            // never by Id, so whatever value SQL Server picks works correctly.
+            migrationBuilder.Sql("""
+                IF NOT EXISTS (SELECT 1 FROM [LeadSources] WHERE [Code] = N'meta')
+                BEGIN
+                    INSERT INTO [LeadSources] ([Code], [CreatedAt], [CustomerSource], [DisplayOrder], [IsActive], [IsSystem], [Name], [UpdatedAt])
+                    VALUES (N'meta', '2026-07-26T00:00:00.0000000', 4, 14, 1, 1, N'Meta (unspecified)', NULL);
+                END
+                """);
 
             migrationBuilder.CreateIndex(
                 name: "IX_LeadExternalSubmissions_ExternalIntegrationConnectionId_ReceivedAt",
@@ -373,10 +382,11 @@ namespace DAMS.Infrastructure.Migrations
                 name: "IX_LeadExternalSubmissions_ExternalIntegrationConnectionId_ReceivedAt",
                 table: "LeadExternalSubmissions");
 
-            migrationBuilder.DeleteData(
-                table: "LeadSources",
-                keyColumn: "Id",
-                keyValue: 14);
+            // Deleted by Code to match the Code-based insert in Up(). Harmless if a lead has
+            // since used this source: LeadSourceId is a Restrict foreign key, so the delete
+            // simply fails loudly rather than orphaning anything, exactly as it would if this
+            // had been a normal HasData row.
+            migrationBuilder.Sql("DELETE FROM [LeadSources] WHERE [Code] = N'meta';");
 
             migrationBuilder.DropColumn(
                 name: "AdAccountExternalId",

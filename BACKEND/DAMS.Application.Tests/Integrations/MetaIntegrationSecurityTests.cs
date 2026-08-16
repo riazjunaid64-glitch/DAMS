@@ -242,6 +242,30 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task ThePhysicalPage_CanOnlyBeEnabledThroughOneConnectionAtATime()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        // Two different Meta users both administer the same real Facebook Page and each
+        // connects DAMS separately. Meta's webhook subscription is app-to-Page, not
+        // connection-to-Page, so if both were allowed to enable it, disconnecting one would
+        // silently unsubscribe leads for the other.
+        var (first, firstPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-a", enabled: false);
+        var (second, secondPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-b", enabled: false);
+
+        await h.Integration.SetResourceEnabledAsync(first.Id, firstPage.Id, isEnabled: true);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Integration.SetResourceEnabledAsync(second.Id, secondPage.Id, isEnabled: true));
+        Assert.Contains("already enabled through another", error.Message);
+
+        var reloadedSecond = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == secondPage.Id);
+        Assert.False(reloadedSecond.IsEnabled);
+    }
+
+    [Fact]
     public async Task AResourceBelongingToAnotherConnection_CannotBeToggled()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

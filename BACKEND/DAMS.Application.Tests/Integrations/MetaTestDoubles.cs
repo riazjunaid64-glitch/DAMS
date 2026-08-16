@@ -26,6 +26,14 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     public List<MetaDiscoveredResource> AdAccountChildren { get; set; } = [];
     public List<MetaDiscoveredResource> LeadForms { get; set; } = [];
 
+    /// <summary>Set by a test to simulate a page walk stopped by MaxGraphPages before it finished.</summary>
+    public bool PagesTruncated { get; set; }
+    public bool AdAccountsTruncated { get; set; }
+    public bool AdAccountChildrenTruncated { get; set; }
+
+    /// <summary>Thrown by the next ad-account discovery call, then discarded.</summary>
+    public Exception? AdAccountDiscoveryFailure { get; set; }
+
     /// <summary>Leads this fake knows about, keyed by leadgen id.</summary>
     public Dictionary<string, MetaLead> Leads { get; } = [];
 
@@ -41,24 +49,32 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     public Task<MetaAuthorizationResult> CompleteAuthorizationAsync(string code, CancellationToken cancellationToken = default) =>
         Task.FromResult(Authorization);
 
-    public Task<List<MetaDiscoveredResource>> GetPagesAsync(string userAccessToken, CancellationToken cancellationToken = default)
+    public Task<MetaDiscoveryPage> GetPagesAsync(string userAccessToken, CancellationToken cancellationToken = default)
     {
         if (DiscoveryFailure is not null)
             throw DiscoveryFailure;
 
-        return Task.FromResult(Pages.ToList());
+        return Task.FromResult(new MetaDiscoveryPage { Items = Pages.ToList(), Truncated = PagesTruncated });
     }
 
-    public Task<List<MetaDiscoveredResource>> GetAdAccountsAsync(string userAccessToken, CancellationToken cancellationToken = default) =>
-        Task.FromResult(AdAccounts.ToList());
+    public Task<MetaDiscoveryPage> GetAdAccountsAsync(string userAccessToken, CancellationToken cancellationToken = default)
+    {
+        if (AdAccountDiscoveryFailure is not null)
+            throw AdAccountDiscoveryFailure;
 
-    public Task<List<MetaDiscoveredResource>> GetAdAccountChildrenAsync(
+        return Task.FromResult(new MetaDiscoveryPage { Items = AdAccounts.ToList(), Truncated = AdAccountsTruncated });
+    }
+
+    public Task<MetaDiscoveryPage> GetAdAccountChildrenAsync(
         string adAccountExternalId, string userAccessToken, CancellationToken cancellationToken = default) =>
-        Task.FromResult(AdAccountChildren.ToList());
+        Task.FromResult(new MetaDiscoveryPage { Items = AdAccountChildren.ToList(), Truncated = AdAccountChildrenTruncated });
 
-    public Task<List<MetaDiscoveredResource>> GetLeadFormsAsync(
+    public Task<MetaDiscoveryPage> GetLeadFormsAsync(
         string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default) =>
-        Task.FromResult(LeadForms.Where(f => f.ParentExternalId == pageExternalId).ToList());
+        Task.FromResult(new MetaDiscoveryPage
+        {
+            Items = LeadForms.Where(f => f.ParentExternalId == pageExternalId).ToList()
+        });
 
     public Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default)
     {

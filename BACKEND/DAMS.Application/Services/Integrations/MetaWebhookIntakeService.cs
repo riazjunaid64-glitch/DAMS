@@ -4,6 +4,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -50,9 +51,9 @@ namespace DAMS.Application.Services.Integrations
                     return 0;
 
                 var recorded = 0;
-                // Keys added but not yet saved. Without this, the same lead appearing twice in
-                // one delivery would pass the database check twice and the unique index would
-                // then reject the whole batch, taking the unrelated events down with it.
+                // Keys already handled by this call. A lead appearing twice in one delivery
+                // would otherwise be attempted twice; each attempt is now saved and resolved
+                // individually, so this is only an optimisation, not a correctness requirement.
                 var pending = new HashSet<string>(StringComparer.Ordinal);
 
                 foreach (var entry in entries.EnumerateArray())
@@ -77,13 +78,16 @@ namespace DAMS.Application.Services.Integrations
                     }
                 }
 
-                if (recorded > 0)
-                    await _context.SaveChangesAsync(cancellationToken);
-
                 return recorded;
             }
         }
 
+        /// <summary>
+        /// Saves exactly one event and commits it immediately, so a duplicate or a failure
+        /// elsewhere in the delivery can never take an unrelated event down with it — a single
+        /// shared SaveChanges for the whole batch would otherwise roll back everything the
+        /// moment any one row collided with the unique index.
+        /// </summary>
         private async Task<bool> RecordOneAsync(
             string field,
             string? pageId,
@@ -92,9 +96,12 @@ namespace DAMS.Application.Services.Integrations
             HashSet<string> pending,
             CancellationToken cancellationToken)
         {
-            // Resolve which connection owns this page. If two connections both claim it, the
-            // most recently connected wins — and the unique (Provider, ExternalLeadId) index on
-            // submissions is the backstop that stops one lead being created twice regardless.
+            // Resolve which connection owns this page. Enabling a page is exclusive to one
+            // connection (MetaIntegrationService.SetResourceEnabledAsync refuses a second), so
+            // this should only ever find one enabled candidate; the ordering is a defensive
+            // tie-break for pre-existing data, not the mechanism that prevents ambiguity. The
+            // unique (Provider, ExternalLeadId) index on submissions is a second backstop that
+            // stops one lead being created twice regardless.
             var resource = pageId is null
                 ? null
                 : await _context.ExternalIntegrationResources
@@ -110,9 +117,10 @@ namespace DAMS.Application.Services.Integrations
             if (!pending.Add(eventKey))
                 return false;
 
-            // Checked here as well as by the unique index: the in-memory provider used by tests
-            // does not enforce unique indexes, and under real concurrency the index is what
-            // actually decides. Both are needed.
+            // A cheap fast path: avoids an exception in the common case. Under real
+            // concurrency two requests can both pass this check before either commits, so it
+            // is not what makes duplication impossible — the unique index and the catch below
+            // are.
             var alreadyRecorded = await _context.ExternalIntegrationEvents
                 .AnyAsync(e => e.Provider == IntegrationProviders.Meta && e.EventKey == eventKey, cancellationToken);
 
@@ -121,7 +129,7 @@ namespace DAMS.Application.Services.Integrations
 
             var isDeliverable = resource is { IsEnabled: true, IsActive: true };
 
-            _context.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            var integrationEvent = new ExternalIntegrationEvent
             {
                 Provider = IntegrationProviders.Meta,
                 ExternalIntegrationConnectionId = resource?.ExternalIntegrationConnectionId,
@@ -144,10 +152,29 @@ namespace DAMS.Application.Services.Integrations
                         ? "No connected Meta page matches this webhook."
                         : "This page is not enabled for lead delivery in DAMS.",
                 AvailableAt = DateTime.UtcNow
-            });
+            };
 
-            return true;
+            _context.ExternalIntegrationEvents.Add(integrationEvent);
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                return true;
+            }
+            catch (DbUpdateException ex) when (IsDuplicateEventKey(ex))
+            {
+                // Another request (a concurrent delivery, or Meta redelivering while the first
+                // is still in flight) committed this exact event first. That is success, not
+                // failure — the event exists — so this attempt is dropped and the rest of the
+                // batch continues rather than the whole delivery being lost.
+                _context.Entry(integrationEvent).State = EntityState.Detached;
+                return false;
+            }
         }
+
+        private static bool IsDuplicateEventKey(DbUpdateException ex) =>
+            ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+            && sql.Message.Contains("IX_ExternalIntegrationEvents_Provider_EventKey", StringComparison.OrdinalIgnoreCase);
 
         private static string? ReadString(JsonElement element, string property) =>
             element.ValueKind == JsonValueKind.Object

@@ -78,14 +78,25 @@ namespace DAMS.Application.Services.Integrations
         /// </summary>
         private async Task<List<int>> ClaimEventsAsync(int batchSize, CancellationToken cancellationToken)
         {
-            var take = Math.Clamp(batchSize, 1, 200);
+            // A batch is processed serially under one lease taken at claim time. Worst case is
+            // every item timing out: batchSize * RequestTimeoutSeconds must comfortably fit
+            // inside the lease, or a still-in-progress item's lease can look expired and a
+            // second worker reclaims — and starts double-fetching — a row nobody actually
+            // abandoned. Halving the arithmetic ceiling leaves headroom for everything that
+            // is not the Graph call itself (DB round trips, GC, scheduling).
+            var leaseSeconds = Math.Max(1, _options.LeaseMinutes * 60);
+            var worstCasePerItemSeconds = Math.Max(1, _options.RequestTimeoutSeconds * 2);
+            var safeForLease = Math.Max(1, leaseSeconds / worstCasePerItemSeconds);
+
+            var take = Math.Clamp(batchSize, 1, Math.Min(200, safeForLease));
 
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 var now = DateTime.UtcNow;
 
                 var due = await _context.ExternalIntegrationEvents
-                    .Where(e => Claimable.Contains(e.Status)
+                    .Where(e => e.Provider == IntegrationProviders.Meta
+                                && Claimable.Contains(e.Status)
                                 && e.AvailableAt <= now
                                 && (e.LockedUntil == null || e.LockedUntil < now))
                     .OrderBy(e => e.AvailableAt)
@@ -217,9 +228,14 @@ namespace DAMS.Application.Services.Integrations
 
             var dto = new LeadIntakeDto
             {
-                // Meta forms do not guarantee a name; the lead is still worth having, and the
-                // provider reference identifies it either way.
-                FirstName = string.IsNullOrWhiteSpace(mapped.FirstName) ? "Meta lead" : mapped.FirstName,
+                // Meta forms do not guarantee a name, and Lead.FirstName is a required column —
+                // some value has to go here. It must not read as if Meta actually submitted it,
+                // the same principle that keeps this integration from inventing a phone number,
+                // so it is built from the provider's own id rather than a plain "Meta lead" that
+                // would be indistinguishable from a real answer once it is on screen.
+                FirstName = string.IsNullOrWhiteSpace(mapped.FirstName)
+                    ? $"Meta lead ({UnnamedLeadSuffix(lead.LeadgenId)})"
+                    : mapped.FirstName,
                 LastName = mapped.LastName,
                 Phone = mapped.Phone,
                 WhatsappNumber = mapped.WhatsappNumber,
@@ -293,9 +309,45 @@ namespace DAMS.Application.Services.Integrations
             submission.AdSetName = lead.AdSetName;
             submission.AdExternalId = lead.AdId;
             submission.AdName = lead.AdName;
-            submission.ExternalFormName = lead.FormName;
+            // Neither of these comes back on the lead itself from Graph — the lead endpoint
+            // returns a form id but not its name, and no ad-account id at all — so they are
+            // filled in, best-effort, from whatever resource sync has already discovered.
+            // Absent here just means "not yet synced", never something that should block
+            // ingestion, which is why this is a lookup and not a required field.
+            submission.ExternalFormName = await LookUpResourceNameAsync(
+                ExternalResourceTypes.LeadForm, lead.FormId, cancellationToken);
+            submission.AdAccountExternalId = await LookUpParentExternalIdAsync(
+                ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken);
             submission.RawPayloadJson = lead.RawJson;
             submission.FieldDataJson = mapped.ToFieldDataJson();
+        }
+
+        private async Task<string?> LookUpResourceNameAsync(
+            string resourceType, string? externalId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(externalId))
+                return null;
+
+            return await _context.ExternalIntegrationResources
+                .Where(r => r.Provider == IntegrationProviders.Meta
+                            && r.ResourceType == resourceType
+                            && r.ExternalId == externalId)
+                .Select(r => r.Name)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        private async Task<string?> LookUpParentExternalIdAsync(
+            string resourceType, string? externalId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(externalId))
+                return null;
+
+            return await _context.ExternalIntegrationResources
+                .Where(r => r.Provider == IntegrationProviders.Meta
+                            && r.ResourceType == resourceType
+                            && r.ExternalId == externalId)
+                .Select(r => r.ParentExternalId)
+                .FirstOrDefaultAsync(cancellationToken);
         }
 
         /// <summary>
@@ -318,6 +370,10 @@ namespace DAMS.Application.Services.Integrations
                     : null
             };
         }
+
+        /// <summary>The last few digits of a leadgen id — enough to tell two unnamed leads apart without echoing the whole id.</summary>
+        private static string UnnamedLeadSuffix(string leadgenId) =>
+            leadgenId.Length <= 6 ? leadgenId : leadgenId[^6..];
 
         private static string ResolveSourceCode(string? platform) => platform switch
         {
@@ -416,12 +472,35 @@ namespace DAMS.Application.Services.Integrations
 
         public async Task<int> PruneOAuthStatesAsync(CancellationToken cancellationToken = default)
         {
-            // Only the short-lived OAuth states are cleaned up. Events are never pruned: they
-            // are the record of what a provider sent and why DAMS did or did not act on it.
             var cutoff = DateTime.UtcNow.AddDays(-1);
 
             return await _context.ExternalIntegrationOAuthStates
                 .Where(s => s.ExpiresAt < cutoff)
+                .ExecuteDeleteAsync(cancellationToken);
+        }
+
+        private static readonly ExternalIntegrationEventStatus[] Finished =
+        [
+            ExternalIntegrationEventStatus.Processed,
+            ExternalIntegrationEventStatus.Ignored,
+            ExternalIntegrationEventStatus.Failed
+        ];
+
+        public async Task<int> PruneOldEventsAsync(CancellationToken cancellationToken = default)
+        {
+            if (_options.EventRetentionDays <= 0)
+                return 0;
+
+            var cutoff = DateTime.UtcNow.AddDays(-_options.EventRetentionDays);
+
+            // Only rows that already reached a final state and are older than the cutoff. A
+            // Lead this event produced is untouched — LeadId is a nullable, non-cascading
+            // reference on the event, never the other way around, so pruning the webhook's
+            // audit trail can never take the lead or its submission history down with it.
+            return await _context.ExternalIntegrationEvents
+                .Where(e => e.Provider == IntegrationProviders.Meta
+                            && Finished.Contains(e.Status)
+                            && e.ReceivedAt < cutoff)
                 .ExecuteDeleteAsync(cancellationToken);
         }
 

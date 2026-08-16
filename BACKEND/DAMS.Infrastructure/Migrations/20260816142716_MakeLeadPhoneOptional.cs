@@ -44,6 +44,18 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // The AlterColumn calls below would otherwise silently stamp "" onto every lead that
+            // legitimately has no phone number the moment NOT NULL is restored. Refusing first
+            // means a revert surfaces the decision to a human instead of quietly rewriting data.
+            migrationBuilder.Sql("""
+                IF EXISTS (SELECT 1 FROM [Leads] WHERE [Phone] IS NULL OR [NormalizedPhone] IS NULL)
+                BEGIN
+                    RAISERROR (
+                        'Cannot revert MakeLeadPhoneOptional: one or more Leads have a NULL Phone or NormalizedPhone. Assign or clear these rows deliberately before restoring NOT NULL.',
+                        16, 1);
+                END
+                """);
+
             migrationBuilder.AlterColumn<string>(
                 name: "Phone",
                 table: "Leads",

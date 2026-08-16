@@ -27,6 +27,18 @@ namespace DAMS.Application.Services.Integrations
         public string RawJson { get; set; } = string.Empty;
     }
 
+    /// <summary>
+    /// The result of walking one paginated Graph edge. <see cref="Truncated"/> is true when the
+    /// walk was stopped by <c>MaxGraphPages</c> rather than running out of pages naturally — in
+    /// that case <see cref="Items"/> is known to be incomplete, and a caller that treats
+    /// "not returned" as "no longer exists" must not do so for this batch.
+    /// </summary>
+    public sealed class MetaDiscoveryPage
+    {
+        public List<MetaDiscoveredResource> Items { get; init; } = [];
+        public bool Truncated { get; init; }
+    }
+
     /// <summary>An asset discovered during sync, in provider-neutral shape.</summary>
     public sealed class MetaDiscoveredResource
     {

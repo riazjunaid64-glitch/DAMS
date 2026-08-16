@@ -30,6 +30,13 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
+// The default HttpClientFactory handler logs each request's full URI (including its query
+// string) at Information level. Meta's Graph client puts the access token, appsecret_proof and
+// (for the OAuth token exchange) the app's client_secret directly in that query string, so
+// leaving this at the default level would write live credentials into the application log on
+// every Graph call. Nothing else needs Information-level detail from this specific client.
+builder.Logging.AddFilter("System.Net.Http.HttpClient.IMetaGraphClient", LogLevel.Warning);
+
 builder.Services.AddMemoryCache();
 
 builder.Services.AddResponseCompression(options =>
@@ -182,13 +189,24 @@ builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<MetaIntegrati
 // because losing it makes every stored token undecryptable — recoverable only by having each
 // admin reconnect. In production this directory must be backed up and, on multi-server
 // deployments, shared between instances. It must never be committed.
-builder.Services.AddDataProtection()
+var dataProtectionBuilder = builder.Services.AddDataProtection()
     .SetApplicationName("DAMS")
     .PersistKeysToFileSystem(new DirectoryInfo(ResolvePrivateStoragePathFor(
         builder.Environment,
         builder.Configuration,
         "DataProtection:KeyRingPath",
         Path.Combine("App_Data", "dataprotection-keys"))));
+
+// ASP.NET Core only encrypts the key ring at rest automatically when it picks the storage
+// location itself; pointing PersistKeysToFileSystem at an explicit directory (above, required so
+// the path is configurable and outside wwwroot) opts out of that. Without this, the keys that
+// decrypt every stored Meta token would sit on disk as plain XML, protected only by filesystem
+// ACLs. DPAPI ties the ciphertext to this Windows account, so set
+// DataProtection:ProtectWithDpapi to false only once a non-Windows host or a shared key ring
+// across multiple machines makes that unworkable — at which point a certificate
+// (ProtectKeysWithCertificate) is the replacement, not going without protection.
+if (OperatingSystem.IsWindows() && builder.Configuration.GetValue("DataProtection:ProtectWithDpapi", true))
+    dataProtectionBuilder.ProtectKeysWithDpapiNG();
 // "Due today", "overdue" and "inactive" all depend on the current instant; taking it from
 // an injected clock keeps those rules deterministic under test.
 builder.Services.AddSingleton(TimeProvider.System);

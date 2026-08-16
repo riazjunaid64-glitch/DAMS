@@ -173,6 +173,49 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
+    public async Task AnAdAccountAuthorizationFailure_KeepsAlreadyDiscoveredPagesAndDoesNotFlagTheConnection()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        // ads_read is commonly missing until Meta grants Advanced Access. That must degrade
+        // only ad-account discovery, never the Page a lead actually needs to arrive through.
+        h.Graph.AdAccountDiscoveryFailure = new MetaAuthorizationException("ads_read is not granted.");
+
+        var result = await h.Sync.SyncConnectionAsync(connection.Id);
+
+        var page = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.ExternalId == "page-1");
+        Assert.True(page.IsActive);
+        Assert.NotNull(result.Warning);
+
+        var refreshed = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected, refreshed.Status);
+        Assert.NotNull(refreshed.LastSyncedAt);
+    }
+
+    [Fact]
+    public async Task TruncatedPagination_DoesNotDeactivateResourcesThatWereSimplyNotReadThisTime()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+
+        // The next sync's page walk is capped before it finishes — Meta returned more pages
+        // than MaxGraphPages allowed following. "Not seen" here must not mean "gone": the walk
+        // never got far enough to say that.
+        h.Graph.Pages = [];
+        h.Graph.PagesTruncated = true;
+        var result = await h.Sync.SyncConnectionAsync(connection.Id);
+
+        var page = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.ExternalId == "page-1");
+        Assert.True(page.IsActive);
+        Assert.Equal(0, result.Deactivated);
+    }
+
+    [Fact]
     public async Task ResourcesOfTwoConnections_StayIsolated()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

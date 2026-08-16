@@ -113,14 +113,16 @@ namespace DAMS.Application.Services.Integrations
 
         // ── Discovery ───────────────────────────────────────────────────────────────
 
-        public async Task<List<MetaDiscoveredResource>> GetPagesAsync(
+        public async Task<MetaDiscoveryPage> GetPagesAsync(
             string userAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
 
-            await foreach (var page in EnumerateAsync(
+            var (items, truncated) = await CollectAsync(
                 "me/accounts?fields=id,name,access_token,instagram_business_account{id,name,username}&limit=100",
-                userAccessToken, cancellationToken))
+                userAccessToken, cancellationToken);
+
+            foreach (var page in items)
             {
                 var pageId = ReadString(page, "id");
                 if (pageId is null)
@@ -151,17 +153,19 @@ namespace DAMS.Application.Services.Integrations
                 }
             }
 
-            return resources;
+            return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
         }
 
-        public async Task<List<MetaDiscoveredResource>> GetAdAccountsAsync(
+        public async Task<MetaDiscoveryPage> GetAdAccountsAsync(
             string userAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
 
-            await foreach (var account in EnumerateAsync(
+            var (items, truncated) = await CollectAsync(
                 "me/adaccounts?fields=id,account_id,name,account_status&limit=100",
-                userAccessToken, cancellationToken))
+                userAccessToken, cancellationToken);
+
+            foreach (var account in items)
             {
                 if (ReadString(account, "id") is not { Length: > 0 } id)
                     continue;
@@ -175,37 +179,44 @@ namespace DAMS.Application.Services.Integrations
                 });
             }
 
-            return resources;
+            return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
         }
 
-        public async Task<List<MetaDiscoveredResource>> GetAdAccountChildrenAsync(
+        public async Task<MetaDiscoveryPage> GetAdAccountChildrenAsync(
             string adAccountExternalId, string userAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
             var account = Uri.EscapeDataString(adAccountExternalId);
+            var truncated = false;
 
-            await foreach (var campaign in EnumerateAsync(
-                $"{account}/campaigns?fields=id,name,status&limit=100", userAccessToken, cancellationToken))
+            var (campaigns, campaignsTruncated) = await CollectAsync(
+                $"{account}/campaigns?fields=id,name,status&limit=100", userAccessToken, cancellationToken);
+            truncated |= campaignsTruncated;
+            foreach (var campaign in campaigns)
             {
                 if (ReadString(campaign, "id") is { Length: > 0 } id)
                     resources.Add(Child(ExternalResourceTypes.Campaign, id, adAccountExternalId, campaign));
             }
 
-            await foreach (var adSet in EnumerateAsync(
-                $"{account}/adsets?fields=id,name,status,campaign_id&limit=100", userAccessToken, cancellationToken))
+            var (adSets, adSetsTruncated) = await CollectAsync(
+                $"{account}/adsets?fields=id,name,status,campaign_id&limit=100", userAccessToken, cancellationToken);
+            truncated |= adSetsTruncated;
+            foreach (var adSet in adSets)
             {
                 if (ReadString(adSet, "id") is { Length: > 0 } id)
                     resources.Add(Child(ExternalResourceTypes.AdSet, id, ReadString(adSet, "campaign_id"), adSet));
             }
 
-            await foreach (var ad in EnumerateAsync(
-                $"{account}/ads?fields=id,name,status,adset_id&limit=100", userAccessToken, cancellationToken))
+            var (ads, adsTruncated) = await CollectAsync(
+                $"{account}/ads?fields=id,name,status,adset_id&limit=100", userAccessToken, cancellationToken);
+            truncated |= adsTruncated;
+            foreach (var ad in ads)
             {
                 if (ReadString(ad, "id") is { Length: > 0 } id)
                     resources.Add(Child(ExternalResourceTypes.Ad, id, ReadString(ad, "adset_id"), ad));
             }
 
-            return resources;
+            return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
         }
 
         private static MetaDiscoveredResource Child(
@@ -219,20 +230,22 @@ namespace DAMS.Application.Services.Integrations
                 ExternalStatus = ReadString(element, "status")
             };
 
-        public async Task<List<MetaDiscoveredResource>> GetLeadFormsAsync(
+        public async Task<MetaDiscoveryPage> GetLeadFormsAsync(
             string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
 
-            await foreach (var form in EnumerateAsync(
+            var (items, truncated) = await CollectAsync(
                 $"{Uri.EscapeDataString(pageExternalId)}/leadgen_forms?fields=id,name,status&limit=100",
-                pageAccessToken, cancellationToken))
+                pageAccessToken, cancellationToken);
+
+            foreach (var form in items)
             {
                 if (ReadString(form, "id") is { Length: > 0 } id)
                     resources.Add(Child(ExternalResourceTypes.LeadForm, id, pageExternalId, form));
             }
 
-            return resources;
+            return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
         }
 
         // ── Leads ───────────────────────────────────────────────────────────────────
@@ -313,14 +326,15 @@ namespace DAMS.Application.Services.Integrations
         // ── Plumbing ────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Walks a cursor-paginated edge. The page cap is a safety net: a malformed "next" link
-        /// that pointed back at itself would otherwise loop until the process died.
+        /// Walks a cursor-paginated edge to completion and reports whether it actually reached
+        /// the end. The page cap is a safety net — a malformed "next" link that pointed back at
+        /// itself would otherwise loop until the process died — but hitting it means the result
+        /// is known to be incomplete, which the caller must not mistake for "there is no more".
         /// </summary>
-        private async IAsyncEnumerable<JsonElement> EnumerateAsync(
-            string relativeUrl,
-            string accessToken,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        private async Task<(List<JsonElement> Items, bool Truncated)> CollectAsync(
+            string relativeUrl, string accessToken, CancellationToken cancellationToken)
         {
+            var items = new List<JsonElement>();
             var url = WithToken(relativeUrl, accessToken);
             var pagesFetched = 0;
 
@@ -334,16 +348,19 @@ namespace DAMS.Application.Services.Integrations
                 if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var item in data.EnumerateArray())
-                        yield return item.Clone();
+                        items.Add(item.Clone());
                 }
 
                 url = ReadNextPageUrl(root);
             }
 
-            if (url is not null)
+            var truncated = url is not null;
+            if (truncated)
                 _logger.LogWarning(
                     "Stopped following Meta pagination after {Pages} pages. Some resources may not have been discovered.",
                     pagesFetched);
+
+            return (items, truncated);
         }
 
         private static string? ReadNextPageUrl(JsonElement root) =>

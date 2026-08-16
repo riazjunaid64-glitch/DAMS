@@ -62,6 +62,14 @@ namespace DAMS.Application.Common
         /// <summary>Hard stop on cursor following, so a pagination bug cannot spin forever.</summary>
         public int MaxGraphPages { get; set; } = 20;
 
+        /// <summary>
+        /// Days to keep a finished (Processed/Ignored/Failed) event before it is pruned. Zero
+        /// (the default) keeps every event forever. This is a data-retention policy question —
+        /// raw lead field answers pass through these rows — so it is left off until the business
+        /// decides a period, rather than this integration picking one silently.
+        /// </summary>
+        public int EventRetentionDays { get; set; } = 0;
+
         /// <summary>True only when every credential needed to talk to Meta is present.</summary>
         public bool IsConfigured =>
             !string.IsNullOrWhiteSpace(AppId)

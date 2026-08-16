@@ -2232,11 +2232,13 @@ namespace DAMS.Infrastructure.Data
                 NewSource(10, "broker", "Broker / Agent", 10, CustomerSource.Referral),
                 NewSource(11, "campaign", "Marketing Campaign", 11, CustomerSource.Other),
                 NewSource(12, "exhibition", "Exhibition / Event", 12, CustomerSource.Other),
-                NewSource(13, "other", "Other", 13, CustomerSource.Other),
-                // Used only when a Meta lead cannot be attributed to Facebook or Instagram with
-                // confidence. Guessing the wrong one corrupts channel reporting, so the honest
-                // answer gets its own source.
-                NewSource(14, "meta", "Meta (unspecified)", 14, CustomerSource.Other));
+                NewSource(13, "other", "Other", 13, CustomerSource.Other));
+            // The "meta" source (used only when a Meta lead cannot be attributed to Facebook or
+            // Instagram with confidence) is deliberately NOT seeded here with a fixed Id. A
+            // production database may already have an admin-created custom LeadSource occupying
+            // the next identity value, and HasData with an explicit Id would collide with it on
+            // upgrade. It is inserted idempotently by Code instead, in the
+            // AddExternalIntegrations migration's Up() — see the comment there.
 
             modelBuilder.Entity<LeadClosureReason>().HasData(
                 NewReason(1, "budget_issue", "Budget issue", 1, LeadClosureReasonKind.Both),

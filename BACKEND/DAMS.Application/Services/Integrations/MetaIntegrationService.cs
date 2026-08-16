@@ -171,7 +171,10 @@ namespace DAMS.Application.Services.Integrations
                 _context.ExternalIntegrationConnections.Add(connection);
             }
 
-            var missingScopes = MetaScopes.All
+            var missingCriticalScopes = MetaScopes.LeadCritical
+                .Where(scope => !authorization.GrantedScopes.Contains(scope, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            var missingOptionalScopes = MetaScopes.Optional
                 .Where(scope => !authorization.GrantedScopes.Contains(scope, StringComparer.OrdinalIgnoreCase))
                 .ToList();
 
@@ -189,20 +192,33 @@ namespace DAMS.Application.Services.Integrations
             // first discovery happens in the background rather than inside a browser redirect.
             connection.LastSyncedAt = null;
 
-            if (missingScopes.Count > 0)
+            if (missingCriticalScopes.Count > 0)
             {
                 // Connected, but it cannot actually do its job. Saying so now is far kinder
                 // than letting every lead retrieval fail silently later.
                 connection.Status = ExternalIntegrationConnectionStatus.NeedsReauthorization;
                 connection.LastErrorAt = DateTime.UtcNow;
                 connection.LastError =
-                    $"Meta did not grant: {string.Join(", ", missingScopes)}. Reconnect and approve all requested permissions.";
+                    $"Meta did not grant: {string.Join(", ", missingCriticalScopes)}. Reconnect and approve all requested permissions.";
             }
             else
             {
                 connection.Status = ExternalIntegrationConnectionStatus.Connected;
-                connection.LastError = null;
-                connection.LastErrorAt = null;
+                // ads_read commonly waits on Meta's own App Review before it is granted. That
+                // must not block a Page from delivering leads, but it is still worth surfacing
+                // as a soft warning rather than pretending nothing is missing.
+                if (missingOptionalScopes.Count > 0)
+                {
+                    connection.LastErrorAt = DateTime.UtcNow;
+                    connection.LastError =
+                        $"Connected, but ad account/campaign discovery is unavailable until Meta grants: " +
+                        $"{string.Join(", ", missingOptionalScopes)}. Lead delivery is not affected.";
+                }
+                else
+                {
+                    connection.LastErrorAt = null;
+                    connection.LastError = null;
+                }
             }
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -369,6 +385,26 @@ namespace DAMS.Application.Services.Integrations
             if (isEnabled && !resource.IsActive)
                 throw new InvalidOperationException(
                     "Meta no longer returns this resource. Run a sync first to confirm it still exists.");
+
+            // A physical Facebook Page's webhook subscription is app-to-Page, not
+            // connection-to-Page: two DAMS connections both claiming the same Page would let
+            // disconnecting one silently unsubscribe leads for the other, since Meta only knows
+            // one relationship exists. Ownership is therefore kept exclusive at the point a Page
+            // is turned on, rather than left for the webhook to guess between candidates later.
+            if (isEnabled && resource.ResourceType == ExternalResourceTypes.FacebookPage)
+            {
+                var alreadyOwnedElsewhere = await _context.ExternalIntegrationResources
+                    .AnyAsync(r => r.Id != resource.Id
+                                   && r.Provider == IntegrationProviders.Meta
+                                   && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                   && r.ExternalId == resource.ExternalId
+                                   && r.IsEnabled, cancellationToken);
+
+                if (alreadyOwnedElsewhere)
+                    throw new InvalidOperationException(
+                        "This Facebook Page is already enabled through another DAMS connection. " +
+                        "Disable it there first before enabling it here.");
+            }
 
             // Enabling a page is what actually starts lead delivery, so the subscription call
             // has to succeed before the flag is trusted.

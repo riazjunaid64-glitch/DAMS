@@ -87,18 +87,19 @@ namespace DAMS.Api
                         _logger.LogInformation("Turned {Count} Meta lead event(s) into leads.", processed);
                 }, stoppingToken);
 
-                // Resource discovery is what makes a newly created ad or form show up without
-                // anyone reconnecting. It is slow and rarely urgent, so it runs far less often.
-                if (ShouldRun(tick, _options.ResourceSyncIntervalSeconds, interval))
+                // Every tick, not gated behind ResourceSyncIntervalSeconds: the six-hour cadence
+                // is already enforced by SyncDueConnectionsAsync's own "is this connection due"
+                // query, which is cheap to run and returns immediately when nothing needs it.
+                // Gating the call itself at the outer scheduler previously meant a freshly
+                // connected account — or a service that had just restarted — could wait up to
+                // six hours for its very first sync regardless of how "never synced" was scored.
+                await SafelyAsync("sync", async scope =>
                 {
-                    await SafelyAsync("sync", async scope =>
-                    {
-                        var sync = scope.GetRequiredService<IMetaResourceSyncService>();
-                        var synced = await sync.SyncDueConnectionsAsync(stoppingToken);
-                        if (synced > 0)
-                            _logger.LogInformation("Synced resources for {Count} Meta connection(s).", synced);
-                    }, stoppingToken);
-                }
+                    var sync = scope.GetRequiredService<IMetaResourceSyncService>();
+                    var synced = await sync.SyncDueConnectionsAsync(stoppingToken);
+                    if (synced > 0)
+                        _logger.LogInformation("Synced resources for {Count} Meta connection(s).", synced);
+                }, stoppingToken);
 
                 if (ShouldRun(tick, 3600, interval))
                 {
@@ -106,6 +107,9 @@ namespace DAMS.Api
                     {
                         var processor = scope.GetRequiredService<IMetaLeadEventProcessor>();
                         await processor.PruneOAuthStatesAsync(stoppingToken);
+                        // A no-op until MetaIntegration:EventRetentionDays is set — events are
+                        // kept forever by default.
+                        await processor.PruneOldEventsAsync(stoppingToken);
                     }, stoppingToken);
                 }
             }

@@ -86,16 +86,22 @@ namespace DAMS.Api.Controllers
                 var recorded = await _intake.RecordAsync(body, cancellationToken);
                 if (recorded > 0)
                     _logger.LogInformation("Recorded {Count} Meta lead event(s) for background processing.", recorded);
+
+                // A 200 tells Meta the delivery is fully handled and it will not be sent again.
+                // That is only true once every event in it is durably stored or was already
+                // known — RecordAsync only returns normally in that case, never having
+                // swallowed a real persistence failure.
+                return Ok();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Meta disables a subscription that keeps receiving errors, and it will redeliver
-                // anyway. Absorbing the failure keeps the integration alive; the event key makes
-                // the redelivery harmless.
-                _logger.LogError(ex, "Recording a Meta webhook delivery failed. Meta will redeliver it.");
+                // Something genuinely failed to persist (a database outage, a timeout, a
+                // migration gap). A non-2xx is what makes Meta retry this exact delivery later
+                // instead of considering it delivered — returning 200 here would silently lose
+                // whatever this call could not save.
+                _logger.LogError(ex, "Recording a Meta webhook delivery failed. Returning a failure so Meta retries it.");
+                return StatusCode(StatusCodes.Status500InternalServerError);
             }
-
-            return Ok();
         }
 
         /// <summary>

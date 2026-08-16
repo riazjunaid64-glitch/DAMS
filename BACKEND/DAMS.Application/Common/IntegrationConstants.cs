@@ -73,6 +73,25 @@ namespace DAMS.Application.Common
             AdsRead
         ];
 
+        /// <summary>
+        /// Without every one of these, lead capture itself cannot work, so their absence is
+        /// what actually earns <c>NeedsReauthorization</c>.
+        /// </summary>
+        public static readonly string[] LeadCritical =
+        [
+            PagesShowList,
+            PagesReadEngagement,
+            PagesManageMetadata,
+            LeadsRetrieval
+        ];
+
+        /// <summary>
+        /// <c>ads_read</c> requires Advanced Access (App Review) on Meta's side and is
+        /// frequently absent on a freshly connected, not-yet-reviewed app. Missing it degrades
+        /// only campaign/ad-set/ad discovery — it must never stop a Page from delivering leads.
+        /// </summary>
+        public static readonly string[] Optional = [AdsRead];
+
         public static string Joined => string.Join(',', All);
     }
 }

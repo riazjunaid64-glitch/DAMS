@@ -78,7 +78,8 @@ namespace DAMS.Application.Services.Integrations
             int connectionId, CancellationToken cancellationToken = default)
         {
             var connection = await _context.ExternalIntegrationConnections
-                .FirstOrDefaultAsync(c => c.Id == connectionId, cancellationToken)
+                .FirstOrDefaultAsync(
+                    c => c.Id == connectionId && c.Provider == IntegrationProviders.Meta, cancellationToken)
                 ?? throw new LeadNotFoundException("That Meta connection no longer exists.");
 
             if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
@@ -105,14 +106,24 @@ namespace DAMS.Application.Services.Integrations
 
             try
             {
-                var pages = await _graph.GetPagesAsync(userToken, cancellationToken);
-                discovered.AddRange(pages);
-                fullyEnumerated.Add(ExternalResourceTypes.FacebookPage);
-                fullyEnumerated.Add(ExternalResourceTypes.InstagramAccount);
+                var pagePage = await _graph.GetPagesAsync(userToken, cancellationToken);
+                discovered.AddRange(pagePage.Items);
+                if (!pagePage.Truncated)
+                {
+                    fullyEnumerated.Add(ExternalResourceTypes.FacebookPage);
+                    fullyEnumerated.Add(ExternalResourceTypes.InstagramAccount);
+                }
+                else
+                {
+                    warning = Combine(warning,
+                        "This account has more Pages than could be read in one sync; some may not yet be listed.");
+                }
 
                 // Forms are read with the page's own token and only for pages an admin turned
-                // on, so a client with fifty pages is not paged through fifty times over.
-                foreach (var page in pages.Where(p => p.ResourceType == ExternalResourceTypes.FacebookPage))
+                // on, so a client with fifty pages is not paged through fifty times over. They
+                // are never added to fullyEnumerated regardless (see ApplyDiscovered), so
+                // truncation here only needs to be surfaced, not tracked for deactivation.
+                foreach (var page in pagePage.Items.Where(p => p.ResourceType == ExternalResourceTypes.FacebookPage))
                 {
                     if (!IsEnabledLocally(existing, ExternalResourceTypes.FacebookPage, page.ExternalId))
                         continue;
@@ -120,7 +131,10 @@ namespace DAMS.Application.Services.Integrations
                     var formToken = page.ResourceToken ?? userToken;
                     try
                     {
-                        discovered.AddRange(await _graph.GetLeadFormsAsync(page.ExternalId, formToken, cancellationToken));
+                        var formPage = await _graph.GetLeadFormsAsync(page.ExternalId, formToken, cancellationToken);
+                        discovered.AddRange(formPage.Items);
+                        if (formPage.Truncated)
+                            warning = Combine(warning, $"Not every lead form for \"{page.Name ?? page.ExternalId}\" could be read.");
                     }
                     catch (MetaPermanentException ex)
                     {
@@ -128,18 +142,44 @@ namespace DAMS.Application.Services.Integrations
                         _logger.LogWarning(ex, "Reading lead forms for page {PageId} failed.", page.ExternalId);
                     }
                 }
+            }
+            catch (MetaAuthorizationException ex)
+            {
+                // Page discovery needs only lead-critical scopes, so a rejection here means the
+                // connection genuinely cannot work until someone reconnects.
+                await MarkNeedsReauthorizationAsync(connection, ex.Message, cancellationToken);
+                throw new InvalidOperationException(
+                    "Meta rejected this connection. Reconnect the account and approve all requested permissions.");
+            }
 
-                var adAccounts = await _graph.GetAdAccountsAsync(userToken, cancellationToken);
-                discovered.AddRange(adAccounts);
-                fullyEnumerated.Add(ExternalResourceTypes.AdAccount);
+            // Ad account / campaign discovery needs ads_read, which commonly waits on Meta's
+            // own App Review and is not required for a single lead to be captured. Its failure
+            // must never discard the pages already found above or send the connection into
+            // NeedsReauthorization — that would park real, working lead delivery over a
+            // permission this integration does not need to function.
+            try
+            {
+                var adAccountPage = await _graph.GetAdAccountsAsync(userToken, cancellationToken);
+                discovered.AddRange(adAccountPage.Items);
+                if (!adAccountPage.Truncated)
+                {
+                    fullyEnumerated.Add(ExternalResourceTypes.AdAccount);
+                }
+                else
+                {
+                    warning = Combine(warning,
+                        "This account has more ad accounts than could be read in one sync; some may not yet be listed.");
+                }
 
-                var everyAdAccountRead = true;
-                foreach (var adAccount in adAccounts)
+                var everyAdAccountRead = !adAccountPage.Truncated;
+                foreach (var adAccount in adAccountPage.Items)
                 {
                     try
                     {
-                        discovered.AddRange(
-                            await _graph.GetAdAccountChildrenAsync(adAccount.ExternalId, userToken, cancellationToken));
+                        var children = await _graph.GetAdAccountChildrenAsync(adAccount.ExternalId, userToken, cancellationToken);
+                        discovered.AddRange(children.Items);
+                        if (children.Truncated)
+                            everyAdAccountRead = false;
                     }
                     catch (MetaPermanentException ex)
                     {
@@ -149,8 +189,9 @@ namespace DAMS.Application.Services.Integrations
                     }
                 }
 
-                // Partial data must not deactivate anything: one ad account refusing access
-                // would otherwise wipe out every campaign belonging to the others.
+                // Partial data must not deactivate anything: one ad account refusing access, or
+                // any page of campaigns/ad sets/ads being truncated, would otherwise wipe out
+                // resources that are still there and simply were not fully read this time.
                 if (everyAdAccountRead)
                 {
                     fullyEnumerated.Add(ExternalResourceTypes.Campaign);
@@ -160,11 +201,9 @@ namespace DAMS.Application.Services.Integrations
             }
             catch (MetaAuthorizationException ex)
             {
-                // Only an authorization failure aborts the whole sync: everything else is
-                // partial data, but this means nothing will work until someone reconnects.
-                await MarkNeedsReauthorizationAsync(connection, ex.Message, cancellationToken);
-                throw new InvalidOperationException(
-                    "Meta rejected this connection. Reconnect the account and approve all requested permissions.");
+                warning = Combine(warning,
+                    "Ad account and campaign discovery is unavailable until Meta grants ads_read. Lead delivery is not affected.");
+                _logger.LogWarning(ex, "Ad account discovery failed for Meta connection {ConnectionId}.", connection.Id);
             }
 
             var result = ApplyDiscovered(connection, existing, discovered, fullyEnumerated);

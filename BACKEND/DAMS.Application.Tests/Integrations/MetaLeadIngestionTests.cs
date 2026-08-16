@@ -392,6 +392,78 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task TheEventProcessor_NeverClaimsAnotherProvidersEvent()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+
+        // A future provider (Google, a portal) would share this same table. Nothing about the
+        // claim query may pick up its rows — the Meta worker must not try to fetch a Google
+        // lead through the Graph API and fail it before Google's own worker ever sees it.
+        h.Db.ExternalIntegrationEvents.Add(new DAMS.Domain.Entities.ExternalIntegrationEvent
+        {
+            Provider = "google",
+            EventType = "leadgen",
+            EventKey = "google:page-1:lead-1",
+            RawPayloadJson = "{}",
+            AvailableAt = DateTime.UtcNow
+        });
+        await h.Db.SaveChangesAsync();
+
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var googleEvent = await h.Db.ExternalIntegrationEvents.SingleAsync(e => e.Provider == "google");
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, googleEvent.Status);
+        Assert.Equal(0, googleEvent.Attempts);
+    }
+
+    [Fact]
+    public async Task AConnectionMissingOnlyAdsRead_StillDeliversLeads()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        // Every lead-critical scope is granted; only the advertising-discovery one is not —
+        // realistic for an app still waiting on Meta's Advanced Access review.
+        h.Graph.Authorization.GrantedScopes =
+        [
+            DAMS.Application.Common.MetaScopes.PagesShowList,
+            DAMS.Application.Common.MetaScopes.PagesReadEngagement,
+            DAMS.Application.Common.MetaScopes.PagesManageMetadata,
+            DAMS.Application.Common.MetaScopes.LeadsRetrieval
+        ];
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, null);
+        var state = System.Web.HttpUtility.ParseQueryString(new Uri(start.AuthorizationUrl).Query)["state"]!;
+        await h.Integration.CompleteCallbackAsync("code-1", state, null);
+
+        var connection = await h.Db.ExternalIntegrationConnections.SingleAsync();
+        // Missing ads_read must not be treated as a reason lead delivery cannot work.
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected, connection.Status);
+
+        var page = new DAMS.Domain.Entities.ExternalIntegrationResource
+        {
+            ExternalIntegrationConnectionId = connection.Id,
+            Provider = "meta",
+            ResourceType = "facebook_page",
+            ExternalId = "page-1",
+            IsEnabled = true,
+            IsActive = true,
+            ResourceTokenProtected = connection.AccessTokenProtected
+        };
+        h.Db.ExternalIntegrationResources.Add(page);
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: "page-1");
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody("page-1", "lead-1"));
+
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
     public async Task ADisconnectedConnection_StopsProducingLeads()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

@@ -4729,18 +4729,9 @@ namespace DAMS.Infrastructure.Migrations
                             IsActive = true,
                             IsSystem = true,
                             Name = "Other"
-                        },
-                        new
-                        {
-                            Id = 14,
-                            Code = "meta",
-                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
-                            CustomerSource = 4,
-                            DisplayOrder = 14,
-                            IsActive = true,
-                            IsSystem = true,
-                            Name = "Meta (unspecified)"
                         });
+                    // The "meta" LeadSource is inserted idempotently by Code in a migration's
+                    // Up(), not seeded here with a fixed Id — see AppDbContext.SeedLeadConfiguration.
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Loan", b =>
