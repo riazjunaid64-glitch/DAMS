@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Domain.Entities;
 
@@ -12,7 +13,16 @@ namespace DAMS.Application.Interfaces
 
         Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter);
 
-        Task<BookingResponseDto> CancelBookingAsync(int id, string? reason, int adminUserId);
+        /// <summary>
+        /// Cancels a booking and records its cancellation settlement (customer cash received,
+        /// refund decided, retained amount) atomically with releasing the unit and running the
+        /// existing commission/rebate cancellation lifecycle. Idempotent on dto.IdempotencyKey.
+        /// </summary>
+        Task<BookingResponseDto> CancelBookingAsync(int id, CancelBookingDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
+
+        /// <summary>Pays a previously-deferred (PayLater) cancellation refund. Idempotent on
+        /// dto.IdempotencyKey; rejects if the refund was already paid.</summary>
+        Task<BookingResponseDto> PayCancellationRefundAsync(int bookingId, PayCancellationRefundDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Sets the negotiated terms (sale price, discount, booking amount required, due date)

@@ -38,5 +38,12 @@ namespace DAMS.Domain.Entities
         public ICollection<LoanTransaction> LoanCashTransactions { get; set; } = new List<LoanTransaction>();
         public ICollection<StaffCashTransfer> StaffCashTransfers { get; set; } = new List<StaffCashTransfer>();
         public ICollection<StaffCashTransfer> StaffCashCounterpartyTransfers { get; set; } = new List<StaffCashTransfer>();
+
+        /// <summary>Cancellation settlements for which this account is the Customer Refunds
+        /// Payable liability. Only ever populated on the system CustomerRefundPayable account.</summary>
+        public ICollection<BookingCancellationSettlement> CancellationSettlementsPayable { get; set; } = new List<BookingCancellationSettlement>();
+
+        /// <summary>Actual cancellation-refund cash payouts made FROM this account.</summary>
+        public ICollection<BookingCancellationRefund> CancellationRefundsPaid { get; set; } = new List<BookingCancellationRefund>();
     }
 }

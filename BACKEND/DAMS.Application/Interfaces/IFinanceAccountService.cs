@@ -21,5 +21,12 @@ namespace DAMS.Application.Interfaces
         /// FixedAsset.</summary>
         Task EnsureAssetAccountAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default);
         Task<List<FinanceAccountResponseDto>> SetupClientChartAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Resolves the id of the given system account, creating it from the canonical
+        /// definition (or adopting a matching-named account) if it does not exist yet. Safe to
+        /// call from inside an ambient transaction — it does not commit anything itself.
+        /// </summary>
+        Task<int> EnsureSystemAccountAsync(FinanceSystemAccountRole role, CancellationToken cancellationToken = default);
     }
 }

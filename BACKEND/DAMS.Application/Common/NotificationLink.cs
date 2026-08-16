@@ -64,6 +64,13 @@ namespace DAMS.Application.Common
         /// </summary>
         public static string ForCustomerBooking(int bookingId) => $"/my-projects/{bookingId}";
 
+        /// <summary>
+        /// The customer's project list, not a specific booking. Customer booking routes
+        /// deliberately exclude cancelled bookings, so a cancellation notification must not
+        /// deep-link to a record the customer can no longer open.
+        /// </summary>
+        public static string ForCustomerBookingsList() => "/my-projects";
+
         public static string ForCustomerReceipt(int bookingId, int paymentId) => $"/receipt/{bookingId}/{paymentId}";
 
         /// <summary>

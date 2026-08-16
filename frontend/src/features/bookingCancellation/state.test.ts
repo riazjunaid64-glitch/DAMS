@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import { computeRetained, idempotencyKey, refundDecisionLabel, refundStatusLabel, validateCancellationDecision } from "./state";
+
+describe("booking cancellation settlement UI state", () => {
+  it("computes retained amount as paid minus refund, clamped at zero", () => {
+    expect(computeRetained(500_000, 450_000)).toBe(50_000);
+    expect(computeRetained(500_000, 500_000)).toBe(0);
+    expect(computeRetained(500_000, 0)).toBe(500_000);
+    expect(computeRetained(0, 0)).toBe(0);
+  });
+
+  it("requires a non-negative refund that never exceeds cash received", () => {
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: -1, decision: "" })).toContain("negative");
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 600_000, decision: "PayLater" })).toContain("cannot exceed");
+  });
+
+  it("requires RefundDecision None when refund is zero, and rejects a stray decision", () => {
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 0, decision: "None" })).toBeNull();
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 0, decision: "PayNow" })).toContain("must be None");
+  });
+
+  it("requires an explicit Pay now / Pay later choice once a refund is entered", () => {
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 450_000, decision: "" })).toContain("Choose whether");
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 450_000, decision: "PayLater" })).toBeNull();
+  });
+
+  it("requires an account and method for Pay now, and a reference for non-cash", () => {
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 450_000, decision: "PayNow" }))
+      .toContain("source account is required");
+    expect(validateCancellationDecision({
+      cashReceived: 500_000, refundAmount: 450_000, decision: "PayNow", refundFinanceAccountId: 1, refundPaymentMethod: "Cash",
+    })).toBeNull();
+    expect(validateCancellationDecision({
+      cashReceived: 500_000, refundAmount: 450_000, decision: "PayNow", refundFinanceAccountId: 1,
+      refundPaymentMethod: "BankTransfer", refundPaymentReference: "",
+    })).toContain("reference is required");
+    expect(validateCancellationDecision({
+      cashReceived: 500_000, refundAmount: 450_000, decision: "PayNow", refundFinanceAccountId: 1,
+      refundPaymentMethod: "BankTransfer", refundPaymentReference: "TXN-1",
+    })).toBeNull();
+  });
+
+  it("labels statuses and decisions for display", () => {
+    expect(refundStatusLabel("NotRequired")).toBe("No refund required");
+    expect(refundStatusLabel("Pending")).toBe("Pending");
+    expect(refundStatusLabel("Paid")).toBe("Paid");
+    expect(refundDecisionLabel("PayNow")).toBe("Pay now");
+    expect(refundDecisionLabel("PayLater")).toBe("Pay later");
+    expect(refundDecisionLabel("None")).toBe("None");
+  });
+
+  it("generates distinct idempotency keys per cancellation operation", () => {
+    expect(idempotencyKey("cancel")).not.toBe(idempotencyKey("cancel"));
+  });
+});
