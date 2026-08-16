@@ -88,6 +88,13 @@ namespace DAMS.Infrastructure.Data
         public DbSet<EmailSuppression> EmailSuppressions { get; set; }
         public DbSet<NotificationAuditEntry> NotificationAuditEntries { get; set; }
 
+        // Provider-neutral integration layer. Meta is the first provider; the shape is
+        // deliberately free of anything Meta-specific so a second one adds no schema.
+        public DbSet<ExternalIntegrationConnection> ExternalIntegrationConnections { get; set; }
+        public DbSet<ExternalIntegrationResource> ExternalIntegrationResources { get; set; }
+        public DbSet<ExternalIntegrationEvent> ExternalIntegrationEvents { get; set; }
+        public DbSet<ExternalIntegrationOAuthState> ExternalIntegrationOAuthStates { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -889,6 +896,7 @@ namespace DAMS.Infrastructure.Data
             ConfigureCommissionAndRebates(modelBuilder);
             ConfigureLeadManagement(modelBuilder);
             ConfigureNotifications(modelBuilder);
+            ConfigureIntegrations(modelBuilder);
         }
 
         private static void ConfigureFinanceReporting(ModelBuilder modelBuilder)
@@ -1725,14 +1733,33 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.Provider).IsRequired().HasMaxLength(50);
                 entity.Property(s => s.ExternalLeadId).IsRequired().HasMaxLength(200);
                 entity.Property(s => s.ExternalFormReference).HasMaxLength(200);
+                entity.Property(s => s.Platform).HasMaxLength(50);
+                entity.Property(s => s.PageExternalId).HasMaxLength(200);
+                entity.Property(s => s.PageName).HasMaxLength(300);
+                entity.Property(s => s.AdAccountExternalId).HasMaxLength(200);
+                entity.Property(s => s.CampaignExternalId).HasMaxLength(200);
+                entity.Property(s => s.CampaignName).HasMaxLength(300);
+                entity.Property(s => s.AdSetExternalId).HasMaxLength(200);
+                entity.Property(s => s.AdSetName).HasMaxLength(300);
+                entity.Property(s => s.AdExternalId).HasMaxLength(200);
+                entity.Property(s => s.AdName).HasMaxLength(300);
+                entity.Property(s => s.ExternalFormName).HasMaxLength(300);
 
                 entity.HasIndex(s => new { s.Provider, s.ExternalLeadId }).IsUnique();
                 entity.HasIndex(s => new { s.LeadId, s.ReceivedAt });
+                entity.HasIndex(s => new { s.ExternalIntegrationConnectionId, s.ReceivedAt });
 
                 entity.HasOne(s => s.Lead)
                       .WithMany(l => l.ExternalSubmissions)
                       .HasForeignKey(s => s.LeadId)
                       .OnDelete(DeleteBehavior.Cascade);
+
+                // Restrict, not cascade: disconnecting a provider must never erase the record of
+                // where a lead actually came from.
+                entity.HasOne(s => s.Connection)
+                      .WithMany()
+                      .HasForeignKey(s => s.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<LeadActivity>(entity =>
@@ -2079,6 +2106,113 @@ namespace DAMS.Infrastructure.Data
             });
         }
 
+        /// <summary>
+        /// The provider-neutral integration layer: connections, the assets discovered inside
+        /// them, the durable webhook inbox, and single-use OAuth states.
+        ///
+        /// Two rules run through all of it. Nothing that a lead references is ever deleted —
+        /// disconnecting clears credentials and flips a status, so attribution survives. And
+        /// every uniqueness guarantee is enforced by an index rather than by application code,
+        /// because provider retries arrive concurrently.
+        /// </summary>
+        private static void ConfigureIntegrations(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ExternalIntegrationConnection>(entity =>
+            {
+                entity.Property(c => c.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(c => c.ExternalAccountId).HasMaxLength(200);
+                entity.Property(c => c.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(c => c.GrantedScopesJson).HasMaxLength(1000);
+                entity.Property(c => c.LastError).HasMaxLength(1000);
+                entity.Property(c => c.Status).HasConversion<int>();
+                entity.Property(c => c.RowVersion).IsRowVersion();
+
+                // Reconnecting the same provider account updates this row instead of creating a
+                // second one, so a page cannot end up owned by two live connections.
+                entity.HasIndex(c => new { c.Provider, c.ExternalAccountId })
+                      .IsUnique()
+                      .HasFilter("[ExternalAccountId] IS NOT NULL");
+                entity.HasIndex(c => new { c.Provider, c.Status });
+
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(c => c.ConnectedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationResource>(entity =>
+            {
+                entity.Property(r => r.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(r => r.ResourceType).IsRequired().HasMaxLength(50);
+                entity.Property(r => r.ExternalId).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.ParentExternalId).HasMaxLength(200);
+                entity.Property(r => r.Name).HasMaxLength(300);
+                entity.Property(r => r.ExternalStatus).HasMaxLength(100);
+                entity.Property(r => r.RowVersion).IsRowVersion();
+
+                entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType, r.ExternalId })
+                      .IsUnique();
+                // How an incoming webhook finds the page it belongs to.
+                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId });
+                entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType });
+                entity.HasIndex(r => r.ParentExternalId);
+
+                entity.HasOne(r => r.Connection)
+                      .WithMany(c => c.Resources)
+                      .HasForeignKey(r => r.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationEvent>(entity =>
+            {
+                entity.Property(e => e.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.EventType).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.EventKey).IsRequired().HasMaxLength(300);
+                entity.Property(e => e.ResourceExternalId).HasMaxLength(200);
+                entity.Property(e => e.RawPayloadJson).IsRequired();
+                entity.Property(e => e.LockedBy).HasMaxLength(100);
+                entity.Property(e => e.LastError).HasMaxLength(1000);
+                entity.Property(e => e.Status).HasConversion<int>();
+                entity.Property(e => e.RowVersion).IsRowVersion();
+
+                // However many times a provider redelivers the same event, there is one row and
+                // therefore one unit of work.
+                entity.HasIndex(e => new { e.Provider, e.EventKey }).IsUnique();
+                // The claim query: due work, oldest first.
+                entity.HasIndex(e => new { e.Status, e.AvailableAt });
+                entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.ReceivedAt });
+
+                entity.HasOne(e => e.Connection)
+                      .WithMany()
+                      .HasForeignKey(e => e.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.Resource)
+                      .WithMany()
+                      .HasForeignKey(e => e.ExternalIntegrationResourceId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<Lead>()
+                      .WithMany()
+                      .HasForeignKey(e => e.LeadId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationOAuthState>(entity =>
+            {
+                entity.Property(s => s.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(s => s.StateHash).IsRequired().HasMaxLength(128);
+                entity.Property(s => s.ReturnPath).HasMaxLength(300);
+                entity.Property(s => s.RowVersion).IsRowVersion();
+
+                entity.HasIndex(s => s.StateHash).IsUnique();
+                entity.HasIndex(s => s.ExpiresAt);
+
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(s => s.CreatedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
         // Fixed timestamp: HasData must be deterministic or every `migrations add` produces
         // a spurious update for these rows.
         private static readonly DateTime SeedDate = new(2026, 7, 26, 0, 0, 0, DateTimeKind.Utc);
@@ -2098,7 +2232,11 @@ namespace DAMS.Infrastructure.Data
                 NewSource(10, "broker", "Broker / Agent", 10, CustomerSource.Referral),
                 NewSource(11, "campaign", "Marketing Campaign", 11, CustomerSource.Other),
                 NewSource(12, "exhibition", "Exhibition / Event", 12, CustomerSource.Other),
-                NewSource(13, "other", "Other", 13, CustomerSource.Other));
+                NewSource(13, "other", "Other", 13, CustomerSource.Other),
+                // Used only when a Meta lead cannot be attributed to Facebook or Instagram with
+                // confidence. Guessing the wrong one corrupts channel reporting, so the honest
+                // answer gets its own source.
+                NewSource(14, "meta", "Meta (unspecified)", 14, CustomerSource.Other));
 
             modelBuilder.Entity<LeadClosureReason>().HasData(
                 NewReason(1, "budget_issue", "Budget issue", 1, LeadClosureReasonKind.Both),
