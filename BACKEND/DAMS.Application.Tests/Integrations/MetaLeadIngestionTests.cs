@@ -71,6 +71,33 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task OneDeliveryRepeatingTheSameLead_RecordsItOnceAndKeepsTheRest()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+
+        // Both changes name the same lead, alongside a genuinely different one. Letting the
+        // duplicate through would make the unique index reject the whole batch and lose the
+        // unrelated enquiry with it.
+        var body = $$"""
+            {
+              "object": "page",
+              "entry": [{
+                "id": "{{page.ExternalId}}",
+                "changes": [
+                  { "field": "leadgen", "value": { "page_id": "{{page.ExternalId}}", "leadgen_id": "lead-1" } },
+                  { "field": "leadgen", "value": { "page_id": "{{page.ExternalId}}", "leadgen_id": "lead-1" } },
+                  { "field": "leadgen", "value": { "page_id": "{{page.ExternalId}}", "leadgen_id": "lead-2" } }
+                ]
+              }]
+            }
+            """;
+
+        Assert.Equal(2, await h.Intake.RecordAsync(body));
+        Assert.Equal(2, await h.Db.ExternalIntegrationEvents.CountAsync());
+    }
+
+    [Fact]
     public async Task ProcessingAnAlreadyProcessedLead_CreatesNoSecondLead()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

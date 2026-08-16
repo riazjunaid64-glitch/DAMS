@@ -50,6 +50,10 @@ namespace DAMS.Application.Services.Integrations
                     return 0;
 
                 var recorded = 0;
+                // Keys added but not yet saved. Without this, the same lead appearing twice in
+                // one delivery would pass the database check twice and the unique index would
+                // then reject the whole batch, taking the unrelated events down with it.
+                var pending = new HashSet<string>(StringComparer.Ordinal);
 
                 foreach (var entry in entries.EnumerateArray())
                 {
@@ -68,7 +72,7 @@ namespace DAMS.Application.Services.Integrations
                         if (string.IsNullOrWhiteSpace(leadgenId))
                             continue;
 
-                        if (await RecordOneAsync(field, pageId, leadgenId, value.GetRawText(), cancellationToken))
+                        if (await RecordOneAsync(field, pageId, leadgenId, value.GetRawText(), pending, cancellationToken))
                             recorded++;
                     }
                 }
@@ -81,7 +85,12 @@ namespace DAMS.Application.Services.Integrations
         }
 
         private async Task<bool> RecordOneAsync(
-            string field, string? pageId, string leadgenId, string payloadJson, CancellationToken cancellationToken)
+            string field,
+            string? pageId,
+            string leadgenId,
+            string payloadJson,
+            HashSet<string> pending,
+            CancellationToken cancellationToken)
         {
             // Resolve which connection owns this page. If two connections both claim it, the
             // most recently connected wins — and the unique (Provider, ExternalLeadId) index on
@@ -97,6 +106,9 @@ namespace DAMS.Application.Services.Integrations
                     .FirstOrDefaultAsync(cancellationToken);
 
             var eventKey = $"{resource?.ExternalIntegrationConnectionId ?? 0}:{pageId ?? "unknown"}:{leadgenId}";
+
+            if (!pending.Add(eventKey))
+                return false;
 
             // Checked here as well as by the unique index: the in-memory provider used by tests
             // does not enforce unique indexes, and under real concurrency the index is what
