@@ -131,6 +131,13 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public DateTime? UpdatedAt { get; set; }
 
+        // Base64 RowVersion. Required on cancellation to detect a booking that changed since
+        // the cancel dialog was opened.
+        public string ConcurrencyToken { get; set; } = string.Empty;
+
         public List<BookingPaymentDto> Payments { get; set; } = new();
+
+        // Null for a Cancelled booking predating this feature — legacy rows are never backfilled.
+        public BookingCancellationSettlementDto? CancellationSettlement { get; set; }
     }
 }

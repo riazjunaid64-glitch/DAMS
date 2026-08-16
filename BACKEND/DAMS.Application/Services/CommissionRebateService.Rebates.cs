@@ -243,6 +243,8 @@ namespace DAMS.Application.Services
                             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
                                 && d.Reference == reference
                                 && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)
+                            || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == dto.FinanceAccountId
+                                && r.PaymentReference == reference, cancellationToken)
                         : await _context.RebateDisbursements.AnyAsync(d => d.RebateId == rebateId
                             && d.Reference == reference
                             && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))

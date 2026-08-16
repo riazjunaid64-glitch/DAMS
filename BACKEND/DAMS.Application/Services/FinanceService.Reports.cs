@@ -121,10 +121,17 @@ namespace DAMS.Application.Services
 
                 var start = openingDate.HasValue && openingDate.Value <= columnDate ? openingDate.Value : SqlStart;
                 var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), cancellationToken);
+                // Income is credit-normal and expense is debit-normal, but a contra line (e.g.
+                // Customer Refunds) carries a negative amount — that negative amount must flip to
+                // the opposite column, not sit as a negative balance in its normal column. A
+                // negative Credit is not a valid trial-balance cell even when the totals still
+                // happen to net out.
                 foreach (var line in pnl.Income)
-                    values[$"I:{line.Key}"] = new TrialValue(VirtualId("I:" + line.Key), null, line.Name, FinanceAccountType.Other, 0m, line.Amount);
+                    values[$"I:{line.Key}"] = new TrialValue(VirtualId("I:" + line.Key), null, line.Name, FinanceAccountType.Other,
+                        line.Amount < 0m ? -line.Amount : 0m, line.Amount < 0m ? 0m : line.Amount);
                 foreach (var line in pnl.Expenses)
-                    values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other, line.Amount, 0m);
+                    values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other,
+                        line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
 
                 if (!projectId.HasValue)
                 {
@@ -267,6 +274,13 @@ namespace DAMS.Application.Services
                 .Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
             if (receipts is { Amount: not 0m })
                 income.Add(new ReportLine { Key = "customer-receipts", Name = "Customer Receipts", Order = -1, Amount = receipts.Amount, Count = receipts.Count });
+            // Contra-revenue, recognised at cancellation — never a second entry when the refund
+            // is actually paid out later, and never folded into the receipts line above so the
+            // original "money was really received" figure stays intact and auditable.
+            var refunds = await CancellationSettlementQuery(projectId, from, toExclusive).GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(s => s.RefundAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
+            if (refunds is { Amount: not 0m })
+                income.Add(new ReportLine { Key = "customer-refunds", Name = "Customer Refunds", Order = 0, Amount = -refunds.Amount, Count = refunds.Count });
 
             var expenses = await ExpenseQuery(projectId, from, toExclusive).GroupBy(e => new
                 {
@@ -370,6 +384,15 @@ namespace DAMS.Application.Services
                 + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
                     .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = deposits.Sum(d => d.Amount);
+            // Customer Refunds Payable: created (contra-revenue recognised) at cancellation,
+            // cleared when the cash is actually paid out. Both sides are booking-scoped, so —
+            // unlike WHT deposits — they can be filtered by project.
+            var cancellationRefundsCash = await SumByAccount(_context.BookingCancellationRefunds.AsNoTracking()
+                .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
+                .GroupBy(r => r.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
+            var refundPayableCreated = await CancellationSettlementQuery(projectId, null, end)
+                .SumAsync(s => (decimal?)s.RefundAmount, cancellationToken) ?? 0m;
+            var refundPayablePaid = cancellationRefundsCash.Sum(x => x.Amount);
 
             foreach (var account in accounts)
             {
@@ -383,6 +406,7 @@ namespace DAMS.Application.Services
                     - Amount(assetPaid, account.Id) + Amount(assetCapitalised, account.Id)
                     - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
                     - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
+                    - Amount(cancellationRefundsCash, account.Id)
                     + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount)
                     + Amount(loanCash, account.Id)
                     + staffTransfers.Where(t => t.StaffId == account.Id).Sum(t =>
@@ -395,6 +419,8 @@ namespace DAMS.Application.Services
                 account.Balance += debitMovement + Amount(loanLiability, account.Id);
                 if (account.SystemRole == FinanceSystemAccountRole.TaxPayable)
                     account.Balance += Money(wht - deposited);
+                if (account.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
+                    account.Balance += Money(refundPayableCreated - refundPayablePaid);
                 account.Balance = Money(account.Balance);
             }
             return accounts;
@@ -428,6 +454,12 @@ namespace DAMS.Application.Services
             var undeposited = Money(wht - deposited);
             if (undeposited != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.TaxPayable))
                 issues.Add($"No Tax Payable system account found; withheld tax of {undeposited:N2} has nowhere to sit.");
+            var refundObligation = Money((await CancellationSettlementQuery(projectId, null, end).SumAsync(s => (decimal?)s.RefundAmount, cancellationToken) ?? 0m)
+                - (await _context.BookingCancellationRefunds.AsNoTracking()
+                    .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
+                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
+            if (refundObligation != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable))
+                issues.Add($"No Customer Refunds Payable system account found; outstanding refund obligation of {refundObligation:N2} has nowhere to sit.");
             if (issues.Count == 0)
             {
                 issues.Add("Opening balances or legacy entries are not double-sided");

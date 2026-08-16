@@ -295,12 +295,18 @@ namespace DAMS.Application.Services.Notifications
                     CustomerUserId = b.Customer.UserId,
                     CustomerEmail = b.Customer.Email,
                     ProjectName = b.Unit.Project.ProjectName,
-                    UnitNumber = b.Unit.UnitNumber
+                    UnitNumber = b.Unit.UnitNumber,
+                    CancellationSettlementReason = b.CancellationSettlement != null ? b.CancellationSettlement.Reason : null
                 })
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (booking == null)
                 return;
+
+            // The reconciliation sweep calls this with reason == null (it only knows the booking
+            // changed status, not why). The structured settlement is the source of truth for a
+            // cancellation reason, so fall back to it rather than losing the reason on replay.
+            var effectiveReason = string.IsNullOrWhiteSpace(reason) ? booking.CancellationSettlementReason : reason;
 
             var data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
@@ -309,7 +315,7 @@ namespace DAMS.Application.Services.Notifications
                 ["projectName"] = booking.ProjectName,
                 ["unitNumber"] = booking.UnitNumber,
                 ["status"] = booking.Status.ToString(),
-                ["reason"] = LeadContactNormalizer.Clean(reason)
+                ["reason"] = LeadContactNormalizer.Clean(effectiveReason)
             };
 
             var title = type switch
@@ -330,12 +336,16 @@ namespace DAMS.Application.Services.Notifications
                 RecipientName = booking.CustomerName,
                 DedupKey = $"{type}:booking:{booking.Id}",
                 Title = title,
-                Message = string.IsNullOrWhiteSpace(reason)
+                Message = string.IsNullOrWhiteSpace(effectiveReason)
                     ? $"{booking.UnitNumber} at {booking.ProjectName}."
-                    : $"{booking.UnitNumber} at {booking.ProjectName}. {reason.Trim()}",
+                    : $"{booking.UnitNumber} at {booking.ProjectName}. {effectiveReason.Trim()}",
                 EntityType = NotificationEntityType.Booking,
                 EntityId = booking.Id,
-                DeepLink = NotificationLink.ForCustomerBooking(booking.Id),
+                // A cancelled booking is excluded from customer booking routes, so its
+                // notification must not deep-link to a detail page the customer cannot open.
+                DeepLink = type == NotificationType.BookingCancelled
+                    ? NotificationLink.ForCustomerBookingsList()
+                    : NotificationLink.ForCustomerBooking(booking.Id),
                 CreatedByUserId = actorUserId,
                 Data = data
             }, $"booking {booking.Id}", cancellationToken);

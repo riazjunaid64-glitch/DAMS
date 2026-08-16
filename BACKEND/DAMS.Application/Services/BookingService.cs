@@ -10,7 +10,7 @@ using System.Data;
 
 namespace DAMS.Application.Services
 {
-    public class BookingService : IBookingService
+    public partial class BookingService : IBookingService
     {
         private readonly AppDbContext _context;
         private readonly ICustomerService _customerService;
@@ -305,45 +305,7 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<BookingResponseDto> CancelBookingAsync(int id, string? reason, int adminUserId)
-        {
-            if (string.IsNullOrWhiteSpace(reason))
-                throw new InvalidOperationException("A booking cancellation reason is required.");
-
-            var booking = await _context.Bookings
-                .Include(b => b.Unit)
-                .FirstOrDefaultAsync(b => b.Id == id);
-
-            if (booking == null)
-                throw new InvalidOperationException("Booking not found.");
-
-            if (booking.Status == BookingStatus.Cancelled)
-                throw new InvalidOperationException("Booking is already cancelled.");
-
-            if (booking.Status is BookingStatus.PossessionGiven or BookingStatus.SaleCompleted)
-                throw new InvalidOperationException("A booking that reached possession or completion cannot be cancelled here.");
-
-            booking.Status = BookingStatus.Cancelled;
-            booking.InternalNotes = AppendNote(booking.InternalNotes,
-                $"Cancelled by user {adminUserId}" +
-                (string.IsNullOrWhiteSpace(reason) ? "." : $": {reason.Trim()}"));
-            booking.UpdatedAt = DateTime.UtcNow;
-
-            // Release the unit back to the market.
-            booking.Unit.Status = UnitStatus.Available;
-            booking.Unit.UpdatedAt = DateTime.UtcNow;
-
-            if (_commissionLifecycle != null)
-                await _commissionLifecycle.HandleBookingCancelledAsync(booking.Id, reason.Trim(),
-                    new FinancialWorkflowActor(adminUserId, $"Admin #{adminUserId}"));
-
-            await _context.SaveChangesAsync();
-
-            await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
-                booking.Id, NotificationType.BookingCancelled, reason, adminUserId));
-
-            return await GetResponseAsync(booking.Id);
-        }
+        // CancelBookingAsync and PayCancellationRefundAsync live in BookingService.Cancellation.cs.
 
         public async Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId)
         {
@@ -692,6 +654,8 @@ namespace DAMS.Application.Services
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
                 .Include(b => b.Payments)
                 .Include(b => b.Installments)
+                .Include(b => b.CancellationSettlement!).ThenInclude(s => s.RefundPayableAccount)
+                .Include(b => b.CancellationSettlement!).ThenInclude(s => s.Refund!).ThenInclude(r => r.FinanceAccount)
                 .AsSplitQuery()
                 .FirstAsync(b => b.Id == id, cancellationToken);
 
@@ -763,6 +727,41 @@ namespace DAMS.Application.Services
                 NextOfKinAddress = b.NextOfKinAddress,
                 CreatedAt = b.CreatedAt,
                 UpdatedAt = b.UpdatedAt,
+                ConcurrencyToken = Convert.ToBase64String(b.RowVersion),
+                CancellationSettlement = b.CancellationSettlement == null ? null : new BookingCancellationSettlementDto
+                {
+                    Id = b.CancellationSettlement.Id,
+                    CustomerCashReceivedSnapshot = b.CancellationSettlement.CustomerCashReceivedSnapshot,
+                    RefundAmount = b.CancellationSettlement.RefundAmount,
+                    RetainedAmount = b.CancellationSettlement.RetainedAmount,
+                    RefundDecision = b.CancellationSettlement.RefundDecision,
+                    RefundStatus = b.CancellationSettlement.RefundAmount == 0m
+                        ? CancellationRefundStatus.NotRequired
+                        : b.CancellationSettlement.Refund == null
+                            ? CancellationRefundStatus.Pending
+                            : CancellationRefundStatus.Paid,
+                    Reason = b.CancellationSettlement.Reason,
+                    Notes = b.CancellationSettlement.Notes,
+                    CancelledAt = b.CancellationSettlement.CancelledAt,
+                    CancelledByUserId = b.CancellationSettlement.CancelledByUserId,
+                    CancelledByName = b.CancellationSettlement.CancelledByName,
+                    RefundPayableAccountId = b.CancellationSettlement.RefundPayableAccountId,
+                    RefundPayableAccountName = b.CancellationSettlement.RefundPayableAccount?.Name,
+                    Refund = b.CancellationSettlement.Refund == null ? null : new BookingCancellationRefundDto
+                    {
+                        Id = b.CancellationSettlement.Refund.Id,
+                        Amount = b.CancellationSettlement.Refund.Amount,
+                        FinanceAccountId = b.CancellationSettlement.Refund.FinanceAccountId,
+                        FinanceAccountName = b.CancellationSettlement.Refund.FinanceAccount?.Name ?? string.Empty,
+                        PaymentMethod = b.CancellationSettlement.Refund.PaymentMethod,
+                        PaymentReference = b.CancellationSettlement.Refund.PaymentReference,
+                        PaidAt = b.CancellationSettlement.Refund.PaidAt,
+                        Notes = b.CancellationSettlement.Refund.Notes,
+                        RecordedByUserId = b.CancellationSettlement.Refund.RecordedByUserId,
+                        RecordedByName = b.CancellationSettlement.Refund.RecordedByName,
+                        RecordedAt = b.CancellationSettlement.Refund.RecordedAt
+                    }
+                },
                 Payments = b.Payments == null
                     ? new List<BookingPaymentDto>()
                     : b.Payments

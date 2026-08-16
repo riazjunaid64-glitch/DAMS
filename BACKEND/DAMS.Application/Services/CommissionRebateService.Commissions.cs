@@ -277,7 +277,9 @@ namespace DAMS.Application.Services
                         && p.Amount > p.Reversals.Sum(r => r.Amount), cancellationToken)
                     || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
                         && d.Reference == paymentReference
-                        && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))
+                        && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)
+                    || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == dto.FinanceAccountId
+                        && r.PaymentReference == paymentReference, cancellationToken)))
                     throw new InvalidOperationException("This payment reference is already recorded against the selected finance account.");
                 var commission = await _context.BookingCommissions.Include(c => c.Booking)
                     .Include(c => c.Partner)

@@ -25,6 +25,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
+        public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
         public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
         public DbSet<EmployeeTask> EmployeeTasks { get; set; }
@@ -470,6 +472,69 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<BookingCancellationSettlement>(entity =>
+            {
+                entity.Property(s => s.CustomerCashReceivedSnapshot).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RefundAmount).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RetainedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RefundDecision).HasConversion<int>();
+                entity.Property(s => s.Reason).IsRequired().HasMaxLength(500);
+                entity.Property(s => s.Notes).HasMaxLength(2000);
+                entity.Property(s => s.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(s => s.CancelledByName).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.CancellationDate).HasColumnType("date");
+
+                entity.HasIndex(s => s.BookingId).IsUnique();
+                entity.HasIndex(s => s.IdempotencyKey).IsUnique();
+                entity.HasIndex(s => s.RefundPayableAccountId);
+                entity.HasIndex(s => s.CancellationDate);
+
+                entity.HasOne(s => s.Booking)
+                      .WithOne(b => b.CancellationSettlement)
+                      .HasForeignKey<BookingCancellationSettlement>(s => s.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(s => s.RefundPayableAccount)
+                      .WithMany(a => a.CancellationSettlementsPayable)
+                      .HasForeignKey(s => s.RefundPayableAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_BookingCancellationSettlements_Amounts",
+                        "[CustomerCashReceivedSnapshot] >= 0 AND [RefundAmount] >= 0 AND [RetainedAmount] >= 0 "
+                        + "AND [RefundAmount] + [RetainedAmount] = [CustomerCashReceivedSnapshot]");
+                    // RefundDecision: None = 0, PayNow = 1, PayLater = 2.
+                    t.HasCheckConstraint("CK_BookingCancellationSettlements_DecisionConsistency",
+                        "([RefundAmount] = 0 AND [RefundDecision] = 0 AND [RefundPayableAccountId] IS NULL) "
+                        + "OR ([RefundAmount] > 0 AND [RefundDecision] IN (1, 2) AND [RefundPayableAccountId] IS NOT NULL)");
+                });
+            });
+
+            modelBuilder.Entity<BookingCancellationRefund>(entity =>
+            {
+                entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.PaymentMethod).HasConversion<int>();
+                entity.Property(r => r.PaymentReference).HasMaxLength(200);
+                entity.Property(r => r.Notes).HasMaxLength(2000);
+                entity.Property(r => r.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(r => r.RecordedByName).IsRequired().HasMaxLength(200);
+
+                entity.HasIndex(r => r.SettlementId).IsUnique();
+                entity.HasIndex(r => r.IdempotencyKey).IsUnique();
+                entity.HasIndex(r => r.FinanceAccountId);
+
+                entity.HasOne(r => r.Settlement)
+                      .WithOne(s => s.Refund)
+                      .HasForeignKey<BookingCancellationRefund>(r => r.SettlementId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.FinanceAccount)
+                      .WithMany(a => a.CancellationRefundsPaid)
+                      .HasForeignKey(r => r.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t => t.HasCheckConstraint("CK_BookingCancellationRefunds_Amount", "[Amount] > 0"));
+            });
+
             modelBuilder.Entity<Employee>(entity =>
             {
                 entity.Property(e => e.FullName).IsRequired().HasMaxLength(200);
@@ -775,8 +840,9 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t =>
                 {
-                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 1");
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 2");
                     t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
                 });
             });
 
@@ -1327,6 +1393,12 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<CapitalTransaction>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Capital transactions are immutable.");
+            if (ChangeTracker.Entries<BookingCancellationSettlement>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking cancellation settlements are append-only.");
+            if (ChangeTracker.Entries<BookingCancellationRefund>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking cancellation refunds are append-only.");
         }
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)

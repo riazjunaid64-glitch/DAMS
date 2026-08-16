@@ -1,3 +1,4 @@
+using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
@@ -379,6 +380,198 @@ public sealed class FinanceReportingAndCapitalTests
             }).ToList()
         });
         Assert.Equal(50m, (await context.CapitalTransactions.SingleAsync(t => t.Id == profit.Id)).ProfitSharePercentSnapshot);
+    }
+
+    [Fact]
+    public async Task CancellationSettlement_PayNow_IsContraRevenue_NotExpense_AndBalances()
+    {
+        await using var context = Context();
+        var (bookingId, bank) = await SeedCancellableBooking(context, paid: 500_000m);
+        var booking = new BookingService(context, new CustomerService(context), new FinanceAccountService(context));
+        await booking.CancelBookingAsync(bookingId, new CancelBookingDto
+        {
+            Reason = "Customer requested cancellation", ExpectedCustomerCashReceived = 500_000m,
+            RefundAmount = 450_000m, RefundDecision = CancellationRefundDecision.PayNow, IdempotencyKey = "pn-1",
+            RefundFinanceAccountId = bank.Id, RefundPaymentMethod = PaymentMethod.Cash,
+            RefundPaidAt = DAMS.Application.Common.PakistanTime.Today
+        }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
+
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
+        var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
+        Assert.Equal(500_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Receipts").Amount);
+        Assert.Equal(-450_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Refunds").Amount);
+        Assert.Equal(50_000m, pnl.TotalIncome);
+        Assert.Equal(0m, pnl.TotalExpenses); // never folded into expenses — it is contra-revenue
+        Assert.Equal(50_000m, pnl.NetProfit);
+
+        var accounts = new FinanceAccountService(context);
+        Assert.Equal(50_000m, (await accounts.GetByIdAsync(bank.Id)).CurrentBalance);
+        var payable = await context.FinanceAccounts.SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable);
+        Assert.Equal(0m, (await accounts.GetByIdAsync(payable.Id)).CurrentBalance);
+
+        var sheet = await Finance(context).GetBalanceSheetAsync(null, today);
+        Assert.True(sheet.IsBalanced);
+        Assert.Equal(50_000m, sheet.TotalAssets);
+        Assert.Equal(0m, sheet.TotalLiabilities);
+        Assert.Equal(50_000m, sheet.RetainedProfit);
+
+        // The Trial Balance must place the refund's negative income amount on the Debit side, not
+        // leave it as a negative Credit — a negative Credit is not a valid double-entry cell even
+        // when the column totals still happen to net out. GetTrialBalanceAsync snaps a mid-month
+        // "as at" date back to the END OF THE PREVIOUS month, so the current month-end (not
+        // "today") must be passed to actually include today's cancellation in the column.
+        var monthEnd = new DateTime(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month));
+        var trial = await Finance(context).GetTrialBalanceAsync(null, monthEnd, 0);
+        var refundRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Refunds");
+        Assert.Equal(450_000m, Assert.Single(refundRow.DebitBalances));
+        Assert.Equal(0m, Assert.Single(refundRow.CreditBalances));
+        var receiptsRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Receipts");
+        Assert.Equal(0m, Assert.Single(receiptsRow.DebitBalances));
+        Assert.Equal(500_000m, Assert.Single(receiptsRow.CreditBalances));
+        Assert.Equal(500_000m, Assert.Single(trial.ColumnDebitTotals));
+        Assert.Equal(500_000m, Assert.Single(trial.ColumnCreditTotals));
+    }
+
+    [Fact]
+    public async Task CancellationSettlement_PayLater_RecognisesLiabilityImmediately_ThenClearsOnPayment_WithNoSecondPnLEffect()
+    {
+        await using var context = Context();
+        var (bookingId, bank) = await SeedCancellableBooking(context, paid: 500_000m);
+        var booking = new BookingService(context, new CustomerService(context), new FinanceAccountService(context));
+        await booking.CancelBookingAsync(bookingId, new CancelBookingDto
+        {
+            Reason = "Customer requested cancellation", ExpectedCustomerCashReceived = 500_000m,
+            RefundAmount = 450_000m, RefundDecision = CancellationRefundDecision.PayLater, IdempotencyKey = "pl-1"
+        }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
+
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
+        var accounts = new FinanceAccountService(context);
+        var payable = await context.FinanceAccounts.SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable);
+
+        // Before payment: cash untouched, liability recognised, P&L already shows the net figure.
+        Assert.Equal(500_000m, (await accounts.GetByIdAsync(bank.Id)).CurrentBalance);
+        Assert.Equal(450_000m, (await accounts.GetByIdAsync(payable.Id)).CurrentBalance);
+        var pnlBefore = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
+        Assert.Equal(50_000m, pnlBefore.NetProfit);
+        var sheetBefore = await Finance(context).GetBalanceSheetAsync(null, today);
+        Assert.True(sheetBefore.IsBalanced);
+        Assert.Equal(500_000m, sheetBefore.TotalAssets);
+        Assert.Equal(450_000m, sheetBefore.TotalLiabilities);
+        Assert.Equal(50_000m, sheetBefore.RetainedProfit);
+
+        await booking.PayCancellationRefundAsync(bookingId, new PayCancellationRefundDto
+        {
+            FinanceAccountId = bank.Id, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = DAMS.Application.Common.PakistanTime.Today, IdempotencyKey = "pay-later-1"
+        }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
+
+        // After payment: cash moved, liability cleared, P&L unchanged (no second recognition).
+        Assert.Equal(50_000m, (await accounts.GetByIdAsync(bank.Id)).CurrentBalance);
+        Assert.Equal(0m, (await accounts.GetByIdAsync(payable.Id)).CurrentBalance);
+        var pnlAfter = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
+        Assert.Equal(50_000m, pnlAfter.NetProfit);
+        var sheetAfter = await Finance(context).GetBalanceSheetAsync(null, today);
+        Assert.True(sheetAfter.IsBalanced);
+        Assert.Equal(50_000m, sheetAfter.TotalAssets);
+        Assert.Equal(0m, sheetAfter.TotalLiabilities);
+        Assert.Equal(50_000m, sheetAfter.RetainedProfit);
+    }
+
+    [Fact]
+    public async Task CancellationSettlement_NoRefund_LeavesOriginalRevenueUnchanged()
+    {
+        await using var context = Context();
+        var (bookingId, _) = await SeedCancellableBooking(context, paid: 500_000m);
+        var booking = new BookingService(context, new CustomerService(context), new FinanceAccountService(context));
+        await booking.CancelBookingAsync(bookingId, new CancelBookingDto
+        {
+            Reason = "Full forfeiture", ExpectedCustomerCashReceived = 500_000m,
+            RefundAmount = 0m, RefundDecision = CancellationRefundDecision.None, IdempotencyKey = "nf-1"
+        }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
+
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
+        var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
+        Assert.DoesNotContain(pnl.IncomeLines, l => l.Name == "Customer Refunds");
+        Assert.Equal(500_000m, pnl.TotalIncome);
+        Assert.Equal(500_000m, pnl.NetProfit);
+    }
+
+    /// <summary>
+    /// DAMS' business day is Pakistan time (UTC+5). A cancellation made at 00:30 PKT on 1 September
+    /// is still 19:30 UTC on 31 August. If reports dated the refund by the raw UTC instant
+    /// (CancelledAt) instead of the Pakistan business date (CancellationDate), it would land in
+    /// August's financial period instead of September's — moving income/liability across a period
+    /// boundary, which is much more serious at a month/year end than on an ordinary day.
+    /// </summary>
+    [Fact]
+    public async Task CancellationSettlement_UsesPakistanBusinessDate_NotRawUtcInstant_ForFinancialPeriod()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var payable = new FinanceAccount
+        {
+            Name = "Customer Refunds Payable", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability,
+            IsActive = true, SystemRole = FinanceSystemAccountRole.CustomerRefundPayable, LedgerCode = "REFUND-PAY", DisplayOrder = 515
+        };
+        var (bookingId, _) = await SeedCancellableBooking(context, paid: 500_000m);
+        context.AddRange(bank, payable);
+        await context.SaveChangesAsync();
+
+        // 1 September 00:30 Pakistan time == 31 August 19:30 UTC.
+        var cancelledAtUtc = new DateTime(2026, 8, 31, 19, 30, 0, DateTimeKind.Utc);
+        var cancellationDatePkt = new DateTime(2026, 9, 1);
+        context.BookingCancellationSettlements.Add(new BookingCancellationSettlement
+        {
+            BookingId = bookingId, CustomerCashReceivedSnapshot = 500_000m, RefundAmount = 100_000m,
+            RetainedAmount = 400_000m, RefundDecision = CancellationRefundDecision.PayLater,
+            RefundPayableAccountId = payable.Id, Reason = "Midnight-boundary regression test",
+            IdempotencyKey = "midnight-1", CancelledByUserId = 1, CancelledByName = "Admin",
+            CancelledAt = cancelledAtUtc, CancellationDate = cancellationDatePkt
+        });
+        await context.SaveChangesAsync();
+
+        var finance = Finance(context);
+        var august = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+        Assert.DoesNotContain(august.IncomeLines, l => l.Name == "Customer Refunds");
+
+        var september = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), new DateTime(2026, 9, 30));
+        var refundLine = Assert.Single(september.IncomeLines, l => l.Name == "Customer Refunds");
+        Assert.Equal(-100_000m, refundLine.Amount);
+    }
+
+    private static async Task<(int BookingId, FinanceAccount Bank)> SeedCancellableBooking(AppDbContext context, decimal paid)
+    {
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var project = new Project { ProjectName = "Cancellation Finance Test", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = $"U-{Guid.NewGuid():N}"[..8], UnitType = "Apartment", Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan };
+        var customer = new Customer { FullName = "Buyer", Phone = "03001112222", Status = CustomerStatus.Active };
+        var bookingEntity = new Booking
+        {
+            BookingReference = $"BK-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+            Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+            AgreedSalePrice = 1_000_000m, DiscountAmount = 0m, BookingAmountRequired = 500_000m,
+            BookingAmountReceived = paid, BookingDate = DateTime.UtcNow
+        };
+        bookingEntity.Payments.Add(new Payment
+        {
+            Booking = bookingEntity, Amount = paid, Type = PaymentType.BookingAmount,
+            PaymentMethod = PaymentMethod.Cash, FinanceAccountId = null, PaidAt = DateTime.UtcNow
+        });
+        context.AddRange(bank, project, unit, customer, bookingEntity);
+        await context.SaveChangesAsync();
+        // The payment must be attributed to the bank account for its cash balance to move.
+        bookingEntity.Payments.Single().FinanceAccountId = bank.Id;
+        await context.SaveChangesAsync();
+        return (bookingEntity.Id, bank);
     }
 
     private static FinanceService Finance(AppDbContext context)

@@ -34,8 +34,13 @@ namespace DAMS.Application.Services
             var toExclusive = to?.Date.AddDays(1);
 
             // All totals are computed in SQL — no rows are materialised for the cards.
-            var automaticRevenue = await PaymentsQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+            var customerReceipts = await PaymentsQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            // Cancellation refunds are contra-revenue: they reduce what customer payments
+            // ultimately contributed, recognised at cancellation time, not at the later payout.
+            var customerRefunds = await CancellationSettlementQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .SumAsync(s => (decimal?)s.RefundAmount) ?? 0m;
+            var automaticRevenue = customerReceipts - customerRefunds;
             var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(r => (decimal?)r.Amount) ?? 0m;
             // GROSS. The full invoice is the business cost, whatever was withheld from the payment,
@@ -195,7 +200,35 @@ namespace DAMS.Application.Services
                     AccountHolderName = r.FinanceAccount != null ? r.FinanceAccount.AccountHolderName : null
                 });
 
-            var raw = await payments.Concat(manual)
+            var refunds = CancellationSettlementQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(s => new RevenueRow
+                {
+                    SortId = s.Id,
+                    Date = s.CancellationDate,
+                    ProjectId = s.Booking.Unit.ProjectId,
+                    ProjectName = s.Booking.Unit.Project.ProjectName,
+                    Amount = -s.RefundAmount,
+                    Source = "Customer Refund",
+                    ManualRevenueId = null,
+                    PaymentType = null,
+                    InstallmentType = null,
+                    ReceiptNumber = null,
+                    BookingReference = s.Booking.BookingReference,
+                    CustomerName = s.Booking.Customer.FullName,
+                    RevenueType = "Cancellation Refund",
+                    RevenueCategoryId = null,
+                    Reference = s.Booking.BookingReference,
+                    Description = s.Reason,
+                    AttachmentFileName = null,
+                    AttachmentContentType = null,
+                    AttachmentFileSize = null,
+                    AttachmentUploadedAt = null,
+                    FinanceAccountId = s.RefundPayableAccountId,
+                    FinanceAccountName = s.RefundPayableAccount != null ? s.RefundPayableAccount.Name : null,
+                    AccountHolderName = s.RefundPayableAccount != null ? s.RefundPayableAccount.AccountHolderName : null
+                });
+
+            var raw = await payments.Concat(manual).Concat(refunds)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Source)
                 .ThenByDescending(x => x.SortId)
@@ -403,9 +436,20 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Loan Interest"
                 });
 
+            // Contra-revenue: Kind stays "revenue" (it is never an expense), but the stored
+            // amount is already negative so the final mapping below (which only flips "expense"
+            // rows) passes it through unchanged.
+            var refunds = CancellationSettlementQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(s => new NetProfitRow
+                {
+                    SortId = s.Id, Date = s.CancellationDate, ProjectName = s.Booking.Unit.Project.ProjectName,
+                    Kind = "revenue", Amount = -s.RefundAmount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Customer Refund"
+                });
+
             var raw = await payments.Concat(manual).Concat(expenses).Concat(commissionPayouts)
                 .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
-                .Concat(loanInterest)
+                .Concat(loanInterest).Concat(refunds)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -490,7 +534,10 @@ namespace DAMS.Application.Services
                         || (t.CounterpartyFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsGiven))
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
                 .SumAsync(t => (decimal?)t.Amount) ?? 0m;
-            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments + staffCashOut;
+            // A pending (PayLater) refund does not move cash — only an actual payout does.
+            var cancellationRefunds = await CancellationRefundCashQuery(null, toExclusive, accountId)
+                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments + staffCashOut + cancellationRefunds;
         }
 
         private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
@@ -512,6 +559,35 @@ namespace DAMS.Application.Services
             if (toExclusive.HasValue) q = q.Where(p => p.PaidAt < toExclusive.Value);
             if (accountId.HasValue) q = q.Where(p => p.FinanceAccountId == accountId.Value);
             else if (unassigned) q = q.Where(p => p.FinanceAccountId == null);
+            return q;
+        }
+
+        // Cancellation settlements with a positive refund — the contra-revenue side of a
+        // cancellation. Dated at CancellationDate, the Pakistan business date the obligation was
+        // recognised on — never CancelledAt (a raw UTC instant that can land on the wrong calendar
+        // day around Pakistan midnight) and never the later cash payout date. Filtered by
+        // RefundPayableAccountId, matching every other account-scoped query here: the accounting
+        // counterpart of a refund is the liability account, not the bank the cash eventually leaves
+        // from.
+        private IQueryable<BookingCancellationSettlement> CancellationSettlementQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId = null, bool unassigned = false)
+        {
+            var q = _context.BookingCancellationSettlements.AsNoTracking().Where(s => s.RefundAmount > 0m);
+            if (projectId.HasValue) q = q.Where(s => s.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(s => s.CancellationDate >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(s => s.CancellationDate < toExclusive.Value);
+            if (accountId.HasValue) q = q.Where(s => s.RefundPayableAccountId == accountId.Value);
+            else if (unassigned) q = q.Where(_ => false);
+            return q;
+        }
+
+        // Actual cancellation-refund cash payouts, dated at PaidAt — used only for cash-account
+        // outflow, never for P&L (the P&L effect happened at cancellation, not at payout).
+        private IQueryable<BookingCancellationRefund> CancellationRefundCashQuery(DateTime? fromValue, DateTime? toExclusive, int accountId)
+        {
+            var q = _context.BookingCancellationRefunds.AsNoTracking().Where(r => r.FinanceAccountId == accountId);
+            if (fromValue.HasValue) q = q.Where(r => r.PaidAt >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(r => r.PaidAt < toExclusive.Value);
             return q;
         }
 

@@ -6,6 +6,9 @@ import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
+import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
+import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
+import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
 
 type Props = { user: User | null };
 
@@ -25,6 +28,8 @@ interface BookingDetail {
   bookingAmountRemaining: number;
   totalInstallmentAmount: number;
   installmentPlanStartDate?: string | null;
+  concurrencyToken: string;
+  cancellationSettlement?: CancellationSettlement | null;
 }
 
 interface ScheduleItem {
@@ -187,9 +192,6 @@ export default function BookingDetailPage({ user }: Props) {
     paidAt: new Date().toISOString().slice(0, 10),
   });
 
-  const [cancelling, setCancelling] = useState(false);
-  const [showCancel, setShowCancel] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
   const [transitioning, setTransitioning] = useState(false);
 
   const [form, setForm] = useState({
@@ -475,25 +477,6 @@ export default function BookingDetailPage({ user }: Props) {
     }
   };
 
-  const handleCancelBooking = async () => {
-    setCancelling(true);
-    try {
-      const res = await api(`/api/Booking/${bookingId}/cancel`, {
-        method: "POST",
-        body: JSON.stringify({ reason: cancelReason.trim() || null }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || "Failed to cancel booking");
-      setShowCancel(false);
-      setCancelReason("");
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel booking.");
-    } finally {
-      setCancelling(false);
-    }
-  };
-
   if (!isAdmin) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;
   }
@@ -544,15 +527,25 @@ export default function BookingDetailPage({ user }: Props) {
               Complete Sale
             </Button>
           )}
-          {booking.status !== "Cancelled" && booking.status !== "PossessionGiven" && booking.status !== "SaleCompleted" && (
-            <Button variant="danger" size="sm" onClick={() => { setCancelReason(""); setShowCancel(true); }}>
-              Cancel Booking
-            </Button>
-          )}
+          <CancellationDialog
+            bookingId={bookingId}
+            status={booking.status}
+            unitNumber={booking.unitNumber}
+            financeAccounts={financeAccounts}
+            onCancelled={load}
+          />
         </div>
       </div>
 
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
+
+      <BookingCancellationPanel
+        bookingId={bookingId}
+        status={booking.status}
+        settlement={booking.cancellationSettlement}
+        financeAccounts={financeAccounts}
+        onChanged={load}
+      />
 
       {/* Financial summary */}
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -926,28 +919,6 @@ export default function BookingDetailPage({ user }: Props) {
         </div>
       )}
 
-      {/* Cancel booking modal */}
-      {showCancel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !cancelling && setShowCancel(false)}>
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-[var(--text-heading)]">Cancel Booking</h3>
-            <p className="mt-1 text-sm text-[var(--text-muted)]">
-              This releases unit {booking.unitNumber} back to the market. This cannot be undone.
-            </p>
-
-            <div className="mt-4 grid gap-4">
-              <Field label="Reason" required value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)} />
-              <div className="flex gap-2">
-                <Button type="button" variant="danger" onClick={handleCancelBooking} disabled={cancelling || !cancelReason.trim()}>
-                  {cancelling ? "Cancelling..." : "Confirm Cancel"}
-                </Button>
-                <Button type="button" variant="ghost" onClick={() => setShowCancel(false)} disabled={cancelling}>Keep Booking</Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </Container>
   );
 }

@@ -22,7 +22,8 @@ namespace DAMS.Domain.Enums
     public enum FinanceSystemAccountRole
     {
         None = 0,
-        TaxPayable = 1
+        TaxPayable = 1,
+        CustomerRefundPayable = 2
     }
 
     public static class AccountBalanceDirection

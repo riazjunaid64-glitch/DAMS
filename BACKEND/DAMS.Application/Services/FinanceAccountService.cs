@@ -67,7 +67,8 @@ namespace DAMS.Application.Services
                 .Select(a => new
                 {
                     a.Type,
-                    IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
+                    IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable,
+                    IsRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable
                 }).SingleOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
 
@@ -182,6 +183,35 @@ namespace DAMS.Application.Services
                     Reference = d.ChallanNumber, ProjectName = "General",
                     Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
                 });
+            // Actual cash refund paid FROM this account.
+            var cancellationRefundsCash = _context.BookingCancellationRefunds.AsNoTracking().Where(r => r.FinanceAccountId == id)
+                .Select(r => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer refund", RecordId = r.Id, Date = r.PaidAt,
+                    Label = r.Settlement.Booking.Customer.FullName, Reference = r.PaymentReference,
+                    ProjectName = r.Settlement.Booking.Unit.Project.ProjectName,
+                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                });
+            // Customer Refunds Payable liability: created when the settlement is decided,
+            // cleared when the cash is actually paid out.
+            var refundPayableCreated = _context.BookingCancellationSettlements.AsNoTracking()
+                .Where(s => account.IsRefundPayable && s.RefundPayableAccountId == id)
+                .Select(s => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer refund payable", RecordId = s.Id, Date = s.CancellationDate,
+                    Label = s.Booking.Customer.FullName, Reference = s.Booking.BookingReference,
+                    ProjectName = s.Booking.Unit.Project.ProjectName,
+                    Amount = s.RefundAmount, GrossAmount = s.RefundAmount, WhtAmount = 0m
+                });
+            var refundPayablePaid = _context.BookingCancellationRefunds.AsNoTracking()
+                .Where(r => account.IsRefundPayable && r.Settlement.RefundPayableAccountId == id)
+                .Select(r => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer refund paid", RecordId = r.Id, Date = r.PaidAt,
+                    Label = r.Settlement.Booking.Customer.FullName, Reference = r.Settlement.Booking.BookingReference,
+                    ProjectName = r.Settlement.Booking.Unit.Project.ProjectName,
+                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                });
             var capitalCash = _context.CapitalTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
                 .Select(t => new FinanceAccountTransactionDto
                 {
@@ -253,6 +283,7 @@ namespace DAMS.Application.Services
             var rows = await revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .Concat(assetPurchasesPaid).Concat(assetPurchasesCapitalised)
+                .Concat(cancellationRefundsCash).Concat(refundPayableCreated).Concat(refundPayablePaid)
                 .Concat(capitalCash).Concat(partnerCapital)
                 .Concat(loanCash).Concat(loanLiability)
                 .Concat(staffTransfers).Concat(staffCounterpartyTransfers)
@@ -501,6 +532,7 @@ namespace DAMS.Application.Services
                 new("WHT TAX", FinanceAccountType.Receivable, "37", 410),
                 new("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500),
                 new("Tax Payable", FinanceAccountType.Liability, "11", 510, SystemRole: FinanceSystemAccountRole.TaxPayable),
+                new("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515, SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
                 new("Loan A/C", FinanceAccountType.Liability, "32", 520)
             };
             rows.AddRange(ClientPartnerNames.Select((name, index) =>
@@ -540,6 +572,8 @@ namespace DAMS.Application.Services
                 - (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
                     .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
                 + (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m)
+                // Actual cancellation-refund cash paid out of this account.
+                + (a.CancellationRefundsPaid.Sum(r => (decimal?)r.Amount) ?? 0m)
             let cashCapitalIn = a.CapitalCashTransactions.Where(t => t.Type == CapitalTransactionType.Contribution)
                 .Sum(t => (decimal?)t.Amount) ?? 0m
             let cashCapitalOut = a.CapitalCashTransactions.Where(t => t.Type == CapitalTransactionType.Withdrawal)
@@ -574,20 +608,36 @@ namespace DAMS.Application.Services
                     + (_context.AssetPurchases.Sum(p => (decimal?)p.WhtAmount) ?? 0m)
                 : 0m
             let taxPayableOut = isTaxPayable ? (_context.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m) : 0m
+            let isRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable
+            // The liability side of a cancellation settlement: created when the Admin decides to
+            // refund, cleared when the cash actually goes out. Queried directly like the tax
+            // payable above, not via a.CancellationSettlementsPayable, so the "in" side of a
+            // PayNow settlement and its immediate refund are counted from the same source of
+            // truth as the PayLater case.
+            let refundPayableIn = isRefundPayable
+                ? (_context.BookingCancellationSettlements.Where(s => s.RefundPayableAccountId == a.Id)
+                    .Sum(s => (decimal?)s.RefundAmount) ?? 0m)
+                : 0m
+            let refundPayableOut = isRefundPayable
+                ? (_context.BookingCancellationRefunds.Where(r => r.Settlement.RefundPayableAccountId == a.Id)
+                    .Sum(r => (decimal?)r.Amount) ?? 0m)
+                : 0m
             let debitMovement = genericIn + capitalisedIn + cashCapitalIn + loanCashIn
                 + staffFloatIn + staffCounterpartyIn
                 - genericOut - cashCapitalOut - loanCashOut - staffFloatOut - staffCounterpartyOut
             let movement = a.Type == FinanceAccountType.Capital
                 ? partnerIn - partnerOut
-                : (isTaxPayable ? taxPayableIn - taxPayableOut : debitMovement + loanLiabilityIn - loanLiabilityOut)
+                : (isTaxPayable ? taxPayableIn - taxPayableOut
+                    : isRefundPayable ? refundPayableIn - refundPayableOut
+                    : debitMovement + loanLiabilityIn - loanLiabilityOut)
             select new FinanceAccountResponseDto
             {
                 Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
                 OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
                 SystemRole = a.SystemRole,
                 BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
-                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
+                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : isRefundPayable ? refundPayableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
+                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : isRefundPayable ? refundPayableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
                 WhtWithheld = isTaxPayable
                     ? taxPayableIn
                     : (a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
@@ -606,10 +656,15 @@ namespace DAMS.Application.Services
                     + a.LoanCashTransactions.Count
                     + a.Loans.SelectMany(l => l.Transactions).Count(t => t.PrincipalAmount != 0m)
                     + a.StaffCashTransfers.Count + a.StaffCashCounterpartyTransfers.Count
+                    + a.CancellationRefundsPaid.Count
                     + (isTaxPayable
                         ? _context.Expenses.Count(e => e.WhtAmount != 0m)
                             + _context.AssetPurchases.Count(p => p.WhtAmount != 0m)
                             + _context.WhtDeposits.Count()
+                        : 0)
+                    + (isRefundPayable
+                        ? _context.BookingCancellationSettlements.Count(s => s.RefundPayableAccountId == a.Id)
+                            + _context.BookingCancellationRefunds.Count(r => r.Settlement.RefundPayableAccountId == a.Id)
                         : 0),
                 CreatedAt = a.CreatedAt, UpdatedAt = a.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
@@ -636,6 +691,71 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("This person already has a staff float.");
         }
 
+        // Canonical definitions for system accounts this service can resolve/create on demand
+        // (not just via SetupClientChartAsync). Only CustomerRefundPayable is created this way
+        // today — TaxPayable is expected to already exist via the client chart.
+        private static readonly Dictionary<FinanceSystemAccountRole, ChartAccount> SystemAccountDefinitions = new()
+        {
+            [FinanceSystemAccountRole.CustomerRefundPayable] =
+                new ChartAccount("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515,
+                    SystemRole: FinanceSystemAccountRole.CustomerRefundPayable)
+        };
+
+        public async Task<int> EnsureSystemAccountAsync(FinanceSystemAccountRole role, CancellationToken cancellationToken = default)
+        {
+            if (!SystemAccountDefinitions.TryGetValue(role, out var definition))
+                throw new InvalidOperationException($"No system-account definition exists for {role}.");
+
+            var existing = await _context.FinanceAccounts.FirstOrDefaultAsync(a => a.SystemRole == role, cancellationToken);
+            if (existing != null)
+            {
+                if (existing.Type != definition.Type)
+                    throw new InvalidOperationException($"The {definition.Name} system account must be a {definition.Type} account.");
+                if (!existing.IsActive)
+                {
+                    existing.IsActive = true;
+                    existing.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+                return existing.Id;
+            }
+
+            var byName = await _context.FinanceAccounts
+                .FirstOrDefaultAsync(a => a.Name == definition.Name, cancellationToken);
+            if (byName != null)
+            {
+                if (byName.Type != definition.Type)
+                    throw new InvalidOperationException(
+                        $"An account named '{definition.Name}' already exists but is not a {definition.Type} account. Correct it before cancelling with a refund.");
+                if (byName.SystemRole != FinanceSystemAccountRole.None)
+                    throw new InvalidOperationException($"An account named '{definition.Name}' already exists with a different system role.");
+                byName.SystemRole = role;
+                if (!byName.IsActive) byName.IsActive = true;
+                byName.UpdatedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync(cancellationToken);
+                return byName.Id;
+            }
+
+            // Prefer the same holder as the existing Tax Payable system account, then any
+            // existing company account, then the client chart's own default.
+            var holder = await _context.FinanceAccounts.AsNoTracking()
+                    .Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                    .Select(a => a.AccountHolderName).FirstOrDefaultAsync(cancellationToken)
+                ?? await _context.FinanceAccounts.AsNoTracking()
+                    .OrderBy(a => a.DisplayOrder).Select(a => a.AccountHolderName).FirstOrDefaultAsync(cancellationToken)
+                ?? definition.Holder;
+
+            var created = new FinanceAccount
+            {
+                Name = definition.Name, Type = definition.Type, AccountHolderName = holder,
+                LedgerCode = definition.LedgerCode, DisplayOrder = definition.DisplayOrder, SystemRole = role,
+                OpeningBalance = 0m, IsActive = true, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+            };
+            _context.FinanceAccounts.Add(created);
+            await _context.SaveChangesAsync(cancellationToken);
+            return created.Id;
+        }
+
         private static void EnsureSystemIdentityIsPreserved(FinanceAccount account, UpdateFinanceAccountDto dto)
         {
             if (account.SystemRole == FinanceSystemAccountRole.None) return;
@@ -652,6 +772,8 @@ namespace DAMS.Application.Services
             || await _context.AssetPurchases.AnyAsync(p => p.FinanceAccountId == id || p.AssetAccountId == id, cancellationToken)
             || await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
+            || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
+            || await _context.BookingCancellationSettlements.AnyAsync(s => s.RefundPayableAccountId == id, cancellationToken)
             || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
             || await _context.OpeningBalanceEntries.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
             || await _context.CapitalPartners.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
