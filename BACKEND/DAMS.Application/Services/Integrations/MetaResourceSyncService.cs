@@ -98,10 +98,17 @@ namespace DAMS.Application.Services.Integrations
             var discovered = new List<MetaDiscoveredResource>();
             string? warning = null;
 
+            // Which asset kinds this run actually asked Meta for in full. Only these may be
+            // deactivated when absent — derived from the calls made, never from what came
+            // back, because "Meta returned no pages at all" is itself meaningful.
+            var fullyEnumerated = new HashSet<string>();
+
             try
             {
                 var pages = await _graph.GetPagesAsync(userToken, cancellationToken);
                 discovered.AddRange(pages);
+                fullyEnumerated.Add(ExternalResourceTypes.FacebookPage);
+                fullyEnumerated.Add(ExternalResourceTypes.InstagramAccount);
 
                 // Forms are read with the page's own token and only for pages an admin turned
                 // on, so a client with fifty pages is not paged through fifty times over.
@@ -124,7 +131,9 @@ namespace DAMS.Application.Services.Integrations
 
                 var adAccounts = await _graph.GetAdAccountsAsync(userToken, cancellationToken);
                 discovered.AddRange(adAccounts);
+                fullyEnumerated.Add(ExternalResourceTypes.AdAccount);
 
+                var everyAdAccountRead = true;
                 foreach (var adAccount in adAccounts)
                 {
                     try
@@ -134,9 +143,19 @@ namespace DAMS.Application.Services.Integrations
                     }
                     catch (MetaPermanentException ex)
                     {
+                        everyAdAccountRead = false;
                         warning = Combine(warning, $"Campaigns for \"{adAccount.Name ?? adAccount.ExternalId}\" could not be read.");
                         _logger.LogWarning(ex, "Reading children of ad account {AdAccountId} failed.", adAccount.ExternalId);
                     }
+                }
+
+                // Partial data must not deactivate anything: one ad account refusing access
+                // would otherwise wipe out every campaign belonging to the others.
+                if (everyAdAccountRead)
+                {
+                    fullyEnumerated.Add(ExternalResourceTypes.Campaign);
+                    fullyEnumerated.Add(ExternalResourceTypes.AdSet);
+                    fullyEnumerated.Add(ExternalResourceTypes.Ad);
                 }
             }
             catch (MetaAuthorizationException ex)
@@ -148,7 +167,7 @@ namespace DAMS.Application.Services.Integrations
                     "Meta rejected this connection. Reconnect the account and approve all requested permissions.");
             }
 
-            var result = ApplyDiscovered(connection, existing, discovered);
+            var result = ApplyDiscovered(connection, existing, discovered, fullyEnumerated);
             result.Warning = warning;
 
             connection.LastSyncedAt = DateTime.UtcNow;
@@ -166,7 +185,8 @@ namespace DAMS.Application.Services.Integrations
         private MetaSyncResultDto ApplyDiscovered(
             ExternalIntegrationConnection connection,
             List<ExternalIntegrationResource> existing,
-            List<MetaDiscoveredResource> discovered)
+            List<MetaDiscoveredResource> discovered,
+            HashSet<string> fullyEnumerated)
         {
             var now = DateTime.UtcNow;
             var result = new MetaSyncResultDto();
@@ -226,13 +246,9 @@ namespace DAMS.Application.Services.Integrations
                 result.Discovered++;
             }
 
-            // Lead forms are only enumerated for enabled pages, so an unseen form usually means
-            // "not looked at" rather than "gone". Deactivating those would flap on every sync.
-            var fullyEnumerated = discovered
-                .Select(d => d.ResourceType)
-                .Where(type => type != ExternalResourceTypes.LeadForm)
-                .ToHashSet();
-
+            // Lead forms are never in this set: they are only read for enabled pages, so an
+            // unseen form means "not looked at" rather than "gone", and deactivating those
+            // would make them flap on every sync.
             foreach (var resource in existing)
             {
                 if (!resource.IsActive

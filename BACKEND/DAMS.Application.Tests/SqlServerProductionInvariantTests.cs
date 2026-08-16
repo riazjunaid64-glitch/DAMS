@@ -368,6 +368,87 @@ public sealed class SqlServerProductionInvariantTests
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
 
+    /// <summary>
+    /// The external-integration schema on real SQL Server. The in-memory provider enforces
+    /// neither nullability nor unique indexes, so the two guarantees this feature actually
+    /// leans on have to be proved here.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ExternalIntegrations_MigrateAndEnforceTheirInvariants_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // A lead with no phone number must be storable, which is the whole point of the
+        // MakeLeadPhoneOptional migration.
+        await using (var db = new AppDbContext(options))
+        {
+            var source = await db.LeadSources.FirstAsync(s => s.Code == "meta");
+            db.Leads.Add(new Lead
+            {
+                LeadReference = $"LD-SQL-{Guid.NewGuid():N}"[..20],
+                FirstName = "Phoneless",
+                LeadSourceId = source.Id,
+                Phone = null,
+                NormalizedPhone = null,
+                ExternalProvider = "meta",
+                ExternalLeadId = $"sql-{Guid.NewGuid():N}"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Leads') AND name = 'Phone' AND is_nullable = 1"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Leads') AND name = 'NormalizedPhone' AND is_nullable = 1"));
+
+        // The webhook writes one event per delivery and relies on the database — not on the
+        // application's pre-check — to make a provider retry harmless under concurrency.
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = "1:page-1:lead-1",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = "1:page-1:lead-1",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+
+        // Two connections may not claim the same provider account, or a webhook could not
+        // resolve unambiguously which one owns the page.
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "acct-1", DisplayName = "First"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "acct-1", DisplayName = "Duplicate"
+            });
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {
@@ -375,6 +456,15 @@ public sealed class SqlServerProductionInvariantTests
             sql => sql.EnableRetryOnFailure());
         if (interceptor != null) builder.AddInterceptors(interceptor);
         return builder.Options;
+    }
+
+    /// <summary>For schema queries, which take no parameters.</summary>
+    private static async Task<int> ScalarAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(sql, connection);
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
     }
 
     private static async Task<int> ScalarAsync(string connectionString, string sql, int id)
