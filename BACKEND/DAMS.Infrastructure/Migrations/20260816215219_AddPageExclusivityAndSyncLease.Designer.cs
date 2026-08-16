@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260816141259_AddExternalIntegrations")]
-    partial class AddExternalIntegrations
+    [Migration("20260816215219_AddPageExclusivityAndSyncLease")]
+    partial class AddPageExclusivityAndSyncLease
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -2911,6 +2911,13 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
+                    b.Property<string>("SyncLockedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("SyncLockedUntil")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("TokenExpiresAt")
                         .HasColumnType("datetime2");
 
@@ -3156,7 +3163,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ExternalIntegrationConnectionId", "ResourceType", "ExternalId")
                         .IsUnique();
 
-                    b.HasIndex("Provider", "ResourceType", "ExternalId");
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "IX_ExternalIntegrationResources_Provider_ResourceType_ExternalId");
+
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "UX_ExternalIntegrationResources_EnabledFacebookPage")
+                        .IsUnique()
+                        .HasFilter("[Provider] = 'meta' AND [ResourceType] = 'facebook_page' AND [IsEnabled] = 1");
 
                     b.ToTable("ExternalIntegrationResources");
                 });
@@ -3707,7 +3718,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("NormalizedPhone")
-                        .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
@@ -3720,7 +3730,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("Phone")
-                        .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 

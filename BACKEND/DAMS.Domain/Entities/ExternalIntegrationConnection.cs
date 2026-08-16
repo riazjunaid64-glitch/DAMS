@@ -41,6 +41,17 @@ namespace DAMS.Domain.Entities
         /// <summary>Null means the first resource discovery has not run yet.</summary>
         public DateTime? LastSyncedAt { get; set; }
 
+        /// <summary>
+        /// A short lease taken by whichever background worker is currently running this
+        /// connection's resource sync, so a second instance polling the same "due" connection
+        /// list does not run a concurrent, duplicate sync against it. Released the moment that
+        /// sync finishes — success or failure — so a failed sync is retried on the very next
+        /// tick rather than waiting out the lease.
+        /// </summary>
+        public DateTime? SyncLockedUntil { get; set; }
+
+        public string? SyncLockedBy { get; set; }
+
         public DateTime? LastErrorAt { get; set; }
 
         /// <summary>Sanitised message only — credentials are scrubbed before anything is stored here.</summary>

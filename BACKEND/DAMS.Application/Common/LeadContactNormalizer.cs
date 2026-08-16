@@ -10,6 +10,10 @@ namespace DAMS.Application.Common
         /// <summary>Local trunk prefix and country code for Pakistani numbers.</summary>
         private const string CountryCode = "92";
 
+        /// <summary>Below this many digits, a number could never be a real, dialable
+        /// subscriber — too short to mean anything, too short to safely match against.</summary>
+        public const int MinUsablePhoneDigits = 7;
+
         public static string NormalizePhone(string? phone)
         {
             if (string.IsNullOrWhiteSpace(phone))
@@ -32,6 +36,15 @@ namespace DAMS.Application.Common
         {
             var normalized = NormalizePhone(phone);
             return normalized.Length == 0 ? null : normalized;
+        }
+
+        /// <summary>Same as <see cref="NormalizePhoneOrNull"/>, but also null when the result
+        /// is too short to be a usable phone or WhatsApp number — so both channels are held to
+        /// the same "would this ever match anything" bar rather than only phone getting it.</summary>
+        public static string? NormalizeUsablePhoneOrNull(string? phone)
+        {
+            var normalized = NormalizePhoneOrNull(phone);
+            return normalized is { Length: < MinUsablePhoneDigits } ? null : normalized;
         }
 
         public static string? NormalizeEmail(string? email) =>

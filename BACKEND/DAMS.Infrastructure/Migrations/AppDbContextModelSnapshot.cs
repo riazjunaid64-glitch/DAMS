@@ -2908,6 +2908,13 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
+                    b.Property<string>("SyncLockedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("SyncLockedUntil")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("TokenExpiresAt")
                         .HasColumnType("datetime2");
 
@@ -3153,7 +3160,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("ExternalIntegrationConnectionId", "ResourceType", "ExternalId")
                         .IsUnique();
 
-                    b.HasIndex("Provider", "ResourceType", "ExternalId");
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "IX_ExternalIntegrationResources_Provider_ResourceType_ExternalId");
+
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "UX_ExternalIntegrationResources_EnabledFacebookPage")
+                        .IsUnique()
+                        .HasFilter("[Provider] = 'meta' AND [ResourceType] = 'facebook_page' AND [IsEnabled] = 1");
 
                     b.ToTable("ExternalIntegrationResources");
                 });
@@ -4730,8 +4741,6 @@ namespace DAMS.Infrastructure.Migrations
                             IsSystem = true,
                             Name = "Other"
                         });
-                    // The "meta" LeadSource is inserted idempotently by Code in a migration's
-                    // Up(), not seeded here with a fixed Id — see AppDbContext.SeedLeadConfiguration.
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Loan", b =>

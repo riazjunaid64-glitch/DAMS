@@ -216,6 +216,69 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
+    public async Task AConnectionLockedByAnotherWorker_IsSkippedRatherThanSyncedTwice()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        // Due, but another instance's sweep is already mid-sync on it.
+        connection.LastSyncedAt = DateTime.UtcNow.AddDays(-1);
+        connection.SyncLockedUntil = DateTime.UtcNow.AddMinutes(10);
+        connection.SyncLockedBy = "another-worker:1";
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+
+        Assert.Equal(0, await h.Sync.SyncDueConnectionsAsync());
+
+        // Untouched: this worker never even attempted the sync, let alone the lease.
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal("another-worker:1", reloaded.SyncLockedBy);
+    }
+
+    [Fact]
+    public async Task ADueConnectionWithAnExpiredLease_IsStillSynced()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        // The worker that took this lease is presumed dead; its lease has lapsed.
+        connection.LastSyncedAt = DateTime.UtcNow.AddDays(-1);
+        connection.SyncLockedUntil = DateTime.UtcNow.AddMinutes(-5);
+        connection.SyncLockedBy = "dead-worker:9";
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+
+        Assert.Equal(1, await h.Sync.SyncDueConnectionsAsync());
+
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        // Released again once this run finishes, not left claimed forever.
+        Assert.Null(reloaded.SyncLockedUntil);
+        Assert.Null(reloaded.SyncLockedBy);
+    }
+
+    [Fact]
+    public async Task AFailedSync_ReleasesItsLeaseImmediately_SoTheNextTickCanRetry()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        connection.LastSyncedAt = DateTime.UtcNow.AddDays(-1);
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.DiscoveryFailure = new MetaTransientException("Meta could not be reached.");
+
+        Assert.Equal(0, await h.Sync.SyncDueConnectionsAsync());
+
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        // A failure must not hold the lease for its full duration — the lease is a ceiling for
+        // a wedged worker, not the normal wait before the next attempt.
+        Assert.Null(reloaded.SyncLockedUntil);
+        Assert.Null(reloaded.SyncLockedBy);
+    }
+
+    [Fact]
     public async Task ResourcesOfTwoConnections_StayIsolated()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

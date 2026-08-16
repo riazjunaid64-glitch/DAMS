@@ -7,6 +7,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -93,16 +94,24 @@ namespace DAMS.Application.Services.Integrations
             if (!_options.IsConfigured)
                 return Redirect(null, Reasons.NotConfigured);
 
-            // The admin declined consent at Meta. Not an error worth alarming anyone about.
-            if (!string.IsNullOrWhiteSpace(error))
-                return Redirect(null, Reasons.Denied);
-
-            if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+            // State is validated and consumed before anything else, including a denial — Meta
+            // echoes the same state back whether the admin approved or declined, and this is a
+            // one-time token regardless of outcome. Checking it only on the success path would
+            // leave a denial's state unconsumed until it simply expires, which is the wrong kind
+            // of "one-time".
+            if (string.IsNullOrWhiteSpace(state))
                 return Redirect(null, Reasons.InvalidState);
 
             var stateRow = await ConsumeStateAsync(state, cancellationToken);
             if (stateRow is null)
                 return Redirect(null, Reasons.InvalidState);
+
+            // The admin declined consent at Meta. Not an error worth alarming anyone about.
+            if (!string.IsNullOrWhiteSpace(error))
+                return Redirect(stateRow.ReturnPath, Reasons.Denied);
+
+            if (string.IsNullOrWhiteSpace(code))
+                return Redirect(stateRow.ReturnPath, Reasons.InvalidState);
 
             try
             {
@@ -414,7 +423,21 @@ namespace DAMS.Application.Services.Integrations
             resource.IsEnabled = isEnabled;
             resource.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (IsDuplicatePageOwnership(ex))
+            {
+                // The AnyAsync check above is a courtesy for the common case; it cannot see a
+                // second request that ran the same check a moment earlier and has not committed
+                // yet. This filtered unique index is what actually decides, and it just did —
+                // the in-memory change that lost the race is discarded rather than left dirty.
+                _context.Entry(resource).State = EntityState.Detached;
+                throw new InvalidOperationException(
+                    "This Facebook Page is already enabled through another DAMS connection. " +
+                    "Disable it there first before enabling it here.");
+            }
 
             return new MetaResourceDto
             {
@@ -532,6 +555,10 @@ namespace DAMS.Application.Services.Integrations
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────────────
+
+        private static bool IsDuplicatePageOwnership(DbUpdateException ex) =>
+            ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+            && sql.Message.Contains("UX_ExternalIntegrationResources_EnabledFacebookPage", StringComparison.OrdinalIgnoreCase);
 
         private async Task<ExternalIntegrationConnection> LoadConnectionAsync(int id, CancellationToken cancellationToken) =>
             await _context.ExternalIntegrationConnections

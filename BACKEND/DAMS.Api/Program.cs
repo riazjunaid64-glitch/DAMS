@@ -163,6 +163,8 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
         "Meta integration batch size is outside the supported range.")
     .Validate(o => o.LeaseMinutes is >= 1 and <= 60,
         "Meta integration lease duration must be between 1 and 60 minutes.")
+    .Validate(o => o.SyncLeaseMinutes is >= 1 and <= 120,
+        "Meta integration sync lease duration must be between 1 and 120 minutes.")
     .Validate(o => o.MaxAttempts is >= 1 and <= 20
                    && o.BaseRetryDelaySeconds is >= 1 and <= 3600
                    && o.MaxRetryDelayMinutes is >= 1 and <= 1440

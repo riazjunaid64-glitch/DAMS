@@ -19,6 +19,8 @@ namespace DAMS.Application.Services.Integrations
     /// </summary>
     public sealed class MetaResourceSyncService : IMetaResourceSyncService
     {
+        private static readonly string WorkerId = $"{Environment.MachineName}:{Environment.ProcessId}";
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -59,6 +61,13 @@ namespace DAMS.Application.Services.Integrations
             var synced = 0;
             foreach (var id in connectionIds)
             {
+                // Several instances can run this same sweep at once and would otherwise all see
+                // the same "due" connection and sync it concurrently. Only the worker that wins
+                // this lease actually runs the sync; a loser simply moves on to the next
+                // connection rather than duplicating the work.
+                if (!await TryClaimForSyncAsync(id, cancellationToken))
+                    continue;
+
                 try
                 {
                     await SyncConnectionAsync(id, cancellationToken);
@@ -69,9 +78,73 @@ namespace DAMS.Application.Services.Integrations
                     // One bad connection must not stop the others from syncing.
                     _logger.LogError(ex, "Syncing Meta connection {ConnectionId} failed. It will be retried.", id);
                 }
+                finally
+                {
+                    // Released immediately regardless of outcome — including failure — so a
+                    // connection that just failed to sync is eligible again on the very next
+                    // tick instead of waiting out the lease.
+                    await ReleaseSyncLeaseAsync(id, cancellationToken);
+                }
             }
 
             return synced;
+        }
+
+        /// <summary>
+        /// Mirrors MetaLeadEventProcessor.ClaimEventsAsync's approach: a tracked update guarded
+        /// by the row's own RowVersion, not a raw conditional UPDATE. Two workers loading the
+        /// same connection before either commits will both try to set the lease, but only the
+        /// first SaveChanges can possibly succeed — the second targets a RowVersion that no
+        /// longer matches and is rejected by the database itself.
+        /// </summary>
+        private async Task<bool> TryClaimForSyncAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            var now = DateTime.UtcNow;
+
+            var connection = await _context.ExternalIntegrationConnections.FindAsync(
+                [connectionId], cancellationToken);
+
+            if (connection is null || connection.SyncLockedUntil > now)
+                return false;
+
+            connection.SyncLockedUntil = now.AddMinutes(_options.SyncLeaseMinutes);
+            connection.SyncLockedBy = WorkerId;
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                return true;
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another worker's claim (or any other concurrent change to this row) landed
+                // first; this attempt loses the race and moves on to the next connection.
+                _context.Entry(connection).State = EntityState.Detached;
+                return false;
+            }
+        }
+
+        private async Task ReleaseSyncLeaseAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            var connection = await _context.ExternalIntegrationConnections.FindAsync(
+                [connectionId], cancellationToken);
+
+            if (connection is null)
+                return;
+
+            connection.SyncLockedUntil = null;
+            connection.SyncLockedBy = null;
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Whatever else changed this row since it was loaded already moved past the
+                // lease this call was trying to clear; nothing left worth forcing through.
+                _context.Entry(connection).State = EntityState.Detached;
+            }
         }
 
         public async Task<MetaSyncResultDto> SyncConnectionAsync(

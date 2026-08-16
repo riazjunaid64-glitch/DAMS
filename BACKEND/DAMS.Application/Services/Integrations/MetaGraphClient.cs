@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -46,12 +47,16 @@ namespace DAMS.Application.Services.Integrations
         {
             EnsureConfigured();
 
-            // Short-lived token first; it is only ever used to obtain the long-lived one.
+            // Short-lived token first; it is only ever used to obtain the long-lived one. Meta's
+            // token-exchange endpoint has no access token yet to carry in a header — client_id,
+            // client_secret and the authorization code are its own credentials, and it does not
+            // accept them any other way.
             var shortLived = await GetAsync(
                 $"oauth/access_token?client_id={Uri.EscapeDataString(_options.AppId!)}" +
                 $"&client_secret={Uri.EscapeDataString(_options.AppSecret!)}" +
                 $"&redirect_uri={Uri.EscapeDataString(_options.OAuthCallbackUrl!)}" +
                 $"&code={Uri.EscapeDataString(code)}",
+                accessToken: null,
                 cancellationToken);
 
             var shortToken = shortLived.RootElement.TryGetProperty("access_token", out var shortTokenElement)
@@ -66,6 +71,7 @@ namespace DAMS.Application.Services.Integrations
                 $"&client_id={Uri.EscapeDataString(_options.AppId!)}" +
                 $"&client_secret={Uri.EscapeDataString(_options.AppSecret!)}" +
                 $"&fb_exchange_token={Uri.EscapeDataString(shortToken)}",
+                accessToken: null,
                 cancellationToken);
 
             var token = longLived.RootElement.TryGetProperty("access_token", out var tokenElement)
@@ -80,8 +86,8 @@ namespace DAMS.Application.Services.Integrations
                 ? DateTime.UtcNow.AddSeconds(seconds)
                 : null;
 
-            var me = await GetAsync(WithToken("me?fields=id,name", token), cancellationToken);
-            var permissions = await GetAsync(WithToken("me/permissions", token), cancellationToken);
+            var me = await GetAsync(WithProof("me?fields=id,name", token), token, cancellationToken);
+            var permissions = await GetAsync(WithProof("me/permissions", token), token, cancellationToken);
 
             return new MetaAuthorizationResult
             {
@@ -113,14 +119,35 @@ namespace DAMS.Application.Services.Integrations
 
         // ── Discovery ───────────────────────────────────────────────────────────────
 
+        private const string PagesWithInstagramFields =
+            "me/accounts?fields=id,name,access_token,instagram_business_account{id,name,username}&limit=100";
+        private const string PagesWithoutInstagramFields =
+            "me/accounts?fields=id,name,access_token&limit=100";
+
         public async Task<MetaDiscoveryPage> GetPagesAsync(
             string userAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
 
-            var (items, truncated) = await CollectAsync(
-                "me/accounts?fields=id,name,access_token,instagram_business_account{id,name,username}&limit=100",
-                userAccessToken, cancellationToken);
+            (List<JsonElement> Items, bool Truncated) result;
+            try
+            {
+                result = await CollectAsync(PagesWithInstagramFields, userAccessToken, cancellationToken);
+            }
+            catch (MetaAuthorizationException)
+            {
+                // instagram_basic is optional (see MetaScopes.Optional) and commonly missing on
+                // a freshly connected account. Facebook Page discovery — and therefore lead
+                // delivery — must not be held hostage by a field expansion nobody guaranteed. If
+                // this retry also fails, it is a real authorization problem and the exception is
+                // allowed to propagate normally.
+                _logger.LogWarning(
+                    "Reading Pages with their linked Instagram account failed, likely because " +
+                    "instagram_basic is not granted. Retrying without it.");
+                result = await CollectAsync(PagesWithoutInstagramFields, userAccessToken, cancellationToken);
+            }
+
+            var (items, truncated) = result;
 
             foreach (var page in items)
             {
@@ -254,10 +281,11 @@ namespace DAMS.Application.Services.Integrations
             string leadgenId, string accessToken, CancellationToken cancellationToken = default)
         {
             using var document = await GetAsync(
-                WithToken(
+                WithProof(
                     $"{Uri.EscapeDataString(leadgenId)}?fields=id,created_time,field_data,form_id,platform," +
                     "is_organic,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name",
                     accessToken),
+                accessToken,
                 cancellationToken);
 
             var root = document.RootElement;
@@ -314,13 +342,15 @@ namespace DAMS.Application.Services.Integrations
 
         public Task SubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default) =>
             PostAsync(
-                WithToken($"{Uri.EscapeDataString(pageExternalId)}/subscribed_apps?subscribed_fields=leadgen", pageAccessToken),
+                WithProof($"{Uri.EscapeDataString(pageExternalId)}/subscribed_apps?subscribed_fields=leadgen", pageAccessToken),
+                pageAccessToken,
                 cancellationToken);
 
         public Task UnsubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default) =>
             SendAsync(
                 HttpMethod.Delete,
-                WithToken($"{Uri.EscapeDataString(pageExternalId)}/subscribed_apps", pageAccessToken),
+                WithProof($"{Uri.EscapeDataString(pageExternalId)}/subscribed_apps", pageAccessToken),
+                pageAccessToken,
                 cancellationToken);
 
         // ── Plumbing ────────────────────────────────────────────────────────────────
@@ -335,14 +365,18 @@ namespace DAMS.Application.Services.Integrations
             string relativeUrl, string accessToken, CancellationToken cancellationToken)
         {
             var items = new List<JsonElement>();
-            var url = WithToken(relativeUrl, accessToken);
+            var url = WithProof(relativeUrl, accessToken);
             var pagesFetched = 0;
 
             while (url is not null && pagesFetched < Math.Max(1, _options.MaxGraphPages))
             {
                 pagesFetched++;
 
-                using var document = await GetAsync(url, cancellationToken);
+                // The Authorization header is attached on every page, not only the first: Meta's
+                // own "next" cursor is a fully-formed URL it constructs itself and may carry its
+                // own access_token query parameter, which this client has no control over — but
+                // every request this client builds still authenticates the same way regardless.
+                using var document = await GetAsync(url, accessToken, cancellationToken);
                 var root = document.RootElement;
 
                 if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
@@ -370,9 +404,9 @@ namespace DAMS.Application.Services.Integrations
                 ? next
                 : null;
 
-        private async Task<JsonDocument> GetAsync(string url, CancellationToken cancellationToken)
+        private async Task<JsonDocument> GetAsync(string url, string? accessToken, CancellationToken cancellationToken)
         {
-            using var response = await SendCoreAsync(HttpMethod.Get, url, cancellationToken);
+            using var response = await SendCoreAsync(HttpMethod.Get, url, accessToken, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
             EnsureSuccess(response, body);
@@ -387,22 +421,31 @@ namespace DAMS.Application.Services.Integrations
             }
         }
 
-        private Task PostAsync(string url, CancellationToken cancellationToken) =>
-            SendAsync(HttpMethod.Post, url, cancellationToken);
+        private Task PostAsync(string url, string? accessToken, CancellationToken cancellationToken) =>
+            SendAsync(HttpMethod.Post, url, accessToken, cancellationToken);
 
-        private async Task SendAsync(HttpMethod method, string url, CancellationToken cancellationToken)
+        private async Task SendAsync(HttpMethod method, string url, string? accessToken, CancellationToken cancellationToken)
         {
-            using var response = await SendCoreAsync(method, url, cancellationToken);
+            using var response = await SendCoreAsync(method, url, accessToken, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             EnsureSuccess(response, body);
         }
 
+        /// <summary>
+        /// Carries the token as an OAuth 2.0 Bearer header rather than a URL query parameter,
+        /// which Meta accepts equally — the query string is reserved for appsecret_proof, so
+        /// nothing this client builds puts the token itself somewhere a proxy, an APM agent or
+        /// any other logger that captures full request URIs could pick it up.
+        /// </summary>
         private async Task<HttpResponseMessage> SendCoreAsync(
-            HttpMethod method, string url, CancellationToken cancellationToken)
+            HttpMethod method, string url, string? accessToken, CancellationToken cancellationToken)
         {
             try
             {
                 using var request = new HttpRequestMessage(method, url);
+                if (accessToken is { Length: > 0 })
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
                 return await _http.SendAsync(request, cancellationToken);
             }
             catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -469,19 +512,19 @@ namespace DAMS.Application.Services.Integrations
         }
 
         /// <summary>
-        /// Appends the token and its app secret proof. The proof lets Meta reject a call made
-        /// with a token that was stolen from somewhere else, since only this app knows the
-        /// secret used to sign it.
+        /// Appends only the app secret proof — never the access token itself, which travels as
+        /// an Authorization header instead (see <see cref="SendCoreAsync"/>). The proof is a
+        /// one-way HMAC of the token, safe to sit in a URL: it lets Meta reject a call made with
+        /// a token stolen from somewhere else, since only this app knows the secret used to sign
+        /// it, but it cannot be used to reconstruct the token or the secret.
         /// </summary>
-        private string WithToken(string relativeUrl, string accessToken)
+        private string WithProof(string relativeUrl, string accessToken)
         {
-            var separator = relativeUrl.Contains('?') ? '&' : '?';
-            var url = $"{relativeUrl}{separator}access_token={Uri.EscapeDataString(accessToken)}";
-
             if (string.IsNullOrWhiteSpace(_options.AppSecret))
-                return url;
+                return relativeUrl;
 
-            return $"{url}&appsecret_proof={AppSecretProof(accessToken, _options.AppSecret)}";
+            var separator = relativeUrl.Contains('?') ? '&' : '?';
+            return $"{relativeUrl}{separator}appsecret_proof={AppSecretProof(accessToken, _options.AppSecret)}";
         }
 
         private static string AppSecretProof(string accessToken, string appSecret)

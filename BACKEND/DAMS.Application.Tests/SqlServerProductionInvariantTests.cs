@@ -569,6 +569,148 @@ public sealed class SqlServerProductionInvariantTests
             "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-race%'"));
     }
 
+    /// <summary>
+    /// MetaIntegrationService.SetResourceEnabledAsync's own "is this Page already enabled
+    /// elsewhere" check is an AnyAsync query: two requests enabling the same physical Page
+    /// through two different connections can both pass it before either has committed. Only a
+    /// database-level constraint can actually make the collision impossible, which the
+    /// InMemory provider used by the rest of the suite does not enforce — this needs real SQL
+    /// Server.
+    /// </summary>
+    [SqlServerFact]
+    public async Task EnablingTheSamePhysicalPageThroughTwoConnections_IsRejectedByTheDatabaseEvenWhenTheAppLevelCheckIsRaced()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+
+        int firstConnectionId, secondConnectionId, firstResourceId, secondResourceId;
+        await using (var db = new AppDbContext(options))
+        {
+            var first = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-user-a", DisplayName = "A",
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("token-a")
+            };
+            var second = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-user-b", DisplayName = "B",
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("token-b")
+            };
+            db.ExternalIntegrationConnections.AddRange(first, second);
+            await db.SaveChangesAsync();
+            firstConnectionId = first.Id;
+            secondConnectionId = second.Id;
+
+            var firstResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = first.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-race", IsEnabled = false, IsActive = true
+            };
+            var secondResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = second.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-race", IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(firstResource, secondResource);
+            await db.SaveChangesAsync();
+            firstResourceId = firstResource.Id;
+            secondResourceId = secondResource.Id;
+        }
+
+        // The first connection enables the shared Page through the real service — succeeds.
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            await integration.SetResourceEnabledAsync(firstConnectionId, firstResourceId, isEnabled: true);
+        }
+
+        // A second, independent context now tries the same thing for the other connection. Its
+        // own AnyAsync check runs against a database where the first save already committed, so
+        // in this ordering it would actually catch the clash on its own — the point of this test
+        // is that even if it did NOT (a true race), the database itself refuses the second row.
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => integration.SetResourceEnabledAsync(secondConnectionId, secondResourceId, isEnabled: true));
+            Assert.Contains("already enabled through another", ex.Message);
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationResources] " +
+            "WHERE [ExternalId] = 'shared-page-race' AND [IsEnabled] = 1"));
+
+        // Bypassing the service's own AnyAsync check entirely — two raw contexts, each loading
+        // a different, never-yet-enabled resource for the same physical Page and setting
+        // IsEnabled in memory before either has saved — is the strongest version of this proof:
+        // nothing but the database itself is left to decide the outcome.
+        int rawA, rawB;
+        await using (var db = new AppDbContext(options))
+        {
+            var connA = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "raw-race-a", DisplayName = "Raw A",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            var connB = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "raw-race-b", DisplayName = "Raw B",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.ExternalIntegrationConnections.AddRange(connA, connB);
+            await db.SaveChangesAsync();
+
+            var resourceA = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connA.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-raw-race", IsEnabled = false, IsActive = true
+            };
+            var resourceB = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connB.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-raw-race", IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(resourceA, resourceB);
+            await db.SaveChangesAsync();
+            rawA = resourceA.Id;
+            rawB = resourceB.Id;
+        }
+
+        await using var winner = new AppDbContext(options);
+        await using var loser = new AppDbContext(options);
+
+        var winnerResource = await winner.ExternalIntegrationResources.SingleAsync(r => r.Id == rawA);
+        var loserResource = await loser.ExternalIntegrationResources.SingleAsync(r => r.Id == rawB);
+        winnerResource.IsEnabled = true;
+        loserResource.IsEnabled = true;
+
+        await winner.SaveChangesAsync();
+
+        var raceEx = await Assert.ThrowsAsync<DbUpdateException>(() => loser.SaveChangesAsync());
+        var sqlEx = Assert.IsType<SqlException>(raceEx.InnerException);
+        Assert.Contains("UX_ExternalIntegrationResources_EnabledFacebookPage", sqlEx.Message);
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {

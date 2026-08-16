@@ -48,15 +48,14 @@ namespace DAMS.Application.Services
             var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
             var isExternal = provider != null && externalId != null;
 
-            var normalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
-            var normalizedWhatsapp = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
-            var normalizedEmail = LeadContactNormalizer.NormalizeEmail(dto.Email);
-
             // A number too short to dial is not a contact method. Discard it rather than store
             // something that would never match anything — the original answer is still kept on
-            // the external submission for whoever wants to look.
-            if (normalizedPhone is { Length: < 7 })
-                normalizedPhone = null;
+            // the external submission for whoever wants to look. Phone and WhatsApp are held to
+            // the same bar: a manual lead created with only an unusable WhatsApp number is just
+            // as unreachable as one with only an unusable phone number.
+            var normalizedPhone = LeadContactNormalizer.NormalizeUsablePhoneOrNull(dto.Phone);
+            var normalizedWhatsapp = LeadContactNormalizer.NormalizeUsablePhoneOrNull(dto.WhatsappNumber);
+            var normalizedEmail = LeadContactNormalizer.NormalizeEmail(dto.Email);
 
             EnsureContactable(isExternal, normalizedPhone, normalizedWhatsapp, normalizedEmail, dto.Phone);
 
@@ -216,7 +215,7 @@ namespace DAMS.Application.Services
                 // rejected number never lingers as if it were dialable.
                 Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone),
                 NormalizedPhone = normalizedPhone,
-                WhatsappNumber = LeadContactNormalizer.Clean(dto.WhatsappNumber),
+                WhatsappNumber = normalizedWhatsapp == null ? null : LeadContactNormalizer.Clean(dto.WhatsappNumber),
                 NormalizedWhatsapp = normalizedWhatsapp,
                 Email = LeadContactNormalizer.NormalizeEmail(dto.Email),
                 NormalizedEmail = normalizedEmail,
@@ -377,18 +376,22 @@ namespace DAMS.Application.Services
             // common case being an ad-platform lead the person then follows up on properly.
             if (lead.NormalizedPhone == null)
             {
-                var incomingPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
-                if (incomingPhone is { Length: >= 7 })
+                var incomingPhone = LeadContactNormalizer.NormalizeUsablePhoneOrNull(dto.Phone);
+                if (incomingPhone != null)
                 {
                     lead.Phone = LeadContactNormalizer.Clean(dto.Phone);
                     lead.NormalizedPhone = incomingPhone;
                 }
             }
 
-            if (lead.WhatsappNumber == null && !string.IsNullOrWhiteSpace(dto.WhatsappNumber))
+            if (lead.NormalizedWhatsapp == null)
             {
-                lead.WhatsappNumber = dto.WhatsappNumber.Trim();
-                lead.NormalizedWhatsapp = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
+                var incomingWhatsapp = LeadContactNormalizer.NormalizeUsablePhoneOrNull(dto.WhatsappNumber);
+                if (incomingWhatsapp != null)
+                {
+                    lead.WhatsappNumber = LeadContactNormalizer.Clean(dto.WhatsappNumber);
+                    lead.NormalizedWhatsapp = incomingWhatsapp;
+                }
             }
 
             if (lead.Email == null && !string.IsNullOrWhiteSpace(dto.Email))
@@ -805,11 +808,11 @@ namespace DAMS.Application.Services
                         : $"This lead is {lead.Stage}. Reopen it before editing.");
 
             var normalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
-            if (normalizedPhone is { Length: < 7 })
+            if (normalizedPhone is { Length: < LeadContactNormalizer.MinUsablePhoneDigits })
                 throw new InvalidOperationException("That phone number is too short to be usable.");
 
             var normalizedWhatsappEdit = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
-            if (normalizedWhatsappEdit is { Length: < 7 })
+            if (normalizedWhatsappEdit is { Length: < LeadContactNormalizer.MinUsablePhoneDigits })
                 throw new InvalidOperationException("That WhatsApp number is too short to be usable.");
 
             var normalizedEmailEdit = LeadContactNormalizer.NormalizeEmail(dto.Email);
@@ -868,8 +871,8 @@ namespace DAMS.Application.Services
             lead.LastName = LeadContactNormalizer.Clean(dto.LastName);
             lead.Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone);
             lead.NormalizedPhone = normalizedPhone;
-            lead.WhatsappNumber = LeadContactNormalizer.Clean(dto.WhatsappNumber);
-            lead.NormalizedWhatsapp = LeadContactNormalizer.NormalizePhoneOrNull(dto.WhatsappNumber);
+            lead.WhatsappNumber = normalizedWhatsappEdit == null ? null : LeadContactNormalizer.Clean(dto.WhatsappNumber);
+            lead.NormalizedWhatsapp = normalizedWhatsappEdit;
             lead.Email = LeadContactNormalizer.NormalizeEmail(dto.Email);
             lead.NormalizedEmail = lead.Email;
             lead.Address = LeadContactNormalizer.Clean(dto.Address);
@@ -1235,10 +1238,13 @@ namespace DAMS.Application.Services
 
             LeadStageRules.EnsureCanConvert(lead.Stage);
 
-            // A customer record requires a phone number. A lead that arrived from an ad platform
-            // without one must have it filled in by whoever qualified them, rather than being
-            // converted with a placeholder that would follow the customer forever.
-            if (string.IsNullOrWhiteSpace(lead.Phone))
+            // A *new* customer record requires a phone number, so a lead that arrived from an ad
+            // platform without one must have it filled in before it can become one. But when the
+            // admin is instead attaching this lead to a Customer that already exists (dto.CustomerId
+            // below), no new customer is created and the lead's own phone is never read — the
+            // existing customer's own contact details stand. Blocking that path on the lead's phone
+            // would refuse a conversion that has nothing to do with the missing number.
+            if (!dto.CustomerId.HasValue && string.IsNullOrWhiteSpace(lead.Phone))
                 throw new InvalidOperationException(
                     "Add a phone number to this lead before converting it — a customer record cannot be created without one.");
 
@@ -1267,7 +1273,11 @@ namespace DAMS.Application.Services
                 {
                     var resolution = await _customerService.FindOrCreateCustomerAsync(
                         FullName(lead),
-                        lead.Phone,
+                        // Guaranteed non-blank here: this branch only runs when dto.CustomerId
+                        // was not supplied, and the check above already refused to reach the
+                        // transaction at all in that case unless lead.Phone was usable.
+                        lead.Phone ?? throw new InvalidOperationException(
+                            "Add a phone number to this lead before converting it — a customer record cannot be created without one."),
                         LeadContactNormalizer.Clean(dto.CNIC),
                         lead.Email,
                         lead.Address,

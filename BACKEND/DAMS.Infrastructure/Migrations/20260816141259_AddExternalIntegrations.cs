@@ -382,11 +382,15 @@ namespace DAMS.Infrastructure.Migrations
                 name: "IX_LeadExternalSubmissions_ExternalIntegrationConnectionId_ReceivedAt",
                 table: "LeadExternalSubmissions");
 
-            // Deleted by Code to match the Code-based insert in Up(). Harmless if a lead has
-            // since used this source: LeadSourceId is a Restrict foreign key, so the delete
-            // simply fails loudly rather than orphaning anything, exactly as it would if this
-            // had been a normal HasData row.
-            migrationBuilder.Sql("DELETE FROM [LeadSources] WHERE [Code] = N'meta';");
+            // Deleted by Code AND IsSystem = 1, not by Code alone: Up() only inserts this row
+            // when nothing with Code = 'meta' already exists, so if an admin had created their
+            // own "meta" source before this migration ever ran, Up() correctly left it alone —
+            // and Down() must make the same distinction, or it would delete that admin's row
+            // (which is IsSystem = 0; only this migration's own row is IsSystem = 1) on a
+            // rollback that never touched it in the first place. Harmless if a lead has since
+            // used the row this migration did own: LeadSourceId is a Restrict foreign key, so
+            // the delete simply fails loudly rather than orphaning anything.
+            migrationBuilder.Sql("DELETE FROM [LeadSources] WHERE [Code] = N'meta' AND [IsSystem] = 1;");
 
             migrationBuilder.DropColumn(
                 name: "AdAccountExternalId",

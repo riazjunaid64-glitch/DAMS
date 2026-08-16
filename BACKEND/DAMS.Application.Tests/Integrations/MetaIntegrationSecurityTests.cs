@@ -100,9 +100,46 @@ public class MetaIntegrationSecurityTests
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
 
-        var redirect = await h.Integration.CompleteCallbackAsync(null, null, "access_denied");
+        // Meta echoes the same state back whether the admin approved or declined — a denial is
+        // not a stateless callback.
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, "/crm/settings");
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+
+        var redirect = await h.Integration.CompleteCallbackAsync(null, state, "access_denied");
 
         Assert.Contains("reason=denied", redirect);
+        Assert.Equal(0, await h.Db.ExternalIntegrationConnections.CountAsync());
+    }
+
+    [Fact]
+    public async Task ADeniedState_IsConsumedAndCannotBeReplayed()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, null);
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+
+        await h.Integration.CompleteCallbackAsync(null, state, "access_denied");
+
+        // Retrying the same state — with or without the error this time — must fail the same
+        // way any other reused state does, not stay usable because the first attempt was a
+        // denial rather than a success.
+        var replay = await h.Integration.CompleteCallbackAsync("code-1", state, null);
+
+        Assert.Contains("reason=invalid_state", replay);
+        Assert.Equal(0, await h.Db.ExternalIntegrationConnections.CountAsync());
+    }
+
+    [Fact]
+    public async Task ADenialWithNoState_IsRejectedAsInvalidRatherThanReportedAsDenied()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        // A denial callback missing the state DAMS itself issued cannot be distinguished from
+        // a forged hit on the callback URL, regardless of what "error" it claims.
+        var redirect = await h.Integration.CompleteCallbackAsync(null, null, "access_denied");
+
+        Assert.Contains("reason=invalid_state", redirect);
     }
 
     [Fact]

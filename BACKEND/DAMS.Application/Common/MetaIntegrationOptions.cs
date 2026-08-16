@@ -63,6 +63,16 @@ namespace DAMS.Application.Common
         public int MaxGraphPages { get; set; } = 20;
 
         /// <summary>
+        /// How long a background worker holds a connection's sync lease. A full sync makes many
+        /// sequential Graph calls (pages, per-page forms, ad accounts, per-account campaigns/ad
+        /// sets/ads), each individually bounded by RequestTimeoutSeconds; this needs enough
+        /// headroom for all of them together, not just one. Released as soon as the sync
+        /// finishes — success or failure — so this is a ceiling for a wedged worker, not the
+        /// normal wait time for a retry.
+        /// </summary>
+        public int SyncLeaseMinutes { get; set; } = 15;
+
+        /// <summary>
         /// Days to keep a finished (Processed/Ignored/Failed) event before it is pruned. Zero
         /// (the default) keeps every event forever. This is a data-retention policy question —
         /// raw lead field answers pass through these rows — so it is left off until the business

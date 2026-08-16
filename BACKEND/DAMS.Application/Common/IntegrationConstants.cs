@@ -64,13 +64,21 @@ namespace DAMS.Application.Common
         /// <summary>Read-only discovery of ad accounts, campaigns, ad sets and ads.</summary>
         public const string AdsRead = "ads_read";
 
+        /// <summary>
+        /// Required by Meta to read the instagram_business_account field expansion this
+        /// integration requests while discovering Pages, so a Page's linked Instagram account
+        /// can be attributed correctly instead of lumped in as a plain Facebook lead.
+        /// </summary>
+        public const string InstagramBasic = "instagram_basic";
+
         public static readonly string[] All =
         [
             PagesShowList,
             PagesReadEngagement,
             PagesManageMetadata,
             LeadsRetrieval,
-            AdsRead
+            AdsRead,
+            InstagramBasic
         ];
 
         /// <summary>
@@ -89,8 +97,12 @@ namespace DAMS.Application.Common
         /// <c>ads_read</c> requires Advanced Access (App Review) on Meta's side and is
         /// frequently absent on a freshly connected, not-yet-reviewed app. Missing it degrades
         /// only campaign/ad-set/ad discovery — it must never stop a Page from delivering leads.
+        /// <c>instagram_basic</c> is the same kind of degradable permission: without it,
+        /// Instagram accounts are simply not discovered and their leads fall back to the
+        /// generic "meta" source rather than being mislabelled — Page discovery, and therefore
+        /// lead delivery, still works.
         /// </summary>
-        public static readonly string[] Optional = [AdsRead];
+        public static readonly string[] Optional = [AdsRead, InstagramBasic];
 
         public static string Joined => string.Join(',', All);
     }

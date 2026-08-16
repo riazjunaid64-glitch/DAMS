@@ -4732,17 +4732,6 @@ namespace DAMS.Infrastructure.Migrations
                             IsActive = true,
                             IsSystem = true,
                             Name = "Other"
-                        },
-                        new
-                        {
-                            Id = 14,
-                            Code = "meta",
-                            CreatedAt = new DateTime(2026, 7, 26, 0, 0, 0, 0, DateTimeKind.Utc),
-                            CustomerSource = 4,
-                            DisplayOrder = 14,
-                            IsActive = true,
-                            IsSystem = true,
-                            Name = "Meta (unspecified)"
                         });
                 });
 

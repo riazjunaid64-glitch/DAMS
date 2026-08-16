@@ -2124,6 +2124,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.DisplayName).IsRequired().HasMaxLength(200);
                 entity.Property(c => c.GrantedScopesJson).HasMaxLength(1000);
                 entity.Property(c => c.LastError).HasMaxLength(1000);
+                entity.Property(c => c.SyncLockedBy).HasMaxLength(100);
                 entity.Property(c => c.Status).HasConversion<int>();
                 entity.Property(c => c.RowVersion).IsRowVersion();
 
@@ -2152,10 +2153,28 @@ namespace DAMS.Infrastructure.Data
 
                 entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType, r.ExternalId })
                       .IsUnique();
-                // How an incoming webhook finds the page it belongs to.
-                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId });
+                // How an incoming webhook finds the page it belongs to. Given an explicit name
+                // (matching EF's own convention for it) so it stays a genuinely separate index
+                // from the filtered one below — calling HasIndex twice with the same column list
+                // and no names would make EF treat the second call as reconfiguring this same
+                // index rather than declaring a new one, silently losing this general lookup
+                // index the moment the filtered one was added.
+                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId },
+                          "IX_ExternalIntegrationResources_Provider_ResourceType_ExternalId");
                 entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType });
                 entity.HasIndex(r => r.ParentExternalId);
+
+                // A physical Facebook Page's webhook subscription is app-to-Page, not
+                // connection-to-Page, so at most one DAMS connection may ever have it enabled at
+                // once — otherwise disconnecting one silently breaks lead delivery for the
+                // other, since Meta only knows a single relationship exists. The application
+                // check in MetaIntegrationService.SetResourceEnabledAsync exists for a clean
+                // error message, but two concurrent requests can both pass it before either
+                // commits; this filtered unique index is what actually makes that impossible.
+                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId },
+                          "UX_ExternalIntegrationResources_EnabledFacebookPage")
+                      .IsUnique()
+                      .HasFilter("[Provider] = 'meta' AND [ResourceType] = 'facebook_page' AND [IsEnabled] = 1");
 
                 entity.HasOne(r => r.Connection)
                       .WithMany(c => c.Resources)
