@@ -175,6 +175,39 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task TheCallbackRedirect_UsesTheConfiguredFrontendOrigin_NotTheApiHostItRanOn()
+    {
+        // The callback itself always executes on the API host. MetaIntegrationHarness configures
+        // FrontendReturnUrl as "https://dams.test/crm/settings" precisely to model a deployment
+        // where the SPA and the API do not share a host — the redirect must still land on that
+        // configured origin, combined with wherever this admin actually started from, rather than
+        // being replaced outright by the relative path the SPA sent as returnPath.
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, "/crm/settings?tab=integrations");
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+
+        var redirect = await h.Integration.CompleteCallbackAsync("code-1", state, null);
+
+        Assert.StartsWith("https://dams.test/crm/settings?tab=integrations", redirect);
+        Assert.Contains("meta=connected", redirect);
+    }
+
+    [Fact]
+    public async Task ADeniedCallback_StillReturnsToTheConfiguredFrontendOrigin()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, "/crm/settings?tab=integrations");
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+
+        var redirect = await h.Integration.CompleteCallbackAsync(null, state, "access_denied");
+
+        Assert.StartsWith("https://dams.test/crm/settings?tab=integrations", redirect);
+        Assert.Contains("reason=denied", redirect);
+    }
+
+    [Fact]
     public async Task ReconnectingTheSameAccount_UpdatesTheExistingConnection()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

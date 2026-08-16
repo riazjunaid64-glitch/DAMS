@@ -130,6 +130,7 @@ namespace DAMS.Application.Services.Integrations
             var resources = new List<MetaDiscoveredResource>();
 
             (List<JsonElement> Items, bool Truncated) result;
+            var includesInstagramAccounts = true;
             try
             {
                 result = await CollectAsync(PagesWithInstagramFields, userAccessToken, cancellationToken);
@@ -145,6 +146,7 @@ namespace DAMS.Application.Services.Integrations
                     "Reading Pages with their linked Instagram account failed, likely because " +
                     "instagram_basic is not granted. Retrying without it.");
                 result = await CollectAsync(PagesWithoutInstagramFields, userAccessToken, cancellationToken);
+                includesInstagramAccounts = false;
             }
 
             var (items, truncated) = result;
@@ -180,7 +182,12 @@ namespace DAMS.Application.Services.Integrations
                 }
             }
 
-            return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
+            return new MetaDiscoveryPage
+            {
+                Items = resources,
+                Truncated = truncated,
+                IncludesInstagramAccounts = includesInstagramAccounts
+            };
         }
 
         public async Task<MetaDiscoveryPage> GetAdAccountsAsync(
@@ -360,6 +367,8 @@ namespace DAMS.Application.Services.Integrations
         /// the end. The page cap is a safety net — a malformed "next" link that pointed back at
         /// itself would otherwise loop until the process died — but hitting it means the result
         /// is known to be incomplete, which the caller must not mistake for "there is no more".
+        /// The same is true if a "next" link is refused for pointing somewhere untrusted: the
+        /// walk stops, but the result is still incomplete, not empty.
         /// </summary>
         private async Task<(List<JsonElement> Items, bool Truncated)> CollectAsync(
             string relativeUrl, string accessToken, CancellationToken cancellationToken)
@@ -367,15 +376,13 @@ namespace DAMS.Application.Services.Integrations
             var items = new List<JsonElement>();
             var url = WithProof(relativeUrl, accessToken);
             var pagesFetched = 0;
+            var stoppedForUntrustedUrl = false;
 
             while (url is not null && pagesFetched < Math.Max(1, _options.MaxGraphPages))
             {
                 pagesFetched++;
 
-                // The Authorization header is attached on every page, not only the first: Meta's
-                // own "next" cursor is a fully-formed URL it constructs itself and may carry its
-                // own access_token query parameter, which this client has no control over — but
-                // every request this client builds still authenticates the same way regardless.
+                // The Authorization header is attached on every page, not only the first.
                 using var document = await GetAsync(url, accessToken, cancellationToken);
                 var root = document.RootElement;
 
@@ -385,10 +392,20 @@ namespace DAMS.Application.Services.Integrations
                         items.Add(item.Clone());
                 }
 
-                url = ReadNextPageUrl(root);
+                var next = ReadNextPageUrl(root);
+                if (next is null)
+                {
+                    url = null;
+                }
+                else
+                {
+                    url = SanitizeNextPageUrl(next, accessToken);
+                    if (url is null)
+                        stoppedForUntrustedUrl = true;
+                }
             }
 
-            var truncated = url is not null;
+            var truncated = stoppedForUntrustedUrl || url is not null;
             if (truncated)
                 _logger.LogWarning(
                     "Stopped following Meta pagination after {Pages} pages. Some resources may not have been discovered.",
@@ -403,6 +420,42 @@ namespace DAMS.Application.Services.Integrations
             && ReadString(paging, "next") is { Length: > 0 } next
                 ? next
                 : null;
+
+        /// <summary>
+        /// Meta's own "next" cursor is a fully-formed URL it constructs itself, commonly
+        /// carrying its own copy of the access token as a query parameter — a detail of how
+        /// Graph implements pagination, not something this client's move to a Bearer header can
+        /// change. It is refused outright unless it actually points back at the Graph API host
+        /// this client talks to, so a manipulated response cannot walk this client — carrying a
+        /// live access token — off to an attacker-controlled server. Once trusted, any token or
+        /// proof Meta put on it is stripped and replaced with a fresh proof of this call's own
+        /// token, so the credential riding in the URL is never simply whatever Meta handed back.
+        /// </summary>
+        private string? SanitizeNextPageUrl(string nextUrl, string accessToken)
+        {
+            if (!Uri.TryCreate(nextUrl, UriKind.Absolute, out var uri)
+                || uri.Scheme != Uri.UriSchemeHttps
+                || !IsTrustedGraphHost(uri.Host))
+            {
+                _logger.LogWarning(
+                    "Meta returned a pagination link that did not point at the expected Graph API host; refusing to follow it.");
+                return null;
+            }
+
+            var keptParams = uri.Query.TrimStart('?')
+                .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(p => !p.StartsWith("access_token=", StringComparison.OrdinalIgnoreCase)
+                            && !p.StartsWith("appsecret_proof=", StringComparison.OrdinalIgnoreCase));
+
+            var sanitizedQuery = string.Join('&', keptParams);
+            var basePath = uri.GetLeftPart(UriPartial.Path);
+            var sanitized = sanitizedQuery.Length > 0 ? $"{basePath}?{sanitizedQuery}" : basePath;
+
+            return WithProof(sanitized, accessToken);
+        }
+
+        private bool IsTrustedGraphHost(string host) =>
+            string.Equals(_http.BaseAddress?.Host ?? "graph.facebook.com", host, StringComparison.OrdinalIgnoreCase);
 
         private async Task<JsonDocument> GetAsync(string url, string? accessToken, CancellationToken cancellationToken)
         {

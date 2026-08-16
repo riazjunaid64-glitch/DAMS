@@ -184,7 +184,21 @@ namespace DAMS.Application.Services.Integrations
                 if (!pagePage.Truncated)
                 {
                     fullyEnumerated.Add(ExternalResourceTypes.FacebookPage);
-                    fullyEnumerated.Add(ExternalResourceTypes.InstagramAccount);
+
+                    // A Page listing that fell back to no Instagram field expansion (missing
+                    // instagram_basic) said nothing at all about Instagram accounts — it must
+                    // not be read as "Meta has none", which would deactivate real ones already
+                    // on file simply because this run could not ask about them.
+                    if (pagePage.IncludesInstagramAccounts)
+                    {
+                        fullyEnumerated.Add(ExternalResourceTypes.InstagramAccount);
+                    }
+                    else
+                    {
+                        warning = Combine(warning,
+                            "Instagram accounts could not be re-checked this sync because instagram_basic " +
+                            "is not granted; any already on file were left unchanged.");
+                    }
                 }
                 else
                 {
@@ -280,6 +294,17 @@ namespace DAMS.Application.Services.Integrations
             }
 
             var result = ApplyDiscovered(connection, existing, discovered, fullyEnumerated);
+
+            // Self-healing for the window between a subscribe/unsubscribe call actually reaching
+            // Meta and the local save that was supposed to record it — a crash, a lost
+            // connection, or any other save failure in that gap leaves Meta and DAMS disagreeing
+            // about whether a Page is really subscribed. Both Graph operations are idempotent, so
+            // simply re-applying the enabled flag here brings Meta back in line without needing
+            // to ask it what it currently thinks.
+            var subscriptionWarning = await ReconcileSubscriptionsAsync(connection, existing, cancellationToken);
+            if (subscriptionWarning is not null)
+                warning = Combine(warning, subscriptionWarning);
+
             result.Warning = warning;
 
             connection.LastSyncedAt = DateTime.UtcNow;
@@ -374,6 +399,63 @@ namespace DAMS.Application.Services.Integrations
             }
 
             return result;
+        }
+
+        private async Task<string?> ReconcileSubscriptionsAsync(
+            ExternalIntegrationConnection connection,
+            List<ExternalIntegrationResource> resources,
+            CancellationToken cancellationToken)
+        {
+            string? warning = null;
+
+            foreach (var page in resources.Where(r =>
+                r.IsActive
+                && r.ResourceType == ExternalResourceTypes.FacebookPage
+                && r.IsEnabled != r.IsSubscribed))
+            {
+                var token = _protector.TryUnprotect(page.ResourceTokenProtected)
+                            ?? _protector.TryUnprotect(connection.AccessTokenProtected);
+                if (token is null)
+                    continue;
+
+                try
+                {
+                    if (page.IsEnabled)
+                        await _graph.SubscribePageAsync(page.ExternalId, token, cancellationToken);
+                    else
+                        await _graph.UnsubscribePageAsync(page.ExternalId, token, cancellationToken);
+
+                    page.IsSubscribed = page.IsEnabled;
+                    page.UpdatedAt = DateTime.UtcNow;
+                }
+                catch (MetaGraphException ex)
+                {
+                    warning = Combine(warning,
+                        $"Could not reconcile the subscription for \"{page.Name ?? page.ExternalId}\"; it will be retried on the next sync.");
+                    _logger.LogWarning(ex, "Reconciling Meta subscription for page {PageId} failed.", page.ExternalId);
+                }
+            }
+
+            return warning;
+        }
+
+        public async Task<MetaSyncResultDto> SyncNowAsync(int connectionId, CancellationToken cancellationToken = default)
+        {
+            // An admin's "Sync now" and the background sweep must share one concurrency rule,
+            // not two: without this lease, a due connection could be mid-sync from the
+            // background worker at the exact moment an admin also triggers it by hand.
+            if (!await TryClaimForSyncAsync(connectionId, cancellationToken))
+                throw new InvalidOperationException(
+                    "This connection is already syncing. Wait for it to finish and try again.");
+
+            try
+            {
+                return await SyncConnectionAsync(connectionId, cancellationToken);
+            }
+            finally
+            {
+                await ReleaseSyncLeaseAsync(connectionId, cancellationToken);
+            }
         }
 
         private static bool IsEnabledLocally(

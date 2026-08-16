@@ -279,6 +279,110 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
+    public async Task ADivergedSubscribe_IsReconciledDuringTheNextSync()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+
+        // Simulates the local save that should have recorded a successful Meta subscribe call
+        // having failed: Meta already thinks the page is subscribed, DAMS does not agree yet.
+        page.IsSubscribed = false;
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+
+        var reloaded = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id);
+        Assert.True(reloaded.IsSubscribed);
+        Assert.Contains("page-1", h.Graph.SubscribedPages);
+    }
+
+    [Fact]
+    public async Task ADivergedUnsubscribe_IsAlsoReconciled()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: false);
+
+        // DAMS still thinks the page is subscribed even though it is disabled locally — the
+        // mirror image of the previous test.
+        page.IsSubscribed = true;
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+
+        var reloaded = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id);
+        Assert.False(reloaded.IsSubscribed);
+        Assert.Contains("page-1", h.Graph.UnsubscribedPages);
+    }
+
+    [Fact]
+    public async Task AnInstagramAccount_StaysActive_WhenALaterSyncFallsBackWithoutInstagramExpansion()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        h.Graph.Pages =
+        [
+            Page("page-1", "Acme Sales"),
+            new()
+            {
+                ResourceType = ExternalResourceTypes.InstagramAccount,
+                ExternalId = "ig-1",
+                ParentExternalId = "page-1",
+                Name = "acme.sales"
+            }
+        ];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+        Assert.True((await h.Db.ExternalIntegrationResources.SingleAsync(r => r.ExternalId == "ig-1")).IsActive);
+
+        // instagram_basic becomes unavailable; discovery falls back to Pages without Instagram
+        // field expansion. This run says nothing about Instagram accounts at all — it must not
+        // be read as "Meta no longer has this one", which is exactly the bug this fallback
+        // introduced: a page listing with no truncation used to mark InstagramAccount as fully
+        // enumerated regardless of whether Instagram was actually asked about.
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        h.Graph.PagesIncludeInstagramAccounts = false;
+        var result = await h.Sync.SyncConnectionAsync(connection.Id);
+
+        var stillThere = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.ExternalId == "ig-1");
+        Assert.True(stillThere.IsActive);
+        Assert.Equal(0, result.Deactivated);
+        Assert.NotNull(result.Warning);
+    }
+
+    [Fact]
+    public async Task SyncNow_RefusesToRunWhileTheConnectionIsAlreadySyncing()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        // The background sweep is presumed mid-sync on this connection right now.
+        connection.SyncLockedUntil = DateTime.UtcNow.AddMinutes(10);
+        connection.SyncLockedBy = "background-worker:1";
+        await h.Db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Sync.SyncNowAsync(connection.Id));
+        Assert.Contains("already syncing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SyncNow_ClaimsAndThenReleasesItsOwnLease()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        await h.Sync.SyncNowAsync(connection.Id);
+
+        // Not left claimed — a background sweep or another admin's click must be free to run
+        // immediately afterward.
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Null(reloaded.SyncLockedUntil);
+        Assert.Null(reloaded.SyncLockedBy);
+    }
+
+    [Fact]
     public async Task ResourcesOfTwoConnections_StayIsolated()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

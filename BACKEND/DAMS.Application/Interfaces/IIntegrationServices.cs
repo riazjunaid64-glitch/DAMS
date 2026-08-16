@@ -36,6 +36,13 @@ namespace DAMS.Application.Interfaces
     {
         Task<MetaSyncResultDto> SyncConnectionAsync(int connectionId, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Same as <see cref="SyncConnectionAsync"/>, but under the same per-connection lease the
+        /// background sweep uses — for an admin-triggered "Sync now" that must not run
+        /// concurrently with either the background worker or another admin's own click.
+        /// </summary>
+        Task<MetaSyncResultDto> SyncNowAsync(int connectionId, CancellationToken cancellationToken = default);
+
         /// <summary>Syncs every connection whose last sync is older than the configured interval.</summary>
         Task<int> SyncDueConnectionsAsync(CancellationToken cancellationToken = default);
     }

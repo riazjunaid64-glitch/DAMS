@@ -169,6 +169,7 @@ namespace DAMS.Application.Services.Integrations
                 .FirstOrDefaultAsync(c => c.Provider == IntegrationProviders.Meta
                                           && c.ExternalAccountId == authorization.UserId, cancellationToken);
 
+            var isNewConnection = connection is null;
             if (connection is null)
             {
                 connection = new ExternalIntegrationConnection
@@ -180,6 +181,34 @@ namespace DAMS.Application.Services.Integrations
                 _context.ExternalIntegrationConnections.Add(connection);
             }
 
+            ApplyAuthorization(connection, authorization, actingUserId);
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (isNewConnection && IsDuplicateConnection(ex))
+            {
+                // Two browsers completing OAuth for the same Meta account at nearly the same
+                // moment both saw no existing row and both tried to insert one; the unique index
+                // on (Provider, ExternalAccountId) is what actually decided. Reload the row the
+                // winner created and apply this callback's result onto it, rather than losing
+                // this callback's own authorization or surfacing a raw database error.
+                _context.Entry(connection).State = EntityState.Detached;
+
+                connection = await _context.ExternalIntegrationConnections
+                    .FirstOrDefaultAsync(c => c.Provider == IntegrationProviders.Meta
+                                              && c.ExternalAccountId == authorization.UserId, cancellationToken)
+                    ?? throw new MetaPermanentException("Could not complete the Meta connection. Try again.");
+
+                ApplyAuthorization(connection, authorization, actingUserId);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+        }
+
+        private void ApplyAuthorization(
+            ExternalIntegrationConnection connection, MetaAuthorizationResult authorization, int actingUserId)
+        {
             var missingCriticalScopes = MetaScopes.LeadCritical
                 .Where(scope => !authorization.GrantedScopes.Contains(scope, StringComparer.OrdinalIgnoreCase))
                 .ToList();
@@ -229,8 +258,6 @@ namespace DAMS.Application.Services.Integrations
                     connection.LastError = null;
                 }
             }
-
-            await _context.SaveChangesAsync(cancellationToken);
         }
 
         // ── Reading ─────────────────────────────────────────────────────────────────
@@ -427,16 +454,25 @@ namespace DAMS.Application.Services.Integrations
             {
                 await _context.SaveChangesAsync(cancellationToken);
             }
-            catch (DbUpdateException ex) when (IsDuplicatePageOwnership(ex))
+            catch (DbUpdateException ex)
             {
-                // The AnyAsync check above is a courtesy for the common case; it cannot see a
-                // second request that ran the same check a moment earlier and has not committed
-                // yet. This filtered unique index is what actually decides, and it just did —
-                // the in-memory change that lost the race is discarded rather than left dirty.
+                // Meta has already applied the subscription change at this point — this is not
+                // the "AnyAsync raced" case alone, it is any failure to persist it locally, and
+                // both leave Meta and DAMS disagreeing about whether the page is subscribed
+                // unless that call is undone. The periodic sync's own reconciliation step would
+                // eventually catch this too, but there is no reason to leave a lead delivery gap
+                // open until the next sync when the failure is known right here.
                 _context.Entry(resource).State = EntityState.Detached;
-                throw new InvalidOperationException(
-                    "This Facebook Page is already enabled through another DAMS connection. " +
-                    "Disable it there first before enabling it here.");
+
+                if (resource.ResourceType == ExternalResourceTypes.FacebookPage)
+                    await RevertPageSubscriptionBestEffortAsync(connection, resource, isEnabled, cancellationToken);
+
+                if (IsDuplicatePageOwnership(ex))
+                    throw new InvalidOperationException(
+                        "This Facebook Page is already enabled through another DAMS connection. " +
+                        "Disable it there first before enabling it here.");
+
+                throw;
             }
 
             return new MetaResourceDto
@@ -490,6 +526,39 @@ namespace DAMS.Application.Services.Integrations
                 _logger.LogError(ex, "Changing the Meta page subscription failed for page {PageId}.", page.ExternalId);
                 throw new InvalidOperationException(
                     "Meta could not update this page's lead delivery just now. Try again shortly.");
+            }
+        }
+
+        /// <summary>
+        /// Undoes a subscribe/unsubscribe call that reached Meta but could not be saved locally,
+        /// so the two do not silently drift apart. Best-effort: if this also fails, the mismatch
+        /// is left for MetaResourceSyncService's own reconciliation to catch on the next
+        /// periodic sync, rather than compounding one failure into an unhandled second one.
+        /// </summary>
+        private async Task RevertPageSubscriptionBestEffortAsync(
+            ExternalIntegrationConnection connection,
+            ExternalIntegrationResource page,
+            bool appliedIsEnabled,
+            CancellationToken cancellationToken)
+        {
+            var token = _protector.TryUnprotect(page.ResourceTokenProtected)
+                        ?? _protector.TryUnprotect(connection.AccessTokenProtected);
+            if (token is null)
+                return;
+
+            try
+            {
+                if (appliedIsEnabled)
+                    await _graph.UnsubscribePageAsync(page.ExternalId, token, cancellationToken);
+                else
+                    await _graph.SubscribePageAsync(page.ExternalId, token, cancellationToken);
+            }
+            catch (MetaGraphException ex)
+            {
+                _logger.LogError(ex,
+                    "Reverting the Meta subscription for page {PageId} after a database save failure also " +
+                    "failed. Meta and DAMS may disagree about whether this page is subscribed until the next sync.",
+                    page.ExternalId);
             }
         }
 
@@ -560,6 +629,10 @@ namespace DAMS.Application.Services.Integrations
             ex.InnerException is SqlException { Number: 2601 or 2627 } sql
             && sql.Message.Contains("UX_ExternalIntegrationResources_EnabledFacebookPage", StringComparison.OrdinalIgnoreCase);
 
+        private static bool IsDuplicateConnection(DbUpdateException ex) =>
+            ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+            && sql.Message.Contains("IX_ExternalIntegrationConnections_Provider_ExternalAccountId", StringComparison.OrdinalIgnoreCase);
+
         private async Task<ExternalIntegrationConnection> LoadConnectionAsync(int id, CancellationToken cancellationToken) =>
             await _context.ExternalIntegrationConnections
                 .FirstOrDefaultAsync(c => c.Id == id && c.Provider == IntegrationProviders.Meta, cancellationToken)
@@ -594,18 +667,36 @@ namespace DAMS.Application.Services.Integrations
 
         private string Redirect(string? returnPath, string? failureReason)
         {
-            var target = string.IsNullOrWhiteSpace(_options.FrontendReturnUrl)
-                ? "/crm/settings"
-                : _options.FrontendReturnUrl;
-
-            if (!string.IsNullOrWhiteSpace(returnPath))
-                target = returnPath;
+            // The callback that builds this URL always runs on the API host, never the SPA's.
+            // returnPath is always relative (SafeReturnPath enforces this) and reflects exactly
+            // where the admin started — it must be combined with the configured frontend origin,
+            // not substituted for it outright, or a split-host deployment sends the browser back
+            // to the API instead of the CRM.
+            var target = !string.IsNullOrWhiteSpace(returnPath)
+                ? CombineWithFrontendOrigin(returnPath)
+                : string.IsNullOrWhiteSpace(_options.FrontendReturnUrl)
+                    ? "/crm/settings"
+                    : _options.FrontendReturnUrl;
 
             var separator = target.Contains('?') ? '&' : '?';
 
             return failureReason is null
                 ? $"{target}{separator}meta=connected"
                 : $"{target}{separator}meta=error&reason={failureReason}";
+        }
+
+        /// <summary>
+        /// FrontendReturnUrl may be configured as either a bare origin or a full default path —
+        /// only its scheme and host are trustworthy here, since the path itself belongs to
+        /// returnPath, which reflects where this particular admin actually started from.
+        /// </summary>
+        private string CombineWithFrontendOrigin(string returnPath)
+        {
+            if (string.IsNullOrWhiteSpace(_options.FrontendReturnUrl)
+                || !Uri.TryCreate(_options.FrontendReturnUrl, UriKind.Absolute, out var frontend))
+                return returnPath;
+
+            return $"{frontend.GetLeftPart(UriPartial.Authority)}{returnPath}";
         }
     }
 }

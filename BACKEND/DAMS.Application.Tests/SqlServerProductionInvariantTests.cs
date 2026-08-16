@@ -711,6 +711,76 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Contains("UX_ExternalIntegrationResources_EnabledFacebookPage", sqlEx.Message);
     }
 
+    /// <summary>
+    /// MetaIntegrationService.UpsertConnectionAsync reads "does a connection for this account
+    /// already exist" and, if not, inserts one — a window a second browser completing OAuth for
+    /// the same Meta account at nearly the same moment can land in before either commits. Only
+    /// the database's own unique index on (Provider, ExternalAccountId) can actually decide that,
+    /// which the InMemory provider used by the rest of the suite does not enforce; this proves
+    /// the service recovers from that collision by reloading and updating the winner's row
+    /// instead of surfacing a raw DbUpdateException to an admin's browser.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ReconnectingTheSameMetaAccountFromTwoBrowsersAtOnce_RecoversFromTheRaceInsteadOfFailing()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var baseOptions = Options(database.ConnectionString);
+        int adminUserId;
+        await using (var migrator = new AppDbContext(baseOptions))
+        {
+            await migrator.Database.MigrateAsync();
+
+            // ExternalIntegrationOAuthState.CreatedByUserId has a real FK to Users, unlike the
+            // unenforced CreatedById audit fields elsewhere in this file — a genuine row is
+            // needed, not just an arbitrary id.
+            var user = new User { FullName = "SQL Race Admin", Email = "sql-race-admin@dams.test", Password = "hash", RoleId = 1 };
+            migrator.Users.Add(user);
+            await migrator.SaveChangesAsync();
+            adminUserId = user.UserId;
+        }
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient
+        {
+            Authorization = new DAMS.Application.Services.Integrations.MetaAuthorizationResult
+            {
+                AccessToken = "race-token", UserId = "race-account", DisplayName = "Race Co",
+                GrantedScopes = [.. MetaScopes.All]
+            }
+        };
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        var admin = new LeadUserContext { UserId = adminUserId, Role = "Admin", DisplayName = "Admin" };
+
+        var interceptor = new InsertCollidingConnectionInterceptor(database.ConnectionString, "race-account");
+        await using var db = new AppDbContext(Options(database.ConnectionString, interceptor));
+        var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+            db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+        var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+            db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+        var start = await integration.StartConnectAsync(admin, null);
+        var state = System.Web.HttpUtility.ParseQueryString(new Uri(start.AuthorizationUrl).Query)["state"]!;
+
+        // At the moment this context's own UpsertConnectionAsync reads for an existing row, none
+        // exists — the interceptor lands the "other browser's" insert only once this context's
+        // own SaveChanges for its new row actually fires, which reproduces the race
+        // deterministically instead of hoping two real threads interleave the right way.
+        var redirect = await integration.CompleteCallbackAsync("code-1", state, null);
+
+        Assert.Contains("meta=connected", redirect);
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationConnections] WHERE [ExternalAccountId] = 'race-account'"));
+        // Not silently dropped: the surviving row carries this callback's own authorization
+        // result, proving it updated the winner's row rather than losing its own data.
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationConnections] " +
+            "WHERE [ExternalAccountId] = 'race-account' AND [DisplayName] = N'Race Co'"));
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {
@@ -759,6 +829,48 @@ public sealed class SqlServerProductionInvariantTests
             if (context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
                     .Any(entry => entry.State == EntityState.Added) == true)
                 throw new InvalidOperationException("Simulated SQL assignment persistence failure.");
+        }
+    }
+
+    /// <summary>
+    /// Simulates a second browser winning a concurrent OAuth reconnect: the moment the context
+    /// under test is about to insert its own new connection row for a given Meta account, this
+    /// inserts and commits a colliding row for the same account through a completely separate
+    /// connection first, so the context under test's own insert then genuinely collides with the
+    /// database's unique index rather than merely being told to expect one.
+    /// </summary>
+    private sealed class InsertCollidingConnectionInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly string _externalAccountId;
+        private bool _raced;
+
+        public InsertCollidingConnectionInterceptor(string connectionString, string externalAccountId)
+        {
+            _connectionString = connectionString;
+            _externalAccountId = externalAccountId;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is not null
+                && eventData.Context.ChangeTracker.Entries<ExternalIntegrationConnection>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.ExternalAccountId == _externalAccountId))
+            {
+                _raced = true;
+
+                await using var racer = new AppDbContext(
+                    new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+                racer.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+                {
+                    Provider = "meta", ExternalAccountId = _externalAccountId, DisplayName = "Racing winner",
+                    Status = ExternalIntegrationConnectionStatus.Connected
+                });
+                await racer.SaveChangesAsync(cancellationToken);
+            }
+
+            return result;
         }
     }
 

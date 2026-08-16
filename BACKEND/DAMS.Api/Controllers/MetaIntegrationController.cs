@@ -72,7 +72,7 @@ namespace DAMS.Api.Controllers
 
         [HttpPost("connections/{id:int}/sync")]
         public Task<IActionResult> Sync(int id, CancellationToken cancellationToken) =>
-            RunAsync(_ => _sync.SyncConnectionAsync(id, cancellationToken), cancellationToken);
+            RunAsync(_ => _sync.SyncNowAsync(id, cancellationToken), cancellationToken);
 
         [HttpGet("connections/{id:int}/events")]
         public Task<IActionResult> Events(int id, [FromQuery] int take = 25, CancellationToken cancellationToken = default) =>

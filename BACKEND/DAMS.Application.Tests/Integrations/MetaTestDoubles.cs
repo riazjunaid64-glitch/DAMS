@@ -28,6 +28,9 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
 
     /// <summary>Set by a test to simulate a page walk stopped by MaxGraphPages before it finished.</summary>
     public bool PagesTruncated { get; set; }
+
+    /// <summary>Set to false by a test to simulate a Page listing that fell back to no Instagram field expansion.</summary>
+    public bool PagesIncludeInstagramAccounts { get; set; } = true;
     public bool AdAccountsTruncated { get; set; }
     public bool AdAccountChildrenTruncated { get; set; }
 
@@ -54,7 +57,12 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
         if (DiscoveryFailure is not null)
             throw DiscoveryFailure;
 
-        return Task.FromResult(new MetaDiscoveryPage { Items = Pages.ToList(), Truncated = PagesTruncated });
+        return Task.FromResult(new MetaDiscoveryPage
+        {
+            Items = Pages.ToList(),
+            Truncated = PagesTruncated,
+            IncludesInstagramAccounts = PagesIncludeInstagramAccounts
+        });
     }
 
     public Task<MetaDiscoveryPage> GetAdAccountsAsync(string userAccessToken, CancellationToken cancellationToken = default)

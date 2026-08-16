@@ -159,6 +159,57 @@ public class LeadPhoneOptionalTests
     }
 
     [Fact]
+    public async Task ManualLead_WithOnlyAnUnusablyShortWhatsappNumber_IsRejected()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        var dto = LeadTestHarness.Intake(phone: null, email: null);
+        dto.WhatsappNumber = "123";
+
+        // Unlike phone, WhatsApp never had a minimum-length check applied on manual/internal
+        // intake — this must be rejected exactly like a too-short phone number, not accepted as
+        // the lead's sole contact method.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.IngestAsync(dto, h.Admin));
+
+        Assert.Contains("at least one way to reach", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ConvertingAPhonelessLead_OntoAnExplicitlyChosenExistingCustomer_Succeeds()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        var customer = new Domain.Entities.Customer
+        {
+            FullName = "Existing Customer", Phone = "03001234567", Status = Domain.Enums.CustomerStatus.Active
+        };
+        h.Db.Customers.Add(customer);
+        await h.Db.SaveChangesAsync();
+
+        var created = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null);
+        var leadId = created.Lead!.Id;
+
+        var lead = await h.Db.Leads.SingleAsync(l => l.Id == leadId);
+        lead.Stage = Domain.Enums.LeadStage.BookingPending;
+        await h.Db.SaveChangesAsync();
+
+        // No phone anywhere on the lead, but an existing customer was explicitly chosen — the
+        // phone-required guard exists only to protect creating a *new* customer, and must not
+        // block attaching to one that already has everything it needs.
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto
+        {
+            UnitId = h.UnitId,
+            CustomerId = customer.Id,
+            AgreedSalePrice = 1_000_000m,
+            BookingAmountRequired = 100_000m
+        }, h.Admin);
+
+        Assert.Equal(customer.Id, result.CustomerId);
+        Assert.False(result.CustomerWasCreated);
+    }
+
+    [Fact]
     public async Task ConvertingAPhonelessLead_IsRefusedWithAClearReason()
     {
         await using var h = await LeadTestHarness.CreateAsync();

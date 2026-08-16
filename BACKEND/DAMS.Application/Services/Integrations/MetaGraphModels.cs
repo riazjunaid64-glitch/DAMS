@@ -37,6 +37,14 @@ namespace DAMS.Application.Services.Integrations
     {
         public List<MetaDiscoveredResource> Items { get; init; } = [];
         public bool Truncated { get; init; }
+
+        /// <summary>
+        /// False only for a Page listing that fell back to a request without Instagram field
+        /// expansion (see MetaGraphClient.GetPagesAsync). A caller must not treat this run as
+        /// having said anything about Instagram accounts at all — not "there are none", and
+        /// not grounds to deactivate ones already on file.
+        /// </summary>
+        public bool IncludesInstagramAccounts { get; init; } = true;
     }
 
     /// <summary>An asset discovered during sync, in provider-neutral shape.</summary>

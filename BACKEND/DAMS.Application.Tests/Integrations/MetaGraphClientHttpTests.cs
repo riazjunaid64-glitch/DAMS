@@ -166,6 +166,86 @@ public class MetaGraphClientHttpTests
         Assert.Equal(2, handler.Requests.Count);
     }
 
+    [Fact]
+    public async Task PaginationCursor_HasItsTokenStripped_AndIsNeverFollowedOffTheGraphHost()
+    {
+        // Meta's own "next" link is a URL it fully constructs and may carry its own copy of the
+        // access token. The client must (1) never send that copy of the token onward as-is —
+        // replacing it with its own fresh proof instead — and (2) refuse to follow a "next" link
+        // that does not actually point back at the Graph API host, in case a response were ever
+        // manipulated to redirect a live token somewhere else.
+        var callCount = 0;
+        var handler = new FakeHandler(request =>
+        {
+            callCount++;
+
+            if (callCount == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """
+                        {
+                          "data": [ { "id": "page-1", "name": "Acme Sales" } ],
+                          "paging": { "next": "https://graph.facebook.com/v21.0/me/accounts?access_token=leaked-token&appsecret_proof=stale-proof&after=cursor-1" }
+                        }
+                        """)
+                };
+            }
+
+            if (callCount == 2)
+            {
+                Assert.Equal("graph.facebook.com", request.RequestUri!.Host);
+                Assert.DoesNotContain("access_token=leaked-token", request.RequestUri.Query, StringComparison.Ordinal);
+                Assert.DoesNotContain("appsecret_proof=stale-proof", request.RequestUri.Query, StringComparison.Ordinal);
+                Assert.Contains("after=cursor-1", request.RequestUri.Query, StringComparison.Ordinal);
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """
+                        {
+                          "data": [ { "id": "page-2", "name": "Acme Rentals" } ],
+                          "paging": { "next": "https://evil.example.com/steal?access_token=leaked-token" }
+                        }
+                        """)
+                };
+            }
+
+            throw new InvalidOperationException(
+                "Pagination must have stopped rather than following a link off the Graph API host.");
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new MetaIntegrationOptions
+        {
+            AppId = "app-id",
+            AppSecret = FakeAppSecret,
+            WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback",
+            GraphApiVersion = "v21.0"
+        });
+        services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
+            {
+                var meta = sp.GetRequiredService<MetaIntegrationOptions>();
+                client.BaseAddress = new Uri($"https://graph.facebook.com/{meta.GraphApiVersion}/");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => handler);
+
+        await using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<IMetaGraphClient>();
+
+        var result = await client.GetPagesAsync(FakeAccessToken, CancellationToken.None);
+
+        // Both pages found before the untrusted link was refused; the walk is reported as
+        // truncated rather than "complete", since a link genuinely existed beyond it.
+        Assert.Equal(2, result.Items.Count(i => i.ResourceType == ExternalResourceTypes.FacebookPage));
+        Assert.True(result.Truncated);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.DoesNotContain(handler.Requests, r => r.RequestUri!.Host == "evil.example.com");
+    }
+
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<HttpRequestMessage> Requests { get; } = [];
