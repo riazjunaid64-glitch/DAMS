@@ -80,10 +80,11 @@ namespace DAMS.Application.Services.Integrations
                 }
                 finally
                 {
-                    // Released immediately regardless of outcome — including failure — so a
-                    // connection that just failed to sync is eligible again on the very next
-                    // tick instead of waiting out the lease.
-                    await ReleaseSyncLeaseAsync(id, cancellationToken);
+                    // Released immediately regardless of outcome — including failure, and
+                    // including this token already being cancelled (e.g. app shutdown mid-sync)
+                    // — so a connection that just failed to sync is eligible again on the very
+                    // next tick instead of waiting out the lease.
+                    await ReleaseSyncLeaseAsync(id, CancellationToken.None);
                 }
             }
 
@@ -413,6 +414,33 @@ namespace DAMS.Application.Services.Integrations
                 && r.ResourceType == ExternalResourceTypes.FacebookPage
                 && r.IsEnabled != r.IsSubscribed))
             {
+                if (!page.IsEnabled)
+                {
+                    // A physical Page's webhook subscription is app-to-Page, not
+                    // connection-to-Page, but this loop only ever sees one connection's own
+                    // rows. A stale IsSubscribed=true on a disabled row here does not by itself
+                    // mean Meta needs an Unsubscribe call — another connection may currently be
+                    // the real, active owner of this exact physical Page, and unsubscribing
+                    // would tear down real, working lead delivery this sync has no visibility
+                    // into. Subscribe carries no such risk (it only reinforces an existing
+                    // subscription, never removes one), so only Unsubscribe needs this check.
+                    var ownedElsewhere = await _context.ExternalIntegrationResources
+                        .AnyAsync(r => r.Id != page.Id
+                                       && r.Provider == IntegrationProviders.Meta
+                                       && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                       && r.ExternalId == page.ExternalId
+                                       && r.IsActive
+                                       && r.IsEnabled, cancellationToken);
+
+                    if (ownedElsewhere)
+                    {
+                        // Not our subscription to touch. Correct our own bookkeeping only.
+                        page.IsSubscribed = false;
+                        page.UpdatedAt = DateTime.UtcNow;
+                        continue;
+                    }
+                }
+
                 var token = _protector.TryUnprotect(page.ResourceTokenProtected)
                             ?? _protector.TryUnprotect(connection.AccessTokenProtected);
                 if (token is null)
@@ -454,7 +482,10 @@ namespace DAMS.Application.Services.Integrations
             }
             finally
             {
-                await ReleaseSyncLeaseAsync(connectionId, cancellationToken);
+                // A cancelled request must still free the lease. Releasing with the caller's
+                // own (possibly already-cancelled) token would make the release itself throw
+                // immediately and never run, leaving the lease held until it simply expires.
+                await ReleaseSyncLeaseAsync(connectionId, CancellationToken.None);
             }
         }
 

@@ -456,21 +456,28 @@ namespace DAMS.Application.Services.Integrations
             }
             catch (DbUpdateException ex)
             {
-                // Meta has already applied the subscription change at this point — this is not
-                // the "AnyAsync raced" case alone, it is any failure to persist it locally, and
-                // both leave Meta and DAMS disagreeing about whether the page is subscribed
-                // unless that call is undone. The periodic sync's own reconciliation step would
-                // eventually catch this too, but there is no reason to leave a lead delivery gap
-                // open until the next sync when the failure is known right here.
                 _context.Entry(resource).State = EntityState.Detached;
 
-                if (resource.ResourceType == ExternalResourceTypes.FacebookPage)
-                    await RevertPageSubscriptionBestEffortAsync(connection, resource, isEnabled, cancellationToken);
-
                 if (IsDuplicatePageOwnership(ex))
+                {
+                    // Another connection's save won this exact race and now legitimately owns
+                    // the physical Page's subscription — the Subscribe call this attempt made
+                    // was therefore redundant (subscribing an already-subscribed page is a
+                    // no-op on Meta's side), and "reverting" it now would unsubscribe the
+                    // winner's real, current subscription, not this attempt's. Nothing this
+                    // attempt did to Meta needs undoing; only the local claim does, and that
+                    // was never persisted.
                     throw new InvalidOperationException(
                         "This Facebook Page is already enabled through another DAMS connection. " +
                         "Disable it there first before enabling it here.");
+                }
+
+                // Any other save failure: Meta has already applied the subscription change, and
+                // nobody else could have concurrently become the owner (the unique index above
+                // rules that out for a non-ownership failure), so it is safe to undo it here
+                // rather than leave a lead delivery gap open until the next sync.
+                if (resource.ResourceType == ExternalResourceTypes.FacebookPage)
+                    await RevertPageSubscriptionBestEffortAsync(connection, resource, isEnabled, cancellationToken);
 
                 throw;
             }

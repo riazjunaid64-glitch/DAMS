@@ -45,15 +45,36 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
 
     public Exception? DiscoveryFailure { get; set; }
 
+    /// <summary>Run synchronously at the very start of GetPagesAsync, before DiscoveryFailure is
+    /// thrown — lets a test deterministically do something (e.g. cancel a token) at the exact
+    /// moment a sync is "in flight", rather than racing real concurrency.</summary>
+    public Action? OnGetPages { get; set; }
+
     public List<string> SubscribedPages { get; } = [];
     public List<string> UnsubscribedPages { get; } = [];
     public List<(string LeadgenId, string Token)> LeadRequests { get; } = [];
+
+    /// <summary>
+    /// Every subscribe/unsubscribe call in the order it actually happened, across every
+    /// DAMS connection that shares this fake — SubscribedPages/UnsubscribedPages alone can't
+    /// answer "what does Meta think right now", only "did this get called at some point".
+    /// A physical Page's subscription is one shared piece of remote state; the last call
+    /// against a given page id is what Meta would actually be left holding.
+    /// </summary>
+    public List<(string PageExternalId, bool Subscribed)> SubscriptionCallLog { get; } = [];
+
+    /// <summary>What Meta would currently report for this page, per SubscriptionCallLog.</summary>
+    public bool IsCurrentlySubscribed(string pageExternalId) =>
+        SubscriptionCallLog.LastOrDefault(c => c.PageExternalId == pageExternalId) is { PageExternalId: not null } call
+        && call.Subscribed;
 
     public Task<MetaAuthorizationResult> CompleteAuthorizationAsync(string code, CancellationToken cancellationToken = default) =>
         Task.FromResult(Authorization);
 
     public Task<MetaDiscoveryPage> GetPagesAsync(string userAccessToken, CancellationToken cancellationToken = default)
     {
+        OnGetPages?.Invoke();
+
         if (DiscoveryFailure is not null)
             throw DiscoveryFailure;
 
@@ -99,12 +120,14 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     public Task SubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
     {
         SubscribedPages.Add(pageExternalId);
+        SubscriptionCallLog.Add((pageExternalId, true));
         return Task.CompletedTask;
     }
 
     public Task UnsubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
     {
         UnsubscribedPages.Add(pageExternalId);
+        SubscriptionCallLog.Add((pageExternalId, false));
         return Task.CompletedTask;
     }
 

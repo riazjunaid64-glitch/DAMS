@@ -712,6 +712,95 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The test above proves the database rejects the losing row, but neither it nor the one
+    /// before it ever drives the losing call through SetResourceEnabledAsync itself, so neither
+    /// exercises what that method actually does with a real Meta subscribe call in flight when
+    /// the race is lost: both connections pass their own "already enabled elsewhere" check
+    /// before either commits, both call Meta Subscribe (a physical Page's webhook subscription
+    /// is app-to-Page, not connection-to-Page), the database then picks a winner, and the loser's
+    /// catch block used to "compensate" by calling Unsubscribe — tearing down the winner's real,
+    /// just-established subscription, not its own. This proves that regression stays fixed: the
+    /// winner's subscription must still be active after the loser's save collides and fails.
+    /// </summary>
+    [SqlServerFact]
+    public async Task LosingTheEnablePageRace_NeverUnsubscribesTheWinnersRealSubscription()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        const string pageId = "shared-page-subscribe-race";
+
+        int winnerConnectionId, loserConnectionId, winnerResourceId, loserResourceId;
+        await using (var db = new AppDbContext(options))
+        {
+            var winnerConn = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "subscribe-race-winner", DisplayName = "Winner",
+                Status = ExternalIntegrationConnectionStatus.Connected, AccessTokenProtected = protector.Protect("token-winner")
+            };
+            var loserConn = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "subscribe-race-loser", DisplayName = "Loser",
+                Status = ExternalIntegrationConnectionStatus.Connected, AccessTokenProtected = protector.Protect("token-loser")
+            };
+            db.ExternalIntegrationConnections.AddRange(winnerConn, loserConn);
+            await db.SaveChangesAsync();
+            winnerConnectionId = winnerConn.Id;
+            loserConnectionId = loserConn.Id;
+
+            var winnerResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = winnerConn.Id, Provider = "meta", ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = pageId, IsEnabled = false, IsActive = true
+            };
+            var loserResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = loserConn.Id, Provider = "meta", ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = pageId, IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(winnerResource, loserResource);
+            await db.SaveChangesAsync();
+            winnerResourceId = winnerResource.Id;
+            loserResourceId = loserResource.Id;
+        }
+
+        // The interceptor plays "the winner" at the exact moment the loser's own SaveChangesAsync
+        // is about to run — i.e. after the loser has already passed its own AnyAsync ownership
+        // check and already called Meta Subscribe for its own attempt, matching the real race
+        // window instead of a convenient ordering.
+        var interceptor = new RunFullEnableThroughAnotherConnectionInterceptor(
+            database.ConnectionString, graph, protector, metaOptions, winnerConnectionId, winnerResourceId, loserResourceId);
+
+        await using var loserDb = new AppDbContext(Options(database.ConnectionString, interceptor));
+        var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+            loserDb, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+        var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+            loserDb, graph, protector, loserSync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => loserIntegration.SetResourceEnabledAsync(loserConnectionId, loserResourceId, isEnabled: true));
+        Assert.Contains("already enabled through another", ex.Message);
+
+        // The point of the whole test: the loser's compensation must not have touched the
+        // winner's real subscription.
+        Assert.True(graph.IsCurrentlySubscribed(pageId));
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [ExternalId] = '{pageId}' AND [IsEnabled] = 1"));
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [Id] = {loserResourceId} AND [IsEnabled] = 1"));
+    }
+
+    /// <summary>
     /// MetaIntegrationService.UpsertConnectionAsync reads "does a connection for this account
     /// already exist" and, if not, inserts one — a window a second browser completing OAuth for
     /// the same Meta account at nearly the same moment can land in before either commits. Only
@@ -868,6 +957,68 @@ public sealed class SqlServerProductionInvariantTests
                     Status = ExternalIntegrationConnectionStatus.Connected
                 });
                 await racer.SaveChangesAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Simulates a second connection legitimately winning a concurrent "enable this Page" race:
+    /// the moment the context under test is about to save its own enable-change for a specific
+    /// resource, this runs a completely separate connection's full SetResourceEnabledAsync
+    /// (including its own real Meta Subscribe call) to commit first through a totally separate
+    /// AppDbContext/connection, so the context under test's own save then genuinely collides with
+    /// the database's unique index — with a real, already-established winning subscription
+    /// sitting behind it, not merely a row.
+    /// </summary>
+    private sealed class RunFullEnableThroughAnotherConnectionInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly DAMS.Application.Tests.Integrations.FakeMetaGraphClient _graph;
+        private readonly DAMS.Application.Tests.Integrations.PlaintextSecretProtector _protector;
+        private readonly MetaIntegrationOptions _metaOptions;
+        private readonly int _winnerConnectionId;
+        private readonly int _winnerResourceId;
+        private readonly int _watchedResourceId;
+        private bool _raced;
+
+        public RunFullEnableThroughAnotherConnectionInterceptor(
+            string connectionString,
+            DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph,
+            DAMS.Application.Tests.Integrations.PlaintextSecretProtector protector,
+            MetaIntegrationOptions metaOptions,
+            int winnerConnectionId, int winnerResourceId, int watchedResourceId)
+        {
+            _connectionString = connectionString;
+            _graph = graph;
+            _protector = protector;
+            _metaOptions = metaOptions;
+            _winnerConnectionId = winnerConnectionId;
+            _winnerResourceId = winnerResourceId;
+            _watchedResourceId = watchedResourceId;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is not null
+                && eventData.Context.ChangeTracker.Entries<ExternalIntegrationResource>()
+                    .Any(e => e.State == EntityState.Modified && e.Entity.Id == _watchedResourceId && e.Entity.IsEnabled))
+            {
+                _raced = true;
+
+                await using var racer = new AppDbContext(
+                    new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+                var racerSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                    racer, _graph, _protector, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                var racerIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                    racer, _graph, _protector, racerSync, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+                await racerIntegration.SetResourceEnabledAsync(
+                    _winnerConnectionId, _winnerResourceId, isEnabled: true, cancellationToken);
             }
 
             return result;

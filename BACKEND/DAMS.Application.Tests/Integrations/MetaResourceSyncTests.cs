@@ -317,6 +317,38 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
+    public async Task AStaleDisabledCopyOfAPage_NeverUnsubscribesAnotherConnectionsRealOwnership()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        // Two DAMS connections both hold a resource row for the same physical Facebook Page.
+        // "winner" is the one actually enabled and subscribed; "loser" is disabled locally but
+        // still carries a stale IsSubscribed=true from some earlier state (e.g. a compensation
+        // that never landed). This is the same physical Page id on purpose.
+        var (_, winnerPage) = await h.ConnectPageAsync(pageId: "page-1", externalAccountId: "meta-user-winner", enabled: true);
+        var (_, loserPage) = await h.ConnectPageAsync(pageId: "page-1", externalAccountId: "meta-user-loser", enabled: false);
+        loserPage.IsSubscribed = true;
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+
+        // Syncing the LOSER's own connection must not unsubscribe a physical Page it no longer
+        // owns just because its own bookkeeping is stale — the winner's real subscription
+        // belongs to a connection this sync has no visibility into.
+        var loserConnectionId = (await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == loserPage.Id)).ExternalIntegrationConnectionId;
+        await h.Sync.SyncConnectionAsync(loserConnectionId);
+
+        Assert.DoesNotContain("page-1", h.Graph.UnsubscribedPages);
+
+        var reloadedLoser = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == loserPage.Id);
+        Assert.False(reloadedLoser.IsSubscribed);
+
+        var reloadedWinner = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == winnerPage.Id);
+        Assert.True(reloadedWinner.IsEnabled);
+        Assert.True(reloadedWinner.IsSubscribed);
+    }
+
+    [Fact]
     public async Task AnInstagramAccount_StaysActive_WhenALaterSyncFallsBackWithoutInstagramExpansion()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
@@ -377,6 +409,30 @@ public class MetaResourceSyncTests
 
         // Not left claimed — a background sweep or another admin's click must be free to run
         // immediately afterward.
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Null(reloaded.SyncLockedUntil);
+        Assert.Null(reloaded.SyncLockedBy);
+    }
+
+    [Fact]
+    public async Task SyncNow_StillReleasesItsLease_WhenTheCallersTokenIsCancelledMidSync()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        // Simulates a browser disconnecting (or the request being cancelled) after the lease was
+        // already claimed but before the sync finished: the token SyncNowAsync was given becomes
+        // cancelled while the sync is genuinely in flight, not before it starts.
+        using var cts = new CancellationTokenSource();
+        h.Graph.OnGetPages = () => cts.Cancel();
+        h.Graph.DiscoveryFailure = new OperationCanceledException(cts.Token);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => h.Sync.SyncNowAsync(connection.Id, cts.Token));
+
+        Assert.True(cts.IsCancellationRequested);
+
+        // Releasing the lease must not itself be cancelled by the same now-cancelled token —
+        // otherwise it stays held until it simply expires on its own.
         var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
         Assert.Null(reloaded.SyncLockedUntil);
         Assert.Null(reloaded.SyncLockedBy);
