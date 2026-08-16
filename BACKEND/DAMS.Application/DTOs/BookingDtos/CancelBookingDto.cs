@@ -16,7 +16,10 @@ namespace DAMS.Application.DTOs.BookingDtos
         [Range(0, double.MaxValue)]
         public decimal RefundAmount { get; set; }
 
-        public CancellationRefundDecision RefundDecision { get; set; } = CancellationRefundDecision.None;
+        // Nullable on purpose: an omitted decision must never be indistinguishable from an
+        // explicit "None". The service rejects a missing decision whenever the booking actually
+        // has money to decide about — see CancelBookingCoreAsync.
+        public CancellationRefundDecision? RefundDecision { get; set; }
 
         [Required, StringLength(80, MinimumLength = 1)]
         public string IdempotencyKey { get; set; } = string.Empty;

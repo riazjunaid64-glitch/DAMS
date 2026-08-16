@@ -164,6 +164,35 @@ public sealed class BookingCancellationSettlementTests
     }
 
     [Fact]
+    public async Task Cancel_PaidBooking_WithoutRefundDecision_IsRejected()
+    {
+        // RefundDecision defaulting to None when omitted from the request would let a paid
+        // customer's refund silently become zero without anyone actually choosing that — the exact
+        // risk this feature exists to eliminate. A missing decision must be rejected outright, not
+        // normalized into "None".
+        var h = await Harness.Create(paid: 500_000m);
+        var dto = h.CancelDto(500_000m, 0m, CancellationRefundDecision.None);
+        dto.RefundDecision = null;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, dto, Actor));
+        Assert.Contains("Confirm the refund decision", error.Message);
+        Assert.False(await h.Context.BookingCancellationSettlements.AnyAsync());
+    }
+
+    [Fact]
+    public async Task Cancel_UnpaidBooking_WithoutRefundDecision_DefaultsToNone()
+    {
+        // Nothing was paid, so there is nothing to decide — an omitted decision is safe to
+        // normalize here, unlike the paid-booking case above.
+        var h = await Harness.Create(paid: 0m);
+        var dto = h.CancelDto(0m, 0m, CancellationRefundDecision.None);
+        dto.RefundDecision = null;
+
+        var result = await h.Service.CancelBookingAsync(h.BookingId, dto, Actor);
+        Assert.Equal(CancellationRefundDecision.None, result.CancellationSettlement!.RefundDecision);
+    }
+
+    [Fact]
     public async Task Cancel_NegativeRefund_IsRejected()
     {
         var h = await Harness.Create(paid: 500_000m);

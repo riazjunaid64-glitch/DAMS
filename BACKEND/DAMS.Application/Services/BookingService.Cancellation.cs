@@ -113,6 +113,9 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(s => s.IdempotencyKey == idempotencyKey, cancellationToken);
             if (existingByKey != null)
             {
+                // Comparing against the nullable dto value directly (not a defaulted local) means
+                // a retry that omits RefundDecision can never match a settlement that recorded an
+                // explicit one — an enum value is never equal to a missing one.
                 var samePayload = existingByKey.BookingId == id
                     && existingByKey.CustomerCashReceivedSnapshot == expectedCash
                     && existingByKey.RefundAmount == refundAmount
@@ -170,25 +173,39 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException(
                     "Customer payments changed while you were cancelling this booking. Reload and review the settlement again.");
 
+            // 7.5. Explicit-decision safety invariant: once real money was received, a decision
+            // must be actively chosen — an omitted RefundDecision must never silently become "no
+            // refund". A booking with nothing paid has nothing to decide, so it may omit it.
+            if (actualCash > 0m && !dto.RefundDecision.HasValue)
+                throw new InvalidOperationException("Confirm the refund decision before continuing.");
+            var refundDecision = dto.RefundDecision ?? CancellationRefundDecision.None;
+
+            // One business-date snapshot for this whole operation. PakistanTime.Today must not be
+            // read again after this point — the several awaits below (system-account resolution,
+            // account validation, reference-collision checks) can straddle a Pakistan midnight,
+            // and a second read could then disagree with this one, letting a PayNow refund's
+            // PaidAt end up dated a day apart from the settlement's own CancellationDate.
+            var businessDate = PakistanTime.Today;
+
             // 8. Refund amount / decision validation.
             if (refundAmount < 0m) throw new InvalidOperationException("Refund amount cannot be negative.");
             if (refundAmount > actualCash) throw new InvalidOperationException("Refund amount cannot exceed the customer's paid amount.");
             if (refundAmount == 0m)
             {
-                if (dto.RefundDecision != CancellationRefundDecision.None)
+                if (refundDecision != CancellationRefundDecision.None)
                     throw new InvalidOperationException("Refund decision must be None when the refund amount is zero.");
                 if (dto.RefundFinanceAccountId.HasValue || dto.RefundPaymentMethod.HasValue
                     || paymentReferenceInput != null || dto.RefundPaidAt.HasValue)
                     throw new InvalidOperationException("No payout details are needed when there is no refund.");
             }
-            else if (dto.RefundDecision is not (CancellationRefundDecision.PayNow or CancellationRefundDecision.PayLater))
+            else if (refundDecision is not (CancellationRefundDecision.PayNow or CancellationRefundDecision.PayLater))
             {
                 throw new InvalidOperationException("Choose whether the refund will be paid now or paid later.");
             }
             var retained = Money(actualCash - refundAmount);
 
-            var payNow = refundAmount > 0m && dto.RefundDecision == CancellationRefundDecision.PayNow;
-            if (dto.RefundDecision == CancellationRefundDecision.PayLater
+            var payNow = refundAmount > 0m && refundDecision == CancellationRefundDecision.PayNow;
+            if (refundDecision == CancellationRefundDecision.PayLater
                 && (dto.RefundFinanceAccountId.HasValue || dto.RefundPaymentMethod.HasValue
                     || paymentReferenceInput != null || dto.RefundPaidAt.HasValue))
                 throw new InvalidOperationException("A refund recorded as payable later must not include payout details.");
@@ -207,9 +224,9 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException("A refund date is required when paying the refund now.");
                 // The refund is being paid at cancellation time, so its business date can only be
                 // "today" — never future-dated, and never before the cancellation it belongs to.
-                if (dto.RefundPaidAt.Value.Date > PakistanTime.Today)
+                if (dto.RefundPaidAt.Value.Date > businessDate)
                     throw new InvalidOperationException("Refund date cannot be in the future.");
-                if (dto.RefundPaidAt.Value.Date < PakistanTime.Today)
+                if (dto.RefundPaidAt.Value.Date < businessDate)
                     throw new InvalidOperationException("Refund date cannot be before the cancellation date.");
             }
 
@@ -236,7 +253,7 @@ namespace DAMS.Application.Services
                 CustomerCashReceivedSnapshot = actualCash,
                 RefundAmount = refundAmount,
                 RetainedAmount = retained,
-                RefundDecision = dto.RefundDecision,
+                RefundDecision = refundDecision,
                 RefundPayableAccountId = refundPayableAccountId,
                 Reason = reason,
                 Notes = notesInput,
@@ -247,7 +264,9 @@ namespace DAMS.Application.Services
                 // The Pakistan business date, not the raw UTC instant: a cancellation at 00:30 PKT
                 // is still 19:30 UTC the previous calendar day, and every report must place this
                 // settlement's contra-revenue/liability on the PKT day the Admin actually acted.
-                CancellationDate = PakistanTime.Today
+                // Reused from the single snapshot taken above — never re-read — so it can never
+                // disagree with the PayNow refund date validation a few awaits earlier.
+                CancellationDate = businessDate
             };
             _context.BookingCancellationSettlements.Add(settlement);
 
@@ -386,11 +405,16 @@ namespace DAMS.Application.Services
             if (dto.PaymentMethod != PaymentMethod.Cash && paymentReference == null)
                 throw new InvalidOperationException("A payment reference is required for a non-cash refund.");
 
+            // One business-date snapshot, read once — matching the same rule CancelBookingCoreAsync
+            // follows, so a future await inserted here can never make the default and the
+            // future-date check disagree about what "today" was.
+            var today = PakistanTime.Today;
+            var paidAt = dto.PaidAt ?? today;
+
             // The liability was recognised on CancellationDate (the Pakistan business date, not the
             // raw UTC CancelledAt instant); the cash movement cannot predate that, and cannot be
             // future-dated while the system already reports the refund as Paid.
-            var paidAt = dto.PaidAt ?? PakistanTime.Today;
-            if (paidAt.Date > PakistanTime.Today)
+            if (paidAt.Date > today)
                 throw new InvalidOperationException("Refund date cannot be in the future.");
             if (paidAt.Date < settlement.CancellationDate.Date)
                 throw new InvalidOperationException("Refund date cannot be before the cancellation date.");

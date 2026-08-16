@@ -396,7 +396,10 @@ public sealed class FinanceReportingAndCapitalTests
             RefundPaidAt = DAMS.Application.Common.PakistanTime.Today
         }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
 
-        var today = DateTime.UtcNow.Date;
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
         var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
         Assert.Equal(500_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Receipts").Amount);
         Assert.Equal(-450_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Refunds").Amount);
@@ -444,7 +447,10 @@ public sealed class FinanceReportingAndCapitalTests
             RefundAmount = 450_000m, RefundDecision = CancellationRefundDecision.PayLater, IdempotencyKey = "pl-1"
         }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
 
-        var today = DateTime.UtcNow.Date;
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
         var accounts = new FinanceAccountService(context);
         var payable = await context.FinanceAccounts.SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable);
 
@@ -489,7 +495,10 @@ public sealed class FinanceReportingAndCapitalTests
             RefundAmount = 0m, RefundDecision = CancellationRefundDecision.None, IdempotencyKey = "nf-1"
         }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
 
-        var today = DateTime.UtcNow.Date;
+        // Pakistan time, not raw UTC: the cancellation itself is dated by PakistanTime.Today (see
+        // BookingService.Cancellation.cs), and UTC lags PKT by up to ~5 hours — using UtcNow.Date
+        // here would flake for report queries run between 00:00 and 04:59 PKT.
+        var today = DAMS.Application.Common.PakistanTime.Today;
         var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
         Assert.DoesNotContain(pnl.IncomeLines, l => l.Name == "Customer Refunds");
         Assert.Equal(500_000m, pnl.TotalIncome);
