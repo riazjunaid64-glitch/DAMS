@@ -1,6 +1,7 @@
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Integrations;
 using DAMS.Application.Services.Notifications;
 using DAMS.Application.Interfaces;
 using Microsoft.Extensions.Options;
@@ -233,6 +234,15 @@ builder.Services.AddScoped<ILeadReportingService, LeadReportingService>();
 builder.Services.AddScoped<ILeadAlertService, LeadAlertService>();
 builder.Services.AddHostedService<LeadAlertBackgroundService>();
 builder.Services.AddSingleton<IIntegrationSecretProtector, DataProtectionIntegrationSecretProtector>();
+// Deliberately no Polly: retries are already durable in ExternalIntegrationEvents, where
+// Attempts and AvailableAt survive a restart. An in-memory policy would duplicate that
+// state and lose it at exactly the wrong moment.
+builder.Services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
+{
+    var meta = sp.GetRequiredService<MetaIntegrationOptions>();
+    client.BaseAddress = new Uri($"https://graph.facebook.com/{meta.GraphApiVersion}/");
+    client.Timeout = TimeSpan.FromSeconds(meta.RequestTimeoutSeconds);
+});
 
 // ── Notification platform ────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
