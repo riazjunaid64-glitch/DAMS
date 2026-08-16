@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260816025957_AddBookingCancellationSettlement")]
+    [Migration("20260816044115_AddBookingCancellationSettlement")]
     partial class AddBookingCancellationSettlement
     {
         /// <inheritdoc />
@@ -396,6 +396,9 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("BookingId")
                         .HasColumnType("int");
 
+                    b.Property<DateTime>("CancellationDate")
+                        .HasColumnType("date");
+
                     b.Property<DateTime>("CancelledAt")
                         .HasColumnType("datetime2");
 
@@ -414,6 +417,10 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("Reason")
                         .IsRequired()
@@ -436,6 +443,8 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("BookingId")
                         .IsUnique();
+
+                    b.HasIndex("CancellationDate");
 
                     b.HasIndex("IdempotencyKey")
                         .IsUnique();

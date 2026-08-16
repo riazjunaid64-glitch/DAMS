@@ -496,6 +496,49 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(500_000m, pnl.NetProfit);
     }
 
+    /// <summary>
+    /// DAMS' business day is Pakistan time (UTC+5). A cancellation made at 00:30 PKT on 1 September
+    /// is still 19:30 UTC on 31 August. If reports dated the refund by the raw UTC instant
+    /// (CancelledAt) instead of the Pakistan business date (CancellationDate), it would land in
+    /// August's financial period instead of September's — moving income/liability across a period
+    /// boundary, which is much more serious at a month/year end than on an ordinary day.
+    /// </summary>
+    [Fact]
+    public async Task CancellationSettlement_UsesPakistanBusinessDate_NotRawUtcInstant_ForFinancialPeriod()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var payable = new FinanceAccount
+        {
+            Name = "Customer Refunds Payable", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability,
+            IsActive = true, SystemRole = FinanceSystemAccountRole.CustomerRefundPayable, LedgerCode = "REFUND-PAY", DisplayOrder = 515
+        };
+        var (bookingId, _) = await SeedCancellableBooking(context, paid: 500_000m);
+        context.AddRange(bank, payable);
+        await context.SaveChangesAsync();
+
+        // 1 September 00:30 Pakistan time == 31 August 19:30 UTC.
+        var cancelledAtUtc = new DateTime(2026, 8, 31, 19, 30, 0, DateTimeKind.Utc);
+        var cancellationDatePkt = new DateTime(2026, 9, 1);
+        context.BookingCancellationSettlements.Add(new BookingCancellationSettlement
+        {
+            BookingId = bookingId, CustomerCashReceivedSnapshot = 500_000m, RefundAmount = 100_000m,
+            RetainedAmount = 400_000m, RefundDecision = CancellationRefundDecision.PayLater,
+            RefundPayableAccountId = payable.Id, Reason = "Midnight-boundary regression test",
+            IdempotencyKey = "midnight-1", CancelledByUserId = 1, CancelledByName = "Admin",
+            CancelledAt = cancelledAtUtc, CancellationDate = cancellationDatePkt
+        });
+        await context.SaveChangesAsync();
+
+        var finance = Finance(context);
+        var august = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+        Assert.DoesNotContain(august.IncomeLines, l => l.Name == "Customer Refunds");
+
+        var september = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), new DateTime(2026, 9, 30));
+        var refundLine = Assert.Single(september.IncomeLines, l => l.Name == "Customer Refunds");
+        Assert.Equal(-100_000m, refundLine.Amount);
+    }
+
     private static async Task<(int BookingId, FinanceAccount Bank)> SeedCancellableBooking(AppDbContext context, decimal paid)
     {
         var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };

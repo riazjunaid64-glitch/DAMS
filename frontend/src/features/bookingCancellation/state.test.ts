@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeRetained, idempotencyKey, refundDecisionLabel, refundStatusLabel, validateCancellationDecision } from "./state";
+import { computeRetained, idempotencyKey, isStaleCancellationError, refundDecisionLabel, refundStatusLabel, validateCancellationDecision } from "./state";
 
 describe("booking cancellation settlement UI state", () => {
   it("computes retained amount as paid minus refund, clamped at zero", () => {
@@ -58,5 +58,13 @@ describe("booking cancellation settlement UI state", () => {
 
   it("generates distinct idempotency keys per cancellation operation", () => {
     expect(idempotencyKey("cancel")).not.toBe(idempotencyKey("cancel"));
+  });
+
+  it("recognizes every stale/concurrency error message the backend can return", () => {
+    expect(isStaleCancellationError("Customer payments changed while you were cancelling this booking. Reload and review the settlement again.")).toBe(true);
+    expect(isStaleCancellationError("The booking changed while you were cancelling it. Refresh and review the settlement again.")).toBe(true);
+    expect(isStaleCancellationError("The booking version is missing. Refresh and try again.")).toBe(true);
+    expect(isStaleCancellationError("The booking version is invalid. Refresh and try again.")).toBe(true);
+    expect(isStaleCancellationError("A refund source account is required when paying the refund now.")).toBe(false);
   });
 });

@@ -90,6 +90,43 @@ public sealed class BookingCancellationSettlementTests
         Assert.False(await h.Context.BookingCancellationRefunds.AnyAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cancel_Notes_ArePersisted_RegardlessOfRefundDecision(bool payNow)
+    {
+        // Notes are a general cancellation note, not a refund-payout note — they must survive
+        // whether or not there's a payout to attach them to (None/PayLater previously discarded
+        // them silently).
+        var h = await Harness.Create(paid: 500_000m);
+        var dto = payNow
+            ? h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true)
+            : h.CancelDto(500_000m, 0m, CancellationRefundDecision.None);
+        dto.RefundNotes = "Manager approved full forfeiture after discussion.";
+
+        await h.Service.CancelBookingAsync(h.BookingId, dto, Actor);
+
+        var settlement = await h.Context.BookingCancellationSettlements.SingleAsync();
+        Assert.Equal("Manager approved full forfeiture after discussion.", settlement.Notes);
+    }
+
+    [Fact]
+    public async Task Cancel_PayLaterRetry_WithStrayPayoutFields_IsRejected_NotTreatedAsIdenticalRetry()
+    {
+        // A retry that matches on BookingId/Cash/Amount/Decision/Reason/Notes but suddenly carries
+        // payout-only fields (which None/PayLater must never have) is a different request in
+        // disguise, not a duplicate of the original — even though it can't move any extra money.
+        var h = await Harness.Create(paid: 500_000m);
+        var original = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater, key: "paylater-key");
+        await h.Service.CancelBookingAsync(h.BookingId, original, Actor);
+
+        var withStrayFields = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater, key: "paylater-key");
+        withStrayFields.RefundFinanceAccountId = h.CashAccountId;
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.CancelBookingAsync(h.BookingId, withStrayFields, Actor));
+        Assert.Contains("different cancellation", error.Message);
+    }
+
     [Fact]
     public async Task PayPendingRefund_MarksPaid_AndCannotBePaidTwice()
     {

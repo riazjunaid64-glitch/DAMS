@@ -2,7 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { bookingCancellationApi } from "./api";
-import { computeRetained, idempotencyKey, money, pakistanToday, trapDialogKeys, validateCancellationDecision } from "./state";
+import { computeRetained, idempotencyKey, isStaleCancellationError, money, pakistanToday, trapDialogKeys, validateCancellationDecision } from "./state";
 import type { CancelBookingRequest, CancellationRefundDecision, RefundPaymentMethod } from "./types";
 
 interface FinanceAccountOption {
@@ -29,6 +29,11 @@ const PAYMENT_METHODS: { value: RefundPaymentMethod; label: string }[] = [
 export default function CancellationDialog({ bookingId, status, unitNumber, financeAccounts, onCancelled }: Props) {
   const [open, setOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  // True only after a fresh booking fetch has actually SUCCEEDED for this dialog-open. The
+  // financial form must never render against a stale or never-loaded snapshot — a failed refresh
+  // has to block the form, not silently fall back to whatever cashReceived/concurrencyToken were
+  // left over from a previous open (or their initial zero/empty defaults on a first-ever open).
+  const [prepared, setPrepared] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -52,11 +57,16 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
   const canCancel = status !== "Cancelled" && status !== "PossessionGiven" && status !== "SaleCompleted";
   if (!canCancel) return null;
 
-  const openDialog = async () => {
+  const openDialog = () => {
     setError(null);
     setStale(false);
+    setPrepared(false);
+    // Invalidate any snapshot left over from a previous open (or the initial zero/empty defaults
+    // on a first-ever open) — the fresh fetch below is the only thing allowed to make the form
+    // usable again.
+    setCashReceived(0);
+    setConcurrencyToken("");
     setOpen(true);
-    setPreparing(true);
     // One key per cancellation attempt — kept across retries of THIS operation, only replaced
     // when the dialog is (re)opened for a fresh attempt.
     setKey(idempotencyKey("cancel"));
@@ -68,12 +78,20 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     setRefundPaymentReference("");
     setRefundPaidAt(pakistanToday());
     setRefundNotes("");
+    void loadFreshBooking();
+  };
+
+  const loadFreshBooking = async () => {
+    setError(null);
+    setPreparing(true);
     try {
       const fresh = await bookingCancellationApi.current(bookingId);
       setConcurrencyToken(fresh.concurrencyToken);
       setCashReceived(fresh.payments.reduce((sum, p) => sum + p.amount, 0));
+      setPrepared(true);
     } catch (x) {
       setError(x instanceof Error ? x.message : "Could not load the current booking.");
+      setPrepared(false);
     } finally {
       setPreparing(false);
     }
@@ -120,7 +138,9 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
         refundPaymentMethod: payNow ? refundPaymentMethod : null,
         refundPaymentReference: payNow ? refundPaymentReference.trim() || null : null,
         refundPaidAt: payNow ? new Date(refundPaidAt).toISOString() : null,
-        refundNotes: payNow ? refundNotes.trim() || null : null,
+        // Sent regardless of decision — this is a general cancellation note, not a refund-payout
+        // note, so it must not be silently dropped just because there's no payout to attach it to.
+        refundNotes: refundNotes.trim() || null,
       };
       await bookingCancellationApi.cancel(bookingId, body);
       setOpen(false);
@@ -128,7 +148,7 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     } catch (x) {
       const message = x instanceof Error ? x.message : "Failed to cancel booking.";
       setError(message);
-      if (/payments changed|version is (missing|invalid)|Refresh and try again/i.test(message)) setStale(true);
+      if (isStaleCancellationError(message)) setStale(true);
     } finally {
       setSubmitting(false);
     }
@@ -159,10 +179,16 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
               <div role="alert" className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
                 {error}
                 {stale && <p className="mt-1 text-xs">Close this dialog and open Cancel Booking again to review the latest figures.</p>}
+                {!preparing && !prepared && (
+                  <div className="mt-3 flex gap-2">
+                    <Button type="button" size="sm" onClick={() => void loadFreshBooking()}>Retry</Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={close}>Close</Button>
+                  </div>
+                )}
               </div>
             )}
 
-            {!preparing && !stale && (
+            {!preparing && !stale && prepared && (
               <form onSubmit={submit} className="mt-4 grid gap-4">
                 <Metric label="Customer cash received" value={money(cashReceived)} />
 

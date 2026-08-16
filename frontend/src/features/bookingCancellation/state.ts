@@ -40,6 +40,15 @@ export function validateCancellationDecision(input: CancellationDecisionInput): 
   return null;
 }
 
+// Recognizes every "reload and try again" business error CancelBookingCoreAsync can produce for
+// a stale snapshot: a changed payment total, a changed booking (RowVersion conflict), or a
+// missing/invalid concurrency token. Centralized so the dialog's stale-detection can't silently
+// drift out of sync with the backend's wording again, the way it did the last time this message
+// changed.
+export function isStaleCancellationError(message: string): boolean {
+  return /payments changed|booking changed|version is (missing|invalid)|Refresh and (try again|review)/i.test(message);
+}
+
 export function refundStatusLabel(status: string): string {
   switch (status) {
     case "NotRequired": return "No refund required";

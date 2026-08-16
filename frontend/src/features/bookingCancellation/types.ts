@@ -24,6 +24,7 @@ export interface CancellationSettlement {
   refundDecision: CancellationRefundDecision;
   refundStatus: CancellationRefundStatus;
   reason: string;
+  notes?: string | null;
   cancelledAt: string;
   cancelledByUserId: number;
   cancelledByName: string;

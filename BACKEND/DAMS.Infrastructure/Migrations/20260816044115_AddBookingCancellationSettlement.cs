@@ -28,10 +28,12 @@ namespace DAMS.Infrastructure.Migrations
                     RefundDecision = table.Column<int>(type: "int", nullable: false),
                     RefundPayableAccountId = table.Column<int>(type: "int", nullable: true),
                     Reason = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: false),
+                    Notes = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
                     IdempotencyKey = table.Column<string>(type: "nvarchar(80)", maxLength: 80, nullable: false),
                     CancelledByUserId = table.Column<int>(type: "int", nullable: false),
                     CancelledByName = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
-                    CancelledAt = table.Column<DateTime>(type: "datetime2", nullable: false)
+                    CancelledAt = table.Column<DateTime>(type: "datetime2", nullable: false),
+                    CancellationDate = table.Column<DateTime>(type: "date", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -120,6 +122,11 @@ namespace DAMS.Infrastructure.Migrations
                 table: "BookingCancellationSettlements",
                 column: "BookingId",
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_BookingCancellationSettlements_CancellationDate",
+                table: "BookingCancellationSettlements",
+                column: "CancellationDate");
 
             migrationBuilder.CreateIndex(
                 name: "IX_BookingCancellationSettlements_IdempotencyKey",

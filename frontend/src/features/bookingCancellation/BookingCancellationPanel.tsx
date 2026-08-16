@@ -98,6 +98,7 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
             Cancelled {new Date(settlement.cancelledAt).toLocaleDateString()} by {settlement.cancelledByName}
           </p>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">{settlement.reason}</p>
+          {settlement.notes && <p className="mt-1 text-sm text-[var(--text-muted)]">Notes: {settlement.notes}</p>}
         </div>
       </div>
 
