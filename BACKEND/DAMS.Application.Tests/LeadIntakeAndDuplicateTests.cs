@@ -40,6 +40,14 @@ public sealed class LeadIntakeAndDuplicateTests
             .ToListAsync();
 
         Assert.Contains(alerts, n => n.RecipientUserId == h.AdminUserId);
+
+        // The notification is queued before the lead's final LD-###### reference is flushed to
+        // the database (both happen in the same save, so a crash between them can never lose
+        // the notification). Its Data must still carry the real reference, not the
+        // LD-PENDING-<guid> placeholder that exists in the database at that instant.
+        var alert = alerts.Single(n => n.RecipientUserId == h.AdminUserId);
+        Assert.Contains(lead.Lead!.LeadReference, alert.DataJson);
+        Assert.DoesNotContain("PENDING", alert.DataJson);
     }
 
     [Fact]
