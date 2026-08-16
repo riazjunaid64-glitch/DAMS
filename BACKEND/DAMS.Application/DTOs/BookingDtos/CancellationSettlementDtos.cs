@@ -34,6 +34,7 @@ namespace DAMS.Application.DTOs.BookingDtos
         public CancellationRefundDecision RefundDecision { get; set; }
         public CancellationRefundStatus RefundStatus { get; set; }
         public string Reason { get; set; } = string.Empty;
+        public string? Notes { get; set; }
         public DateTime CancelledAt { get; set; }
         public int CancelledByUserId { get; set; }
         public string CancelledByName { get; set; } = string.Empty;

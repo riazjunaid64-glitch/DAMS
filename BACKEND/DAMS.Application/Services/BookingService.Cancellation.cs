@@ -117,20 +117,27 @@ namespace DAMS.Application.Services
                     && existingByKey.CustomerCashReceivedSnapshot == expectedCash
                     && existingByKey.RefundAmount == refundAmount
                     && existingByKey.RefundDecision == dto.RefundDecision
-                    && existingByKey.Reason == reason;
+                    && existingByKey.Reason == reason
+                    && existingByKey.Notes == notesInput;
                 if (samePayload && dto.RefundDecision == CancellationRefundDecision.PayNow)
                 {
                     var existingRefund = await _context.BookingCancellationRefunds
                         .FirstOrDefaultAsync(r => r.SettlementId == existingByKey.Id, cancellationToken);
-                    // Full-payload comparison: PaidAt and Notes matter just as much as the account,
-                    // method and reference — a retry that silently changes any of them is a
-                    // different request, not a duplicate, and must be rejected rather than accepted.
+                    // Full-payload comparison: PaidAt matters just as much as the account, method
+                    // and reference — a retry that silently changes it is a different request, not
+                    // a duplicate, and must be rejected rather than accepted.
                     samePayload = existingRefund != null
                         && existingRefund.FinanceAccountId == dto.RefundFinanceAccountId
                         && existingRefund.PaymentMethod == dto.RefundPaymentMethod
                         && existingRefund.PaymentReference == paymentReferenceInput
-                        && existingRefund.PaidAt == dto.RefundPaidAt
-                        && existingRefund.Notes == notesInput;
+                        && existingRefund.PaidAt == dto.RefundPaidAt;
+                }
+                else if (samePayload)
+                {
+                    // None/PayLater never carry payout details — a retry that suddenly does is a
+                    // different request in disguise, not a duplicate of the original.
+                    samePayload = !dto.RefundFinanceAccountId.HasValue && !dto.RefundPaymentMethod.HasValue
+                        && paymentReferenceInput == null && !dto.RefundPaidAt.HasValue;
                 }
                 if (!samePayload)
                     throw new InvalidOperationException("This idempotency key was already used for a different cancellation.");
@@ -232,10 +239,15 @@ namespace DAMS.Application.Services
                 RefundDecision = dto.RefundDecision,
                 RefundPayableAccountId = refundPayableAccountId,
                 Reason = reason,
+                Notes = notesInput,
                 IdempotencyKey = idempotencyKey,
                 CancelledByUserId = actor.UserId,
                 CancelledByName = actorName,
-                CancelledAt = DateTime.UtcNow
+                CancelledAt = DateTime.UtcNow,
+                // The Pakistan business date, not the raw UTC instant: a cancellation at 00:30 PKT
+                // is still 19:30 UTC the previous calendar day, and every report must place this
+                // settlement's contra-revenue/liability on the PKT day the Admin actually acted.
+                CancellationDate = PakistanTime.Today
             };
             _context.BookingCancellationSettlements.Add(settlement);
 
@@ -374,12 +386,13 @@ namespace DAMS.Application.Services
             if (dto.PaymentMethod != PaymentMethod.Cash && paymentReference == null)
                 throw new InvalidOperationException("A payment reference is required for a non-cash refund.");
 
-            // The liability was recognised at CancelledAt; the cash movement cannot predate that,
-            // and cannot be future-dated while the system already reports the refund as Paid.
-            var paidAt = dto.PaidAt ?? DateTime.UtcNow;
+            // The liability was recognised on CancellationDate (the Pakistan business date, not the
+            // raw UTC CancelledAt instant); the cash movement cannot predate that, and cannot be
+            // future-dated while the system already reports the refund as Paid.
+            var paidAt = dto.PaidAt ?? PakistanTime.Today;
             if (paidAt.Date > PakistanTime.Today)
                 throw new InvalidOperationException("Refund date cannot be in the future.");
-            if (paidAt.Date < settlement.CancelledAt.Date)
+            if (paidAt.Date < settlement.CancellationDate.Date)
                 throw new InvalidOperationException("Refund date cannot be before the cancellation date.");
 
             // 12. Reference collision, scoped to the selected account.

@@ -479,12 +479,15 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.RetainedAmount).HasColumnType("decimal(18,2)");
                 entity.Property(s => s.RefundDecision).HasConversion<int>();
                 entity.Property(s => s.Reason).IsRequired().HasMaxLength(500);
+                entity.Property(s => s.Notes).HasMaxLength(2000);
                 entity.Property(s => s.IdempotencyKey).IsRequired().HasMaxLength(80);
                 entity.Property(s => s.CancelledByName).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.CancellationDate).HasColumnType("date");
 
                 entity.HasIndex(s => s.BookingId).IsUnique();
                 entity.HasIndex(s => s.IdempotencyKey).IsUnique();
                 entity.HasIndex(s => s.RefundPayableAccountId);
+                entity.HasIndex(s => s.CancellationDate);
 
                 entity.HasOne(s => s.Booking)
                       .WithOne(b => b.CancellationSettlement)

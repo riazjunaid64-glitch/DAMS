@@ -204,7 +204,7 @@ namespace DAMS.Application.Services
                 .Select(s => new RevenueRow
                 {
                     SortId = s.Id,
-                    Date = s.CancelledAt,
+                    Date = s.CancellationDate,
                     ProjectId = s.Booking.Unit.ProjectId,
                     ProjectName = s.Booking.Unit.Project.ProjectName,
                     Amount = -s.RefundAmount,
@@ -442,7 +442,7 @@ namespace DAMS.Application.Services
             var refunds = CancellationSettlementQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(s => new NetProfitRow
                 {
-                    SortId = s.Id, Date = s.CancelledAt, ProjectName = s.Booking.Unit.Project.ProjectName,
+                    SortId = s.Id, Date = s.CancellationDate, ProjectName = s.Booking.Unit.Project.ProjectName,
                     Kind = "revenue", Amount = -s.RefundAmount, IsPayment = false, PaymentType = null,
                     InstallmentType = null, Label = "Customer Refund"
                 });
@@ -563,17 +563,19 @@ namespace DAMS.Application.Services
         }
 
         // Cancellation settlements with a positive refund — the contra-revenue side of a
-        // cancellation. Dated at CancelledAt (when the obligation was recognised), never at the
-        // later cash payout date. Filtered by RefundPayableAccountId, matching every other
-        // account-scoped query here: the accounting counterpart of a refund is the liability
-        // account, not the bank the cash eventually leaves from.
+        // cancellation. Dated at CancellationDate, the Pakistan business date the obligation was
+        // recognised on — never CancelledAt (a raw UTC instant that can land on the wrong calendar
+        // day around Pakistan midnight) and never the later cash payout date. Filtered by
+        // RefundPayableAccountId, matching every other account-scoped query here: the accounting
+        // counterpart of a refund is the liability account, not the bank the cash eventually leaves
+        // from.
         private IQueryable<BookingCancellationSettlement> CancellationSettlementQuery(int? projectId, DateTime? fromValue,
             DateTime? toExclusive, int? accountId = null, bool unassigned = false)
         {
             var q = _context.BookingCancellationSettlements.AsNoTracking().Where(s => s.RefundAmount > 0m);
             if (projectId.HasValue) q = q.Where(s => s.Booking.Unit.ProjectId == projectId.Value);
-            if (fromValue.HasValue) q = q.Where(s => s.CancelledAt >= fromValue.Value);
-            if (toExclusive.HasValue) q = q.Where(s => s.CancelledAt < toExclusive.Value);
+            if (fromValue.HasValue) q = q.Where(s => s.CancellationDate >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(s => s.CancellationDate < toExclusive.Value);
             if (accountId.HasValue) q = q.Where(s => s.RefundPayableAccountId == accountId.Value);
             else if (unassigned) q = q.Where(_ => false);
             return q;

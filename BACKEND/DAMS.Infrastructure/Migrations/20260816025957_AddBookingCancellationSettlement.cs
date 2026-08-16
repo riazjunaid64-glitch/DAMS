@@ -15,18 +15,6 @@ namespace DAMS.Infrastructure.Migrations
                 name: "CK_FinanceAccounts_SystemRole",
                 table: "FinanceAccounts");
 
-            migrationBuilder.AlterColumn<byte[]>(
-                name: "RowVersion",
-                table: "AssetPurchases",
-                type: "rowversion",
-                rowVersion: true,
-                nullable: false,
-                defaultValue: new byte[0],
-                oldClrType: typeof(byte[]),
-                oldType: "rowversion",
-                oldRowVersion: true,
-                oldNullable: true);
-
             migrationBuilder.CreateTable(
                 name: "BookingCancellationSettlements",
                 columns: table => new
@@ -161,16 +149,6 @@ namespace DAMS.Infrastructure.Migrations
             migrationBuilder.DropCheckConstraint(
                 name: "CK_FinanceAccounts_SystemRole",
                 table: "FinanceAccounts");
-
-            migrationBuilder.AlterColumn<byte[]>(
-                name: "RowVersion",
-                table: "AssetPurchases",
-                type: "rowversion",
-                rowVersion: true,
-                nullable: true,
-                oldClrType: typeof(byte[]),
-                oldType: "rowversion",
-                oldRowVersion: true);
 
             migrationBuilder.AddCheckConstraint(
                 name: "CK_FinanceAccounts_SystemRole",

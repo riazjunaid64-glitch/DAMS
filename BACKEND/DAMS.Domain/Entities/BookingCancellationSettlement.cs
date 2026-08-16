@@ -24,11 +24,25 @@ namespace DAMS.Domain.Entities
 
         public string Reason { get; set; } = string.Empty;
 
+        // Free-text notes captured at cancellation time, independent of the refund decision — the
+        // Admin can leave a note ("Manager approved full forfeiture") whether or not money moves.
+        public string? Notes { get; set; }
+
         public string IdempotencyKey { get; set; } = string.Empty;
 
         public int CancelledByUserId { get; set; }
         public string CancelledByName { get; set; } = string.Empty;
+
+        // The exact audit instant, in UTC — who/when detail only. Never use this for financial
+        // period filtering: DAMS' business day is Pakistan time (UTC+5), so a cancellation made at
+        // 00:30 PKT is still 19:30 UTC the PREVIOUS calendar day. CancellationDate below is what
+        // reports use.
         public DateTime CancelledAt { get; set; } = DateTime.UtcNow;
+
+        // The Pakistan business date this cancellation belongs to — what P&L, Trial Balance,
+        // Balance Sheet and every other report use to place the contra-revenue/liability. Set once
+        // at cancellation as PakistanTime.Today; never recomputed from CancelledAt.
+        public DateTime CancellationDate { get; set; }
 
         public Booking Booking { get; set; } = null!;
         public FinanceAccount? RefundPayableAccount { get; set; }

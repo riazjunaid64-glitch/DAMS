@@ -198,7 +198,7 @@ namespace DAMS.Application.Services
                 .Where(s => account.IsRefundPayable && s.RefundPayableAccountId == id)
                 .Select(s => new FinanceAccountTransactionDto
                 {
-                    Kind = "Customer refund payable", RecordId = s.Id, Date = s.CancelledAt,
+                    Kind = "Customer refund payable", RecordId = s.Id, Date = s.CancellationDate,
                     Label = s.Booking.Customer.FullName, Reference = s.Booking.BookingReference,
                     ProjectName = s.Booking.Unit.Project.ProjectName,
                     Amount = s.RefundAmount, GrossAmount = s.RefundAmount, WhtAmount = 0m

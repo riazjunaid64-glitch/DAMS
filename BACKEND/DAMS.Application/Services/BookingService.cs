@@ -741,6 +741,7 @@ namespace DAMS.Application.Services
                             ? CancellationRefundStatus.Pending
                             : CancellationRefundStatus.Paid,
                     Reason = b.CancellationSettlement.Reason,
+                    Notes = b.CancellationSettlement.Notes,
                     CancelledAt = b.CancellationSettlement.CancelledAt,
                     CancelledByUserId = b.CancellationSettlement.CancelledByUserId,
                     CancelledByName = b.CancellationSettlement.CancelledByName,
