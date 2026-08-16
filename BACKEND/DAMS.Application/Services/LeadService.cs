@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
+using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
@@ -706,6 +707,78 @@ namespace DAMS.Application.Services
                     AssignedAt = h.AssignedAt
                 })
                 .ToListAsync(cancellationToken);
+        }
+
+        public async Task<List<LeadExternalSubmissionDto>> GetExternalSubmissionsAsync(
+            int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            await EnsureVisibleAsync(leadId, ctx, cancellationToken);
+
+            var rows = await _context.LeadExternalSubmissions
+                .AsNoTracking()
+                .Where(s => s.LeadId == leadId)
+                .OrderByDescending(s => s.ExternalSubmittedAt ?? s.ReceivedAt)
+                .ThenByDescending(s => s.Id)
+                .Select(s => new
+                {
+                    s.Id,
+                    s.Provider,
+                    s.Platform,
+                    s.ExternalLeadId,
+                    s.ExternalFormReference,
+                    s.ExternalFormName,
+                    s.PageName,
+                    s.AdAccountExternalId,
+                    s.CampaignName,
+                    s.AdSetName,
+                    s.AdName,
+                    s.ExternalSubmittedAt,
+                    s.ReceivedAt,
+                    s.FieldDataJson,
+                    ConnectionDisplayName = _context.ExternalIntegrationConnections
+                        .Where(c => c.Id == s.ExternalIntegrationConnectionId)
+                        .Select(c => c.DisplayName)
+                        .FirstOrDefault()
+                })
+                .ToListAsync(cancellationToken);
+
+            return rows.Select(s => new LeadExternalSubmissionDto
+            {
+                Id = s.Id,
+                Provider = s.Provider,
+                Platform = s.Platform,
+                ConnectionDisplayName = s.ConnectionDisplayName,
+                ExternalLeadId = s.ExternalLeadId,
+                ExternalFormReference = s.ExternalFormReference,
+                ExternalFormName = s.ExternalFormName,
+                PageName = s.PageName,
+                AdAccountExternalId = s.AdAccountExternalId,
+                CampaignName = s.CampaignName,
+                AdSetName = s.AdSetName,
+                AdName = s.AdName,
+                ExternalSubmittedAt = s.ExternalSubmittedAt,
+                ReceivedAt = s.ReceivedAt,
+                FieldData = ReadFieldData(s.FieldDataJson)
+            }).ToList();
+        }
+
+        /// <summary>
+        /// The stored answers, or nothing at all. A receipt written before this feature existed
+        /// has no field data, and malformed JSON is not worth failing a page load over.
+        /// </summary>
+        private static List<ExternalFieldAnswerDto> ReadFieldData(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return [];
+
+            try
+            {
+                return System.Text.Json.JsonSerializer.Deserialize<List<ExternalFieldAnswerDto>>(json) ?? [];
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return [];
+            }
         }
 
         // ── Mutations ───────────────────────────────────────────────────────────────

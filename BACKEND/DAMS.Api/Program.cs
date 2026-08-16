@@ -73,6 +73,18 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             }));
+    // Meta delivers lead webhooks in bursts and disables a subscription that keeps failing.
+    // Its own bucket, so neither this nor the generic intake endpoint can starve the other.
+    options.AddPolicy("metaWebhook", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? IPAddress.None.ToString(),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 600,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
     // Notification settings, templates, test sends and subscription writes are cheap to
     // call and expensive to abuse; bound them per signed-in user rather than per IP so one
     // shared office address cannot lock everybody out.
@@ -243,6 +255,11 @@ builder.Services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =
     client.BaseAddress = new Uri($"https://graph.facebook.com/{meta.GraphApiVersion}/");
     client.Timeout = TimeSpan.FromSeconds(meta.RequestTimeoutSeconds);
 });
+builder.Services.AddScoped<IMetaResourceSyncService, MetaResourceSyncService>();
+builder.Services.AddScoped<IMetaIntegrationService, MetaIntegrationService>();
+builder.Services.AddScoped<IMetaWebhookIntakeService, MetaWebhookIntakeService>();
+builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
+builder.Services.AddHostedService<IntegrationBackgroundService>();
 
 // ── Notification platform ────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
