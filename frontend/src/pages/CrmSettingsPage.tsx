@@ -11,6 +11,7 @@ import {
   Label,
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
+import MetaIntegrationsPanel from "../features/integrations/MetaIntegrationsPanel.tsx";
 import { apiJson, jsonRequest } from "../features/leads/leadApi.ts";
 import type { ClosureReason, LeadSource, StaffMember, Team } from "../features/leads/types.ts";
 
@@ -22,7 +23,11 @@ export default function CrmSettingsPage({ user }: Props) {
 }
 
 function SettingsWorkspace({ user }: { user: User }) {
-  const [tab, setTab] = useState("staff");
+  // Returning from Meta's consent screen should land on the tab that sent you there.
+  const [tab, setTab] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tab") === "integrations" || params.has("meta") ? "integrations" : "staff";
+  });
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [linkable, setLinkable] = useState<LinkableUser[]>([]);
   const [sources, setSources] = useState<LeadSource[]>([]);
@@ -56,9 +61,11 @@ function SettingsWorkspace({ user }: { user: User }) {
       <CrmHeader title="CRM administration" subtitle="Manage secure staff access and the controlled configuration used by the Lead workflow." role={user.role} actions={<Button variant="outline" onClick={() => location.assign("/crm")}>← Lead workspace</Button>} />
       <div className="mx-auto w-full max-w-[1350px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-        <CrmTabs active={tab} onChange={setTab} items={[{ id: "staff", label: "Staff accounts", count: staff.length }, { id: "teams", label: "Sales teams", count: teams.length }, { id: "sources", label: "Lead sources", count: sources.length }, { id: "reasons", label: "Closure reasons", count: reasons.length }]} />
+        <CrmTabs active={tab} onChange={setTab} items={[{ id: "staff", label: "Staff accounts", count: staff.length }, { id: "teams", label: "Sales teams", count: teams.length }, { id: "sources", label: "Lead sources", count: sources.length }, { id: "reasons", label: "Closure reasons", count: reasons.length }, { id: "integrations", label: "Integrations" }]} />
         <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6">
-          {loading ? <p className="py-16 text-center text-sm text-[var(--text-muted)]">Loading configuration…</p> : (
+          {/* Integrations loads its own data, so it stays usable even if the shared
+              configuration fetch above failed. */}
+          {tab === "integrations" ? <MetaIntegrationsPanel /> : loading ? <p className="py-16 text-center text-sm text-[var(--text-muted)]">Loading configuration…</p> : (
             <>
               {tab === "staff" && <SettingsTable title="Staff accounts" description="Create a secure login or connect an existing account to an employee. Role changes invalidate existing refresh sessions." addLabel="Add staff account" onAdd={() => open("staff")} headers={["Employee", "Login", "Role", "Team", "Status", ""]} rows={staff.map((item) => [<div><p className="font-semibold text-[var(--text-heading)]">{item.fullName}</p><p className="text-xs text-[var(--text-muted)]">{item.jobTitle} · {item.department}</p></div>, item.email ?? "No account", roleLabel(item.role), item.teamName ?? "No team", item.status, <Button size="sm" variant="outline" onClick={() => open("staff", item)}>Manage</Button>])} empty="No employees exist yet." />}
               {tab === "teams" && <SettingsTable title="Sales teams" description="Managers see the team they belong to and any team they manage." addLabel="Create team" onAdd={() => open("team")} headers={["Team", "Manager", "Members", "Status", ""]} rows={teams.map((item) => [item.name, item.managerName ?? "Not assigned", item.memberCount, item.isActive ? "Active" : "Inactive", <Button size="sm" variant="outline" onClick={() => open("team", item)}>Edit</Button>])} empty="No sales teams configured." />}

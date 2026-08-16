@@ -77,6 +77,83 @@ export interface Lead {
   documentCount: number;
 }
 
+export type MetaConnectionStatus =
+  | "Connected"
+  | "NeedsReauthorization"
+  | "Disconnected"
+  | "Error";
+
+export interface MetaConnection {
+  id: number;
+  provider: string;
+  displayName: string;
+  status: MetaConnectionStatus;
+  connectedAt: string;
+  connectedByName?: string | null;
+  lastSyncedAt?: string | null;
+  lastErrorAt?: string | null;
+  lastError?: string | null;
+  tokenExpiresAt?: string | null;
+  grantedScopes: string[];
+  pageCount: number;
+  instagramCount: number;
+  adAccountCount: number;
+  leadFormCount: number;
+  enabledResourceCount: number;
+}
+
+export interface MetaResource {
+  id: number;
+  resourceType: string;
+  externalId: string;
+  parentExternalId?: string | null;
+  name?: string | null;
+  externalStatus?: string | null;
+  isEnabled: boolean;
+  isActive: boolean;
+  isSubscribed: boolean;
+  lastSeenAt?: string | null;
+}
+
+export interface MetaResourceGroup {
+  resourceType: string;
+  label: string;
+  items: MetaResource[];
+}
+
+export interface MetaSyncResult {
+  discovered: number;
+  updated: number;
+  deactivated: number;
+  syncedAt: string;
+  warning?: string | null;
+}
+
+/** One answer from a provider form. Unmapped answers are kept and shown, never discarded. */
+export interface ExternalFieldAnswer {
+  name: string;
+  value?: string | null;
+  isMapped: boolean;
+}
+
+export interface ExternalSubmission {
+  id: number;
+  provider: string;
+  platform?: string | null;
+  connectionDisplayName?: string | null;
+  externalLeadId: string;
+  externalFormReference?: string | null;
+  externalFormName?: string | null;
+  pageName?: string | null;
+  adAccountExternalId?: string | null;
+  campaignName?: string | null;
+  adSetName?: string | null;
+  adName?: string | null;
+  externalSubmittedAt?: string | null;
+  receivedAt: string;
+  fieldData: ExternalFieldAnswer[];
+}
+
 export interface LeadList {
   items: Lead[];
   totalCount: number;
