@@ -19,6 +19,13 @@ describe("booking cancellation settlement UI state", () => {
     expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 0, decision: "PayNow" })).toContain("must be None");
   });
 
+  it("never defaults a paid customer's refund to zero without an explicit decision", () => {
+    // Money was received but the Admin hasn't chosen anything yet — must block, not silently retain 100%.
+    expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 0, decision: "" })).toContain("Confirm the refund decision");
+    // Nothing was ever paid — there is nothing to decide, so an unmade decision is fine.
+    expect(validateCancellationDecision({ cashReceived: 0, refundAmount: 0, decision: "" })).toBeNull();
+  });
+
   it("requires an explicit Pay now / Pay later choice once a refund is entered", () => {
     expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 450_000, decision: "" })).toContain("Choose whether");
     expect(validateCancellationDecision({ cashReceived: 500_000, refundAmount: 450_000, decision: "PayLater" })).toBeNull();

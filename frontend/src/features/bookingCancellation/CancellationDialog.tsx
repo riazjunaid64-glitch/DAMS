@@ -41,7 +41,7 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
   const [key, setKey] = useState("");
 
   const [reason, setReason] = useState("");
-  const [refundAmount, setRefundAmount] = useState("0");
+  const [refundAmount, setRefundAmount] = useState("");
   const [decision, setDecision] = useState<CancellationRefundDecision | "">("");
   const [refundFinanceAccountId, setRefundFinanceAccountId] = useState("");
   const [refundPaymentMethod, setRefundPaymentMethod] = useState<RefundPaymentMethod>("Cash");
@@ -61,7 +61,7 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     // when the dialog is (re)opened for a fresh attempt.
     setKey(idempotencyKey("cancel"));
     setReason("");
-    setRefundAmount("0");
+    setRefundAmount("");
     setDecision("");
     setRefundFinanceAccountId(financeAccounts.length === 1 ? String(financeAccounts[0].id) : "");
     setRefundPaymentMethod("Cash");
@@ -80,6 +80,15 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
   };
 
   const close = () => { if (!submitting) setOpen(false); };
+
+  // The Admin must pick one of the three options explicitly — picking "No refund" is the only
+  // thing allowed to zero the amount out; typing/switching away from it clears a stale "0" so a
+  // refund can't be submitted while still showing the no-refund amount.
+  const chooseDecision = (next: CancellationRefundDecision) => {
+    setDecision(next);
+    if (next === "None") setRefundAmount("0");
+    else if (refundAmount.trim() === "" || refundAmount === "0") setRefundAmount("");
+  };
 
   const refundValue = Number(refundAmount) || 0;
   const retained = computeRetained(cashReceived, refundValue);
@@ -164,23 +173,31 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
                   </>
                 ) : (
                   <>
-                    <Field label="Refund to customer" type="number" min={0} max={cashReceived} step="0.01" required
-                      value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} />
-                    <Metric label="Company will retain" value={money(retained)} />
+                    <fieldset className="grid gap-2">
+                      <legend className="text-sm font-medium text-[var(--text-secondary)]">Refund decision</legend>
+                      <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                        <input type="radio" name="refund-decision" checked={decision === "None"} onChange={() => chooseDecision("None")} />
+                        No refund — retain the full amount
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                        <input type="radio" name="refund-decision" checked={decision === "PayNow"} onChange={() => chooseDecision("PayNow")} />
+                        Refund now
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                        <input type="radio" name="refund-decision" checked={decision === "PayLater"} onChange={() => chooseDecision("PayLater")} />
+                        Record refund as payable / pay later
+                      </label>
+                    </fieldset>
 
-                    {refundValue > 0 && (
-                      <fieldset className="grid gap-2">
-                        <legend className="text-sm font-medium text-[var(--text-secondary)]">Refund timing</legend>
-                        <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-                          <input type="radio" name="refund-timing" checked={decision === "PayNow"} onChange={() => setDecision("PayNow")} />
-                          Pay refund now
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-                          <input type="radio" name="refund-timing" checked={decision === "PayLater"} onChange={() => setDecision("PayLater")} />
-                          Record refund as payable / pay later
-                        </label>
-                      </fieldset>
+                    {(decision === "PayNow" || decision === "PayLater") && (
+                      <>
+                        <Field label="Refund to customer" type="number" min={0.01} max={cashReceived} step="0.01" required
+                          value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} />
+                        <Metric label="Company will retain" value={money(retained)} />
+                      </>
                     )}
+
+                    {decision === "None" && <Metric label="Company will retain" value={money(cashReceived)} />}
 
                     {refundValue > 0 && decision === "PayLater" && (
                       <p className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-xs text-[var(--text-muted)]">
@@ -221,11 +238,11 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
                   <p>Customer paid <strong>{money(cashReceived)}</strong></p>
                   <p>Refund <strong>{money(refundValue)}</strong></p>
                   <p>Company retains <strong>{money(retained)}</strong></p>
-                  <p>Refund timing <strong>{refundValue === 0 ? "No refund" : decision === "PayNow" ? "Pay now" : decision === "PayLater" ? "Pay later" : "—"}</strong></p>
+                  <p>Refund timing <strong>{decision === "None" ? "No refund" : decision === "PayNow" ? "Pay now" : decision === "PayLater" ? "Pay later" : "—"}</strong></p>
                   <p>Unit released <strong>{unitNumber}</strong></p>
                 </div>
 
-                {validationError && refundValue > 0 && (
+                {validationError && (
                   <p role="alert" className="text-xs text-rose-400">{validationError}</p>
                 )}
 

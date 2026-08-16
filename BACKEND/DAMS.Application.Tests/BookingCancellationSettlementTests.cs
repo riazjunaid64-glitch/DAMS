@@ -100,7 +100,7 @@ public sealed class BookingCancellationSettlementTests
         var pay = new PayCancellationRefundDto
         {
             FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
-            PaidAt = DateTime.UtcNow, IdempotencyKey = "pay-1"
+            PaidAt = PakistanTime.Today, IdempotencyKey = "pay-1"
         };
         var result = await h.Service.PayCancellationRefundAsync(h.BookingId, pay, Actor);
         Assert.Equal(CancellationRefundStatus.Paid, result.CancellationSettlement!.RefundStatus);
@@ -109,7 +109,7 @@ public sealed class BookingCancellationSettlementTests
         var again = new PayCancellationRefundDto
         {
             FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
-            PaidAt = DateTime.UtcNow, IdempotencyKey = "pay-2"
+            PaidAt = PakistanTime.Today, IdempotencyKey = "pay-2"
         };
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.PayCancellationRefundAsync(h.BookingId, again, Actor));
         Assert.Contains("already been paid", error.Message);
@@ -246,6 +246,59 @@ public sealed class BookingCancellationSettlementTests
     }
 
     [Fact]
+    public async Task Cancel_PayNow_SameKey_ButDifferentPaidAtOrNotes_IsRejected_NotTreatedAsIdenticalRetry()
+    {
+        // The account, method and reference alone are not the whole payload — a retry that keeps
+        // those the same but silently changes the paid date or notes is still a different request
+        // and must not be accepted as a duplicate of the original.
+        var h = await Harness.Create(paid: 500_000m);
+        var original = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true, key: "paynow-key");
+        original.RefundNotes = "Paid at office";
+        await h.Service.CancelBookingAsync(h.BookingId, original, Actor);
+
+        var differentDate = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true, key: "paynow-key");
+        differentDate.RefundNotes = "Paid at office";
+        differentDate.RefundPaidAt = PakistanTime.Today.AddDays(-1);
+        var dateError = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, differentDate, Actor));
+        Assert.Contains("different cancellation", dateError.Message);
+
+        var differentNotes = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true, key: "paynow-key");
+        differentNotes.RefundNotes = "Paid by manager";
+        var notesError = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, differentNotes, Actor));
+        Assert.Contains("different cancellation", notesError.Message);
+
+        // The exact original payload is still accepted as a genuine retry.
+        var exactRetry = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true, key: "paynow-key");
+        exactRetry.RefundNotes = "Paid at office";
+        await h.Service.CancelBookingAsync(h.BookingId, exactRetry, Actor);
+        Assert.Single(h.Context.BookingCancellationRefunds);
+    }
+
+    [Fact]
+    public async Task PayPendingRefund_SameKey_ButDifferentPaidAtOrNotes_IsRejected_NotTreatedAsIdenticalRetry()
+    {
+        var h = await Harness.Create(paid: 500_000m);
+        await h.Service.CancelBookingAsync(h.BookingId,
+            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater), Actor);
+
+        var original = new PayCancellationRefundDto
+        {
+            FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = PakistanTime.Today, Notes = "Paid at office", IdempotencyKey = "pay-key"
+        };
+        await h.Service.PayCancellationRefundAsync(h.BookingId, original, Actor);
+
+        var differentNotes = new PayCancellationRefundDto
+        {
+            FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = PakistanTime.Today, Notes = "Paid by manager", IdempotencyKey = "pay-key"
+        };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.PayCancellationRefundAsync(h.BookingId, differentNotes, Actor));
+        Assert.Contains("different refund payment", error.Message);
+    }
+
+    [Fact]
     public async Task Cancel_StaleCashSnapshot_IsRejected_AndDoesNotSilentlyRecompute()
     {
         var h = await Harness.Create(paid: 500_000m);
@@ -261,13 +314,110 @@ public sealed class BookingCancellationSettlementTests
     }
 
     [Fact]
-    public async Task Cancel_StaleConcurrencyToken_IsRejected()
+    public async Task Cancel_StaleConcurrencyToken_IsRejected_WithACleanBusinessError()
     {
         var h = await Harness.Create(paid: 0m);
         var dto = h.CancelDto(0m, 0m, CancellationRefundDecision.None);
         dto.ConcurrencyToken = Convert.ToBase64String(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 });
 
-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => h.Service.CancelBookingAsync(h.BookingId, dto, Actor));
+        // The mismatched RowVersion surfaces from SaveChangesAsync as EF's raw
+        // DbUpdateConcurrencyException; the service must translate it into the same clean,
+        // controller-friendly InvalidOperationException every other rejection in this method uses
+        // — never let the infrastructure exception escape to the caller.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, dto, Actor));
+        Assert.Contains("Refresh and review", error.Message);
+    }
+
+    [Fact]
+    public async Task Cancel_PayNow_RefundIdempotencyKey_NeverExceedsTheColumnLimit_EvenAtMaxLength()
+    {
+        // BookingCancellationRefund.IdempotencyKey has its own 80-char limit. A cancellation key
+        // already at that limit must not be suffixed (e.g. ":refund") when copied onto the refund —
+        // that would silently overflow the column on a real database.
+        var h = await Harness.Create(paid: 500_000m);
+        var maxLengthKey = new string('k', 80);
+        var dto = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true, key: maxLengthKey);
+
+        await h.Service.CancelBookingAsync(h.BookingId, dto, Actor);
+
+        var refund = await h.Context.BookingCancellationRefunds.SingleAsync();
+        Assert.Equal(maxLengthKey, refund.IdempotencyKey);
+        Assert.True(refund.IdempotencyKey.Length <= 80);
+    }
+
+    [Fact]
+    public async Task Cancel_PayNow_RefundDateInTheFuture_IsRejected()
+    {
+        var h = await Harness.Create(paid: 500_000m);
+        var dto = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true);
+        dto.RefundPaidAt = PakistanTime.Today.AddDays(1);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, dto, Actor));
+        Assert.Contains("cannot be in the future", error.Message);
+    }
+
+    [Fact]
+    public async Task Cancel_PayNow_RefundDateBeforeCancellationDate_IsRejected()
+    {
+        var h = await Harness.Create(paid: 500_000m);
+        var dto = h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true);
+        dto.RefundPaidAt = PakistanTime.Today.AddDays(-1);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.CancelBookingAsync(h.BookingId, dto, Actor));
+        Assert.Contains("before the cancellation date", error.Message);
+    }
+
+    [Fact]
+    public async Task PayPendingRefund_DateInTheFuture_IsRejected()
+    {
+        var h = await Harness.Create(paid: 500_000m);
+        await h.Service.CancelBookingAsync(h.BookingId,
+            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater), Actor);
+
+        var pay = new PayCancellationRefundDto
+        {
+            FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = PakistanTime.Today.AddDays(1), IdempotencyKey = "future-pay"
+        };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.PayCancellationRefundAsync(h.BookingId, pay, Actor));
+        Assert.Contains("cannot be in the future", error.Message);
+    }
+
+    [Fact]
+    public async Task PayPendingRefund_DateBeforeCancellationDate_IsRejected()
+    {
+        // The settlement was just created (CancelledAt == now), so paying it out "yesterday" is
+        // unambiguously before the cancellation regardless of timezone rounding.
+        var h = await Harness.Create(paid: 500_000m);
+        await h.Service.CancelBookingAsync(h.BookingId,
+            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater), Actor);
+
+        var pay = new PayCancellationRefundDto
+        {
+            FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = PakistanTime.Today.AddDays(-1), IdempotencyKey = "backdated-pay"
+        };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.PayCancellationRefundAsync(h.BookingId, pay, Actor));
+        Assert.Contains("before the cancellation date", error.Message);
+    }
+
+    [Fact]
+    public async Task Cancel_PayNow_RefundAccount_CannotBeDeletedOrRetyped_Afterwards()
+    {
+        var h = await Harness.Create(paid: 500_000m);
+        await h.Service.CancelBookingAsync(h.BookingId,
+            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayNow, payNow: true), Actor);
+
+        var accounts = new FinanceAccountService(h.Context);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.DeleteUnusedAsync(h.CashAccountId));
+
+        var current = await accounts.GetByIdAsync(h.CashAccountId);
+        var typeChangeError = await Assert.ThrowsAsync<InvalidOperationException>(() => accounts.UpdateAsync(h.CashAccountId, new DAMS.Application.DTOs.FinanceDtos.UpdateFinanceAccountDto
+        {
+            Name = current.Name, Type = FinanceAccountType.Bank, AccountHolderName = current.AccountHolderName,
+            OpeningBalance = current.OpeningBalance, ConcurrencyToken = current.ConcurrencyToken
+        }));
+        Assert.Contains("cannot change type", typeChangeError.Message);
     }
 
     // ── History & side effects ──────────────────────────────────────────────
@@ -407,7 +557,10 @@ public sealed class BookingCancellationSettlementTests
             IdempotencyKey = key,
             RefundFinanceAccountId = payNow ? CashAccountId : null,
             RefundPaymentMethod = payNow ? PaymentMethod.Cash : null,
-            RefundPaidAt = payNow ? DateTime.UtcNow : null
+            // PakistanTime.Today, not DateTime.UtcNow: the service validates RefundPaidAt against
+            // PakistanTime.Today, and UtcNow can land on the prior calendar day for part of every
+            // day (Pakistan is UTC+5), which would make this flaky right around that boundary.
+            RefundPaidAt = payNow ? PakistanTime.Today : null
         };
     }
 

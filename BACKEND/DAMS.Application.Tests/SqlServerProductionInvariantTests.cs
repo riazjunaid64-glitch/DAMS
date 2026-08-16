@@ -1,4 +1,5 @@
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -272,6 +273,76 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(4_600m, Assert.Single(await loans.GetAllAsync(false)).CurrentBalance);
         Assert.Equal(40m, (await finance.GetProfitAndLossAsync(null,
             new DateTime(2026, 8, 1), new DateTime(2026, 8, 31))).TotalExpenses);
+    }
+
+    // Booking cancellation depends on real SQL Server rowversion semantics (EF's InMemory provider
+    // cannot reproduce a genuine OriginalValue mismatch at SaveChanges) and runs the newest
+    // migration, so this is the one place that actually proves: (1) the settlement/refund tables,
+    // indexes and check constraints migrate cleanly, and (2) a stale RowVersion is translated into
+    // the clean business error every other rejection uses, never EF's raw
+    // DbUpdateConcurrencyException.
+    [SqlServerFact]
+    public async Task CancellationSettlement_MigratesAndTranslatesRowVersionConflicts_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId;
+        string staleToken;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "SQL cancellation", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "SQL-CANCEL-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "SQL Cancel Customer", Phone = "03008888888", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"SQL-CXL-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 500_000m, BookingAmountReceived = 500_000m, BookingDate = DateTime.UtcNow
+            };
+            booking.Payments.Add(new Payment
+            {
+                Booking = booking, Amount = 500_000m, Type = PaymentType.BookingAmount, PaymentMethod = PaymentMethod.Cash
+            });
+            db.AddRange(project, unit, customer, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+            staleToken = Convert.ToBase64String(booking.RowVersion);
+        }
+
+        // Another admin edits the booking (not its payments) after the cancellation dialog captured
+        // its RowVersion. This must be caught by the RowVersion check specifically — the customer
+        // cash snapshot is unchanged, so the separate stale-cash check must not be what fires here.
+        await using (var db = new AppDbContext(options))
+        {
+            var booking = await db.Bookings.SingleAsync(b => b.Id == bookingId);
+            booking.InternalNotes = "Edited by another admin";
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var service = new BookingService(db, new CustomerService(db), new FinanceAccountService(db));
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CancelBookingAsync(bookingId, new CancelBookingDto
+            {
+                Reason = "SQL invariant cancellation", ExpectedCustomerCashReceived = 500_000m,
+                RefundAmount = 0m, RefundDecision = CancellationRefundDecision.None,
+                IdempotencyKey = "sql-cancel-stale", ConcurrencyToken = staleToken
+            }, Actor));
+            Assert.Contains("Refresh and review", error.Message);
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            Assert.False(await verify.BookingCancellationSettlements.AnyAsync(s => s.BookingId == bookingId));
+            Assert.Equal(BookingStatus.PaymentPlanActive, (await verify.Bookings.SingleAsync(b => b.Id == bookingId)).Status);
+        }
     }
 
     private static BookingCommission Commission(int bookingId, int partnerId, BookingCommissionStatus status,

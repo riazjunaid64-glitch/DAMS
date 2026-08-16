@@ -392,7 +392,8 @@ public sealed class FinanceReportingAndCapitalTests
         {
             Reason = "Customer requested cancellation", ExpectedCustomerCashReceived = 500_000m,
             RefundAmount = 450_000m, RefundDecision = CancellationRefundDecision.PayNow, IdempotencyKey = "pn-1",
-            RefundFinanceAccountId = bank.Id, RefundPaymentMethod = PaymentMethod.Cash, RefundPaidAt = DateTime.UtcNow
+            RefundFinanceAccountId = bank.Id, RefundPaymentMethod = PaymentMethod.Cash,
+            RefundPaidAt = DAMS.Application.Common.PakistanTime.Today
         }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
 
         var today = DateTime.UtcNow.Date;
@@ -413,6 +414,22 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(50_000m, sheet.TotalAssets);
         Assert.Equal(0m, sheet.TotalLiabilities);
         Assert.Equal(50_000m, sheet.RetainedProfit);
+
+        // The Trial Balance must place the refund's negative income amount on the Debit side, not
+        // leave it as a negative Credit — a negative Credit is not a valid double-entry cell even
+        // when the column totals still happen to net out. GetTrialBalanceAsync snaps a mid-month
+        // "as at" date back to the END OF THE PREVIOUS month, so the current month-end (not
+        // "today") must be passed to actually include today's cancellation in the column.
+        var monthEnd = new DateTime(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month));
+        var trial = await Finance(context).GetTrialBalanceAsync(null, monthEnd, 0);
+        var refundRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Refunds");
+        Assert.Equal(450_000m, Assert.Single(refundRow.DebitBalances));
+        Assert.Equal(0m, Assert.Single(refundRow.CreditBalances));
+        var receiptsRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Receipts");
+        Assert.Equal(0m, Assert.Single(receiptsRow.DebitBalances));
+        Assert.Equal(500_000m, Assert.Single(receiptsRow.CreditBalances));
+        Assert.Equal(500_000m, Assert.Single(trial.ColumnDebitTotals));
+        Assert.Equal(500_000m, Assert.Single(trial.ColumnCreditTotals));
     }
 
     [Fact]
@@ -444,7 +461,8 @@ public sealed class FinanceReportingAndCapitalTests
 
         await booking.PayCancellationRefundAsync(bookingId, new PayCancellationRefundDto
         {
-            FinanceAccountId = bank.Id, PaymentMethod = PaymentMethod.Cash, PaidAt = DateTime.UtcNow, IdempotencyKey = "pay-later-1"
+            FinanceAccountId = bank.Id, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = DAMS.Application.Common.PakistanTime.Today, IdempotencyKey = "pay-later-1"
         }, new DAMS.Application.Common.FinancialWorkflowActor(1, "Admin"));
 
         // After payment: cash moved, liability cleared, P&L unchanged (no second recognition).

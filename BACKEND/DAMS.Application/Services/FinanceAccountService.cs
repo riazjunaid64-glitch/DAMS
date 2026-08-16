@@ -772,6 +772,8 @@ namespace DAMS.Application.Services
             || await _context.AssetPurchases.AnyAsync(p => p.FinanceAccountId == id || p.AssetAccountId == id, cancellationToken)
             || await _context.CommissionPayouts.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)
             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
+            || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == id, cancellationToken)
+            || await _context.BookingCancellationSettlements.AnyAsync(s => s.RefundPayableAccountId == id, cancellationToken)
             || await _context.WhtDeposits.AnyAsync(d => d.FinanceAccountId == id, cancellationToken)
             || await _context.OpeningBalanceEntries.AnyAsync(e => e.FinanceAccountId == id, cancellationToken)
             || await _context.CapitalPartners.AnyAsync(p => p.FinanceAccountId == id, cancellationToken)

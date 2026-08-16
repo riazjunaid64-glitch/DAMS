@@ -121,10 +121,17 @@ namespace DAMS.Application.Services
 
                 var start = openingDate.HasValue && openingDate.Value <= columnDate ? openingDate.Value : SqlStart;
                 var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), cancellationToken);
+                // Income is credit-normal and expense is debit-normal, but a contra line (e.g.
+                // Customer Refunds) carries a negative amount — that negative amount must flip to
+                // the opposite column, not sit as a negative balance in its normal column. A
+                // negative Credit is not a valid trial-balance cell even when the totals still
+                // happen to net out.
                 foreach (var line in pnl.Income)
-                    values[$"I:{line.Key}"] = new TrialValue(VirtualId("I:" + line.Key), null, line.Name, FinanceAccountType.Other, 0m, line.Amount);
+                    values[$"I:{line.Key}"] = new TrialValue(VirtualId("I:" + line.Key), null, line.Name, FinanceAccountType.Other,
+                        line.Amount < 0m ? -line.Amount : 0m, line.Amount < 0m ? 0m : line.Amount);
                 foreach (var line in pnl.Expenses)
-                    values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other, line.Amount, 0m);
+                    values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other,
+                        line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
 
                 if (!projectId.HasValue)
                 {

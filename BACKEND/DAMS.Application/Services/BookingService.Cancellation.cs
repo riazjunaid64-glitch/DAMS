@@ -105,6 +105,7 @@ namespace DAMS.Application.Services
             var refundAmount = Money(dto.RefundAmount);
             var expectedCash = Money(dto.ExpectedCustomerCashReceived);
             var paymentReferenceInput = Limited(dto.RefundPaymentReference, "Payment reference", 200);
+            var notesInput = Limited(dto.RefundNotes, "Notes", 2000);
 
             // 2. Idempotent retry: an identical request with the same key returns the original
             // success; a reused key with a different payload is rejected outright.
@@ -121,10 +122,15 @@ namespace DAMS.Application.Services
                 {
                     var existingRefund = await _context.BookingCancellationRefunds
                         .FirstOrDefaultAsync(r => r.SettlementId == existingByKey.Id, cancellationToken);
+                    // Full-payload comparison: PaidAt and Notes matter just as much as the account,
+                    // method and reference — a retry that silently changes any of them is a
+                    // different request, not a duplicate, and must be rejected rather than accepted.
                     samePayload = existingRefund != null
                         && existingRefund.FinanceAccountId == dto.RefundFinanceAccountId
                         && existingRefund.PaymentMethod == dto.RefundPaymentMethod
-                        && existingRefund.PaymentReference == paymentReferenceInput;
+                        && existingRefund.PaymentReference == paymentReferenceInput
+                        && existingRefund.PaidAt == dto.RefundPaidAt
+                        && existingRefund.Notes == notesInput;
                 }
                 if (!samePayload)
                     throw new InvalidOperationException("This idempotency key was already used for a different cancellation.");
@@ -192,6 +198,12 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException("A payment reference is required for a non-cash refund.");
                 if (!dto.RefundPaidAt.HasValue)
                     throw new InvalidOperationException("A refund date is required when paying the refund now.");
+                // The refund is being paid at cancellation time, so its business date can only be
+                // "today" — never future-dated, and never before the cancellation it belongs to.
+                if (dto.RefundPaidAt.Value.Date > PakistanTime.Today)
+                    throw new InvalidOperationException("Refund date cannot be in the future.");
+                if (dto.RefundPaidAt.Value.Date < PakistanTime.Today)
+                    throw new InvalidOperationException("Refund date cannot be before the cancellation date.");
             }
 
             // 9. A refund obligation needs the Customer Refunds Payable liability to exist —
@@ -208,7 +220,6 @@ namespace DAMS.Application.Services
                 await EnsureRefundReferenceAvailableAsync(dto.RefundFinanceAccountId.Value, paymentReference, cancellationToken);
             }
 
-            var notes = Limited(dto.RefundNotes, "Notes", 2000);
             var actorName = Limited(actor.DisplayName, "Actor name", 200) ?? "Admin";
 
             // 11. Create the settlement — the permanent record of the Admin's decision.
@@ -240,8 +251,11 @@ namespace DAMS.Application.Services
                     PaidAt = dto.RefundPaidAt!.Value,
                     PaymentMethod = dto.RefundPaymentMethod!.Value,
                     PaymentReference = paymentReference,
-                    Notes = notes,
-                    IdempotencyKey = $"{idempotencyKey}:refund",
+                    Notes = notesInput,
+                    // Reused verbatim, not suffixed: the refund table's IdempotencyKey column has
+                    // its own 80-char limit and its own unique index (table-scoped), so appending
+                    // ":refund" to an already-80-char cancellation key would silently overflow it.
+                    IdempotencyKey = idempotencyKey,
                     RecordedByUserId = actor.UserId,
                     RecordedByName = actorName,
                     RecordedAt = DateTime.UtcNow
@@ -282,7 +296,19 @@ namespace DAMS.Application.Services
             // settlement, the optional refund, the booking/unit status, and the commission/rebate
             // lifecycle changes atomically. 17. The caller commits the transaction after this
             // returns — a failure anywhere above leaves nothing behind.
-            await _context.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // ApplyBookingConcurrencyToken's OriginalValue mismatch surfaces here as EF's raw
+                // infrastructure exception. Translate it to the same clean, business-level error
+                // every other InvalidOperationException in this method produces, so the controller
+                // (and the frontend's stale-data handling) never has to special-case it.
+                throw new InvalidOperationException(
+                    "The booking changed while you were cancelling it. Refresh and review the settlement again.");
+            }
 
             // 19. Freshly loaded, includes the settlement. 18 (notification) happens in the
             // caller, after the transaction actually commits.
@@ -297,6 +323,7 @@ namespace DAMS.Application.Services
         {
             var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
             var paymentReferenceInput = Limited(dto.PaymentReference, "Payment reference", 200);
+            var notesInput = Limited(dto.Notes, "Notes", 2000);
 
             // 1/2/3. Exact retry of an already-recorded payout returns the same success; a reused
             // key with a different payload is rejected.
@@ -306,10 +333,16 @@ namespace DAMS.Application.Services
             {
                 var settlementForKey = await _context.BookingCancellationSettlements
                     .FirstAsync(s => s.Id == existingByKey.SettlementId, cancellationToken);
+                // Full-payload comparison: PaidAt and Notes matter just as much as the account,
+                // method and reference. PaidAt is only compared when the caller actually supplied
+                // one — an omitted PaidAt is server-defaulted to "now" and can never be reproduced
+                // byte-for-byte on a retry, so it is excluded rather than always mismatching.
                 var samePayload = settlementForKey.BookingId == bookingId
                     && existingByKey.FinanceAccountId == dto.FinanceAccountId
                     && existingByKey.PaymentMethod == dto.PaymentMethod
-                    && existingByKey.PaymentReference == paymentReferenceInput;
+                    && existingByKey.PaymentReference == paymentReferenceInput
+                    && (!dto.PaidAt.HasValue || existingByKey.PaidAt == dto.PaidAt.Value)
+                    && existingByKey.Notes == notesInput;
                 if (!samePayload)
                     throw new InvalidOperationException("This idempotency key was already used for a different refund payment.");
                 return await GetResponseAsync(bookingId, cancellationToken);
@@ -341,10 +374,17 @@ namespace DAMS.Application.Services
             if (dto.PaymentMethod != PaymentMethod.Cash && paymentReference == null)
                 throw new InvalidOperationException("A payment reference is required for a non-cash refund.");
 
+            // The liability was recognised at CancelledAt; the cash movement cannot predate that,
+            // and cannot be future-dated while the system already reports the refund as Paid.
+            var paidAt = dto.PaidAt ?? DateTime.UtcNow;
+            if (paidAt.Date > PakistanTime.Today)
+                throw new InvalidOperationException("Refund date cannot be in the future.");
+            if (paidAt.Date < settlement.CancelledAt.Date)
+                throw new InvalidOperationException("Refund date cannot be before the cancellation date.");
+
             // 12. Reference collision, scoped to the selected account.
             await EnsureRefundReferenceAvailableAsync(dto.FinanceAccountId, paymentReference, cancellationToken);
 
-            var notes = Limited(dto.Notes, "Notes", 2000);
             var actorName = Limited(actor.DisplayName, "Actor name", 200) ?? "Admin";
 
             // 13. Amount is never accepted from the caller — it is always the already-decided
@@ -354,10 +394,10 @@ namespace DAMS.Application.Services
                 SettlementId = settlement.Id,
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = settlement.RefundAmount,
-                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                PaidAt = paidAt,
                 PaymentMethod = dto.PaymentMethod,
                 PaymentReference = paymentReference,
-                Notes = notes,
+                Notes = notesInput,
                 IdempotencyKey = idempotencyKey,
                 RecordedByUserId = actor.UserId,
                 RecordedByName = actorName,

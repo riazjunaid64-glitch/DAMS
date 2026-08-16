@@ -16,13 +16,19 @@ export interface CancellationDecisionInput {
 
 // Mirrors BookingService.CancelBookingCoreAsync's validation order so the dialog can disable
 // its confirm button and show the same message the server would return, before ever submitting.
+//
+// Zero refund is only ever valid as an EXPLICIT choice ("None") once money has actually been
+// received — an unmade decision (decision === "") must never be silently treated as "no refund",
+// since that would let a paid customer's refund default to zero without anyone deciding it should.
+// When nothing was paid there is nothing to decide, so an unmade decision is harmless there.
 export function validateCancellationDecision(input: CancellationDecisionInput): string | null {
   const { cashReceived, refundAmount, decision } = input;
   if (!Number.isFinite(refundAmount) || refundAmount < 0) return "Refund amount cannot be negative.";
   if (refundAmount > cashReceived) return "Refund amount cannot exceed the customer's paid amount.";
   if (refundAmount === 0) {
-    if (decision !== "None" && decision !== "") return "Refund decision must be None when the refund amount is zero.";
-    return null;
+    if (decision === "None") return null;
+    if (decision === "PayNow" || decision === "PayLater") return "Refund decision must be None when the refund amount is zero.";
+    return cashReceived > 0 ? "Confirm the refund decision before continuing." : null;
   }
   if (decision !== "PayNow" && decision !== "PayLater") return "Choose whether the refund will be paid now or paid later.";
   if (decision === "PayNow") {
