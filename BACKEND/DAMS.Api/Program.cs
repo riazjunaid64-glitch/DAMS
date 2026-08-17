@@ -1,6 +1,7 @@
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Integrations;
 using DAMS.Application.Services.Notifications;
 using DAMS.Application.Interfaces;
 using Microsoft.Extensions.Options;
@@ -16,6 +17,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Http.Features;
 using System.IO.Compression;
@@ -27,6 +29,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
+
+// The default HttpClientFactory handler logs each request's full URI (including its query
+// string) at Information level. Meta's Graph client puts the access token, appsecret_proof and
+// (for the OAuth token exchange) the app's client_secret directly in that query string, so
+// leaving this at the default level would write live credentials into the application log on
+// every Graph call. Nothing else needs Information-level detail from this specific client.
+builder.Logging.AddFilter("System.Net.Http.HttpClient.IMetaGraphClient", LogLevel.Warning);
 
 builder.Services.AddMemoryCache();
 
@@ -68,6 +77,18 @@ builder.Services.AddRateLimiter(options =>
             {
                 Window = TimeSpan.FromMinutes(1),
                 PermitLimit = 120,
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            }));
+    // Meta delivers lead webhooks in bursts and disables a subscription that keeps failing.
+    // Its own bucket, so neither this nor the generic intake endpoint can starve the other.
+    options.AddPolicy("metaWebhook", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? IPAddress.None.ToString(),
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 600,
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             }));
@@ -129,6 +150,65 @@ builder.Services.AddOptions<NotificationOptions>()
 // The delivery processor and the push sender need the plain options object, not the
 // IOptions wrapper, because they are also constructed directly in tests.
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<NotificationOptions>>().Value);
+
+// ── External integrations (Meta Lead Ads) ────────────────────────────────────────
+// Validation covers ranges and all-or-nothing credentials only. Missing credentials must
+// not stop the application booting: an unconfigured integration is simply switched off,
+// exactly as an unconfigured LeadIntake:ApiKey is.
+builder.Services.AddOptions<MetaIntegrationOptions>()
+    .Bind(builder.Configuration.GetSection(MetaIntegrationOptions.SectionName))
+    .Validate(o => o.EventIntervalSeconds >= 0 && o.ResourceSyncIntervalSeconds >= 0,
+        "Meta integration worker intervals cannot be negative.")
+    .Validate(o => o.EventBatchSize is >= 1 and <= 200,
+        "Meta integration batch size is outside the supported range.")
+    .Validate(o => o.LeaseMinutes is >= 1 and <= 60,
+        "Meta integration lease duration must be between 1 and 60 minutes.")
+    .Validate(o => o.SyncLeaseMinutes is >= 1 and <= 120,
+        "Meta integration sync lease duration must be between 1 and 120 minutes.")
+    .Validate(o => o.MaxAttempts is >= 1 and <= 20
+                   && o.BaseRetryDelaySeconds is >= 1 and <= 3600
+                   && o.MaxRetryDelayMinutes is >= 1 and <= 1440
+                   && o.AuthRetryDelayHours is >= 1 and <= 168,
+        "Meta integration retry settings are outside the supported range.")
+    .Validate(o => o.OAuthStateLifetimeMinutes is >= 1 and <= 60,
+        "The Meta OAuth state lifetime must be between 1 and 60 minutes.")
+    .Validate(o => o.RequestTimeoutSeconds is >= 5 and <= 300
+                   && o.MaxWebhookBodyBytes is >= 1024 and <= 5242880
+                   && o.MaxGraphPages is >= 1 and <= 200,
+        "Meta integration request limits are outside the supported range.")
+    .Validate(o => System.Text.RegularExpressions.Regex.IsMatch(o.GraphApiVersion ?? "", @"^v\d+\.\d+$"),
+        "MetaIntegration:GraphApiVersion must look like \"v21.0\".")
+    .Validate(o => string.IsNullOrWhiteSpace(o.OAuthCallbackUrl)
+                   || (Uri.TryCreate(o.OAuthCallbackUrl, UriKind.Absolute, out var callback)
+                       && callback.Scheme == Uri.UriSchemeHttps),
+        "MetaIntegration:OAuthCallbackUrl must be an absolute HTTPS URL.")
+    .Validate(o => IsAllOrNoneConfigured(o),
+        "MetaIntegration needs AppId, AppSecret, WebhookVerifyToken and OAuthCallbackUrl together, or none of them.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<MetaIntegrationOptions>>().Value);
+
+// Provider tokens are encrypted at rest with this key ring. It is persisted outside wwwroot
+// because losing it makes every stored token undecryptable — recoverable only by having each
+// admin reconnect. In production this directory must be backed up and, on multi-server
+// deployments, shared between instances. It must never be committed.
+var dataProtectionBuilder = builder.Services.AddDataProtection()
+    .SetApplicationName("DAMS")
+    .PersistKeysToFileSystem(new DirectoryInfo(ResolvePrivateStoragePathFor(
+        builder.Environment,
+        builder.Configuration,
+        "DataProtection:KeyRingPath",
+        Path.Combine("App_Data", "dataprotection-keys"))));
+
+// ASP.NET Core only encrypts the key ring at rest automatically when it picks the storage
+// location itself; pointing PersistKeysToFileSystem at an explicit directory (above, required so
+// the path is configurable and outside wwwroot) opts out of that. Without this, the keys that
+// decrypt every stored Meta token would sit on disk as plain XML, protected only by filesystem
+// ACLs. DPAPI ties the ciphertext to this Windows account, so set
+// DataProtection:ProtectWithDpapi to false only once a non-Windows host or a shared key ring
+// across multiple machines makes that unworkable — at which point a certificate
+// (ProtectKeysWithCertificate) is the replacement, not going without protection.
+if (OperatingSystem.IsWindows() && builder.Configuration.GetValue("DataProtection:ProtectWithDpapi", true))
+    dataProtectionBuilder.ProtectKeysWithDpapiNG();
 // "Due today", "overdue" and "inactive" all depend on the current instant; taking it from
 // an injected clock keeps those rules deterministic under test.
 builder.Services.AddSingleton(TimeProvider.System);
@@ -185,6 +265,21 @@ builder.Services.AddScoped<ILeadConfigurationService, LeadConfigurationService>(
 builder.Services.AddScoped<ILeadReportingService, LeadReportingService>();
 builder.Services.AddScoped<ILeadAlertService, LeadAlertService>();
 builder.Services.AddHostedService<LeadAlertBackgroundService>();
+builder.Services.AddSingleton<IIntegrationSecretProtector, DataProtectionIntegrationSecretProtector>();
+// Deliberately no Polly: retries are already durable in ExternalIntegrationEvents, where
+// Attempts and AvailableAt survive a restart. An in-memory policy would duplicate that
+// state and lose it at exactly the wrong moment.
+builder.Services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
+{
+    var meta = sp.GetRequiredService<MetaIntegrationOptions>();
+    client.BaseAddress = new Uri($"https://graph.facebook.com/{meta.GraphApiVersion}/");
+    client.Timeout = TimeSpan.FromSeconds(meta.RequestTimeoutSeconds);
+});
+builder.Services.AddScoped<IMetaResourceSyncService, MetaResourceSyncService>();
+builder.Services.AddScoped<IMetaIntegrationService, MetaIntegrationService>();
+builder.Services.AddScoped<IMetaWebhookIntakeService, MetaWebhookIntakeService>();
+builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
+builder.Services.AddHostedService<IntegrationBackgroundService>();
 
 // ── Notification platform ────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
@@ -325,6 +420,19 @@ static string NotificationPartitionKey(HttpContext context) =>
     ?? context.Connection.RemoteIpAddress?.ToString()
     ?? IPAddress.None.ToString();
 
+// Half-configured credentials are worse than none: the integration would appear available
+// and then fail at the first Graph call. Demand all four together or none at all.
+static bool IsAllOrNoneConfigured(MetaIntegrationOptions options)
+{
+    string?[] credentials =
+    [
+        options.AppId, options.AppSecret, options.WebhookVerifyToken, options.OAuthCallbackUrl
+    ];
+
+    var supplied = credentials.Count(value => !string.IsNullOrWhiteSpace(value));
+    return supplied == 0 || supplied == credentials.Length;
+}
+
 static bool IsValidPushHostPattern(string? value)
 {
     if (string.IsNullOrWhiteSpace(value))
@@ -339,10 +447,19 @@ static bool IsValidPushHostPattern(string? value)
 
 // Private documents (finance evidence, lead paperwork) are served only through authorised
 // endpoints, so their storage must never sit anywhere the static-file middleware can reach.
-static string ResolvePrivateStoragePath(IServiceProvider sp, string configurationKey, string defaultRelativePath)
+static string ResolvePrivateStoragePath(IServiceProvider sp, string configurationKey, string defaultRelativePath) =>
+    ResolvePrivateStoragePathFor(
+        sp.GetRequiredService<IWebHostEnvironment>(),
+        sp.GetRequiredService<IConfiguration>(),
+        configurationKey,
+        defaultRelativePath);
+
+// Used at startup, where the environment and configuration are already to hand and building
+// a throwaway service provider would create a second container.
+static string ResolvePrivateStoragePathFor(
+    IWebHostEnvironment env, IConfiguration configuration, string configurationKey, string defaultRelativePath)
 {
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    var configuredPath = sp.GetRequiredService<IConfiguration>()[configurationKey];
+    var configuredPath = configuration[configurationKey];
     var storagePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
         ? Path.Combine(env.ContentRootPath, defaultRelativePath)
         : Path.IsPathRooted(configuredPath)

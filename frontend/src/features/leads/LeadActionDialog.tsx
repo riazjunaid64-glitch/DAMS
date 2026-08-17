@@ -125,7 +125,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="First name" required value={value("firstName")} onChange={(v) => set("firstName", v)} />
             <Field label="Last name" value={value("lastName")} onChange={(v) => set("lastName", v)} />
-            <Field label="Phone" required value={value("phone")} onChange={(v) => set("phone", v)} />
+            <Field label="Phone" value={value("phone")} onChange={(v) => set("phone", v)} />
             <Field label="WhatsApp" value={value("whatsappNumber")} onChange={(v) => set("whatsappNumber", v)} />
             <Field label="Email" type="email" value={value("email")} onChange={(v) => set("email", v)} />
             <Field label="City" value={value("city")} onChange={(v) => set("city", v)} />
@@ -319,7 +319,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
 function initialForm(action: LeadAction, lead: Lead): Record<string, string | boolean> {
   switch (action.type) {
     case "edit": return {
-      firstName: lead.firstName, lastName: lead.lastName ?? "", phone: lead.phone, whatsappNumber: lead.whatsappNumber ?? "", email: lead.email ?? "", address: lead.address ?? "", city: lead.city ?? "", preferredContactMethod: lead.preferredContactMethod, preferredContactTime: lead.preferredContactTime ?? "", sourceDetails: lead.sourceDetails ?? "", campaignName: lead.campaignName ?? "", campaignReference: lead.campaignReference ?? "", adReference: lead.adReference ?? "", interestedProjectId: lead.interestedProjectId?.toString() ?? "", interestedUnitId: lead.interestedUnitId?.toString() ?? "", propertyType: lead.propertyType ?? "", preferredLocation: lead.preferredLocation ?? "", budgetMin: lead.budgetMin?.toString() ?? "", budgetMax: lead.budgetMax?.toString() ?? "", purchaseIntent: lead.purchaseIntent, notes: lead.notes ?? "",
+      firstName: lead.firstName, lastName: lead.lastName ?? "", phone: lead.phone ?? "", whatsappNumber: lead.whatsappNumber ?? "", email: lead.email ?? "", address: lead.address ?? "", city: lead.city ?? "", preferredContactMethod: lead.preferredContactMethod, preferredContactTime: lead.preferredContactTime ?? "", sourceDetails: lead.sourceDetails ?? "", campaignName: lead.campaignName ?? "", campaignReference: lead.campaignReference ?? "", adReference: lead.adReference ?? "", interestedProjectId: lead.interestedProjectId?.toString() ?? "", interestedUnitId: lead.interestedUnitId?.toString() ?? "", propertyType: lead.propertyType ?? "", preferredLocation: lead.preferredLocation ?? "", budgetMin: lead.budgetMin?.toString() ?? "", budgetMax: lead.budgetMax?.toString() ?? "", purchaseIntent: lead.purchaseIntent, notes: lead.notes ?? "",
     };
     case "assign": return { employeeId: lead.assignedEmployeeId?.toString() ?? "", teamId: lead.assignedTeamId?.toString() ?? "", reason: "" };
     case "stage": return { stage: "", notes: "" };

@@ -20,6 +20,7 @@ import {
   type AssignmentHistory,
   type ClosureReason,
   type Communication,
+  type ExternalSubmission,
   type FollowUp,
   type Lead,
   type LeadComment,
@@ -42,6 +43,7 @@ type DetailData = {
   documents: LeadDocument[];
   comments: LeadComment[];
   assignments: AssignmentHistory[];
+  submissions: ExternalSubmission[];
 };
 export type LeadLookups = {
   sources: LeadSource[];
@@ -60,6 +62,7 @@ const TABS = [
   ["documents", "Documents"],
   ["collaboration", "Internal collaboration"],
   ["assignments", "Assignment history"],
+  ["integration", "Source & integration"],
   ["conversion", "Conversion"],
 ] as const;
 
@@ -82,7 +85,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
     if (!Number.isFinite(leadId) || leadId <= 0) { setError("Invalid lead reference."); setLoading(false); return; }
     setLoading(true); setError(null);
     try {
-      const [lead, timeline, communications, followUps, visits, documents, comments, assignments, refs] = await Promise.all([
+      const [lead, timeline, communications, followUps, visits, documents, comments, assignments, submissions, refs] = await Promise.all([
         apiJson<Lead>(`/api/leads/${leadId}`),
         apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline`),
         apiJson<Communication[]>(`/api/leads/${leadId}/communications`),
@@ -91,9 +94,10 @@ function LeadDetailWorkspace({ user }: { user: User }) {
         apiJson<LeadDocument[]>(`/api/leads/${leadId}/documents`),
         apiJson<LeadComment[]>(`/api/leads/${leadId}/comments`),
         apiJson<AssignmentHistory[]>(`/api/leads/${leadId}/assignment-history`),
+        apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`),
         loadCrmLookups(),
       ]);
-      setData({ lead, timeline, communications, followUps, visits, documents, comments, assignments });
+      setData({ lead, timeline, communications, followUps, visits, documents, comments, assignments, submissions });
       setLookups(refs);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The lead could not be loaded.");
@@ -119,6 +123,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
       tabId === "documents" ? data.documents.length :
       tabId === "collaboration" ? data.comments.length :
       tabId === "assignments" ? data.assignments.length :
+      tabId === "integration" ? data.submissions.length :
       undefined,
   }));
 
@@ -178,6 +183,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
           {activeTab === "documents" && <Documents items={data.documents} closed={closed} onAdd={() => setAction({ type: "document" })} onDownload={(document) => void downloadLeadDocument(document.id, document.fileName).catch((e) => setError(e.message))} />}
           {activeTab === "collaboration" && <Comments items={data.comments} closed={closed} onAdd={() => setAction({ type: "comment" })} />}
           {activeTab === "assignments" && <Assignments items={data.assignments} />}
+          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} />}
           {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={user.role === "Admin"} onConvert={() => setAction({ type: "convert" })} />}
         </section>
       </div>
@@ -206,7 +212,7 @@ function Overview({ lead }: { lead: Lead }) {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <InfoSection title="Contact">
-        <Info label="Phone" value={lead.phone} href={`tel:${lead.phone}`} />
+        <Info label="Phone" value={lead.phone} href={lead.phone ? `tel:${lead.phone}` : undefined} />
         <Info label="WhatsApp" value={lead.whatsappNumber} />
         <Info label="Email" value={lead.email} href={lead.email ? `mailto:${lead.email}` : undefined} />
         <Info label="Location" value={[lead.address, lead.city].filter(Boolean).join(", ")} />
@@ -286,6 +292,73 @@ function Comments({ items, closed, onAdd }: { items: LeadComment[]; closed: bool
 
 function Assignments({ items }: { items: AssignmentHistory[] }) {
   return <SectionList title="Ownership history">{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><p className="text-sm text-[var(--text-secondary)]"><span className="font-semibold text-[var(--text-heading)]">{item.previousEmployeeName ?? "Unassigned"}</span> → <span className="font-semibold text-[var(--accent)]">{item.assignedEmployeeName ?? "Unassigned"}</span></p><p className="mt-2 text-xs text-[var(--text-muted)]">{item.assignedByName ?? "System"} · {formatDateTime(item.assignedAt)}</p>{item.reason && <p className="mt-2 text-sm text-[var(--text-secondary)]">{item.reason}</p>}</article>) : <Empty text="No ownership changes recorded." />}</SectionList>;
+}
+
+/**
+ * The provider enquiries behind this lead.
+ *
+ * Every answer is shown, including ones DAMS has no field for — those are the reason the
+ * raw answers are kept at all, and hiding them would defeat the point.
+ */
+function ExternalSubmissions({ items }: { items: ExternalSubmission[] }) {
+  if (items.length === 0)
+    return <SectionList title="Source & integration"><Empty text="This lead did not arrive through a connected integration." /></SectionList>;
+
+  return (
+    <SectionList title="Source & integration">
+      {items.map((item) => (
+        <article key={item.id} className="rounded-xl border border-[var(--border)] p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-[var(--border)] px-2.5 py-0.5 text-xs text-[var(--text-secondary)]">
+              {platformLabel(item)}
+            </span>
+            <p className="text-xs text-[var(--text-muted)]">
+              Submitted {formatDateTime(item.externalSubmittedAt ?? item.receivedAt)} · Reference {item.externalLeadId}
+            </p>
+          </div>
+
+          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <Attribution label="Page" value={item.pageName} />
+            <Attribution label="Form" value={item.externalFormName ?? item.externalFormReference} />
+            <Attribution label="Campaign" value={item.campaignName} />
+            <Attribution label="Ad set" value={item.adSetName} />
+            <Attribution label="Ad" value={item.adName} />
+            <Attribution label="Account" value={item.connectionDisplayName} />
+          </dl>
+
+          {item.fieldData.length > 0 && (
+            <div className="mt-4 border-t border-[var(--border)] pt-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Form answers</p>
+              <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                {item.fieldData.map((answer, index) => (
+                  <div key={`${answer.name}-${index}`}>
+                    <dt className="text-xs text-[var(--text-muted)]">
+                      {answer.name}
+                      {!answer.isMapped && <span className="ml-1.5 opacity-70">· not mapped</span>}
+                    </dt>
+                    <dd className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{answer.value || "—"}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+        </article>
+      ))}
+    </SectionList>
+  );
+}
+
+function Attribution({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return <div><dt className="text-xs text-[var(--text-muted)]">{label}</dt><dd className="mt-0.5 text-sm text-[var(--text-secondary)]">{value}</dd></div>;
+}
+
+// Never guesses. An enquiry Meta did not attribute to a surface is shown as "Meta", not as
+// Facebook, because a lead-ad webhook always arrives through a Page either way.
+function platformLabel(item: ExternalSubmission) {
+  if (item.platform === "instagram") return "Instagram";
+  if (item.platform === "facebook") return "Facebook";
+  return item.provider === "meta" ? "Meta" : item.provider;
 }
 
 function Conversion({ lead, canManage, canOpenBooking, onConvert }: { lead: Lead; canManage: boolean; canOpenBooking: boolean; onConvert: () => void }) {

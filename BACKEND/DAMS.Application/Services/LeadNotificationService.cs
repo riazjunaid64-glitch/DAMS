@@ -163,18 +163,36 @@ namespace DAMS.Application.Services
             if (_leads.TryGetValue(leadId, out var cached))
                 return cached;
 
+            // A brand-new lead is notified before its final LD-###### reference has been
+            // flushed to the database (LeadService queues the notification inside the same
+            // save that writes that reference, to close a durability gap). An AsNoTracking
+            // query run at that moment would still see the LD-PENDING placeholder, so the
+            // change tracker — which already holds the in-memory, post-assignment value for
+            // any lead this same request created or loaded — is checked first.
+            var tracked = _context.ChangeTracker.Entries<Lead>()
+                .Select(e => e.Entity)
+                .FirstOrDefault(l => l.Id == leadId);
+
+            var described = tracked != null
+                ? ($"{tracked.FirstName} {tracked.LastName}".Trim(), tracked.LeadReference)
+                : await DescribeFromDatabaseAsync(leadId, cancellationToken);
+
+            _leads[leadId] = described;
+            return described;
+        }
+
+        private async Task<(string Name, string Reference)> DescribeFromDatabaseAsync(
+            int leadId, CancellationToken cancellationToken)
+        {
             var lead = await _context.Leads
                 .AsNoTracking()
                 .Where(l => l.Id == leadId)
                 .Select(l => new { l.FirstName, l.LastName, l.LeadReference })
                 .FirstOrDefaultAsync(cancellationToken);
 
-            var described = lead == null
+            return lead == null
                 ? (string.Empty, string.Empty)
                 : ($"{lead.FirstName} {lead.LastName}".Trim(), lead.LeadReference);
-
-            _leads[leadId] = described;
-            return described;
         }
 
         private async Task<string?> EmployeeNameAsync(int userId, CancellationToken cancellationToken)

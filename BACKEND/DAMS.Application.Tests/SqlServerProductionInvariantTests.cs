@@ -368,6 +368,508 @@ public sealed class SqlServerProductionInvariantTests
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
 
+    /// <summary>
+    /// The external-integration schema on real SQL Server. The in-memory provider enforces
+    /// neither nullability nor unique indexes, so the two guarantees this feature actually
+    /// leans on have to be proved here.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ExternalIntegrations_MigrateAndEnforceTheirInvariants_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // A lead with no phone number must be storable, which is the whole point of the
+        // MakeLeadPhoneOptional migration.
+        await using (var db = new AppDbContext(options))
+        {
+            var source = await db.LeadSources.FirstAsync(s => s.Code == "meta");
+            db.Leads.Add(new Lead
+            {
+                LeadReference = $"LD-SQL-{Guid.NewGuid():N}"[..20],
+                FirstName = "Phoneless",
+                LeadSourceId = source.Id,
+                Phone = null,
+                NormalizedPhone = null,
+                ExternalProvider = "meta",
+                ExternalLeadId = $"sql-{Guid.NewGuid():N}"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Leads') AND name = 'Phone' AND is_nullable = 1"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Leads') AND name = 'NormalizedPhone' AND is_nullable = 1"));
+
+        // The webhook writes one event per delivery and relies on the database — not on the
+        // application's pre-check — to make a provider retry harmless under concurrency.
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = "1:page-1:lead-1",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = "1:page-1:lead-1",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+
+        // Two connections may not claim the same provider account, or a webhook could not
+        // resolve unambiguously which one owns the page.
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "acct-1", DisplayName = "First"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "acct-1", DisplayName = "Duplicate"
+            });
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+    }
+
+    /// <summary>
+    /// A production database that already has a custom LeadSource occupying the identity value
+    /// the "meta" seed used to hardcode (14) must still be able to apply
+    /// AddExternalIntegrations. A fixed Id = 14 InsertData would fail this with a primary key
+    /// violation; the migration inserts by Code and lets the identity column pick its own value.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AddExternalIntegrationsMigration_SucceedsEvenWhenACustomLeadSourceAlreadyOccupiesId14()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var migrator = db.GetService<IMigrator>();
+            await migrator.MigrateAsync("20260816044115_AddBookingCancellationSettlement");
+        }
+
+        // The 13 system sources already exist at this point, so the next identity value an
+        // admin-created custom source receives is exactly the one the old hardcoded seed
+        // collided with.
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadSources.Add(new LeadSource
+            {
+                Code = "roadshow",
+                Name = "Road Show",
+                DisplayOrder = 99,
+                IsActive = true,
+                IsSystem = false,
+                CustomerSource = CustomerSource.Other,
+                CreatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var customSourceId = await ScalarAsync(database.ConnectionString,
+            "SELECT [Id] FROM [LeadSources] WHERE [Code] = N'roadshow'");
+        Assert.Equal(14, customSourceId);
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [LeadSources] WHERE [Code] = N'meta'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [LeadSources] WHERE [Code] = N'roadshow' AND [Name] = N'Road Show'"));
+    }
+
+    /// <summary>
+    /// Two requests can both pass the in-application duplicate pre-check before either commits.
+    /// The unique index — not the pre-check — is what makes the collision harmless, and it must
+    /// not take an unrelated new event down with it, which is only provable against a provider
+    /// that actually enforces the index.
+    /// </summary>
+    [SqlServerFact]
+    public async Task WebhookIntake_SurvivesAConcurrentDuplicate_WithoutLosingTheOtherEventInTheSameDelivery()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // Simulates a race: another request already committed this exact event before the
+        // in-process pre-check in RecordOneAsync could see it.
+        int connectionId;
+        await using (var db = new AppDbContext(options))
+        {
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-account", DisplayName = "Race Account"
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = "meta", ResourceType = "facebook_page", ExternalId = "page-race",
+                IsEnabled = true, IsActive = true
+            });
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", EventType = "leadgen", EventKey = $"{connectionId}:page-race:lead-race",
+                RawPayloadJson = "{}", AvailableAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var intake = new DAMS.Application.Services.Integrations.MetaWebhookIntakeService(
+                db, NullLogger<DAMS.Application.Services.Integrations.MetaWebhookIntakeService>.Instance);
+
+            var body = """
+                {
+                  "object": "page",
+                  "entry": [{
+                    "id": "page-race",
+                    "changes": [
+                      {"field": "leadgen", "value": {"page_id": "page-race", "leadgen_id": "lead-race", "created_time": 1}},
+                      {"field": "leadgen", "value": {"page_id": "page-race", "leadgen_id": "lead-unique", "created_time": 1}}
+                    ]
+                  }]
+                }
+                """;
+
+            var recorded = await intake.RecordAsync(body);
+
+            // Only the genuinely new event; the colliding one was already there.
+            Assert.Equal(1, recorded);
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-unique%'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-race%'"));
+    }
+
+    /// <summary>
+    /// MetaIntegrationService.SetResourceEnabledAsync's own "is this Page already enabled
+    /// elsewhere" check is an AnyAsync query: two requests enabling the same physical Page
+    /// through two different connections can both pass it before either has committed. Only a
+    /// database-level constraint can actually make the collision impossible, which the
+    /// InMemory provider used by the rest of the suite does not enforce — this needs real SQL
+    /// Server.
+    /// </summary>
+    [SqlServerFact]
+    public async Task EnablingTheSamePhysicalPageThroughTwoConnections_IsRejectedByTheDatabaseEvenWhenTheAppLevelCheckIsRaced()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+
+        int firstConnectionId, secondConnectionId, firstResourceId, secondResourceId;
+        await using (var db = new AppDbContext(options))
+        {
+            var first = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-user-a", DisplayName = "A",
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("token-a")
+            };
+            var second = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "race-user-b", DisplayName = "B",
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("token-b")
+            };
+            db.ExternalIntegrationConnections.AddRange(first, second);
+            await db.SaveChangesAsync();
+            firstConnectionId = first.Id;
+            secondConnectionId = second.Id;
+
+            var firstResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = first.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-race", IsEnabled = false, IsActive = true
+            };
+            var secondResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = second.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-race", IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(firstResource, secondResource);
+            await db.SaveChangesAsync();
+            firstResourceId = firstResource.Id;
+            secondResourceId = secondResource.Id;
+        }
+
+        // The first connection enables the shared Page through the real service — succeeds.
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            await integration.SetResourceEnabledAsync(firstConnectionId, firstResourceId, isEnabled: true);
+        }
+
+        // A second, independent context now tries the same thing for the other connection. Its
+        // own AnyAsync check runs against a database where the first save already committed, so
+        // in this ordering it would actually catch the clash on its own — the point of this test
+        // is that even if it did NOT (a true race), the database itself refuses the second row.
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => integration.SetResourceEnabledAsync(secondConnectionId, secondResourceId, isEnabled: true));
+            Assert.Contains("already enabled through another", ex.Message);
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationResources] " +
+            "WHERE [ExternalId] = 'shared-page-race' AND [IsEnabled] = 1"));
+
+        // Bypassing the service's own AnyAsync check entirely — two raw contexts, each loading
+        // a different, never-yet-enabled resource for the same physical Page and setting
+        // IsEnabled in memory before either has saved — is the strongest version of this proof:
+        // nothing but the database itself is left to decide the outcome.
+        int rawA, rawB;
+        await using (var db = new AppDbContext(options))
+        {
+            var connA = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "raw-race-a", DisplayName = "Raw A",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            var connB = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "raw-race-b", DisplayName = "Raw B",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.ExternalIntegrationConnections.AddRange(connA, connB);
+            await db.SaveChangesAsync();
+
+            var resourceA = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connA.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-raw-race", IsEnabled = false, IsActive = true
+            };
+            var resourceB = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connB.Id, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "shared-page-raw-race", IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(resourceA, resourceB);
+            await db.SaveChangesAsync();
+            rawA = resourceA.Id;
+            rawB = resourceB.Id;
+        }
+
+        await using var winner = new AppDbContext(options);
+        await using var loser = new AppDbContext(options);
+
+        var winnerResource = await winner.ExternalIntegrationResources.SingleAsync(r => r.Id == rawA);
+        var loserResource = await loser.ExternalIntegrationResources.SingleAsync(r => r.Id == rawB);
+        winnerResource.IsEnabled = true;
+        loserResource.IsEnabled = true;
+
+        await winner.SaveChangesAsync();
+
+        var raceEx = await Assert.ThrowsAsync<DbUpdateException>(() => loser.SaveChangesAsync());
+        var sqlEx = Assert.IsType<SqlException>(raceEx.InnerException);
+        Assert.Contains("UX_ExternalIntegrationResources_EnabledFacebookPage", sqlEx.Message);
+    }
+
+    /// <summary>
+    /// The test above proves the database rejects the losing row, but neither it nor the one
+    /// before it ever drives the losing call through SetResourceEnabledAsync itself, so neither
+    /// exercises what that method actually does with a real Meta subscribe call in flight when
+    /// the race is lost: both connections pass their own "already enabled elsewhere" check
+    /// before either commits, both call Meta Subscribe (a physical Page's webhook subscription
+    /// is app-to-Page, not connection-to-Page), the database then picks a winner, and the loser's
+    /// catch block used to "compensate" by calling Unsubscribe — tearing down the winner's real,
+    /// just-established subscription, not its own. This proves that regression stays fixed: the
+    /// winner's subscription must still be active after the loser's save collides and fails.
+    /// </summary>
+    [SqlServerFact]
+    public async Task LosingTheEnablePageRace_NeverUnsubscribesTheWinnersRealSubscription()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        const string pageId = "shared-page-subscribe-race";
+
+        int winnerConnectionId, loserConnectionId, winnerResourceId, loserResourceId;
+        await using (var db = new AppDbContext(options))
+        {
+            var winnerConn = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "subscribe-race-winner", DisplayName = "Winner",
+                Status = ExternalIntegrationConnectionStatus.Connected, AccessTokenProtected = protector.Protect("token-winner")
+            };
+            var loserConn = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "subscribe-race-loser", DisplayName = "Loser",
+                Status = ExternalIntegrationConnectionStatus.Connected, AccessTokenProtected = protector.Protect("token-loser")
+            };
+            db.ExternalIntegrationConnections.AddRange(winnerConn, loserConn);
+            await db.SaveChangesAsync();
+            winnerConnectionId = winnerConn.Id;
+            loserConnectionId = loserConn.Id;
+
+            var winnerResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = winnerConn.Id, Provider = "meta", ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = pageId, IsEnabled = false, IsActive = true
+            };
+            var loserResource = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = loserConn.Id, Provider = "meta", ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = pageId, IsEnabled = false, IsActive = true
+            };
+            db.ExternalIntegrationResources.AddRange(winnerResource, loserResource);
+            await db.SaveChangesAsync();
+            winnerResourceId = winnerResource.Id;
+            loserResourceId = loserResource.Id;
+        }
+
+        // The interceptor plays "the winner" at the exact moment the loser's own SaveChangesAsync
+        // is about to run — i.e. after the loser has already passed its own AnyAsync ownership
+        // check and already called Meta Subscribe for its own attempt, matching the real race
+        // window instead of a convenient ordering.
+        var interceptor = new RunFullEnableThroughAnotherConnectionInterceptor(
+            database.ConnectionString, graph, protector, metaOptions, winnerConnectionId, winnerResourceId, loserResourceId);
+
+        await using var loserDb = new AppDbContext(Options(database.ConnectionString, interceptor));
+        var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+            loserDb, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+        var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+            loserDb, graph, protector, loserSync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => loserIntegration.SetResourceEnabledAsync(loserConnectionId, loserResourceId, isEnabled: true));
+        Assert.Contains("already enabled through another", ex.Message);
+
+        // The point of the whole test: the loser's compensation must not have touched the
+        // winner's real subscription.
+        Assert.True(graph.IsCurrentlySubscribed(pageId));
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [ExternalId] = '{pageId}' AND [IsEnabled] = 1"));
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [Id] = {loserResourceId} AND [IsEnabled] = 1"));
+    }
+
+    /// <summary>
+    /// MetaIntegrationService.UpsertConnectionAsync reads "does a connection for this account
+    /// already exist" and, if not, inserts one — a window a second browser completing OAuth for
+    /// the same Meta account at nearly the same moment can land in before either commits. Only
+    /// the database's own unique index on (Provider, ExternalAccountId) can actually decide that,
+    /// which the InMemory provider used by the rest of the suite does not enforce; this proves
+    /// the service recovers from that collision by reloading and updating the winner's row
+    /// instead of surfacing a raw DbUpdateException to an admin's browser.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ReconnectingTheSameMetaAccountFromTwoBrowsersAtOnce_RecoversFromTheRaceInsteadOfFailing()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var baseOptions = Options(database.ConnectionString);
+        int adminUserId;
+        await using (var migrator = new AppDbContext(baseOptions))
+        {
+            await migrator.Database.MigrateAsync();
+
+            // ExternalIntegrationOAuthState.CreatedByUserId has a real FK to Users, unlike the
+            // unenforced CreatedById audit fields elsewhere in this file — a genuine row is
+            // needed, not just an arbitrary id.
+            var user = new User { FullName = "SQL Race Admin", Email = "sql-race-admin@dams.test", Password = "hash", RoleId = 1 };
+            migrator.Users.Add(user);
+            await migrator.SaveChangesAsync();
+            adminUserId = user.UserId;
+        }
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient
+        {
+            Authorization = new DAMS.Application.Services.Integrations.MetaAuthorizationResult
+            {
+                AccessToken = "race-token", UserId = "race-account", DisplayName = "Race Co",
+                GrantedScopes = [.. MetaScopes.All]
+            }
+        };
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        var admin = new LeadUserContext { UserId = adminUserId, Role = "Admin", DisplayName = "Admin" };
+
+        var interceptor = new InsertCollidingConnectionInterceptor(database.ConnectionString, "race-account");
+        await using var db = new AppDbContext(Options(database.ConnectionString, interceptor));
+        var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+            db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+        var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+            db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+        var start = await integration.StartConnectAsync(admin, null);
+        var state = System.Web.HttpUtility.ParseQueryString(new Uri(start.AuthorizationUrl).Query)["state"]!;
+
+        // At the moment this context's own UpsertConnectionAsync reads for an existing row, none
+        // exists — the interceptor lands the "other browser's" insert only once this context's
+        // own SaveChanges for its new row actually fires, which reproduces the race
+        // deterministically instead of hoping two real threads interleave the right way.
+        var redirect = await integration.CompleteCallbackAsync("code-1", state, null);
+
+        Assert.Contains("meta=connected", redirect);
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationConnections] WHERE [ExternalAccountId] = 'race-account'"));
+        // Not silently dropped: the surviving row carries this callback's own authorization
+        // result, proving it updated the winner's row rather than losing its own data.
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationConnections] " +
+            "WHERE [ExternalAccountId] = 'race-account' AND [DisplayName] = N'Race Co'"));
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {
@@ -375,6 +877,15 @@ public sealed class SqlServerProductionInvariantTests
             sql => sql.EnableRetryOnFailure());
         if (interceptor != null) builder.AddInterceptors(interceptor);
         return builder.Options;
+    }
+
+    /// <summary>For schema queries, which take no parameters.</summary>
+    private static async Task<int> ScalarAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(sql, connection);
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
     }
 
     private static async Task<int> ScalarAsync(string connectionString, string sql, int id)
@@ -407,6 +918,110 @@ public sealed class SqlServerProductionInvariantTests
             if (context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
                     .Any(entry => entry.State == EntityState.Added) == true)
                 throw new InvalidOperationException("Simulated SQL assignment persistence failure.");
+        }
+    }
+
+    /// <summary>
+    /// Simulates a second browser winning a concurrent OAuth reconnect: the moment the context
+    /// under test is about to insert its own new connection row for a given Meta account, this
+    /// inserts and commits a colliding row for the same account through a completely separate
+    /// connection first, so the context under test's own insert then genuinely collides with the
+    /// database's unique index rather than merely being told to expect one.
+    /// </summary>
+    private sealed class InsertCollidingConnectionInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly string _externalAccountId;
+        private bool _raced;
+
+        public InsertCollidingConnectionInterceptor(string connectionString, string externalAccountId)
+        {
+            _connectionString = connectionString;
+            _externalAccountId = externalAccountId;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is not null
+                && eventData.Context.ChangeTracker.Entries<ExternalIntegrationConnection>()
+                    .Any(e => e.State == EntityState.Added && e.Entity.ExternalAccountId == _externalAccountId))
+            {
+                _raced = true;
+
+                await using var racer = new AppDbContext(
+                    new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+                racer.ExternalIntegrationConnections.Add(new ExternalIntegrationConnection
+                {
+                    Provider = "meta", ExternalAccountId = _externalAccountId, DisplayName = "Racing winner",
+                    Status = ExternalIntegrationConnectionStatus.Connected
+                });
+                await racer.SaveChangesAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Simulates a second connection legitimately winning a concurrent "enable this Page" race:
+    /// the moment the context under test is about to save its own enable-change for a specific
+    /// resource, this runs a completely separate connection's full SetResourceEnabledAsync
+    /// (including its own real Meta Subscribe call) to commit first through a totally separate
+    /// AppDbContext/connection, so the context under test's own save then genuinely collides with
+    /// the database's unique index — with a real, already-established winning subscription
+    /// sitting behind it, not merely a row.
+    /// </summary>
+    private sealed class RunFullEnableThroughAnotherConnectionInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly DAMS.Application.Tests.Integrations.FakeMetaGraphClient _graph;
+        private readonly DAMS.Application.Tests.Integrations.PlaintextSecretProtector _protector;
+        private readonly MetaIntegrationOptions _metaOptions;
+        private readonly int _winnerConnectionId;
+        private readonly int _winnerResourceId;
+        private readonly int _watchedResourceId;
+        private bool _raced;
+
+        public RunFullEnableThroughAnotherConnectionInterceptor(
+            string connectionString,
+            DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph,
+            DAMS.Application.Tests.Integrations.PlaintextSecretProtector protector,
+            MetaIntegrationOptions metaOptions,
+            int winnerConnectionId, int winnerResourceId, int watchedResourceId)
+        {
+            _connectionString = connectionString;
+            _graph = graph;
+            _protector = protector;
+            _metaOptions = metaOptions;
+            _winnerConnectionId = winnerConnectionId;
+            _winnerResourceId = winnerResourceId;
+            _watchedResourceId = watchedResourceId;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is not null
+                && eventData.Context.ChangeTracker.Entries<ExternalIntegrationResource>()
+                    .Any(e => e.State == EntityState.Modified && e.Entity.Id == _watchedResourceId && e.Entity.IsEnabled))
+            {
+                _raced = true;
+
+                await using var racer = new AppDbContext(
+                    new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+                var racerSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                    racer, _graph, _protector, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                var racerIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                    racer, _graph, _protector, racerSync, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+                await racerIntegration.SetResourceEnabledAsync(
+                    _winnerConnectionId, _winnerResourceId, isEnabled: true, cancellationToken);
+            }
+
+            return result;
         }
     }
 

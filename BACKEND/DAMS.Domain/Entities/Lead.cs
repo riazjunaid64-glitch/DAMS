@@ -18,11 +18,15 @@ namespace DAMS.Domain.Entities
 
         public string? LastName { get; set; }
 
-        public string Phone { get; set; } = string.Empty;
+        // Optional: a lead arriving from an ad platform may legitimately have no phone number,
+        // and inventing one would corrupt duplicate detection. Manual entry still demands at
+        // least one way to reach the person — that rule lives in LeadService, not here,
+        // because it depends on which channel the lead came from.
+        public string? Phone { get; set; }
 
         // Digits-only copies used for duplicate detection and indexed lookups. Written by
         // the application whenever the display value changes.
-        public string NormalizedPhone { get; set; } = string.Empty;
+        public string? NormalizedPhone { get; set; }
 
         public string? WhatsappNumber { get; set; }
 

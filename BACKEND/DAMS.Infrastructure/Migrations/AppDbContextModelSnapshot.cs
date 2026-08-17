@@ -2842,6 +2842,333 @@ namespace DAMS.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationConnection", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AccessTokenProtected")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("ConnectedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ConnectedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DisconnectedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("DisconnectedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ExternalAccountId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("GrantedScopesJson")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime?>("LastErrorAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastSyncedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastValidatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SyncLockedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("SyncLockedUntil")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("TokenExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConnectedByUserId");
+
+                    b.HasIndex("Provider", "ExternalAccountId")
+                        .IsUnique()
+                        .HasFilter("[ExternalAccountId] IS NOT NULL");
+
+                    b.HasIndex("Provider", "Status");
+
+                    b.ToTable("ExternalIntegrationConnections");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationEvent", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("AvailableAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EventKey")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int?>("ExternalIntegrationConnectionId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ExternalIntegrationResourceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int?>("LeadId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LockedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("LockedUntil")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ProcessedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("RawPayloadJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ResourceExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExternalIntegrationResourceId");
+
+                    b.HasIndex("LeadId");
+
+                    b.HasIndex("ExternalIntegrationConnectionId", "ReceivedAt");
+
+                    b.HasIndex("Provider", "EventKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "AvailableAt");
+
+                    b.ToTable("ExternalIntegrationEvents");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationOAuthState", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("ConsumedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CreatedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("ReturnPath")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("StateHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("StateHash")
+                        .IsUnique();
+
+                    b.ToTable("ExternalIntegrationOAuthStates");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationResource", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("ExternalIntegrationConnectionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ExternalStatus")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("FirstSeenAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsSubscribed")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("LastSeenAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastSyncedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ParentExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime?>("ResourceTokenExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ResourceTokenProtected")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ResourceType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentExternalId");
+
+                    b.HasIndex("ExternalIntegrationConnectionId", "ResourceType");
+
+                    b.HasIndex("ExternalIntegrationConnectionId", "ResourceType", "ExternalId")
+                        .IsUnique();
+
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "IX_ExternalIntegrationResources_Provider_ResourceType_ExternalId");
+
+                    b.HasIndex(new[] { "Provider", "ResourceType", "ExternalId" }, "UX_ExternalIntegrationResources_EnabledFacebookPage")
+                        .IsUnique()
+                        .HasFilter("[Provider] = 'meta' AND [ResourceType] = 'facebook_page' AND [IsEnabled] = 1");
+
+                    b.ToTable("ExternalIntegrationResources");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAccount", b =>
                 {
                     b.Property<int>("Id")
@@ -3388,7 +3715,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("NormalizedPhone")
-                        .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
@@ -3401,7 +3727,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("Phone")
-                        .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
@@ -3975,9 +4300,44 @@ namespace DAMS.Infrastructure.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AdAccountExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("AdExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("AdName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("AdSetExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("AdSetName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("CampaignExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CampaignName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ExternalFormName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
                     b.Property<string>("ExternalFormReference")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<int?>("ExternalIntegrationConnectionId")
+                        .HasColumnType("int");
 
                     b.Property<string>("ExternalLeadId")
                         .IsRequired()
@@ -3987,18 +4347,38 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<DateTime?>("ExternalSubmittedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("FieldDataJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("LeadId")
                         .HasColumnType("int");
+
+                    b.Property<string>("PageExternalId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("PageName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("Platform")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<string>("RawPayloadJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<DateTime>("ReceivedAt")
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ExternalIntegrationConnectionId", "ReceivedAt");
 
                     b.HasIndex("LeadId", "ReceivedAt");
 
@@ -6868,6 +7248,56 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("VendorAccount");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationConnection", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("ConnectedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationEvent", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.ExternalIntegrationConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("ExternalIntegrationConnectionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.ExternalIntegrationResource", "Resource")
+                        .WithMany()
+                        .HasForeignKey("ExternalIntegrationResourceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DAMS.Domain.Entities.Lead", null)
+                        .WithMany()
+                        .HasForeignKey("LeadId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Connection");
+
+                    b.Navigation("Resource");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationOAuthState", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationResource", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.ExternalIntegrationConnection", "Connection")
+                        .WithMany("Resources")
+                        .HasForeignKey("ExternalIntegrationConnectionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAttachment", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.AssetPurchase", "AssetPurchase")
@@ -7157,11 +7587,18 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadExternalSubmission", b =>
                 {
+                    b.HasOne("DAMS.Domain.Entities.ExternalIntegrationConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("ExternalIntegrationConnectionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
                         .WithMany("ExternalSubmissions")
                         .HasForeignKey("LeadId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Connection");
 
                     b.Navigation("Lead");
                 });
@@ -7634,6 +8071,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("AssetPurchases");
 
                     b.Navigation("Expenses");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationConnection", b =>
+                {
+                    b.Navigation("Resources");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceAccount", b =>

@@ -111,6 +111,26 @@ internal sealed class LeadTestHarness : IAsyncDisposable
 
         // Applies the seeded roles, lead sources and closure reasons.
         context.Database.EnsureCreated();
+
+        // The "meta" LeadSource is intentionally not part of the HasData seed (a production
+        // upgrade inserts it idempotently by Code instead — see AddExternalIntegrations' Up()),
+        // so EnsureCreated alone will not create it here. Tests that ingest a Meta lead with an
+        // unattributable platform need it to exist, exactly as the real migration guarantees.
+        if (!context.LeadSources.Any(s => s.Code == "meta"))
+        {
+            context.LeadSources.Add(new LeadSource
+            {
+                Code = "meta",
+                Name = "Meta (unspecified)",
+                DisplayOrder = 14,
+                IsActive = true,
+                IsSystem = true,
+                CustomerSource = CustomerSource.Other,
+                CreatedAt = DateTime.UtcNow
+            });
+            context.SaveChanges();
+        }
+
         return context;
     }
 
@@ -219,7 +239,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
 
     public static LeadIntakeDto Intake(
         string firstName = "Bilal",
-        string phone = "0300-1234567",
+        string? phone = "0300-1234567",
         string? email = "bilal@example.com",
         string sourceCode = "walk_in") =>
         new()

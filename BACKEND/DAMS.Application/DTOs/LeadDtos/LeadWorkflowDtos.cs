@@ -12,9 +12,9 @@ namespace DAMS.Application.DTOs.LeadDtos
         [StringLength(100)]
         public string? LastName { get; set; }
 
-        [Required]
-        [StringLength(50, MinimumLength = 7)]
-        public string Phone { get; set; } = string.Empty;
+        /// <summary>Optional; LeadService rejects an edit that would leave no contact method at all.</summary>
+        [StringLength(50)]
+        public string? Phone { get; set; }
 
         [StringLength(50)]
         public string? WhatsappNumber { get; set; }

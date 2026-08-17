@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Domain.Entities;
 
@@ -26,6 +27,12 @@ namespace DAMS.Application.Interfaces
         Task<List<LeadActivityDto>> GetTimelineAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<List<LeadAssignmentHistoryDto>> GetAssignmentHistoryAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// The immutable provider receipts behind this lead, each with every answer the person
+        /// gave — including the ones DAMS has no field for.
+        /// </summary>
+        Task<List<LeadExternalSubmissionDto>> GetExternalSubmissionsAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<LeadResponseDto> UpdateAsync(int id, UpdateLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
