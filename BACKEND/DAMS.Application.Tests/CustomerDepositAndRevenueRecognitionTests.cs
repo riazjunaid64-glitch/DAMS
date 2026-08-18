@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
@@ -567,6 +568,166 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         var pnl = await Finance(context).GetProfitAndLossAsync(null, Jan.AddDays(-1), Mar);
         Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name.Contains("Cost of Sales", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(0m, pnl.TotalExpenses);
+    }
+
+    // ── 23. A recognised status is not proof of recognised revenue ───────────────────────────
+
+    [Fact]
+    public async Task CompleteSale_RequiresARecognisedSale_NotMerelyAPossessionGivenStatus()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 500_000m);
+        await PayAsync(context, world, 500_000m, Jan);
+
+        // A legacy row exactly as the backfill would leave it if it could not date the sale:
+        // possession-given by status, with no recognition behind it.
+        var booking = await context.Bookings.SingleAsync(b => b.Id == world.BookingId);
+        booking.Status = BookingStatus.PossessionGiven;
+        booking.PossessionDate = Feb;
+        await context.SaveChangesAsync();
+        Assert.False(await context.BookingSaleRecognitions.AnyAsync());
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Bookings(context).CompleteSaleAsync(world.BookingId, 1));
+        Assert.Contains("no recognised sale", error.Message);
+
+        // Completing it would have produced the quiet failure this guards: a finished sale
+        // carrying 500k of cash, reporting nothing as income.
+        var pnl = await Finance(context).GetProfitAndLossAsync(null, Jan.AddDays(-1), Mar);
+        Assert.Equal(0m, pnl.TotalIncome);
+    }
+
+    [Fact]
+    public async Task EveryPossessedOrCompletedBooking_HasExactlyOneRecognition()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m);
+        await PayAsync(context, world, 5_000_000m, Jan);
+        await GivePossessionAsync(context, world, Feb);
+        await Bookings(context).CompleteSaleAsync(world.BookingId, 1);
+
+        var second = await AddBookingAsync(context, world, "BK-2", "A-2", 2_000_000m);
+        await PayAsync(context, world, 2_000_000m, Jan, second);
+        await Bookings(context).GivePossessionAsync(second, Feb, 1);
+
+        // The invariant the whole design rests on. Anything that reaches a recognised status
+        // without exactly one recognition row is a sale with no revenue, or a sale counted twice.
+        var recognisedStatuses = new[] { BookingStatus.PossessionGiven, BookingStatus.SaleCompleted };
+        var bookings = await context.Bookings.Where(b => recognisedStatuses.Contains(b.Status)).ToListAsync();
+        Assert.Equal(2, bookings.Count);
+        foreach (var item in bookings)
+            Assert.Equal(1, await context.BookingSaleRecognitions.CountAsync(r => r.BookingId == item.Id));
+    }
+
+    // ── 24. A receivable must always have a way to be collected ──────────────────────────────
+
+    [Fact]
+    public async Task PossessionWithOutstandingAndNoSchedule_LeavesTheReceivableCollectable()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m);
+        // The only way 3m arrives with no schedule behind it: the booking-amount milestone, which
+        // is what moves a booking to PaymentPlanActive in the first place. Recorded the way that
+        // path records it, so the schedule generated below plans from a real balance.
+        await PayAsync(context, world, 3_000_000m, Jan);
+        var booking = await context.Bookings.SingleAsync(b => b.Id == world.BookingId);
+        booking.BookingAmountRequired = 3_000_000m;
+        booking.BookingAmountReceived = 3_000_000m;
+        await context.SaveChangesAsync();
+        await GivePossessionAsync(context, world, Feb);
+
+        var accounts = new FinanceAccountService(context);
+        Assert.Equal(2_000_000m, (await accounts.GetByIdAsync(world.Receivables.Id)).CurrentBalance);
+
+        // No schedule was ever generated, so there is no installment to pay against. Unless a
+        // schedule can still be built after possession, that 2m receivable can never be cleared
+        // by any route the application offers — a permanent phantom asset on the balance sheet.
+        var installments = new InstallmentService(context, accounts);
+        var schedule = await installments.GenerateScheduleAsync(world.BookingId, new GenerateInstallmentPlanDto
+        {
+            AgreedSalePrice = 5_000_000m, DiscountPercent = 0m,
+            Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 2,
+            InstallmentStartDate = Mar
+        }, 1);
+
+        Assert.Equal(2_000_000m, schedule.Items.Sum(i => i.Amount));
+        foreach (var item in schedule.Items)
+            await installments.RecordInstallmentPaymentAsync(world.BookingId, item.Id, new RecordInstallmentPaymentDto
+            {
+                Amount = item.Amount, FinanceAccountId = world.Bank.Id,
+                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Mar
+            }, 1);
+
+        Assert.Equal(0m, (await accounts.GetByIdAsync(world.Receivables.Id)).CurrentBalance);
+        Assert.Equal(5_000_000m, (await accounts.GetByIdAsync(world.Bank.Id)).CurrentBalance);
+
+        var finance = Finance(context);
+        // Collecting a receivable moves cash, never income: the sale was recognised in February
+        // and collection in March must not add a second rupee of revenue.
+        Assert.Equal(5_000_000m, (await finance.GetProfitAndLossAsync(null, Jan.AddDays(-1), Mar.AddDays(1))).TotalIncome);
+        await AssertBalancedAsync(finance, Mar.AddDays(1));
+    }
+
+    // ── 25. Recognition cannot be dated outside the life of the booking ──────────────────────
+
+    [Fact]
+    public async Task PossessionDate_CannotPrecedeTheBookingDate()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m); // BookingDate = Jan
+        await PayAsync(context, world, 5_000_000m, Jan);
+
+        // Recognising in a prior year would push revenue into a period that is almost certainly
+        // already reported, and the recognition row is immutable by design.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => GivePossessionAsync(context, world, new DateTime(2024, 6, 1)));
+        Assert.Contains("before the booking date", error.Message);
+        Assert.False(await context.BookingSaleRecognitions.AnyAsync());
+
+        // The booking's own date is allowed: same-day possession is legitimate.
+        await GivePossessionAsync(context, world, Jan);
+        Assert.Equal(Jan, (await context.BookingSaleRecognitions.SingleAsync()).RecognitionDate);
+    }
+
+    [Fact]
+    public async Task PossessionDate_CannotBeInTheFuture()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => GivePossessionAsync(context, world, PakistanTime.Today.AddDays(1)));
+        Assert.Contains("future", error.Message);
+        Assert.False(await context.BookingSaleRecognitions.AnyAsync());
+    }
+
+    // ── 26. UTC timestamps against Pakistan business dates ───────────────────────────────────
+
+    [Fact]
+    public async Task PaymentInThePakistanEarlyMorning_DoesNotDisturbDepositOrReceivableBalances()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 5_000_000m);
+
+        // 02:00 PKT on 16 Feb is 21:00 UTC on 15 Feb: the one window where the stored UTC instant
+        // and the Pakistan business date disagree. Recognition is a business date (15 Feb), the
+        // payment is a UTC instant, and the deposit/receivable split compares the two — so this is
+        // the case where a naive boundary would misfile the cash.
+        await PayAsync(context, world, 3_000_000m, Jan);
+        await GivePossessionAsync(context, world, Feb);
+        await PayAsync(context, world, 2_000_000m, new DateTime(2026, 2, 15, 21, 0, 0, DateTimeKind.Utc));
+
+        var accounts = new FinanceAccountService(context);
+        // Whichever side of the boundary the payment is filed on, the money is the same money:
+        // the deposit is fully cleared, the receivable is fully collected, and the sale is
+        // recognised exactly once at its February value.
+        Assert.Equal(0m, (await accounts.GetByIdAsync(world.Deposits.Id)).CurrentBalance);
+        Assert.Equal(0m, (await accounts.GetByIdAsync(world.Receivables.Id)).CurrentBalance);
+        Assert.Equal(5_000_000m, (await accounts.GetByIdAsync(world.Bank.Id)).CurrentBalance);
+
+        var finance = Finance(context);
+        Assert.Equal(5_000_000m, (await finance.GetProfitAndLossAsync(null, Jan.AddDays(-1), Mar)).TotalIncome);
+        await AssertBalancedAsync(finance, Mar);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────

@@ -310,6 +310,94 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(3_000_000m, Assert.Single(asAtJanuary.Items).DepositBalance);
     }
 
+    // The migration immediately before revenue recognition. Migrating to it first leaves the
+    // database in the exact state a real deployment starts from.
+    private const string BeforeRecognition = "20260816215219_AddPageExclusivityAndSyncLease";
+
+    [SqlServerFact]
+    public async Task RecognitionMigration_RefusesToDeploy_WhenALegacySaleCannotBeDated()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using var db = new AppDbContext(Options(database.ConnectionString));
+        await db.GetService<IMigrator>().MigrateAsync(BeforeRecognition);
+
+        // A completed sale carrying real cash, with neither a possession nor a completion date to
+        // recognise it by — the shape imported or hand-edited data takes. Skipping it would leave
+        // Bank +500k, Customer Deposits +500k, Revenue nil: perfectly balanced and completely
+        // wrong, with no imbalance for any diagnostic to notice.
+        var project = new Project { ProjectName = "Legacy", Location = "Multan", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = "L-1", UnitType = "Apartment", Price = 500_000m, Status = UnitStatus.Sold };
+        var customer = new Customer { FullName = "Legacy Buyer", Phone = "03004445555", Status = CustomerStatus.Active };
+        db.AddRange(project, unit, customer, new Booking
+        {
+            BookingReference = "BK-LEGACY", Customer = customer, Unit = unit, Source = CustomerSource.Referral,
+            Status = BookingStatus.SaleCompleted, AgreedSalePrice = 500_000m, DiscountAmount = 0m,
+            BookingDate = new DateTime(2025, 3, 1), PossessionDate = null, CompletionDate = null
+        });
+        await db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => db.Database.MigrateAsync());
+        Assert.Contains("Revenue recognition cannot be backfilled", Flatten(error));
+        Assert.Contains("BK-LEGACY", await ScalarAsync<string>(database.ConnectionString,
+            "SELECT STRING_AGG([BookingReference], ',') FROM [Bookings] WHERE [Status] IN (2,3)"));
+
+        // Fail closed means fail whole: the deployment rolls back rather than half-landing.
+        Assert.Equal(0, await ScalarAsync<int>(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.tables WHERE [name] = 'BookingSaleRecognitions'"));
+
+        // Give the sale a date it can be recognised by, and the same deployment now succeeds.
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE [Bookings] SET [CompletionDate] = '2025-06-15' WHERE [BookingReference] = 'BK-LEGACY'");
+        await db.Database.MigrateAsync();
+        var recognition = await db.BookingSaleRecognitions.SingleAsync();
+        Assert.Equal(new DateTime(2025, 6, 15), recognition.RecognitionDate);
+        Assert.Equal(500_000m, recognition.NetSaleValue);
+    }
+
+    [SqlServerFact]
+    public async Task RecognitionMigration_RefusesToDeploy_WhenAnAccountNameBlocksItsSystemRole()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using var db = new AppDbContext(Options(database.ConnectionString));
+        await db.GetService<IMigrator>().MigrateAsync(BeforeRecognition);
+
+        // The chart already carries this name. Retyped to Bank it can no longer hold the deposit
+        // role — and it defeats both halves of the account step at once: the adopt-in-place UPDATE
+        // matches nothing, and the create-instead INSERT is blocked by the very name it wanted.
+        // Without the preflight the migration reports success with no deposit account at all.
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE [FinanceAccounts] SET [Type] = 2 WHERE [Name] = N'Customer General Account / Customer Deposits'");
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => db.Database.MigrateAsync());
+        Assert.Contains("cannot take the Customer Deposits role", Flatten(error));
+        Assert.Equal(0, await ScalarAsync<int>(database.ConnectionString,
+            "SELECT COUNT(*) FROM sys.tables WHERE [name] = 'BookingSaleRecognitions'"));
+
+        // Put the type back and the deployment completes, with both roles established.
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE [FinanceAccounts] SET [Type] = 5 WHERE [Name] = N'Customer General Account / Customer Deposits'");
+        await db.Database.MigrateAsync();
+        Assert.Single(await db.FinanceAccounts.Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerDeposits).ToListAsync());
+        Assert.Single(await db.FinanceAccounts.Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerReceivables).ToListAsync());
+    }
+
+    private static string Flatten(Exception error)
+    {
+        var text = new System.Text.StringBuilder();
+        for (var current = error; current != null; current = current.InnerException)
+            text.AppendLine(current.Message);
+        return text.ToString();
+    }
+
+    private static async Task<T> ScalarAsync<T>(string connectionString, string sql)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(sql, connection);
+        var value = await command.ExecuteScalarAsync();
+        return value is null or DBNull ? default! : (T)value;
+    }
+
     [SqlServerFact]
     public async Task LoanQueriesCorrectionsAndReports_RunOnTheRealSqlServerProvider()
     {

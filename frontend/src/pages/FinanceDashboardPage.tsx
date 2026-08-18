@@ -1060,10 +1060,11 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CustomerDepositLine).customerName}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).projectName}</span> },
             { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).unitNumber}</span> },
-            { key: "status", header: "Status", width: "150px", render: (r) => {
+            { key: "status", header: "Current Status", width: "150px", render: (r) => {
+              // Labelled "Current" on purpose: the money on this row is historical (as at the
+              // selected date) but the status is today's, so a booking can legitimately show a
+              // deposit balance next to a status that has since moved past it.
               const row = r as CustomerDepositLine;
-              // A recognised booking that still shows a deposit here means the balance is being
-              // read as at a date BEFORE possession — worth being able to see at a glance.
               return (
                 <span className="inline-flex rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] font-semibold text-violet-300">
                   {row.bookingStatus || "—"}
@@ -1073,10 +1074,24 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "netSale", header: "Net Sale Value", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).netSaleValue) },
             { key: "cash", header: "Cash Received", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).customerCashReceived, "text-emerald-400") },
             { key: "balance", header: "Deposit Held", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).depositBalance, "text-violet-300") },
-            { key: "recognised", header: "Possession", width: "140px", render: (r) => {
+            { key: "recognised", header: "Cleared By", width: "170px", render: (r) => {
+              // Two different events can clear a deposit and they must not be conflated: possession
+              // turns it into revenue, cancellation turns it into a refund payable. Showing a
+              // cancellation date under a "Possession" heading would assert a handover that never
+              // happened, so the event is named alongside its date.
               const row = r as CustomerDepositLine;
-              const date = row.recognitionDate ?? row.cancellationDate;
-              return <span className="text-[var(--text-secondary)]">{date ? formatDate(date) : "—"}</span>;
+              const cleared = row.recognitionDate
+                ? { label: "Possession", date: row.recognitionDate, tone: "text-emerald-400" }
+                : row.cancellationDate
+                  ? { label: "Cancelled", date: row.cancellationDate, tone: "text-rose-400" }
+                  : null;
+              if (!cleared) return <span className="text-[var(--text-secondary)]">—</span>;
+              return (
+                <span className="text-[var(--text-secondary)]">
+                  <span className={`font-semibold ${cleared.tone}`}>{cleared.label}</span>
+                  {" · "}{formatDate(cleared.date)}
+                </span>
+              );
             } },
           ],
         };

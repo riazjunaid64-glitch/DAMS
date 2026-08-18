@@ -11,6 +11,53 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            // ── Preflight: refuse the deployment rather than land a wrong ledger ─────────────
+            //
+            // Everything below either recognises a sale or establishes the account its money sits
+            // in. Both can be defeated by production data this migration cannot repair on its own,
+            // and both fail QUIETLY when they are: an unrecognised sale keeps its cash as a
+            // customer deposit, and the balance sheet still balances — Bank up, Deposits up,
+            // Revenue nil. Nothing is out of balance, so no diagnostic fires and nobody is told.
+            //
+            // So the checks run first and throw. A migration that cannot produce a correct ledger
+            // must stop the deployment, not complete and leave someone to notice next quarter.
+            migrationBuilder.Sql("""
+                DECLARE @undatable int = (
+                    SELECT COUNT(*) FROM [Bookings] b
+                    WHERE b.[Status] IN (2, 3)
+                      AND COALESCE(b.[PossessionDate], b.[CompletionDate]) IS NULL);
+                DECLARE @negative int = (
+                    SELECT COUNT(*) FROM [Bookings] b
+                    WHERE b.[Status] IN (2, 3)
+                      AND (b.[AgreedSalePrice] - b.[DiscountAmount]) < 0);
+                IF @undatable > 0 OR @negative > 0
+                BEGIN
+                    DECLARE @msg nvarchar(2048) = CONCAT(
+                        N'Revenue recognition cannot be backfilled: ', @undatable,
+                        N' possessed/completed booking(s) have neither a possession nor a completion date, and ',
+                        @negative,
+                        N' have a discount larger than the agreed sale price. Each one would keep its cash as a customer deposit and report no revenue at all, on a balance sheet that still balances. ',
+                        N'Fix them first: SELECT [Id], [BookingReference], [Status], [PossessionDate], [CompletionDate], [AgreedSalePrice], [DiscountAmount] FROM [Bookings] WHERE [Status] IN (2,3) AND (COALESCE([PossessionDate],[CompletionDate]) IS NULL OR ([AgreedSalePrice] - [DiscountAmount]) < 0);');
+                    THROW 51000, @msg, 1;
+                END
+                """);
+
+            // The two account statements further down adopt an existing account by name, or create
+            // one. An account holding that name with the wrong type or another system role defeats
+            // both halves at once — the UPDATE matches nothing, and the INSERT is blocked by the
+            // name it was meant to claim — leaving the migration "successful" with no account to
+            // post to.
+            migrationBuilder.Sql("""
+                IF EXISTS (SELECT 1 FROM [FinanceAccounts]
+                           WHERE [Name] = N'Customer General Account / Customer Deposits'
+                             AND ([Type] <> 5 OR [SystemRole] NOT IN (0, 3)))
+                    THROW 51001, N'An account named "Customer General Account / Customer Deposits" already exists but is not an unclaimed Liability account, so it cannot take the Customer Deposits role. Retype it to Liability and clear its system role, or rename it, then re-run.', 1;
+                IF EXISTS (SELECT 1 FROM [FinanceAccounts]
+                           WHERE [Name] = N'Customer Receivables'
+                             AND ([Type] <> 8 OR [SystemRole] NOT IN (0, 4)))
+                    THROW 51001, N'An account named "Customer Receivables" already exists but is not an unclaimed Receivable account, so it cannot take the Customer Receivables role. Retype it to Receivable and clear its system role, or rename it, then re-run.', 1;
+                """);
+
             migrationBuilder.DropCheckConstraint(
                 name: "CK_FinanceAccounts_SystemRole",
                 table: "FinanceAccounts");
@@ -76,16 +123,16 @@ namespace DAMS.Infrastructure.Migrations
             //   • CompletionDate for legacy rows that completed without possession (a path this
             //     change closes for new work, but which existing data took).
             //
-            // Two kinds of row are deliberately LEFT BEHIND rather than guessed at:
-            //   • a recognised-status booking with neither date — there is nothing in the record
-            //     to date it by, and inventing one would put revenue in a period it never
-            //     belonged to. Both dates are written unconditionally by the application, so this
-            //     can only come from imported or hand-edited data.
+            // Two kinds of row cannot be recognised from the record alone:
+            //   • a recognised-status booking with neither date — there is nothing to date it by,
+            //     and inventing one would put revenue in a period it never belonged to. Both dates
+            //     are written unconditionally by the application, so this can only come from
+            //     imported or hand-edited data.
             //   • a booking whose discount exceeds its agreed price, which has no meaningful net
             //     sale value.
-            // Either way the booking's cash simply stays a customer deposit, which is visible on
-            // the Customer Deposits view and reported by the Balance Sheet's imbalance diagnosis —
-            // loud and fixable, rather than quiet and wrong.
+            // Neither is skipped: the preflight at the top of this migration has already refused
+            // the deployment if any exist. The WHERE clause below still spells the conditions out
+            // so this statement is correct on its own terms rather than only in company.
             //
             // NOT EXISTS makes it re-runnable; the unique index on BookingId makes it safe anyway.
             migrationBuilder.Sql("""
@@ -157,6 +204,19 @@ namespace DAMS.Infrastructure.Migrations
                             (SELECT TOP (1) [AccountHolderName] FROM [FinanceAccounts] WHERE [SystemRole] = 1),
                             (SELECT TOP (1) [AccountHolderName] FROM [FinanceAccounts] ORDER BY [DisplayOrder], [Id])),
                         0, NULL, 420, 4, NULL, NULL, 1, SYSUTCDATETIME(), SYSUTCDATETIME();
+                """);
+
+            // Postcondition. The preflight covers the failure modes that are known; this covers
+            // the ones that are not. If a chart exists at all, both roles must be held by the time
+            // this migration finishes — anything else means customer money has no account to sit
+            // in, which is a broken ledger no matter which guard let it through.
+            // An empty chart is exempt: a brand-new database gets its accounts from chart setup,
+            // which assigns both roles itself.
+            migrationBuilder.Sql("""
+                IF EXISTS (SELECT 1 FROM [FinanceAccounts])
+                   AND (NOT EXISTS (SELECT 1 FROM [FinanceAccounts] WHERE [SystemRole] = 3)
+                        OR NOT EXISTS (SELECT 1 FROM [FinanceAccounts] WHERE [SystemRole] = 4))
+                    THROW 51002, N'Migration finished without establishing both customer system accounts (Customer Deposits and Customer Receivables). Customer money would have no account to sit in and the balance sheet would not balance. Inspect [FinanceAccounts] for name or type collisions and re-run.', 1;
                 """);
         }
 

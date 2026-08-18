@@ -251,8 +251,12 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled)
                 throw new InvalidOperationException("Cannot generate installments for a cancelled booking.");
 
-            if (booking.Status != BookingStatus.PaymentPlanActive)
-                throw new InvalidOperationException("Installment schedule can only be generated when the booking is on an active payment plan.");
+            // Possession is included deliberately. Once the sale is recognised the unpaid balance
+            // is an Accounts Receivable, and an installment is the only way DAMS collects one — so
+            // refusing to build a schedule after possession would strand that receivable with no
+            // route to payment at all. Regeneration stays gated by CanRegenerateAsync as before.
+            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
+                throw new InvalidOperationException("Installment schedule can only be generated while the payment plan is active or after possession.");
 
             var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
             var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
@@ -426,7 +430,7 @@ namespace DAMS.Application.Services
         {
             var hasSchedule = booking.Installments.Count > 0;
             var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
-            var canGenerate = booking.Status == BookingStatus.PaymentPlanActive
+            var canGenerate = booking.Status is BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven
                               && booking.BookingAmountReceived >= effectiveRequired
                               && (!hasSchedule || canRegenerate);
 
