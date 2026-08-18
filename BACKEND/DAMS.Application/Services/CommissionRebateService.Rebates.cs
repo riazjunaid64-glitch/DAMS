@@ -331,8 +331,8 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.AwaitingBookingAmount && satisfied)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate ??= PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                 booking.UpdatedAt = DateTime.UtcNow;
                 if (booking.Unit != null)
                 {
@@ -402,10 +402,10 @@ namespace DAMS.Application.Services
             {
                 DisbursementId = disbursement.Id, Amount = amount, Reason = reason,
                 IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
-                ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
+                ReversedByName = actor.DisplayName, ReversedAt = PakistanTime.Now
             });
             if (disbursement.InstallmentId.HasValue)
-                await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, DateTime.UtcNow, cancellationToken);
+                await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, PakistanTime.Now, cancellationToken);
             // NetDisbursed already reflects this reversal (EF fixup tracked it into
             // disbursement.Reversals above); subtracting `amount` again would double-count and
             // leave a fully reversed rebate stuck in PartiallyApplied / ReversalRequired.

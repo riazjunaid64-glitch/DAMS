@@ -538,9 +538,18 @@ namespace DAMS.Application.Services
         /// the value lands somewhere it is actually held. Booking a purchase into a bank account
         /// would count the money twice, and into a liability would invert its sign.
         /// <para>
-        /// Two destinations qualify, for the same reason. A fixed asset is something the company
-        /// keeps; work in progress is construction cost accumulating into something it is
-        /// building. Neither is consumed, so neither reduces profit at purchase time.
+        /// A fixed asset is the only valid destination. Work in progress used to qualify on the
+        /// theory that construction cost accumulates into the building and is released to cost of
+        /// sales later. The client has since confirmed the opposite: construction spending is a
+        /// cost on the day it is paid, so it belongs on the expense flow with the construction
+        /// heads (cement, steel, labour, contractors) behind it, not here.
+        /// </para>
+        /// <para>
+        /// A purchase ALREADY booked to a work-in-progress account stays editable in place —
+        /// correcting its amount or attachment must not be blocked, and forcing it to move would
+        /// rewrite history rather than preserve it. Only pointing a purchase AT work in progress is
+        /// refused. The work-in-progress accounts themselves stay on the chart because their
+        /// inherited ERP opening balances are still real assets.
         /// </para>
         /// </summary>
         public async Task EnsureAssetAccountAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default)
@@ -552,9 +561,17 @@ namespace DAMS.Application.Services
             if (account == null) throw new InvalidOperationException("Selected asset account does not exist.");
             if (!account.IsActive && currentAccountId != accountId)
                 throw new InvalidOperationException("Selected asset account is inactive. Choose an active account.");
-            if (account.Type is not (FinanceAccountType.FixedAsset or FinanceAccountType.WorkInProgress))
+            if (account.Type == FinanceAccountType.WorkInProgress)
+            {
+                if (currentAccountId == accountId) return;
                 throw new InvalidOperationException(
-                    "Purchases can only be capitalised into a fixed-asset or work-in-progress account.");
+                    "Construction and work-in-progress spending is recorded as an expense, not capitalised. "
+                    + "Record it under Expenses against its construction head (cement, steel, labour, contractor) "
+                    + "so it reduces profit on the day it is paid.");
+            }
+            if (account.Type != FinanceAccountType.FixedAsset)
+                throw new InvalidOperationException(
+                    "Purchases can only be capitalised into a fixed-asset account.");
         }
 
         public async Task<List<FinanceAccountResponseDto>> SetupClientChartAsync(CancellationToken cancellationToken = default)

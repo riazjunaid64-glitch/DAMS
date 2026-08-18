@@ -71,9 +71,11 @@ namespace DAMS.Application.Services
                 .SumAsync(t => (decimal?)t.InterestAmount) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals
                 + rebatePayments - rebateReversals + nonCashCredits + loanInterest;
-            // Reported alongside the expense total, never inside it. Capitalising a purchase is the
-            // whole point: the money changed form rather than being consumed, so it must not reach
-            // NetProfit by any route.
+            // Reported alongside the expense total, never inside it. For ACCOUNTING purposes
+            // capitalising a purchase is the whole point: the money changed form rather than being
+            // consumed, so it must not reach NetProfit by any route — that is what keeps NetProfit
+            // tied to the Balance Sheet. It is subtracted once, separately, to give the client's
+            // ManagementNetProfit below.
             var assetPurchases = await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
 
@@ -138,6 +140,9 @@ namespace DAMS.Application.Services
                 TotalRevenue = totalRevenue,
                 TotalExpenses = totalExpenses,
                 NetProfit = totalRevenue - totalExpenses,
+                // Same rows, same filters, one subtraction apart — so the two profit figures can
+                // never tell different stories about the same period.
+                ManagementNetProfit = totalRevenue - totalExpenses - assetPurchases,
                 WhtWithheld = whtWithheld,
                 TotalAssetPurchases = assetPurchases,
                 OutstandingAmount = outstandingTotal,
@@ -189,7 +194,8 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = null,
                     FinanceAccountId = null,
                     FinanceAccountName = null,
-                    AccountHolderName = null
+                    AccountHolderName = null,
+                    RowVersion = null
                 });
 
             var manual = ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
@@ -217,7 +223,8 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = r.Attachment != null ? r.Attachment.UploadedAt : null,
                     FinanceAccountId = r.FinanceAccountId,
                     FinanceAccountName = r.FinanceAccount != null ? r.FinanceAccount.Name : null,
-                    AccountHolderName = r.FinanceAccount != null ? r.FinanceAccount.AccountHolderName : null
+                    AccountHolderName = r.FinanceAccount != null ? r.FinanceAccount.AccountHolderName : null,
+                    RowVersion = r.RowVersion
                 });
 
             // What the company keeps on a cancellation — real income, recognised once on the
@@ -248,7 +255,8 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = null,
                     FinanceAccountId = null,
                     FinanceAccountName = null,
-                    AccountHolderName = null
+                    AccountHolderName = null,
+                    RowVersion = null
                 });
 
             var raw = await recognisedSales.Concat(manual).Concat(retained)
@@ -273,6 +281,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = r.FinanceAccountId,
                 FinanceAccountName = r.FinanceAccountName,
                 AccountHolderName = r.AccountHolderName,
+                ConcurrencyToken = r.RowVersion == null ? null : Convert.ToBase64String(r.RowVersion),
                 Attachment = MapAttachment(r.AttachmentFileName, r.AttachmentContentType, r.AttachmentFileSize, r.AttachmentUploadedAt)
             }).ToList();
 
@@ -310,6 +319,7 @@ namespace DAMS.Application.Services
                     FinanceAccountId = e.FinanceAccountId,
                     FinanceAccountName = e.FinanceAccount != null ? e.FinanceAccount.Name : null,
                     AccountHolderName = e.FinanceAccount != null ? e.FinanceAccount.AccountHolderName : null,
+                    ConcurrencyToken = Convert.ToBase64String(e.RowVersion),
                     Attachment = e.Attachment == null ? null : new FinanceAttachmentDto
                     {
                         FileName = e.Attachment.OriginalFileName,
@@ -438,9 +448,9 @@ namespace DAMS.Application.Services
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
 
-            // Net Profit = every revenue line (+) and expense line (−), unioned, ordered and paged
-            // in SQL. Customer payments are absent by design: they move cash between a bank and a
-            // deposit or receivable, and never touch profit.
+            // Every revenue line (+), expense line (−) and management adjustment (−), unioned,
+            // ordered and paged in SQL. Customer payments are absent by design: they move cash
+            // between a bank and a deposit or receivable, and never touch profit.
             var recognisedSales = SaleRecognitionQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new NetProfitRow
                 {
@@ -552,10 +562,24 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Customer credit reversal"
                 });
 
+            // Fixed-asset purchases. NOT an accounting cost — which is why they carry their own kind
+            // rather than joining the expense rows. Listing them here is what lets this one drill-down
+            // reconcile to BOTH the accounting net profit (revenue + expense) and the client's
+            // management net profit (revenue + expense + management), instead of silently
+            // contradicting whichever card the operator clicked.
+            var capitalised = AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                .Select(p => new NetProfitRow
+                {
+                    SortId = p.Id, Date = p.Date,
+                    ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Kind = "management", Amount = p.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Fixed asset purchase — " + p.ItemName
+                });
+
             var raw = await recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
                 .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(loanInterest).Concat(retained)
-                .Concat(nonCashCredits).Concat(nonCashCreditReversals)
+                .Concat(nonCashCredits).Concat(nonCashCreditReversals).Concat(capitalised)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -568,7 +592,10 @@ namespace DAMS.Application.Services
                 ProjectName = r.ProjectName ?? "General",
                 Kind = r.Kind,
                 Label = r.Label ?? string.Empty,
-                Amount = r.Kind == "expense" ? -r.Amount : r.Amount
+                // Anything that is not revenue reduces one of the two profit figures, so it is
+                // negative. Naming "revenue" as the positive case rather than "expense" as the
+                // negative one means a future kind cannot default itself into income.
+                Amount = r.Kind == "revenue" ? r.Amount : -r.Amount
             }).ToList();
 
             return new PagedResult<NetProfitLineDto> { Items = items, HasMore = raw.Count > take };
@@ -1044,6 +1071,15 @@ namespace DAMS.Application.Services
             public int? FinanceAccountId { get; set; }
             public string? FinanceAccountName { get; set; }
             public string? AccountHolderName { get; set; }
+
+            /// <summary>
+            /// Null on the recognised-sale and retained-cancellation branches: those are events, not
+            /// editable records, so they have no version to guard. Carried as raw bytes rather than a
+            /// base64 string because the encoding does not translate to SQL — and bound in EVERY
+            /// branch because EF aligns a union on the first branch's members and drops any that one
+            /// leaves unset.
+            /// </summary>
+            public byte[]? RowVersion { get; set; }
         }
 
         private sealed class NetProfitRow
@@ -1082,7 +1118,7 @@ namespace DAMS.Application.Services
                 RevenueType = category.Name,
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
                 Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim(),
-                Date = dto.Date?.Date ?? DateTime.UtcNow,
+                Date = ResolveFinanceDate(dto.Date, "Revenue date"),
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1129,6 +1165,7 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
             if (revenue == null)
                 throw new InvalidOperationException("Manual revenue entry not found.");
+            ApplyRowVersion(revenue, dto.ConcurrencyToken, "revenue entry");
             ValidateRevenue(dto.Amount, dto.RevenueType, dto.RevenueCategoryId);
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
@@ -1164,7 +1201,7 @@ namespace DAMS.Application.Services
             revenue.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
             revenue.Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim();
             if (dto.Date.HasValue)
-                revenue.Date = dto.Date.Value.Date;
+                revenue.Date = ResolveFinanceDate(dto.Date, "Revenue date");
 
             try
             {
@@ -1182,13 +1219,16 @@ namespace DAMS.Application.Services
             return await MapManualRevenueAsync(revenue);
         }
 
-        public async Task DeleteManualRevenueAsync(int id, CancellationToken cancellationToken = default)
+        public async Task DeleteManualRevenueAsync(int id, string? concurrencyToken = null, CancellationToken cancellationToken = default)
         {
             var revenue = await _context.ManualRevenues
                 .Include(r => r.Attachment)
                 .FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
             if (revenue == null)
                 throw new InvalidOperationException("Manual revenue entry not found.");
+            // Deleting is as destructive as editing and races the same way: one admin correcting the
+            // amount while another removes the row must not both appear to succeed.
+            ApplyRowVersion(revenue, concurrencyToken, "revenue entry");
 
             var storedFileName = revenue.Attachment?.StoredFileName;
             _context.ManualRevenues.Remove(revenue);
@@ -1218,7 +1258,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
-                Date = dto.Date?.Date ?? DateTime.UtcNow,
+                Date = ResolveFinanceDate(dto.Date, "Expense date"),
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1268,6 +1308,7 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
+            ApplyRowVersion(expense, dto.ConcurrencyToken, "expense");
             await EnsureProjectExistsAsync(dto.ProjectId, cancellationToken);
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
@@ -1302,7 +1343,7 @@ namespace DAMS.Application.Services
             expense.Amount = dto.Amount;
             expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
             if (dto.Date.HasValue)
-                expense.Date = dto.Date.Value.Date;
+                expense.Date = ResolveFinanceDate(dto.Date, "Expense date");
             // Re-resolved after the date and amount move, because both feed the threshold check
             // and therefore the tax.
             await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
@@ -1325,13 +1366,14 @@ namespace DAMS.Application.Services
             return await MapExpenseAsync(expense);
         }
 
-        public async Task DeleteExpenseAsync(int id, CancellationToken cancellationToken = default)
+        public async Task DeleteExpenseAsync(int id, string? concurrencyToken = null, CancellationToken cancellationToken = default)
         {
             var expense = await _context.Expenses
                 .Include(e => e.Attachment)
                 .FirstOrDefaultAsync(e => e.Id == id, cancellationToken);
             if (expense == null)
                 throw new InvalidOperationException("Expense not found.");
+            ApplyRowVersion(expense, concurrencyToken, "expense");
 
             // Removing an expense lowers the vendor's year-to-date total, so it moves the same
             // aggregate a save reads. Without the lock a concurrent entry can decide the threshold
@@ -1575,6 +1617,7 @@ namespace DAMS.Application.Services
                 Reference = r.Reference,
                 Date = r.Date,
                 CreatedAt = r.CreatedAt,
+                ConcurrencyToken = Token(r.RowVersion),
                 Attachment = MapAttachment(r.Attachment)
             };
         }
@@ -1606,6 +1649,7 @@ namespace DAMS.Application.Services
                 WhtTaxSection = e.WhtTaxSection,
                 VendorFilerStatusAtEntry = e.VendorFilerStatusAtEntry,
                 CreatedAt = e.CreatedAt,
+                ConcurrencyToken = Token(e.RowVersion),
                 Attachment = MapAttachment(e.Attachment)
             };
         }
@@ -1702,6 +1746,59 @@ namespace DAMS.Application.Services
         {
             if (attachment != null && removeAttachment)
                 throw new InvalidOperationException("Choose either a replacement attachment or removal, not both.");
+        }
+
+        /// <summary>
+        /// Pins the row version the caller loaded onto the tracked entity, so the UPDATE/DELETE
+        /// carries it in its WHERE clause and EF raises a concurrency exception rather than letting a
+        /// stale copy win.
+        /// <para>
+        /// A missing token is tolerated only when the row genuinely has none — an in-memory test
+        /// store, or a row read before the version column existed. Once a real version is present,
+        /// omitting it is an error rather than a licence to overwrite: silently accepting it would
+        /// make the protection opt-out by simply not sending a field.
+        /// </para>
+        /// </summary>
+        private void ApplyRowVersion<TEntity>(TEntity entity, string? token, string label)
+            where TEntity : class
+        {
+            var property = _context.Entry(entity).Property<byte[]>(nameof(Expense.RowVersion));
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                if (property.CurrentValue is { Length: > 0 })
+                    throw new DbUpdateConcurrencyException($"The {label} version is missing. Refresh and try again.");
+                return;
+            }
+            try { property.OriginalValue = Convert.FromBase64String(token); }
+            catch (FormatException)
+            {
+                throw new DbUpdateConcurrencyException($"The {label} version is invalid. Refresh and try again.");
+            }
+        }
+
+        private static string Token(byte[] rowVersion) => Convert.ToBase64String(rowVersion);
+
+        /// <summary>
+        /// The business date a finance record belongs to, normalised to midnight.
+        /// <para>
+        /// Omitting the date means "today" — and today is the PAKISTAN date, not the UTC one. Taking
+        /// <c>DateTime.UtcNow</c> instead put every entry made between midnight and 5 AM local time
+        /// on the previous calendar day, so a payment and the expense it funded could land in
+        /// different months while the operator saw one evening's work. It also left a time of day on
+        /// a column every report reads as a date.
+        /// </para>
+        /// <para>
+        /// The lower bound is the Trial Balance's own floor: a date SQL Server accepts but the
+        /// reports cannot address is a row that silently never appears anywhere.
+        /// </para>
+        /// </summary>
+        private static DateTime ResolveFinanceDate(DateTime? date, string field)
+        {
+            var value = date?.Date ?? PakistanTime.Today;
+            if (value < SqlStart || value.Year > 9998)
+                throw new InvalidOperationException(
+                    $"{field} must be between {SqlStart:dd MMM yyyy} and 31 Dec 9998.");
+            return value;
         }
 
         private static void ValidateRevenue(decimal amount, string revenueType, int? categoryId)

@@ -81,9 +81,17 @@ interface FinancialSummary {
   customerDepositsBalance: number;
   manualRevenue: number;
   totalExpenses: number;
+  /** The ACCOUNTING result. Ties to the Balance Sheet and Trial Balance. */
   netProfit: number;
+  /**
+   * The client's MANAGEMENT result: netProfit less the gross cost of fixed assets bought in the
+   * period. Buying an asset spends money even though accounting says value only changed form, so
+   * both readings are reported and neither is allowed to overwrite the other.
+   */
+  managementNetProfit: number;
   whtWithheld: number;
-  /** Fixed assets bought in the period, at cost. Deliberately outside totalExpenses and netProfit. */
+  /** Fixed assets bought in the period, at cost. Outside totalExpenses and netProfit; it IS the
+   *  whole of the gap between netProfit and managementNetProfit. */
   totalAssetPurchases: number;
   outstandingAmount: number;
   overdueAmount: number;
@@ -106,6 +114,8 @@ interface RevenueLine {
   financeAccountId: number | null;
   financeAccountName: string | null;
   accountHolderName: string | null;
+  /** Base64 row version. Null on recognised sales and retained cancellations — events, not editable records. */
+  concurrencyToken: string | null;
   attachment: FinanceAttachmentInfo | null;
 }
 
@@ -131,6 +141,8 @@ interface ExpenseLine {
   financeAccountId: number | null;
   financeAccountName: string | null;
   accountHolderName: string | null;
+  /** Base64 row version — sent back on update and delete so a stale edit is refused, not applied. */
+  concurrencyToken: string;
   attachment: FinanceAttachmentInfo | null;
 }
 
@@ -182,7 +194,11 @@ interface NetProfitLine {
   date: string;
   projectName: string;
   label: string;
-  kind: "revenue" | "expense";
+  /**
+   * "revenue" + "expense" sum to the accounting net profit; adding "management" (fixed-asset
+   * purchases) gives the client's management net profit. One list, both totals.
+   */
+  kind: "revenue" | "expense" | "management";
   amount: number;
 }
 
@@ -204,8 +220,9 @@ const VIEW_PARAM: Record<View, string> = {
 const VIEW_TITLES: Record<View, string> = {
   revenue: "Revenue",
   expense: "Expenses",
-  // Fixed assets AND work in progress: both are money that changed form rather than being spent.
-  assetPurchase: "Capitalised Purchases",
+  // Things the company keeps. Money that changed form rather than being consumed — so it is outside
+  // accounting profit, and inside the client's management-profit deduction.
+  assetPurchase: "Fixed Asset Purchases",
   customerDeposits: "Customer Deposits",
   netProfit: "Net Profit Breakdown",
   outstanding: "Outstanding Balances",
@@ -261,6 +278,8 @@ const PERIODS: Exclude<Period, "custom">[] = ["today", "month", "year", "lastYea
 
 interface RevenueFormState {
   id: number | null;
+  /** Base64 row version of the row being edited; "" for a new one. */
+  concurrencyToken: string;
   projectId: string;
   financeAccountId: string;
   amount: string;
@@ -276,6 +295,8 @@ interface RevenueFormState {
 
 interface ExpenseFormState {
   id: number | null;
+  /** Base64 row version of the row being edited; "" for a new one. */
+  concurrencyToken: string;
   projectId: string;
   financeAccountId: string;
   amount: string;
@@ -305,6 +326,13 @@ interface AssetPurchaseFormState {
   id: number | null;
   projectId: string;
   assetAccountId: string;
+  /**
+   * The destination's name as recorded on the row. Needed because a purchase saved before
+   * construction spend became an expense points at a work-in-progress account, and that account is
+   * no longer offered as a destination — without the name here the select would silently blank it
+   * and the operator would be forced to mis-file a row they only meant to correct.
+   */
+  assetAccountName: string;
   financeAccountId: string;
   amount: string;
   itemName: string;
@@ -325,6 +353,7 @@ const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
   id: null,
   projectId: "",
   assetAccountId: "",
+  assetAccountName: "",
   financeAccountId: "",
   amount: "",
   itemName: "",
@@ -343,6 +372,7 @@ const emptyAssetPurchaseForm = (): AssetPurchaseFormState => ({
 
 const emptyRevenueForm = (): RevenueFormState => ({
   id: null,
+  concurrencyToken: "",
   projectId: "",
   financeAccountId: "",
   amount: "",
@@ -358,6 +388,7 @@ const emptyRevenueForm = (): RevenueFormState => ({
 
 const emptyExpenseForm = (): ExpenseFormState => ({
   id: null,
+  concurrencyToken: "",
   projectId: "",
   financeAccountId: "",
   amount: "",
@@ -449,21 +480,17 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
-  // The purchase destinations. Type 7 is FixedAsset and type 9 is WorkInProgress — both asked
-  // for explicitly rather than by "not cash-like", which would also offer liabilities and capital
-  // as somewhere to put a desk. Construction spend goes to WIP: it is not consumed, it accumulates
-  // into the building, so it must not reduce profit any more than buying a desk does.
+  // The purchase destinations: fixed-asset accounts (type 7) only, asked for explicitly rather than
+  // by "not cash-like", which would also offer liabilities and capital as somewhere to put a desk.
+  //
+  // Work-in-progress accounts (type 9) are deliberately NOT offered. Construction and site work is
+  // a cost on the day it is paid, so it belongs on the Expense form under its construction head;
+  // the server refuses a work-in-progress destination and this list simply agrees with it. The WIP
+  // accounts still exist and still carry their inherited ERP balances.
   const loadAssetAccounts = useCallback(async () => {
     try {
-      const [fixedAssets, workInProgress] = await Promise.all([
-        api("/api/finance/accounts/options?includeInactive=true&type=7"),
-        api("/api/finance/accounts/options?includeInactive=true&type=9"),
-      ]);
-      const rows: FinanceAccountOption[] = [
-        ...(fixedAssets.ok ? await fixedAssets.json() as FinanceAccountOption[] : []),
-        ...(workInProgress.ok ? await workInProgress.json() as FinanceAccountOption[] : []),
-      ];
-      if (fixedAssets.ok || workInProgress.ok) setAssetAccounts(rows);
+      const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
+      if (response.ok) setAssetAccounts(await response.json() as FinanceAccountOption[]);
     } catch {
       /* The purchase form shows its validation message if these cannot be loaded. */
     }
@@ -590,13 +617,18 @@ export default function FinanceDashboardPage({ user }: Props) {
     return [
       { label: "Total Revenue", value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View },
       { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "expense" as View },
-      // Sits between expenses and profit on purpose: it is spending that is NOT a cost, and the
-      // adjacency is what stops someone reading the two as the same kind of number.
-      { label: "Capitalised", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
+      // Sits between expenses and profit on purpose: it is spending that is NOT an accounting cost,
+      // and the adjacency is what stops someone reading the two as the same kind of number. It is
+      // also exactly the gap between the two profit cards below.
+      { label: "Fixed Assets Bought", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
       // A balance, not a period total, and deliberately next to Revenue: this is the money
       // customers have handed over that the company has NOT yet earned.
       { label: "Customer Deposits", value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View },
-      { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
+      // Both profit readings, adjacent and labelled. The accounting one is what the Balance Sheet
+      // and Trial Balance agree with; the management one is what the client judges the period by.
+      // Showing one without the other is what would make two screens contradict each other.
+      { label: "Net Profit (accounting)", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
+      { label: "Management Net Profit", value: s?.managementNetProfit ?? 0, valueColor: (s?.managementNetProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#0ea5e9", view: "netProfit" as View },
       { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
@@ -660,6 +692,9 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (revenueForm.date) body.append("date", revenueForm.date);
       if (revenueForm.selectedAttachment) body.append("attachment", revenueForm.selectedAttachment);
       if (revenueForm.removeAttachment) body.append("removeAttachment", "true");
+      // The version the form was opened with. Without it a second admin's save would overwrite
+      // the first's silently; with it the server refuses and the operator is told to reload.
+      if (revenueForm.id) body.append("concurrencyToken", revenueForm.concurrencyToken);
       const res = revenueForm.id
         ? await api(`/api/Finance/revenue/${revenueForm.id}/form`, { method: "PUT", body })
         : await api("/api/Finance/revenue/form", { method: "POST", body });
@@ -719,6 +754,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       }
       if (expenseForm.selectedAttachment) body.append("attachment", expenseForm.selectedAttachment);
       if (expenseForm.removeAttachment) body.append("removeAttachment", "true");
+      if (expenseForm.id) body.append("concurrencyToken", expenseForm.concurrencyToken);
       const res = expenseForm.id
         ? await api(`/api/Finance/expenses/${expenseForm.id}/form`, { method: "PUT", body })
         : await api("/api/Finance/expenses/form", { method: "POST", body });
@@ -798,18 +834,27 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   };
 
-  const deleteRevenue = async (id: number) => {
+  // Deletes carry the row version too, and surface the server's message rather than a generic
+  // failure — "changed by someone else" is the one delete error an operator can actually act on.
+  const deleteRevenue = async (row: RevenueLine) => {
+    if (row.manualRevenueId == null) return;
     if (!window.confirm("Delete this manual revenue entry?")) return;
-    const res = await api(`/api/Finance/revenue/${id}`, { method: "DELETE" });
+    const res = await api(
+      `/api/Finance/revenue/${row.manualRevenueId}?concurrencyToken=${encodeURIComponent(row.concurrencyToken ?? "")}`,
+      { method: "DELETE" },
+    );
     if (res.ok) await refreshAll();
-    else alert("Failed to delete revenue entry.");
+    else alert(await financeApiError(res, "Failed to delete revenue entry."));
   };
 
-  const deleteExpense = async (id: number) => {
+  const deleteExpense = async (row: ExpenseLine) => {
     if (!window.confirm("Delete this expense?")) return;
-    const res = await api(`/api/Finance/expenses/${id}`, { method: "DELETE" });
+    const res = await api(
+      `/api/Finance/expenses/${row.id}?concurrencyToken=${encodeURIComponent(row.concurrencyToken)}`,
+      { method: "DELETE" },
+    );
     if (res.ok) await refreshAll();
-    else alert("Failed to delete expense.");
+    else alert(await financeApiError(res, "Failed to delete expense."));
   };
 
   const deleteAssetPurchase = async (row: AssetPurchaseLine) => {
@@ -830,6 +875,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       id: row.id,
       projectId: row.projectId != null ? String(row.projectId) : "",
       assetAccountId: String(row.assetAccountId),
+      assetAccountName: row.assetAccountName,
       financeAccountId: String(row.financeAccountId),
       amount: String(row.amount),
       itemName: row.itemName,
@@ -860,6 +906,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     setFormError(null);
     setRevenueForm({
       id: row.manualRevenueId,
+      concurrencyToken: row.concurrencyToken ?? "",
       projectId: row.projectId != null ? String(row.projectId) : "",
       financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
@@ -880,6 +927,7 @@ export default function FinanceDashboardPage({ user }: Props) {
     setFormError(null);
     setExpenseForm({
       id: row.id,
+      concurrencyToken: row.concurrencyToken,
       projectId: row.projectId != null ? String(row.projectId) : "",
       financeAccountId: row.financeAccountId != null ? String(row.financeAccountId) : "",
       amount: String(row.amount),
@@ -963,7 +1011,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               return row.manualRevenueId != null ? (
                 <span className="inline-flex justify-end gap-2">
                   <button type="button" onClick={() => editRevenue(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteRevenue(row.manualRevenueId!)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
+                  <button type="button" onClick={() => deleteRevenue(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               ) : null;
             } },
@@ -1002,7 +1050,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               return (
                 <span className="inline-flex justify-end gap-2">
                   <button type="button" onClick={() => editExpense(row)} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
-                  <button type="button" onClick={() => deleteExpense(row.id)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
+                  <button type="button" onClick={() => deleteExpense(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               );
             } },
@@ -1011,13 +1059,13 @@ export default function FinanceDashboardPage({ user }: Props) {
       case "assetPurchase":
         return {
           minWidth: 1360,
-          emptyText: "No capitalised purchases for the selected filters.",
+          emptyText: "No fixed asset purchases for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as AssetPurchaseLine).date)}</span> },
             { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.itemName}{x.description && <small className="block text-[var(--text-muted)]">{x.description}</small>}</span>; } },
             // The destination account is the point of the whole record, so it is a first-class
             // column rather than something to be inferred from the category.
-            { key: "assetAccount", header: "Capitalised Into", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
+            { key: "assetAccount", header: "Asset Account", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
             { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span>{x.financeAccountName ?? "—"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
             // Cost, not "gross expense": this figure is what the asset is carried at.
@@ -1103,11 +1151,18 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as NetProfitLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).projectName}</span> },
             { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).label}</span> },
-            { key: "kind", header: "Type", width: "130px", render: (r) => {
+            // Three kinds, not two. Revenue and Expense sum to the accounting profit; adding the
+            // Management rows gives the management profit. Badging a fixed-asset purchase as an
+            // "Expense" here would make this list contradict the Trial Balance.
+            { key: "kind", header: "Type", width: "150px", render: (r) => {
               const row = r as NetProfitLine;
-              return (
-                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.kind === "revenue" ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20"}`}>{row.kind === "revenue" ? "Revenue" : "Expense"}</span>
-              );
+              const style = row.kind === "revenue"
+                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                : row.kind === "management"
+                  ? "text-sky-300 bg-sky-500/10 border-sky-500/20"
+                  : "text-rose-400 bg-rose-500/10 border-rose-500/20";
+              const label = row.kind === "revenue" ? "Revenue" : row.kind === "management" ? "Mgmt adjustment" : "Expense";
+              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{label}</span>;
             } },
             { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
               const row = r as NetProfitLine;
@@ -1273,6 +1328,16 @@ export default function FinanceDashboardPage({ user }: Props) {
             </p>
           )}
 
+          {/* Spelled out rather than left to be inferred: two profit numbers on one screen are only
+              trustworthy if the screen says why they differ. */}
+          {summary && summary.totalAssetPurchases > 0 && (
+            <p className="mt-2 text-xs text-sky-300/90">
+              Management Net Profit is {formatMoney(summary.netProfit)} accounting profit less{" "}
+              {formatMoney(summary.totalAssetPurchases)} of fixed assets bought. The assets stay on the
+              Balance Sheet — only the management figure treats buying them as spending.
+            </p>
+          )}
+
           {summary && summary.whtWithheld > 0 && (
             <p className="mt-2 text-xs text-amber-300/90">
               Expenses are shown gross. {formatMoney(summary.whtWithheld)} of that was withheld as tax
@@ -1322,7 +1387,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               + Add Revenue
             </Button>
             <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
-              ◆ Add Purchase
+              ◆ Add Fixed Asset
             </Button>
             <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
               − Add Expense
@@ -1416,23 +1481,30 @@ export default function FinanceDashboardPage({ user }: Props) {
           <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             <div className="border-b border-[var(--border)] px-6 py-4">
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                {assetForm.id ? "Edit Capitalised Purchase" : "Record Capitalised Purchase"}
+                {assetForm.id ? "Edit Fixed Asset Purchase" : "Record Fixed Asset Purchase"}
               </h3>
+              {/* Both halves of the truth, on the form that creates it. Saying only "profit is not
+                  affected" was the wording that let someone believe buying a generator was free. */}
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                The money changes form rather than being spent — profit is not affected.
+                The asset stays on the Balance Sheet, so accounting profit does not move — but
+                Management Net Profit falls by the full purchase price. For construction, site work
+                or materials being consumed, use Expenses instead.
               </p>
             </div>
             <div className="space-y-4 p-6">
               {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
               <FormInput label="What was bought" value={assetForm.itemName} onChange={(v) => setAssetForm({ ...assetForm, itemName: v })} />
-              {/* Fixed asset or work in progress. Both hold value rather than consume it, so the
-                  choice changes where the cost lands on the Balance Sheet, never whether it hits
-                  profit. */}
-              <FormSelect label="Capitalise Into" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
-                <option value="">Select asset or work-in-progress account</option>
+              {/* Fixed-asset accounts only. The row's own destination is re-added below when it is
+                  not in the list — an old work-in-progress purchase must stay correctable in place
+                  rather than being pushed onto the wrong account by a blank select. */}
+              <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
+                <option value="">Select a fixed asset account</option>
                 {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
                   <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
                 ))}
+                {assetForm.assetAccountId
+                  && !assetAccounts.some((a) => String(a.id) === assetForm.assetAccountId)
+                  && <option value={assetForm.assetAccountId}>{assetForm.assetAccountName} (as recorded)</option>}
               </FormSelect>
               <FormSelect label="Paid From Account" value={assetForm.financeAccountId} onChange={(v) => setAssetForm({ ...assetForm, financeAccountId: v })}>
                 <option value="">Select account</option>
@@ -1537,6 +1609,14 @@ export default function FinanceDashboardPage({ user }: Props) {
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {expenseForm.id ? "Edit Expense" : "Add Expense"}
               </h3>
+              {/* Says where construction belongs, because this is the form it belongs on. The pair of
+                  notes here and on the fixed-asset form is what stops the same spend being recorded
+                  twice through two different screens. */}
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Reduces profit on the date it is paid. Construction, materials, labour, contractors
+                and site work all belong here. Use Add Fixed Asset only for something the company
+                keeps, such as equipment or furniture.
+              </p>
             </div>
             <div className="space-y-4 p-6">
               {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}

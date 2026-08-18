@@ -197,7 +197,7 @@ namespace DAMS.Application.Services
                         PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
                         Notes = "Received with the application form.",
                         RecordedByUserId = adminUserId,
-                        PaidAt = dto.ApplicationDate ?? DateTime.UtcNow,
+                        PaidAt = dto.ApplicationDate ?? PakistanTime.Now,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.Payments.Add(payment);
@@ -206,8 +206,8 @@ namespace DAMS.Application.Services
                     if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
                     {
                         booking.Status = BookingStatus.PaymentPlanActive;
-                        booking.BookingAmountConfirmedDate = DateTime.UtcNow;
-                        booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                        booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                        booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                         unit.Status = UnitStatus.OnPaymentPlan;
                         unit.UpdatedAt = DateTime.UtcNow;
                     }
@@ -351,8 +351,8 @@ namespace DAMS.Application.Services
             {
                 var unit = await _context.Units.FirstOrDefaultAsync(u => u.Id == booking.UnitId);
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate ??= PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                 if (unit != null)
                 {
                     unit.Status = UnitStatus.OnPaymentPlan;
@@ -415,7 +415,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                PaidAt = dto.PaidAt ?? PakistanTime.Now,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -429,8 +429,8 @@ namespace DAMS.Application.Services
             if (booking.BookingAmountReceived >= effectiveRequired)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate = DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
 
                 booking.Unit.Status = UnitStatus.OnPaymentPlan;
                 booking.Unit.UpdatedAt = DateTime.UtcNow;
@@ -498,7 +498,7 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("This sale has already been recognised.");
 
             booking.Status = BookingStatus.PossessionGiven;
-            booking.PossessionDate = possessionDate ?? DateTime.UtcNow;
+            booking.PossessionDate = possessionDate ?? PakistanTime.Now;
             booking.InternalNotes = AppendNote(booking.InternalNotes,
                 $"Possession given by user {adminUserId}.");
             booking.UpdatedAt = DateTime.UtcNow;
@@ -582,7 +582,7 @@ namespace DAMS.Application.Services
                     "The sale cannot be completed while installments remain unpaid. Apply each remaining credit as an installment adjustment, or collect the installment, before completing.");
 
             booking.Status = BookingStatus.SaleCompleted;
-            booking.CompletionDate = DateTime.UtcNow;
+            booking.CompletionDate = PakistanTime.Now;
             booking.InternalNotes = AppendNote(booking.InternalNotes,
                 $"Sale completed by user {adminUserId}.");
             booking.UpdatedAt = DateTime.UtcNow;

@@ -5,19 +5,27 @@ using Microsoft.EntityFrameworkCore;
 namespace DAMS.Application.Services
 {
     /// <summary>
-    /// Recording the purchase of something the company keeps, or is building.
+    /// Recording the purchase of a fixed asset — something the company keeps.
     /// <para>
     /// Mechanically this is the expense flow: same form fields, same attachment handling, same
     /// withholding. What differs is where the money goes. An expense credits cash and lands in the
-    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET OR
-    /// WORK-IN-PROGRESS ACCOUNT — the value moved rather than left, so profit must not move.
-    /// Nothing in this file writes to any P&amp;L surface, and that omission is the feature.
+    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT — the
+    /// value moved rather than left, so the ACCOUNTING profit must not move. Nothing in this file
+    /// writes to any accounting P&amp;L surface, and that omission is deliberate: it is what keeps
+    /// the Balance Sheet and Trial Balance in balance.
     /// </para>
     /// <para>
-    /// Construction cost accumulating into work in progress is the same event as buying a desk,
-    /// which is why it reuses this flow rather than getting a subsystem of its own. Releasing that
-    /// WIP to cost of sales is intentionally deferred pending the approved per-unit allocation
-    /// policy — nothing here moves it out.
+    /// The client's MANAGEMENT profit does move, by the gross purchase price. That adjustment is
+    /// applied where the reports are built (<c>FinanceService.Reports.cs</c>, <c>GetSummaryAsync</c>)
+    /// as a clearly separated figure — never by writing a second, unbalanced entry here. Both
+    /// numbers come off the same rows, so they cannot drift apart.
+    /// </para>
+    /// <para>
+    /// Construction / work-in-progress spending does NOT come through here any more. The client
+    /// confirmed it is a cost on the day it is paid, so it is recorded as an ordinary expense under
+    /// its construction head. <see cref="IFinanceAccountService.EnsureAssetAccountAsync"/> refuses a
+    /// work-in-progress destination for that reason; rows that already point at one stay editable so
+    /// their history survives.
     /// </para>
     /// </summary>
     public partial class FinanceService
@@ -87,7 +95,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Description = Clean(dto.Description),
-                Date = dto.Date?.Date ?? DateTime.UtcNow,
+                Date = ResolveFinanceDate(dto.Date, "Purchase date"),
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -167,7 +175,7 @@ namespace DAMS.Application.Services
             purchase.Amount = dto.Amount;
             purchase.Description = Clean(dto.Description);
             if (dto.Date.HasValue)
-                purchase.Date = dto.Date.Value.Date;
+                purchase.Date = ResolveFinanceDate(dto.Date, "Purchase date");
             // After the date and amount have moved, because both feed the threshold and so the tax.
             await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
 

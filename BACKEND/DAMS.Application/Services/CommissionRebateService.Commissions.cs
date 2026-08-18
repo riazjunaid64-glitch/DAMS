@@ -356,7 +356,7 @@ namespace DAMS.Application.Services
                 {
                     PayoutId = payout.Id, Amount = amount, Reason = reason,
                     IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
-                    ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
+                    ReversedByName = actor.DisplayName, ReversedAt = PakistanTime.Now
                 };
                 _context.CommissionPayoutReversals.Add(reversal);
                 // NetPaid already reflects this reversal: EF relationship fixup adds it to

@@ -32,12 +32,12 @@ namespace DAMS.Application.Interfaces
         // Manual revenue CRUD
         Task<ManualRevenueResponseDto> CreateManualRevenueAsync(CreateManualRevenueDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
         Task<ManualRevenueResponseDto> UpdateManualRevenueAsync(int id, UpdateManualRevenueDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
-        Task DeleteManualRevenueAsync(int id, CancellationToken cancellationToken = default);
+        Task DeleteManualRevenueAsync(int id, string? concurrencyToken = null, CancellationToken cancellationToken = default);
 
         // Expense CRUD
         Task<ExpenseResponseDto> CreateExpenseAsync(CreateExpenseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
         Task<ExpenseResponseDto> UpdateExpenseAsync(int id, UpdateExpenseDto dto, FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default);
-        Task DeleteExpenseAsync(int id, CancellationToken cancellationToken = default);
+        Task DeleteExpenseAsync(int id, string? concurrencyToken = null, CancellationToken cancellationToken = default);
 
         // Fixed-asset purchase CRUD. Same shape as expenses; the difference is where the value goes.
         Task<AssetPurchaseResponseDto> CreateAssetPurchaseAsync(CreateAssetPurchaseDto dto, int? adminUserId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);

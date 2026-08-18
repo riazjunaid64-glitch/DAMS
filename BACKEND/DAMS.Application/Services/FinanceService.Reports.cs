@@ -18,9 +18,16 @@ namespace DAMS.Application.Services
             var priorEnd = end.AddYears(-1);
             var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), cancellationToken);
             var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
+            // The management adjustment, for this period and the comparative. Read from the same
+            // purchase rows the Fixed Assets group on the Balance Sheet is built from, so the memo
+            // line and the asset it refers to cannot disagree.
+            var capitalised = await CapitalisedPurchasesAsync(projectId, start, end.AddDays(1), cancellationToken);
+            var priorCapitalised = await CapitalisedPurchasesAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
             var projectName = projectId.HasValue
                 ? await _context.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.ProjectName).SingleAsync(cancellationToken)
                 : null;
+            var netProfit = Money(current.Income.Sum(l => l.Amount) - current.Expenses.Sum(l => l.Amount));
+            var priorNetProfit = Money(prior.Income.Sum(l => l.Amount) - prior.Expenses.Sum(l => l.Amount));
             return new ProfitAndLossDto
             {
                 PeriodStart = start, PeriodEnd = end, PeriodLabel = label, ProjectName = projectName,
@@ -28,12 +35,35 @@ namespace DAMS.Application.Services
                 ExpenseLines = MergeLines(current.Expenses, prior.Expenses),
                 TotalIncome = Money(current.Income.Sum(l => l.Amount)),
                 TotalExpenses = Money(current.Expenses.Sum(l => l.Amount)),
-                NetProfit = Money(current.Income.Sum(l => l.Amount) - current.Expenses.Sum(l => l.Amount)),
+                NetProfit = netProfit,
+                CapitalisedPurchases = capitalised,
+                ManagementNetProfit = Money(netProfit - capitalised),
                 PriorTotalIncome = Money(prior.Income.Sum(l => l.Amount)),
                 PriorTotalExpenses = Money(prior.Expenses.Sum(l => l.Amount)),
-                PriorNetProfit = Money(prior.Income.Sum(l => l.Amount) - prior.Expenses.Sum(l => l.Amount))
+                PriorNetProfit = priorNetProfit,
+                PriorCapitalisedPurchases = priorCapitalised,
+                PriorManagementNetProfit = Money(priorNetProfit - priorCapitalised)
             };
         }
+
+        /// <summary>
+        /// Gross cost of the fixed assets bought in a window — the whole of the difference between
+        /// the accounting result and the client's management result.
+        /// <para>
+        /// GROSS, not net of withholding, for the same reason an expense is gross: what was withheld
+        /// from the supplier is owed to FBR, not saved. Net would understate the management
+        /// deduction by exactly the tax and leave the two profit figures reconciling to nothing.
+        /// </para>
+        /// <para>
+        /// This is read-only and is never written into <c>ExpenseLines</c>, the Trial Balance or the
+        /// Balance Sheet's Capital section. Its counterpart entry already exists on the sheet: the
+        /// asset itself.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> CapitalisedPurchasesAsync(
+            int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken) =>
+            Money(await AssetPurchaseQuery(projectId, from, toExclusive, null, null, false)
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
 
         public async Task<BalanceSheetDto> GetBalanceSheetAsync(
             int? projectId, DateTime asAt, CancellationToken cancellationToken = default)
@@ -75,6 +105,11 @@ namespace DAMS.Application.Services
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
             var imbalance = Money(totalAssets - rhs);
+            // The management memo. Computed over exactly the window retainedProfit covers, and
+            // deliberately applied AFTER totalCapital/rhs/imbalance are settled: the accounting
+            // statement is finished before the management view is even mentioned, so no ordering
+            // mistake can leak the adjustment into the figures IsBalanced is checked against.
+            var capitalisedToDate = await CapitalisedPurchasesAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
             var result = new BalanceSheetDto
             {
                 AsAt = date, AssetGroups = assetGroups, TotalAssets = totalAssets,
@@ -82,7 +117,9 @@ namespace DAMS.Application.Services
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
-                IsBalanced = imbalance == 0m
+                IsBalanced = imbalance == 0m,
+                CapitalisedPurchases = capitalisedToDate,
+                ManagementRetainedProfit = Money(retainedProfit - capitalisedToDate)
             };
             if (!result.IsBalanced)
                 result.UnbalancedAccounts = await DiagnoseImbalanceAsync(projectId, date, snapshots, cancellationToken);
@@ -182,7 +219,12 @@ namespace DAMS.Application.Services
             rows.Add(new object?[] { "Expenses", "Current", "Prior" });
             rows.AddRange(report.ExpenseLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount, l.PriorAmount }));
             rows.Add(new object?[] { "Total Expenses", report.TotalExpenses, report.PriorTotalExpenses });
-            rows.Add(new object?[] { "Net Profit", report.NetProfit, report.PriorNetProfit });
+            rows.Add(new object?[] { "Net Profit (accounting)", report.NetProfit, report.PriorNetProfit });
+            // Below the accounting total and labelled as an adjustment, mirroring the screen. An
+            // export that showed only one of the two profit figures would be the disagreement this
+            // report exists to prevent.
+            rows.Add(new object?[] { "Less: fixed asset purchases (management adjustment)", report.CapitalisedPurchases, report.PriorCapitalisedPurchases });
+            rows.Add(new object?[] { "Management Net Profit", report.ManagementNetProfit, report.PriorManagementNetProfit });
             return Workbook("profit-and-loss", rows);
         }
 
@@ -224,6 +266,11 @@ namespace DAMS.Application.Services
             rows.Add(new object?[] { "Retained Profit", report.RetainedProfit });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
+            // Memorandum, outside the statement totals above — the assets these purchases bought are
+            // already in the Fixed Assets group, so this is a second READING of them, not a second
+            // entry.
+            rows.Add(new object?[] { "Memo — fixed asset purchases since the opening baseline", report.CapitalisedPurchases });
+            rows.Add(new object?[] { "Memo — management retained profit", report.ManagementRetainedProfit });
             return Workbook("balance-sheet", rows);
         }
 

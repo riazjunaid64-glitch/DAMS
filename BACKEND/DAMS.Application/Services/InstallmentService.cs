@@ -105,7 +105,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                PaidAt = dto.PaidAt ?? PakistanTime.Now,
                 CreatedAt = DateTime.UtcNow
             };
 

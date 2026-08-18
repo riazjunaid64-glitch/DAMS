@@ -160,6 +160,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpPut("revenue/{id:int}/form")]
@@ -183,6 +187,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
+            }
             catch (IOException)
             {
                 return StatusCode(StatusCodes.Status500InternalServerError,
@@ -191,16 +199,20 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpDelete("revenue/{id:int}")]
-        public async Task<IActionResult> DeleteRevenue(int id)
+        public async Task<IActionResult> DeleteRevenue(int id, [FromQuery] string? concurrencyToken)
         {
             try
             {
-                await _financeService.DeleteManualRevenueAsync(id);
+                await _financeService.DeleteManualRevenueAsync(id, concurrencyToken);
                 return Ok(new { message = "Manual revenue entry deleted." });
             }
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
             }
         }
 
@@ -259,6 +271,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpPut("expenses/{id:int}/form")]
@@ -282,6 +298,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
+            }
             catch (IOException)
             {
                 return StatusCode(StatusCodes.Status500InternalServerError,
@@ -290,16 +310,20 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpDelete("expenses/{id:int}")]
-        public async Task<IActionResult> DeleteExpense(int id)
+        public async Task<IActionResult> DeleteExpense(int id, [FromQuery] string? concurrencyToken)
         {
             try
             {
-                await _financeService.DeleteExpenseAsync(id);
+                await _financeService.DeleteExpenseAsync(id, concurrencyToken);
                 return Ok(new { message = "Expense deleted." });
             }
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
             }
         }
 

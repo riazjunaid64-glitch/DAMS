@@ -25,7 +25,27 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public decimal ManualRevenue { get; set; }
         public decimal TotalExpenses { get; set; }
+
+        /// <summary>
+        /// The ACCOUNTING result: revenue less costs. Capitalised purchases are absent by
+        /// construction — they are not costs — which is what keeps this figure tied to the Balance
+        /// Sheet's retained profit and the Trial Balance.
+        /// </summary>
         public decimal NetProfit { get; set; }
+
+        /// <summary>
+        /// The client's MANAGEMENT result: <see cref="NetProfit"/> less the gross cost of every
+        /// fixed asset bought in the period (<see cref="TotalAssetPurchases"/>).
+        /// <para>
+        /// The client judges a period by what the business spent, and buying an asset spends money
+        /// even though accounting says value only changed form. Both readings are true and they
+        /// disagree, so both are reported. This one is deliberately NOT what the Balance Sheet or
+        /// Trial Balance use: subtracting an asset from retained profit while the asset also sits on
+        /// the sheet would put the statements out by exactly this amount.
+        /// </para>
+        /// </summary>
+        public decimal ManagementNetProfit { get; set; }
+
         public decimal OutstandingAmount { get; set; }
         public decimal OverdueAmount { get; set; }
 
@@ -33,10 +53,11 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <see cref="TotalExpenses"/> but has not left the bank — it is owed to FBR.</summary>
         public decimal WhtWithheld { get; set; }
 
-        /// <summary>Fixed assets bought in the period, at cost. Deliberately NOT part of
-        /// <see cref="TotalExpenses"/> or <see cref="NetProfit"/>: the company still owns what this
-        /// bought, so nothing was spent in the profit sense. It sits beside them as a separate
-        /// figure precisely so the two are never confused.</summary>
+        /// <summary>Fixed assets bought in the period, at cost (gross of any tax withheld from the
+        /// supplier). Deliberately NOT part of <see cref="TotalExpenses"/> or
+        /// <see cref="NetProfit"/>: for accounting purposes the company still owns what this bought,
+        /// so nothing was consumed. It IS the whole of the adjustment between
+        /// <see cref="NetProfit"/> and <see cref="ManagementNetProfit"/>.</summary>
         public decimal TotalAssetPurchases { get; set; }
 
         // Populated only when a single finance account is selected. Opening balance and the
@@ -79,6 +100,11 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? AccountHolderName { get; set; }
 
         public FinanceAttachmentDto? Attachment { get; set; }
+
+        /// <summary>Base64 row version, set only on manual-revenue rows (the editable ones).
+        /// Recognised sales and retained cancellations are events, not records to be corrected
+        /// in place, so they carry none.</summary>
+        public string? ConcurrencyToken { get; set; }
     }
 
     /// <summary>A single row in the expense table.</summary>
@@ -109,6 +135,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? FinanceAccountName { get; set; }
         public string? AccountHolderName { get; set; }
         public FinanceAttachmentDto? Attachment { get; set; }
+
+        /// <summary>Base64 row version — send it back on the next update or delete.</summary>
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 
     /// <summary>
@@ -173,17 +202,27 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal OverdueAmount { get; set; }
     }
 
-    /// <summary>A single line in the Net Profit breakdown: a revenue (+) or expense (−) entry.</summary>
+    /// <summary>A single line in the Net Profit breakdown.</summary>
     public class NetProfitLineDto
     {
         public DateTime Date { get; set; }
         public string ProjectName { get; set; } = "—";
         public string Label { get; set; } = string.Empty;
 
-        /// <summary>"revenue" or "expense".</summary>
+        /// <summary>
+        /// "revenue", "expense", or "management".
+        /// <para>
+        /// The first two sum to the accounting net profit. "management" lines are fixed-asset
+        /// purchases: not accounting costs, but deductions the client's management profit makes —
+        /// so revenue + expense + management sums to
+        /// <see cref="FinancialSummaryDto.ManagementNetProfit"/>. Keeping them a distinct kind is
+        /// what lets one list reconcile to both totals instead of contradicting one of them.
+        /// </para>
+        /// </summary>
         public string Kind { get; set; } = string.Empty;
 
-        /// <summary>Signed amount: positive for revenue, negative for expense.</summary>
+        /// <summary>Signed amount: positive for revenue, negative for an expense or a management
+        /// deduction.</summary>
         public decimal Amount { get; set; }
     }
 
