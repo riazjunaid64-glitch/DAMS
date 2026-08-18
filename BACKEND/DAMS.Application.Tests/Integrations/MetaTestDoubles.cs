@@ -50,6 +50,14 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     /// moment a sync is "in flight", rather than racing real concurrency.</summary>
     public Action? OnGetPages { get; set; }
 
+    /// <summary>The same hook one stage later: SubscribePageAsync is only reached once discovery
+    /// has already been applied, which is where a sync holds staged, unsaved work.</summary>
+    public Action? OnSubscribePage { get; set; }
+
+    /// <summary>Thrown by every UnsubscribePageAsync call while set — Meta refusing the remote
+    /// cleanup that a disconnect cannot retry once it has cleared its own credentials.</summary>
+    public Exception? UnsubscribeFailure { get; set; }
+
     public List<string> SubscribedPages { get; } = [];
     public List<string> UnsubscribedPages { get; } = [];
     public List<(string LeadgenId, string Token)> LeadRequests { get; } = [];
@@ -119,6 +127,8 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
 
     public Task SubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
     {
+        OnSubscribePage?.Invoke();
+
         SubscribedPages.Add(pageExternalId);
         SubscriptionCallLog.Add((pageExternalId, true));
         return Task.CompletedTask;
@@ -126,6 +136,9 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
 
     public Task UnsubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
     {
+        if (UnsubscribeFailure is not null)
+            throw UnsubscribeFailure;
+
         UnsubscribedPages.Add(pageExternalId);
         SubscriptionCallLog.Add((pageExternalId, false));
         return Task.CompletedTask;

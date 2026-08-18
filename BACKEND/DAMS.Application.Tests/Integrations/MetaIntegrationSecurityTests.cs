@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
+using DAMS.Application.Services.Integrations;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -294,6 +295,66 @@ public class MetaIntegrationSecurityTests
         var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
         Assert.Equal(connection.Id, submission.ExternalIntegrationConnectionId);
         Assert.Contains(page.ExternalId, h.Graph.UnsubscribedPages);
+    }
+
+    [Fact]
+    public async Task Disconnecting_NeverUnsubscribesAPageThatAnotherConnectionStillOwns()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        // Two DAMS connections hold a row for the same physical Facebook Page. "owner" is live;
+        // "leaving" is disabled here but still carries a stale IsSubscribed=true.
+        var (_, ownerPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-owner", enabled: true);
+        var (leaving, leavingPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-leaving", enabled: false);
+        leavingPage.IsSubscribed = true;
+        await h.Db.SaveChangesAsync();
+
+        // The owner's subscription is a real, established piece of remote state, not just a
+        // local flag — establishing it here is what makes "is Meta still subscribed afterwards"
+        // a question the fake can actually answer.
+        await h.Graph.SubscribePageAsync("shared-page", "page-token-shared-page");
+
+        await h.Integration.DisconnectAsync(leaving.Id, h.Leads.Admin);
+
+        // A Page's subscription is app-to-Page. Disconnecting an unrelated account must never
+        // take down the connection that actually owns it.
+        Assert.DoesNotContain("shared-page", h.Graph.UnsubscribedPages);
+        Assert.True(h.Graph.IsCurrentlySubscribed("shared-page"));
+
+        var stillOwned = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == ownerPage.Id);
+        Assert.True(stillOwned.IsEnabled);
+        Assert.True(stillOwned.IsSubscribed);
+
+        var released = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == leavingPage.Id);
+        Assert.False(released.IsEnabled);
+        Assert.False(released.IsSubscribed);
+    }
+
+    [Fact]
+    public async Task Disconnecting_WhenMetaRefusesTheUnsubscribe_KeepsTheEvidenceAndSaysSo()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+
+        h.Graph.UnsubscribeFailure = new MetaTransientException("Meta could not be reached.");
+
+        // The disconnect itself must still succeed — often the whole reason to disconnect is
+        // that Meta no longer answers for this account.
+        await h.Integration.DisconnectAsync(connection.Id, h.Leads.Admin);
+
+        var updated = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Disconnected, updated.Status);
+        Assert.Null(updated.AccessTokenProtected);
+
+        // The credentials needed to retry are gone by design, so an admin has to be told that
+        // Meta may keep delivering — and the flag must not claim a cleanup that never happened.
+        var reloadedPage = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id);
+        Assert.False(reloadedPage.IsEnabled);
+        Assert.True(reloadedPage.IsSubscribed);
+        Assert.NotNull(updated.LastError);
+        Assert.Contains("could not be told to stop", updated.LastError);
     }
 
     [Fact]

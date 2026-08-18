@@ -48,9 +48,25 @@ namespace DAMS.Application.Services.Integrations
             EnsureConfigured();
 
             // Short-lived token first; it is only ever used to obtain the long-lived one. Meta's
-            // token-exchange endpoint has no access token yet to carry in a header — client_id,
-            // client_secret and the authorization code are its own credentials, and it does not
-            // accept them any other way.
+            // token-exchange endpoint has no access token yet to carry in a header, so unlike
+            // every other call in this class (see SendCoreAsync) its credentials travel in the
+            // query string, as Meta's own OAuth documentation specifies.
+            //
+            // KNOWN RESIDUAL RISK, deliberately left open rather than guessed at. On .NET 8 the
+            // System.Net.Http EventSource emits the full request URI — query string included —
+            // so anything that attaches an EventListener or ETW/APM collector to that provider
+            // can observe client_secret and the authorization code. This was verified by running
+            // a real loopback request against net8.0 with a live EventListener, not inferred:
+            // the secret appears verbatim in the RequestStart payload. It is a different surface
+            // from the IHttpClientFactory ILogger categories this app already filters, and there
+            // is no supported .NET 8 API to redact it — default URI-query redaction only arrives
+            // in .NET 9.
+            //
+            // Closing it needs a decision that belongs to whoever runs this in production, not to
+            // this class: confirm Meta accepts these parameters over a non-URI transport and move
+            // them there, move the runtime to a version that redacts by default, or accept it
+            // under an explicit policy that no System.Net.Http URI-query diagnostics are
+            // collected from this process.
             var shortLived = await GetAsync(
                 $"oauth/access_token?client_id={Uri.EscapeDataString(_options.AppId!)}" +
                 $"&client_secret={Uri.EscapeDataString(_options.AppSecret!)}" +

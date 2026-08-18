@@ -125,12 +125,32 @@ namespace DAMS.Application.Services.Integrations
             }
         }
 
+        /// <summary>
+        /// Clears this worker's own lease, and nothing else.
+        ///
+        /// Two details carry the weight. Anything still pending on the context when this runs
+        /// belongs to a sync that did not finish — a cancelled request, a failed run — and
+        /// committing it as a side effect of releasing a lease would persist a half-applied
+        /// discovery that no code path ever intended to save. Those abandoned changes are
+        /// therefore discarded first, so this save carries the lease fields alone.
+        ///
+        /// And the lease is only cleared if this worker still holds it. A sync that overran its
+        /// lease may already have been taken over by another worker, whose fresh claim must not
+        /// be wiped out by the straggler finally reaching its finally block.
+        /// </summary>
         private async Task ReleaseSyncLeaseAsync(int connectionId, CancellationToken cancellationToken)
         {
+            foreach (var entry in _context.ChangeTracker.Entries()
+                         .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
             var connection = await _context.ExternalIntegrationConnections.FindAsync(
                 [connectionId], cancellationToken);
 
-            if (connection is null)
+            if (connection is null || connection.SyncLockedBy != WorkerId)
                 return;
 
             connection.SyncLockedUntil = null;
@@ -297,11 +317,10 @@ namespace DAMS.Application.Services.Integrations
             var result = ApplyDiscovered(connection, existing, discovered, fullyEnumerated);
 
             // Self-healing for the window between a subscribe/unsubscribe call actually reaching
-            // Meta and the local save that was supposed to record it — a crash, a lost
-            // connection, or any other save failure in that gap leaves Meta and DAMS disagreeing
-            // about whether a Page is really subscribed. Both Graph operations are idempotent, so
-            // simply re-applying the enabled flag here brings Meta back in line without needing
-            // to ask it what it currently thinks.
+            // Meta and the local save that was supposed to record it. Both Graph operations are
+            // idempotent, so the desired state is simply reasserted rather than inferred from
+            // whether two local flags happen to disagree — see ReconcileSubscriptionsAsync for
+            // why that comparison cannot detect the drift that matters.
             var subscriptionWarning = await ReconcileSubscriptionsAsync(connection, existing, cancellationToken);
             if (subscriptionWarning is not null)
                 warning = Combine(warning, subscriptionWarning);
@@ -402,6 +421,27 @@ namespace DAMS.Application.Services.Integrations
             return result;
         }
 
+        /// <summary>
+        /// Puts Meta back in step with what DAMS currently intends for each physical Page.
+        ///
+        /// IsSubscribed records only that a Graph call once succeeded; it is not evidence of what
+        /// Meta holds right now. A crash between a successful call and the save that would have
+        /// recorded it — or a concurrency conflict whose Graph call had already landed — leaves
+        /// the two local flags agreeing with each other while both disagree with Meta, which no
+        /// comparison of those flags can ever detect. So the subscribe direction is asserted on
+        /// every sync rather than only when the flags differ: it is idempotent, it is the only
+        /// direction whose silent failure loses real leads, and it costs one call per Page an
+        /// admin actually turned on.
+        ///
+        /// The desired state is derived per physical Page across every connection, never per row,
+        /// because a Page's webhook subscription is app-to-Page: whoever owns it, it must stay
+        /// subscribed, and this connection's own rows cannot see that on their own.
+        ///
+        /// Unsubscribe is deliberately not asserted for Pages DAMS has no record of ever
+        /// subscribing. It is the destructive direction, and issuing it for every Page an admin
+        /// merely happens to administer would put a Graph call — and a permission this app may
+        /// not even hold — behind every never-enabled Page on every sync.
+        /// </summary>
         private async Task<string?> ReconcileSubscriptionsAsync(
             ExternalIntegrationConnection connection,
             List<ExternalIntegrationResource> resources,
@@ -409,62 +449,96 @@ namespace DAMS.Application.Services.Integrations
         {
             string? warning = null;
 
-            foreach (var page in resources.Where(r =>
-                r.IsActive
-                && r.ResourceType == ExternalResourceTypes.FacebookPage
-                && r.IsEnabled != r.IsSubscribed))
+            var pageGroups = resources
+                .Where(r => r.IsActive && r.ResourceType == ExternalResourceTypes.FacebookPage)
+                .GroupBy(r => r.ExternalId, StringComparer.Ordinal)
+                .ToList();
+
+            foreach (var group in pageGroups)
             {
-                if (!page.IsEnabled)
-                {
-                    // A physical Page's webhook subscription is app-to-Page, not
-                    // connection-to-Page, but this loop only ever sees one connection's own
-                    // rows. A stale IsSubscribed=true on a disabled row here does not by itself
-                    // mean Meta needs an Unsubscribe call — another connection may currently be
-                    // the real, active owner of this exact physical Page, and unsubscribing
-                    // would tear down real, working lead delivery this sync has no visibility
-                    // into. Subscribe carries no such risk (it only reinforces an existing
-                    // subscription, never removes one), so only Unsubscribe needs this check.
-                    var ownedElsewhere = await _context.ExternalIntegrationResources
-                        .AnyAsync(r => r.Id != page.Id
+                var pageExternalId = group.Key;
+                var rows = group.ToList();
+                var ownedHere = rows.Any(r => r.IsEnabled);
+
+                // Only this connection's own rows are in memory. A sibling connection may hold
+                // the real, active ownership of this exact physical Page, and unsubscribing it
+                // from here would tear down working lead delivery this sync cannot see.
+                var ownedElsewhere = !ownedHere
+                    && await _context.ExternalIntegrationResources
+                        .AnyAsync(r => r.ExternalIntegrationConnectionId != connection.Id
                                        && r.Provider == IntegrationProviders.Meta
                                        && r.ResourceType == ExternalResourceTypes.FacebookPage
-                                       && r.ExternalId == page.ExternalId
+                                       && r.ExternalId == pageExternalId
                                        && r.IsActive
                                        && r.IsEnabled, cancellationToken);
 
-                    if (ownedElsewhere)
-                    {
-                        // Not our subscription to touch. Correct our own bookkeeping only.
-                        page.IsSubscribed = false;
-                        page.UpdatedAt = DateTime.UtcNow;
-                        continue;
-                    }
+                if (ownedElsewhere)
+                {
+                    // Not this connection's subscription to assert in either direction. The only
+                    // thing it genuinely owns here is its own bookkeeping.
+                    foreach (var row in rows)
+                        SetSubscribed(row, false);
+                    continue;
                 }
 
-                var token = _protector.TryUnprotect(page.ResourceTokenProtected)
-                            ?? _protector.TryUnprotect(connection.AccessTokenProtected);
+                // Nothing owns this Page and DAMS never recorded subscribing it — there is no
+                // subscription to take down and no reason to spend a call saying so.
+                if (!ownedHere && !rows.Any(r => r.IsSubscribed))
+                    continue;
+
+                var token = ResolvePageToken(rows, connection);
                 if (token is null)
                     continue;
 
                 try
                 {
-                    if (page.IsEnabled)
-                        await _graph.SubscribePageAsync(page.ExternalId, token, cancellationToken);
+                    if (ownedHere)
+                        await _graph.SubscribePageAsync(pageExternalId, token, cancellationToken);
                     else
-                        await _graph.UnsubscribePageAsync(page.ExternalId, token, cancellationToken);
+                        await _graph.UnsubscribePageAsync(pageExternalId, token, cancellationToken);
 
-                    page.IsSubscribed = page.IsEnabled;
-                    page.UpdatedAt = DateTime.UtcNow;
+                    foreach (var row in rows)
+                        SetSubscribed(row, ownedHere && row.IsEnabled);
                 }
                 catch (MetaGraphException ex)
                 {
+                    var name = rows.Select(r => r.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
+                               ?? pageExternalId;
                     warning = Combine(warning,
-                        $"Could not reconcile the subscription for \"{page.Name ?? page.ExternalId}\"; it will be retried on the next sync.");
-                    _logger.LogWarning(ex, "Reconciling Meta subscription for page {PageId} failed.", page.ExternalId);
+                        $"Could not reconcile the subscription for \"{name}\"; it will be retried on the next sync.");
+                    _logger.LogWarning(ex, "Reconciling Meta subscription for page {PageId} failed.", pageExternalId);
                 }
             }
 
             return warning;
+        }
+
+        /// <summary>
+        /// A Page's own token is the right credential for its subscription; the connection's user
+        /// token is the fallback for a row Meta never returned a Page token for. An enabled row is
+        /// preferred because its credential is the one discovery keeps current.
+        /// </summary>
+        private string? ResolvePageToken(
+            List<ExternalIntegrationResource> rows, ExternalIntegrationConnection connection)
+        {
+            foreach (var row in rows.OrderByDescending(r => r.IsEnabled))
+            {
+                if (_protector.TryUnprotect(row.ResourceTokenProtected) is { Length: > 0 } pageToken)
+                    return pageToken;
+            }
+
+            return _protector.TryUnprotect(connection.AccessTokenProtected);
+        }
+
+        /// <summary>Touches UpdatedAt only when the flag genuinely moved, so an unchanged
+        /// reconciliation does not rewrite every Page row on every sync.</summary>
+        private static void SetSubscribed(ExternalIntegrationResource row, bool isSubscribed)
+        {
+            if (row.IsSubscribed == isSubscribed)
+                return;
+
+            row.IsSubscribed = isSubscribed;
+            row.UpdatedAt = DateTime.UtcNow;
         }
 
         public async Task<MetaSyncResultDto> SyncNowAsync(int connectionId, CancellationToken cancellationToken = default)
