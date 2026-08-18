@@ -349,6 +349,96 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
+    public async Task AnEnabledPage_IsReassertedAtMeta_EvenWhenBothLocalFlagsAlreadyAgree()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+
+        // The drift that matters is invisible locally. A process that unsubscribed at Meta and
+        // died before its save — or lost a rowversion race after its Graph call had already
+        // landed — leaves IsEnabled and IsSubscribed both true and both wrong. Comparing those
+        // two flags to each other can never find it, so reconciliation must not depend on them
+        // disagreeing.
+        Assert.True(page.IsEnabled);
+        Assert.True(page.IsSubscribed);
+        h.Graph.SubscribedPages.Clear();
+        h.Graph.SubscriptionCallLog.Clear();
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+
+        Assert.Contains("page-1", h.Graph.SubscribedPages);
+        Assert.True(h.Graph.IsCurrentlySubscribed("page-1"));
+    }
+
+    [Fact]
+    public async Task APageNobodyEverEnabled_IsLeftAloneRatherThanUnsubscribedOnEverySync()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1", enabled: false);
+
+        // Discovery routinely returns every Page an admin administers. Asserting "not
+        // subscribed" against all of them would spend a destructive Graph call — and a
+        // permission this app may not hold — on Pages DAMS has never touched.
+        h.Graph.Pages = [Page("page-1", "Acme Sales"), Page("page-2", "Acme Rentals")];
+        await h.Sync.SyncConnectionAsync(connection.Id);
+
+        Assert.Empty(h.Graph.UnsubscribedPages);
+    }
+
+    [Fact]
+    public async Task ACancelledSync_ReleasesItsLease_WithoutCommittingTheHalfAppliedDiscovery()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+
+        // A second page is discovered this run, so by the time the request is cancelled the
+        // sync genuinely has staged, unsaved work sitting on the context.
+        h.Graph.Pages = [Page("page-1", "Acme Sales"), Page("page-2", "Acme Rentals")];
+
+        using var cts = new CancellationTokenSource();
+        h.Graph.OnSubscribePage = () =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => h.Sync.SyncNowAsync(connection.Id, cts.Token));
+
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Null(reloaded.SyncLockedUntil);
+        Assert.Null(reloaded.SyncLockedBy);
+
+        // Releasing a lease must release a lease. Saving on the shared context would otherwise
+        // commit the abandoned run's half-applied discovery as a side effect of cleaning up.
+        Assert.False(await h.Db.ExternalIntegrationResources.AnyAsync(r => r.ExternalId == "page-2"));
+    }
+
+    [Fact]
+    public async Task ASyncThatOverranItsLease_DoesNotClearTheLeaseAnotherWorkerHasSinceTaken()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync(pageId: "page-1");
+
+        h.Graph.Pages = [Page("page-1", "Acme Sales")];
+
+        // Mid-sync this run's lease lapses and a second worker legitimately claims the
+        // connection. The straggler finishing afterwards must not wipe out that fresh claim.
+        h.Graph.OnGetPages = () =>
+        {
+            connection.SyncLockedUntil = DateTime.UtcNow.AddMinutes(10);
+            connection.SyncLockedBy = "another-worker:2";
+            h.Db.SaveChanges();
+        };
+
+        await h.Sync.SyncNowAsync(connection.Id);
+
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal("another-worker:2", reloaded.SyncLockedBy);
+        Assert.NotNull(reloaded.SyncLockedUntil);
+    }
+
+    [Fact]
     public async Task AnInstagramAccount_StaysActive_WhenALaterSyncFallsBackWithoutInstagramExpansion()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

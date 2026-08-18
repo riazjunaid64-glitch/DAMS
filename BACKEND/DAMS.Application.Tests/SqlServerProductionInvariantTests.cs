@@ -801,6 +801,107 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// Two admins toggling the same Page row at the same moment — two browser tabs, or a click
+    /// repeated on a slow connection. Both load the same rowversion, both reach Meta, and the
+    /// database rejects the second save with a DbUpdateConcurrencyException, which is itself a
+    /// DbUpdateException and so lands in the same catch that used to "compensate" by issuing the
+    /// opposite Graph call. That undid the state the winner had just committed rather than the
+    /// loser's own: DAMS left claiming a subscription Meta no longer had on a concurrent enable
+    /// (a silent lead-delivery outage), and the exact mirror on a concurrent disable. Neither
+    /// direction may finish with Meta out of step with the row that actually committed.
+    ///
+    /// Only a real SQL Server can produce this at all — the InMemory provider the rest of the
+    /// suite uses does not maintain rowversions, so the conflict never arises there.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TwoAdminsTogglingTheSamePageRowAtOnce_LeaveMetaMatchingTheRowThatCommitted()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+
+        int connectionId, enableRaceId, disableRaceId;
+        await using (var db = new AppDbContext(options))
+        {
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "same-row-race", DisplayName = "Same row",
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("same-row-token")
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            var enabling = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connection.Id, Provider = "meta",
+                ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = "same-row-enable",
+                IsEnabled = false, IsActive = true, IsSubscribed = false
+            };
+            var disabling = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connection.Id, Provider = "meta",
+                ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = "same-row-disable",
+                IsEnabled = true, IsActive = true, IsSubscribed = true
+            };
+            db.ExternalIntegrationResources.AddRange(enabling, disabling);
+            await db.SaveChangesAsync();
+            enableRaceId = enabling.Id;
+            disableRaceId = disabling.Id;
+        }
+
+        // ── Both admins enable the same row ──────────────────────────────────────────
+        await using (var loserDb = new AppDbContext(Options(database.ConnectionString,
+            new RunFullToggleThroughASecondContextInterceptor(
+                database.ConnectionString, graph, protector, metaOptions, connectionId, enableRaceId, toggleTo: true))))
+        {
+            var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                loserDb, graph, protector, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                loserDb, graph, protector, loserSync, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                () => loserIntegration.SetResourceEnabledAsync(connectionId, enableRaceId, isEnabled: true));
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [Id] = {enableRaceId} AND [IsEnabled] = 1"));
+        Assert.True(graph.IsCurrentlySubscribed("same-row-enable"));
+
+        // ── Both admins disable the same row ─────────────────────────────────────────
+        await using (var loserDb = new AppDbContext(Options(database.ConnectionString,
+            new RunFullToggleThroughASecondContextInterceptor(
+                database.ConnectionString, graph, protector, metaOptions, connectionId, disableRaceId, toggleTo: false))))
+        {
+            var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                loserDb, graph, protector, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                loserDb, graph, protector, loserSync, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+                () => loserIntegration.SetResourceEnabledAsync(connectionId, disableRaceId, isEnabled: false));
+        }
+
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [Id] = {disableRaceId} AND [IsEnabled] = 1"));
+        Assert.False(graph.IsCurrentlySubscribed("same-row-disable"));
+    }
+
+    /// <summary>
     /// MetaIntegrationService.UpsertConnectionAsync reads "does a connection for this account
     /// already exist" and, if not, inserts one — a window a second browser completing OAuth for
     /// the same Meta account at nearly the same moment can land in before either commits. Only
@@ -1019,6 +1120,72 @@ public sealed class SqlServerProductionInvariantTests
 
                 await racerIntegration.SetResourceEnabledAsync(
                     _winnerConnectionId, _winnerResourceId, isEnabled: true, cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Simulates a second admin toggling the very same resource row at the very same moment: as
+    /// the context under test is about to save its own change to that row, this runs the
+    /// identical SetResourceEnabledAsync — real Meta call included — through a completely
+    /// separate AppDbContext and commits it first. The row's rowversion has therefore genuinely
+    /// moved on by the time the context under test's UPDATE reaches the database, which is the
+    /// only way to produce a real DbUpdateConcurrencyException here rather than merely assert
+    /// that one would be handled.
+    /// </summary>
+    private sealed class RunFullToggleThroughASecondContextInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly DAMS.Application.Tests.Integrations.FakeMetaGraphClient _graph;
+        private readonly DAMS.Application.Tests.Integrations.PlaintextSecretProtector _protector;
+        private readonly MetaIntegrationOptions _metaOptions;
+        private readonly int _connectionId;
+        private readonly int _resourceId;
+        private readonly bool _toggleTo;
+        private bool _raced;
+
+        public RunFullToggleThroughASecondContextInterceptor(
+            string connectionString,
+            DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph,
+            DAMS.Application.Tests.Integrations.PlaintextSecretProtector protector,
+            MetaIntegrationOptions metaOptions,
+            int connectionId, int resourceId, bool toggleTo)
+        {
+            _connectionString = connectionString;
+            _graph = graph;
+            _protector = protector;
+            _metaOptions = metaOptions;
+            _connectionId = connectionId;
+            _resourceId = resourceId;
+            _toggleTo = toggleTo;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is not null
+                && eventData.Context.ChangeTracker.Entries<ExternalIntegrationResource>()
+                    .Any(e => e.State == EntityState.Modified
+                              && e.Entity.Id == _resourceId
+                              && e.Entity.IsEnabled == _toggleTo))
+            {
+                _raced = true;
+
+                // Deliberately built without this interceptor, so the racer's own save cannot
+                // recurse back into here.
+                await using var racer = new AppDbContext(
+                    new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+                var racerSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                    racer, _graph, _protector, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                var racerIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                    racer, _graph, _protector, racerSync, _metaOptions,
+                    NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+                await racerIntegration.SetResourceEnabledAsync(
+                    _connectionId, _resourceId, _toggleTo, cancellationToken);
             }
 
             return result;

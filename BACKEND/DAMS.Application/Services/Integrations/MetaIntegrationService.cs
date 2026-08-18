@@ -472,12 +472,13 @@ namespace DAMS.Application.Services.Integrations
                         "Disable it there first before enabling it here.");
                 }
 
-                // Any other save failure: Meta has already applied the subscription change, and
-                // nobody else could have concurrently become the owner (the unique index above
-                // rules that out for a non-ownership failure), so it is safe to undo it here
-                // rather than leave a lead delivery gap open until the next sync.
+                // Any other save failure: Meta has already been told about a change this save
+                // failed to record, so the two are now out of step and something has to put them
+                // back. What Meta should be left holding is deliberately not assumed to be
+                // "whatever this attempt started from" — see the helper for why undoing this
+                // attempt's own call is the wrong repair.
                 if (resource.ResourceType == ExternalResourceTypes.FacebookPage)
-                    await RevertPageSubscriptionBestEffortAsync(connection, resource, isEnabled, cancellationToken);
+                    await RestorePageSubscriptionToCommittedStateAsync(connection, resource, cancellationToken);
 
                 throw;
             }
@@ -537,34 +538,59 @@ namespace DAMS.Application.Services.Integrations
         }
 
         /// <summary>
-        /// Undoes a subscribe/unsubscribe call that reached Meta but could not be saved locally,
-        /// so the two do not silently drift apart. Best-effort: if this also fails, the mismatch
-        /// is left for MetaResourceSyncService's own reconciliation to catch on the next
-        /// periodic sync, rather than compounding one failure into an unhandled second one.
+        /// Puts Meta back in step with what the database actually holds for a physical Page after
+        /// a save that failed.
+        ///
+        /// Blindly undoing what this attempt did to Meta is wrong precisely when the save failed
+        /// because somebody else's change won. Two admins toggling the same Page at once both
+        /// load the same rowversion, both call Meta, and the loser's SaveChanges is rejected by
+        /// the database — so "reverting" the loser's own call would tear down the state the
+        /// winner just committed, leaving DAMS claiming a subscription Meta no longer has and
+        /// losing every lead until the next sync. The same is true in reverse for two concurrent
+        /// disables. The desired state is therefore read back from what actually committed, and
+        /// read page-globally, because a Page's subscription is app-to-Page rather than
+        /// connection-to-Page.
+        ///
+        /// Best-effort by design: this runs inside a catch that is about to rethrow, so nothing
+        /// here may replace the original failure. Whatever is left unreconciled is picked up by
+        /// MetaResourceSyncService's periodic reconciliation.
         /// </summary>
-        private async Task RevertPageSubscriptionBestEffortAsync(
+        private async Task RestorePageSubscriptionToCommittedStateAsync(
             ExternalIntegrationConnection connection,
             ExternalIntegrationResource page,
-            bool appliedIsEnabled,
             CancellationToken cancellationToken)
         {
-            var token = _protector.TryUnprotect(page.ResourceTokenProtected)
-                        ?? _protector.TryUnprotect(connection.AccessTokenProtected);
-            if (token is null)
-                return;
-
             try
             {
-                if (appliedIsEnabled)
-                    await _graph.UnsubscribePageAsync(page.ExternalId, token, cancellationToken);
-                else
+                // AsNoTracking on purpose: the tracked graph still carries the change this save
+                // could not commit, and identity resolution would hand back exactly the state
+                // that must not be trusted here.
+                var shouldBeSubscribed = await _context.ExternalIntegrationResources
+                    .AsNoTracking()
+                    .AnyAsync(r => r.Provider == IntegrationProviders.Meta
+                                   && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                   && r.ExternalId == page.ExternalId
+                                   && r.IsActive
+                                   && r.IsEnabled, cancellationToken);
+
+                var token = _protector.TryUnprotect(page.ResourceTokenProtected)
+                            ?? _protector.TryUnprotect(connection.AccessTokenProtected);
+                if (token is null)
+                    return;
+
+                if (shouldBeSubscribed)
                     await _graph.SubscribePageAsync(page.ExternalId, token, cancellationToken);
+                else
+                    await _graph.UnsubscribePageAsync(page.ExternalId, token, cancellationToken);
             }
-            catch (MetaGraphException ex)
+            catch (Exception ex)
             {
+                // Intentionally broad, cancellation included: the caller is mid-catch and about
+                // to rethrow the real failure, which must not be swapped out for a secondary one
+                // raised while cleaning up after it.
                 _logger.LogError(ex,
-                    "Reverting the Meta subscription for page {PageId} after a database save failure also " +
-                    "failed. Meta and DAMS may disagree about whether this page is subscribed until the next sync.",
+                    "Could not put the Meta subscription for page {PageId} back in step with the database " +
+                    "after a failed save. Meta and DAMS may disagree about this page until the next sync.",
                     page.ExternalId);
             }
         }
@@ -578,15 +604,40 @@ namespace DAMS.Application.Services.Integrations
                 .Where(r => r.ExternalIntegrationConnectionId == connectionId)
                 .ToListAsync(cancellationToken);
 
+            // Rows whose subscription this disconnect could not actually take down at Meta, so
+            // the local flag is not cleared as though it had.
+            var stillSubscribedRemotely = new HashSet<int>();
+            var unresolved = new List<string>();
+
             // Stop delivery at Meta's end where we still can, but never let a failure here block
             // the disconnect — the point of disconnecting is often that the token no longer works.
             foreach (var page in resources.Where(r => r.ResourceType == ExternalResourceTypes.FacebookPage && r.IsSubscribed))
             {
+                // A Page's webhook subscription is app-to-Page, not connection-to-Page. If
+                // another DAMS connection currently owns this exact physical Page, unsubscribing
+                // it here would silently stop that connection's lead delivery — which is the one
+                // thing disconnecting an unrelated account must never do. This row is simply no
+                // longer subscribed as far as this connection is concerned.
+                var ownedElsewhere = await _context.ExternalIntegrationResources
+                    .AnyAsync(r => r.Id != page.Id
+                                   && r.Provider == IntegrationProviders.Meta
+                                   && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                   && r.ExternalId == page.ExternalId
+                                   && r.IsActive
+                                   && r.IsEnabled, cancellationToken);
+
+                if (ownedElsewhere)
+                    continue;
+
                 var token = _protector.TryUnprotect(page.ResourceTokenProtected)
                             ?? _protector.TryUnprotect(connection.AccessTokenProtected);
 
                 if (token is null)
+                {
+                    stillSubscribedRemotely.Add(page.Id);
+                    unresolved.Add(page.Name ?? page.ExternalId);
                     continue;
+                }
 
                 try
                 {
@@ -594,6 +645,8 @@ namespace DAMS.Application.Services.Integrations
                 }
                 catch (MetaGraphException ex)
                 {
+                    stillSubscribedRemotely.Add(page.Id);
+                    unresolved.Add(page.Name ?? page.ExternalId);
                     _logger.LogWarning(ex,
                         "Could not unsubscribe Meta page {PageId} during disconnect. The local connection is still being disabled.",
                         page.ExternalId);
@@ -603,7 +656,11 @@ namespace DAMS.Application.Services.Integrations
             foreach (var resource in resources)
             {
                 resource.IsEnabled = false;
-                resource.IsSubscribed = false;
+                // Kept truthful rather than tidy: a Page whose unsubscribe never reached Meta is
+                // still subscribed there, and clearing the flag would erase the only local record
+                // of it. Reconnecting this account is what lets the next sync's reconciliation
+                // finally take it down, since the credentials to do so are cleared below.
+                resource.IsSubscribed = stillSubscribedRemotely.Contains(resource.Id);
                 // Credentials go; the rows stay, because leads reference them for attribution.
                 resource.ResourceTokenProtected = null;
                 resource.ResourceTokenExpiresAt = null;
@@ -616,6 +673,18 @@ namespace DAMS.Application.Services.Integrations
             connection.DisconnectedAt = DateTime.UtcNow;
             connection.DisconnectedByUserId = actor.UserId;
             connection.UpdatedAt = DateTime.UtcNow;
+
+            if (unresolved.Count > 0)
+            {
+                // The credentials needed to retry are gone by design, so this is the only place
+                // an admin can learn that Meta may still be delivering for these Pages. Said
+                // plainly, with both ways out of it, rather than buried in a server log.
+                connection.LastErrorAt = DateTime.UtcNow;
+                connection.LastError = MetaCredentialScrubber.ScrubAndLimit(
+                    "Disconnected, but Meta could not be told to stop sending leads for: " +
+                    $"{string.Join(", ", unresolved)}. Reconnect this account to let the next sync " +
+                    "retry, or remove this app from those Pages in Meta's own settings.", 1000);
+            }
 
             await _context.SaveChangesAsync(cancellationToken);
         }
