@@ -61,8 +61,14 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled)
                 throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
 
-            if (booking.Status != BookingStatus.PaymentPlanActive)
-                throw new InvalidOperationException("Installment payments can only be recorded while the payment plan is active.");
+            // Collection continues after possession. The sale is already recognised by then, so an
+            // unpaid installment is no longer a promise — it is an Accounts Receivable balance,
+            // and refusing the cash would leave a receivable that can never be cleared. The status
+            // itself is deliberately not touched here: a PossessionGiven booking stays
+            // PossessionGiven until it is legitimately completed.
+            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
+                throw new InvalidOperationException(
+                    "Installment payments can only be recorded while the payment plan is active or after possession.");
 
             var installment = await _context.Installments
                 .FirstOrDefaultAsync(i => i.Id == installmentId && i.BookingId == bookingId);

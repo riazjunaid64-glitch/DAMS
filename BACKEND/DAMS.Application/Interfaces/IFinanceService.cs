@@ -14,6 +14,9 @@ namespace DAMS.Application.Interfaces
         // ── Paged table rows (infinite scroll). Each returns one page + HasMore. ──
         Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
         Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
+        /// <summary>Customer money held but not yet earned, one row per booking, as at
+        /// <paramref name="to"/>. A balance view: there is no period start.</summary>
+        Task<PagedResult<CustomerDepositLineDto>> GetCustomerDepositPageAsync(int? projectId, DateTime? to, int skip, int take);
         Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take);
         Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take);
         Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);

@@ -452,6 +452,21 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id, cancellationToken);
         }
 
+        /// <summary>
+        /// Hands the unit over and recognises the sale — the single revenue event for a booking.
+        /// <para>
+        /// Everything the customer paid before this moment was a deposit (a liability). Here the
+        /// full net sale value becomes revenue at once: the deposit clears, and whatever is still
+        /// unpaid becomes a receivable. The <see cref="BookingSaleRecognition"/> row written in the
+        /// same SaveChanges is what dates that revenue, so a report for last month keeps reporting
+        /// last month after this runs.
+        /// </para>
+        /// <para>
+        /// WIP-to-cost-of-sales allocation is intentionally deferred pending approved per-unit
+        /// allocation policy: possession recognises REVENUE only, and accumulated construction
+        /// cost stays in Work in Progress.
+        /// </para>
+        /// </summary>
         public async Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId)
         {
             var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
@@ -462,13 +477,44 @@ namespace DAMS.Application.Services
             if (booking.Status != BookingStatus.PaymentPlanActive)
                 throw new InvalidOperationException("Possession can only be given while the payment plan is active.");
 
+            // The business date the revenue belongs to. A future date would book revenue into a
+            // period that has not happened yet, which no later correction can undo cleanly.
+            var recognitionDate = (possessionDate?.Date ?? PakistanTime.Today);
+            if (recognitionDate > PakistanTime.Today)
+                throw new InvalidOperationException("Possession date cannot be in the future.");
+
+            // Belt and braces with the unique index below: this catches the ordinary retry with a
+            // readable message, the index catches the genuine race.
+            if (await _context.BookingSaleRecognitions.AnyAsync(r => r.BookingId == booking.Id))
+                throw new InvalidOperationException("This sale has already been recognised.");
+
             booking.Status = BookingStatus.PossessionGiven;
             booking.PossessionDate = possessionDate ?? DateTime.UtcNow;
             booking.InternalNotes = AppendNote(booking.InternalNotes,
                 $"Possession given by user {adminUserId}.");
             booking.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync();
+            _context.BookingSaleRecognitions.Add(new BookingSaleRecognition
+            {
+                BookingId = booking.Id,
+                RecognitionDate = recognitionDate,
+                NetSaleValue = Money(booking.AgreedSalePrice - booking.DiscountAmount),
+                RecognizedAt = DateTime.UtcNow,
+                RecognizedByUserId = adminUserId
+            });
+
+            // One SaveChanges: the status change and the recognition row commit together or not
+            // at all. A booking that says PossessionGiven with no recognition would be a sale with
+            // no revenue.
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                throw new InvalidOperationException(
+                    "This sale has already been recognised. Reload the booking and try again.");
+            }
 
             await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
                 booking.Id, NotificationType.PossessionGiven, null, adminUserId));
@@ -487,8 +533,15 @@ namespace DAMS.Application.Services
             if (booking == null)
                 throw new InvalidOperationException("Booking not found.");
 
-            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
-                throw new InvalidOperationException("Only an active or possession-given booking can be completed.");
+            // Completion is a paperwork milestone, not an accounting one — the sale became revenue
+            // at possession. Allowing a PaymentPlanActive booking straight to SaleCompleted would
+            // let a sale finish without ever being recognised, which is why that legacy path is
+            // closed here. Historical rows that took it are handled by the recognition backfill.
+            if (booking.Status != BookingStatus.PossessionGiven)
+                throw new InvalidOperationException(
+                    booking.Status == BookingStatus.PaymentPlanActive
+                        ? "Give possession before completing the sale — the sale is recognised at possession."
+                        : "Only a possession-given booking can be completed.");
 
             var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
             var effectiveBookingAmountRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, rebateCredits);

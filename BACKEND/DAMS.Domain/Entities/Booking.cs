@@ -135,5 +135,9 @@ namespace DAMS.Domain.Entities
 
         // At most one — enforced by a unique index on BookingId.
         public BookingCancellationSettlement? CancellationSettlement { get; set; }
+
+        // At most one — enforced by a unique index on BookingId. Written at possession; the sale
+        // is never recognised twice.
+        public BookingSaleRecognition? SaleRecognition { get; set; }
     }
 }

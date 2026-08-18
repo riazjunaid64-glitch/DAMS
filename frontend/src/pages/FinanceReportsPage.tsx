@@ -139,7 +139,7 @@ function PnlView({ report }: { report: Pnl }) {
     <TableHeader/><SectionRows title="Income" lines={report.incomeLines}/><TotalRow label="Total Income" current={report.totalIncome} prior={report.priorTotalIncome}/>
     <SectionRows title="Expenses" lines={report.expenseLines}/><TotalRow label="Total Expenses" current={report.totalExpenses} prior={report.priorTotalExpenses}/>
     <div className={`mt-4 grid grid-cols-3 rounded-xl p-4 font-bold ${report.netProfit >= 0 ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}><span>Net Profit</span><span className="text-right">{money(report.netProfit)}</span><span className="text-right">{money(report.priorNetProfit)}</span></div>
-    <p className="mt-4 text-xs text-amber-300">Customer Receipts are shown explicitly. Under the current policy they are included in income; revenue-recognition reclassification remains a separate accounting decision.</p>
+    <p className="mt-4 text-xs text-amber-300">Unit sales are recognised in full at possession, on the possession date. Customer payments taken before possession are a deposit liability, not income, and do not appear here.</p>
   </ReportCard>;
 }
 function TableHeader(){return <div className="grid grid-cols-3 border-b border-[var(--border)] px-3 pb-2 text-xs font-semibold uppercase text-[var(--text-muted)]"><span>Account</span><span className="text-right">Current</span><span className="text-right">Prior year</span></div>}

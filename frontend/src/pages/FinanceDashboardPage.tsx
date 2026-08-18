@@ -75,7 +75,10 @@ interface RevenueCategory {
 
 interface FinancialSummary {
   totalRevenue: number;
+  /** Unit sales recognised at possession + amounts retained on cancellation. Not customer cash. */
   automaticRevenue: number;
+  /** Customer money held but not yet earned, as at the END of the range. A balance, not income. */
+  customerDepositsBalance: number;
   manualRevenue: number;
   totalExpenses: number;
   netProfit: number;
@@ -131,6 +134,25 @@ interface ExpenseLine {
   attachment: FinanceAttachmentInfo | null;
 }
 
+/**
+ * One booking's share of the Customer Deposits liability, as at the selected end date.
+ * Read-only: possession and cancellation are what clear a deposit, never this screen.
+ */
+interface CustomerDepositLine {
+  bookingId: number;
+  bookingReference: string;
+  customerName: string;
+  projectId: number | null;
+  projectName: string;
+  unitNumber: string;
+  bookingStatus: string;
+  netSaleValue: number;
+  customerCashReceived: number;
+  depositBalance: number;
+  recognitionDate: string | null;
+  cancellationDate: string | null;
+}
+
 interface OutstandingLine {
   bookingReference: string;
   customerName: string;
@@ -164,15 +186,16 @@ interface NetProfitLine {
   amount: number;
 }
 
-type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | OutstandingLine | OverdueLine | NetProfitLine;
+type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | CustomerDepositLine | OutstandingLine | OverdueLine | NetProfitLine;
 
-type View = "revenue" | "expense" | "assetPurchase" | "netProfit" | "outstanding" | "overdue";
+type View = "revenue" | "expense" | "assetPurchase" | "customerDeposits" | "netProfit" | "outstanding" | "overdue";
 
 // API view query value for each card view.
 const VIEW_PARAM: Record<View, string> = {
   revenue: "revenue",
   expense: "expense",
   assetPurchase: "assetPurchase",
+  customerDeposits: "customerDeposits",
   netProfit: "netProfit",
   outstanding: "outstanding",
   overdue: "overdue",
@@ -181,7 +204,9 @@ const VIEW_PARAM: Record<View, string> = {
 const VIEW_TITLES: Record<View, string> = {
   revenue: "Revenue",
   expense: "Expenses",
-  assetPurchase: "Fixed Assets Purchased",
+  // Fixed assets AND work in progress: both are money that changed form rather than being spent.
+  assetPurchase: "Capitalised Purchases",
+  customerDeposits: "Customer Deposits",
   netProfit: "Net Profit Breakdown",
   outstanding: "Outstanding Balances",
   overdue: "Overdue Installments",
@@ -424,12 +449,21 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
-  // The purchase destinations. Type 7 is FixedAsset — asked for explicitly rather than by
-  // "not cash-like", which would also offer liabilities and capital as somewhere to put a desk.
+  // The purchase destinations. Type 7 is FixedAsset and type 9 is WorkInProgress — both asked
+  // for explicitly rather than by "not cash-like", which would also offer liabilities and capital
+  // as somewhere to put a desk. Construction spend goes to WIP: it is not consumed, it accumulates
+  // into the building, so it must not reduce profit any more than buying a desk does.
   const loadAssetAccounts = useCallback(async () => {
     try {
-      const res = await api("/api/finance/accounts/options?includeInactive=true&type=7");
-      if (res.ok) setAssetAccounts(await res.json());
+      const [fixedAssets, workInProgress] = await Promise.all([
+        api("/api/finance/accounts/options?includeInactive=true&type=7"),
+        api("/api/finance/accounts/options?includeInactive=true&type=9"),
+      ]);
+      const rows: FinanceAccountOption[] = [
+        ...(fixedAssets.ok ? await fixedAssets.json() as FinanceAccountOption[] : []),
+        ...(workInProgress.ok ? await workInProgress.json() as FinanceAccountOption[] : []),
+      ];
+      if (fixedAssets.ok || workInProgress.ok) setAssetAccounts(rows);
     } catch {
       /* The purchase form shows its validation message if these cannot be loaded. */
     }
@@ -558,7 +592,10 @@ export default function FinanceDashboardPage({ user }: Props) {
       { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "expense" as View },
       // Sits between expenses and profit on purpose: it is spending that is NOT a cost, and the
       // adjacency is what stops someone reading the two as the same kind of number.
-      { label: "Fixed Assets", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
+      { label: "Capitalised", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
+      // A balance, not a period total, and deliberately next to Revenue: this is the money
+      // customers have handed over that the company has NOT yet earned.
+      { label: "Customer Deposits", value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View },
       { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
       { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
@@ -974,13 +1011,13 @@ export default function FinanceDashboardPage({ user }: Props) {
       case "assetPurchase":
         return {
           minWidth: 1360,
-          emptyText: "No fixed assets purchased for the selected filters.",
+          emptyText: "No capitalised purchases for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as AssetPurchaseLine).date)}</span> },
             { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.itemName}{x.description && <small className="block text-[var(--text-muted)]">{x.description}</small>}</span>; } },
             // The destination account is the point of the whole record, so it is a first-class
             // column rather than something to be inferred from the category.
-            { key: "assetAccount", header: "Asset Account", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
+            { key: "assetAccount", header: "Capitalised Into", width: "minmax(160px,1fr)", render: (r) => <span className="text-sky-300">{(r as AssetPurchaseLine).assetAccountName}</span> },
             { key: "account", header: "Paid From", width: "minmax(150px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span>{x.financeAccountName ?? "—"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "category", header: "Category", width: "minmax(140px,1fr)", render: (r) => { const x = r as AssetPurchaseLine; return <span className="text-[var(--text-primary)]">{x.category}{x.whtTaxSection && <small className="block text-[var(--text-muted)]">s.{x.whtTaxSection}</small>}</span>; } },
             // Cost, not "gross expense": this figure is what the asset is carried at.
@@ -1009,6 +1046,37 @@ export default function FinanceDashboardPage({ user }: Props) {
                   <button type="button" onClick={() => deleteAssetPurchase(row)} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
                 </span>
               );
+            } },
+          ],
+        };
+      // Read-only by design: a deposit is cleared by giving possession or by cancelling the
+      // booking, never by editing this list. There is nothing here to edit or delete.
+      case "customerDeposits":
+        return {
+          minWidth: 1180,
+          emptyText: "No customer deposits held for the selected filters.",
+          columns: [
+            { key: "booking", header: "Booking", width: "140px", render: (r) => <span className="text-[var(--text-primary)] whitespace-nowrap">{(r as CustomerDepositLine).bookingReference}</span> },
+            { key: "customer", header: "Customer", width: "minmax(140px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CustomerDepositLine).customerName}</span> },
+            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).projectName}</span> },
+            { key: "unit", header: "Unit", width: "110px", render: (r) => <span className="text-[var(--text-secondary)]">{(r as CustomerDepositLine).unitNumber}</span> },
+            { key: "status", header: "Status", width: "150px", render: (r) => {
+              const row = r as CustomerDepositLine;
+              // A recognised booking that still shows a deposit here means the balance is being
+              // read as at a date BEFORE possession — worth being able to see at a glance.
+              return (
+                <span className="inline-flex rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-1 text-[10px] font-semibold text-violet-300">
+                  {row.bookingStatus || "—"}
+                </span>
+              );
+            } },
+            { key: "netSale", header: "Net Sale Value", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).netSaleValue) },
+            { key: "cash", header: "Cash Received", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).customerCashReceived, "text-emerald-400") },
+            { key: "balance", header: "Deposit Held", width: "140px", align: "right", render: (r) => money((r as CustomerDepositLine).depositBalance, "text-violet-300") },
+            { key: "recognised", header: "Possession", width: "140px", render: (r) => {
+              const row = r as CustomerDepositLine;
+              const date = row.recognitionDate ?? row.cancellationDate;
+              return <span className="text-[var(--text-secondary)]">{date ? formatDate(date) : "—"}</span>;
             } },
           ],
         };
@@ -1075,6 +1143,8 @@ export default function FinanceDashboardPage({ user }: Props) {
         return `exp-${(row as ExpenseLine).id}`;
       case "assetPurchase":
         return `ast-${(row as AssetPurchaseLine).id}`;
+      case "customerDeposits":
+        return `dep-${(row as CustomerDepositLine).bookingId}`;
       case "outstanding":
         return `out-${(row as OutstandingLine).bookingReference}`;
       case "overdue": {
@@ -1180,9 +1250,11 @@ export default function FinanceDashboardPage({ user }: Props) {
 
           {summary && (
             <p className="mt-3 text-xs text-[var(--text-muted)]">
-              Revenue breakdown: {formatMoney(summary.automaticRevenue)} from payments
+              Revenue breakdown: {formatMoney(summary.automaticRevenue)} recognised sales &amp; retained cancellations
               {" + "}
-              {formatMoney(summary.manualRevenue)} manual
+              {formatMoney(summary.manualRevenue)} manual.
+              {" "}
+              Customer payments before possession are deposits, not revenue.
             </p>
           )}
 
@@ -1235,7 +1307,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               + Add Revenue
             </Button>
             <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
-              ◆ Add Asset
+              ◆ Add Purchase
             </Button>
             <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
               − Add Expense
@@ -1329,7 +1401,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           <div className="relative z-10 max-h-[calc(100dvh-2rem)] w-[460px] max-w-[92vw] overflow-y-auto animate-scale-in rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl">
             <div className="border-b border-[var(--border)] px-6 py-4">
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
-                {assetForm.id ? "Edit Asset Purchase" : "Record Asset Purchase"}
+                {assetForm.id ? "Edit Capitalised Purchase" : "Record Capitalised Purchase"}
               </h3>
               <p className="mt-1 text-xs text-[var(--text-muted)]">
                 The money changes form rather than being spent — profit is not affected.
@@ -1338,8 +1410,11 @@ export default function FinanceDashboardPage({ user }: Props) {
             <div className="space-y-4 p-6">
               {formError && <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{formError}</p>}
               <FormInput label="What was bought" value={assetForm.itemName} onChange={(v) => setAssetForm({ ...assetForm, itemName: v })} />
-              <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
-                <option value="">Select asset account</option>
+              {/* Fixed asset or work in progress. Both hold value rather than consume it, so the
+                  choice changes where the cost lands on the Balance Sheet, never whether it hits
+                  profit. */}
+              <FormSelect label="Capitalise Into" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
+                <option value="">Select asset or work-in-progress account</option>
                 {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
                   <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
                 ))}

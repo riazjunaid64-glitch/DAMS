@@ -82,13 +82,17 @@ namespace DAMS.Api.Controllers
             {
                 "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
                 "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                // A deposit belongs to a booking, not to a bank account — so an account filter has
+                // nothing to say about it, exactly as with outstanding balances.
+                "customerdeposits" when accountId.HasValue || unassigned => Ok(new PagedResult<CustomerDepositLineDto>()),
+                "customerdeposits" => Ok(await _financeService.GetCustomerDepositPageAsync(projectId, to, skip, take)),
                 "outstanding" when accountId.HasValue || unassigned => Ok(new PagedResult<OutstandingLineDto>()),
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
                 "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take, accountId, unassigned)),
                 "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, outstanding, overdue or netProfit." })
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
             };
         }
 

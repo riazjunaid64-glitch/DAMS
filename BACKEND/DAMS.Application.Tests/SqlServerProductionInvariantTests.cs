@@ -220,6 +220,96 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    /// <summary>
+    /// Deposits, recognition and receivables against the REAL provider.
+    /// <para>
+    /// These balances are derived, not stored, and every one of them is built from a query that
+    /// reaches through a booking into its optional sale recognition. The in-memory provider will
+    /// happily evaluate such a thing in C# and report a perfect balance sheet that SQL Server
+    /// cannot produce at all — so the whole path (recognition-date comparisons, the conditional
+    /// dating of a credit, the derived ledger rows unioned into the account detail) is exercised
+    /// here with real rows, on real SQL.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CustomerDepositsRecognitionAndReceivables_TranslateAndReconcile_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        // The migration's own backfill is what puts these two roles on the chart — the deposit
+        // liability adopted in place under its existing ERP name, the receivable created because
+        // the client's chart has no counterpart for it. If that step regressed, this is where it
+        // shows up: there would be nothing to find.
+        var deposits = await db.FinanceAccounts.SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CustomerDeposits);
+        var receivables = await db.FinanceAccounts.SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CustomerReceivables);
+        Assert.Equal("Customer General Account / Customer Deposits", deposits.Name);
+        Assert.Equal(FinanceAccountType.Liability, deposits.Type);
+        Assert.Equal("Customer Receivables", receivables.Name);
+        Assert.Equal(FinanceAccountType.Receivable, receivables.Type);
+        Assert.Null(receivables.LedgerCode); // no legitimate ERP code exists, so none is invented
+
+        var bank = new FinanceAccount { Name = "SQL Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var project = new Project { ProjectName = "SQL Recognition", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = "R-1", UnitType = "Apartment", Price = 5_000_000m, Status = UnitStatus.OnPaymentPlan };
+        var customer = new Customer { FullName = "SQL Buyer", Phone = "03007778888", Status = CustomerStatus.Active };
+        var booking = new Booking
+        {
+            BookingReference = "BK-SQL-REC", Customer = customer, Unit = unit, Source = CustomerSource.Referral,
+            Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 5_000_000m, DiscountAmount = 0m,
+            BookingDate = new DateTime(2026, 1, 1)
+        };
+        db.AddRange(bank, project, unit, customer, booking);
+        await db.SaveChangesAsync();
+
+        db.Payments.Add(new Payment
+        {
+            BookingId = booking.Id, FinanceAccountId = bank.Id, Amount = 3_000_000m,
+            Type = PaymentType.Installment, PaymentMethod = PaymentMethod.BankTransfer,
+            PaidAt = new DateTime(2026, 1, 15)
+        });
+        await db.SaveChangesAsync();
+
+        var accounts = new FinanceAccountService(db);
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+
+        // Before possession: a liability, not income.
+        Assert.Equal(3_000_000m, (await accounts.GetByIdAsync(deposits.Id)).CurrentBalance);
+        Assert.Equal(0m, (await finance.GetProfitAndLossAsync(null, new DateTime(2026, 1, 1), new DateTime(2026, 1, 31))).TotalIncome);
+        Assert.True((await finance.GetBalanceSheetAsync(null, new DateTime(2026, 1, 31))).IsBalanced);
+
+        await new BookingService(db, new CustomerService(db), accounts)
+            .GivePossessionAsync(booking.Id, new DateTime(2026, 2, 15), 1);
+
+        // After possession: revenue in full, deposit cleared, the rest a receivable.
+        var pnl = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 1, 1), new DateTime(2026, 2, 28));
+        Assert.Equal(5_000_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Unit Sales").Amount);
+        Assert.Equal(0m, (await accounts.GetByIdAsync(deposits.Id)).CurrentBalance);
+        Assert.Equal(2_000_000m, (await accounts.GetByIdAsync(receivables.Id)).CurrentBalance);
+
+        var sheet = await finance.GetBalanceSheetAsync(null, new DateTime(2026, 2, 28));
+        Assert.True(sheet.IsBalanced);
+        var trial = await finance.GetTrialBalanceAsync(null, new DateTime(2026, 2, 28), 0);
+        Assert.True(Assert.Single(trial.ColumnBalanced));
+
+        // Historical integrity: a report that ends before possession must not see the sale.
+        Assert.Equal(0m, (await finance.GetProfitAndLossAsync(null, new DateTime(2026, 1, 1), new DateTime(2026, 2, 14))).TotalIncome);
+
+        // The derived ledgers must add up to the very numbers the Balance Sheet printed.
+        var depositLedger = await accounts.GetTransactionsAsync(deposits.Id, 0, 50);
+        Assert.Equal(0m, depositLedger.Items.Sum(t => t.Amount));
+        var receivableLedger = await accounts.GetTransactionsAsync(receivables.Id, 0, 50);
+        Assert.Equal(2_000_000m, receivableLedger.Items.Sum(t => t.Amount));
+
+        var depositsPage = await finance.GetCustomerDepositPageAsync(null, new DateTime(2026, 2, 28), 0, 20);
+        Assert.Empty(depositsPage.Items);
+        var asAtJanuary = await finance.GetCustomerDepositPageAsync(null, new DateTime(2026, 1, 31), 0, 20);
+        Assert.Equal(3_000_000m, Assert.Single(asAtJanuary.Items).DepositBalance);
+    }
+
     [SqlServerFact]
     public async Task LoanQueriesCorrectionsAndReports_RunOnTheRealSqlServerProvider()
     {

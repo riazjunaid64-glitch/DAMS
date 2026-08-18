@@ -220,8 +220,82 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(10_000m, payableRow.Amount);
     }
 
+    /// <summary>
+    /// Construction spend accumulating into the building. Mechanically identical to buying a desk,
+    /// and for the same reason: the money changed form rather than being consumed, so profit must
+    /// not move while the building is going up.
+    /// </summary>
     [Fact]
-    public async Task TheDestinationMustBeAFixedAssetAccount_AndTheSourceMustBeCash()
+    public async Task ConstructionPurchase_AccumulatesIntoWorkInProgress_AndLeavesProfitUntouched()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var wip = new FinanceAccount
+        {
+            Name = "Floria Building — Work in Progress", LedgerCode = "26", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.WorkInProgress, IsActive = true
+        };
+        context.FinanceAccounts.Add(wip);
+        await context.SaveChangesAsync();
+        var service = Finance(context);
+        var accounts = new FinanceAccountService(context);
+
+        await service.CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            AssetAccountId = wip.Id, FinanceAccountId = world.Hbl.Id, Amount = 300_000m,
+            ItemName = "Steel & cement — 3rd floor slab", CategoryId = world.NoTaxHead.Id,
+            Date = new DateTime(2026, 8, 12)
+        }, adminUserId: 1);
+
+        Assert.Equal(700_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
+        Assert.Equal(300_000m, (await accounts.GetByIdAsync(wip.Id)).CurrentBalance);
+
+        var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
+        Assert.Equal(0m, pnl.TotalExpenses);
+        Assert.Equal(0m, pnl.NetProfit);
+
+        var sheet = await service.GetBalanceSheetAsync(null, AsAt);
+        Assert.True(sheet.IsBalanced);
+        Assert.Equal(300_000m, Group(sheet, "Work in Progress").Total);
+        // Fixed assets are untouched: the two destinations do not bleed into one another.
+        Assert.Equal(0m, Group(sheet, "Fixed Assets").Total);
+    }
+
+    [Fact]
+    public async Task ConstructionPurchaseWithWithholding_CapitalisesGross_PaysNet_AndOwesFbrTheRest()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var wip = new FinanceAccount
+        {
+            Name = "Work in Progress — Site Office", LedgerCode = "29", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.WorkInProgress, IsActive = true
+        };
+        context.FinanceAccounts.Add(wip);
+        await context.SaveChangesAsync();
+        var service = Finance(context);
+        var accounts = new FinanceAccountService(context);
+
+        var purchase = await service.CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            AssetAccountId = wip.Id, FinanceAccountId = world.Hbl.Id, Amount = 100_000m,
+            ItemName = "Site office structure", CategoryId = world.GoodsHead.Id, VendorId = world.Supplier.Id,
+            Date = new DateTime(2026, 8, 12)
+        }, adminUserId: 1);
+
+        // Withholding behaves exactly as it does on a fixed asset — no separate WIP tax rule.
+        Assert.Equal(10_000m, purchase.WhtAmount);
+        Assert.Equal(90_000m, purchase.NetPaid);
+        Assert.Equal(100_000m, (await accounts.GetByIdAsync(wip.Id)).CurrentBalance);
+        Assert.Equal(910_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
+        Assert.Equal(10_000m, (await accounts.GetByIdAsync(world.TaxPayable.Id)).CurrentBalance);
+
+        Assert.Equal(0m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).TotalExpenses);
+        Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
+    }
+
+    [Fact]
+    public async Task TheDestinationMustBeCapitalisable_AndTheSourceMustBeCash()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -236,7 +310,7 @@ public sealed class FixedAssetPurchaseTests
         // Capitalising into a bank account would count the money twice.
         var wrongDestination = await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.CreateAssetPurchaseAsync(Purchase(world.Hbl.Id, world.Hbl.Id), 1));
-        Assert.Contains("fixed-asset account", wrongDestination.Message);
+        Assert.Contains("fixed-asset or work-in-progress account", wrongDestination.Message);
 
         // Paying from an asset account would credit something that holds no cash.
         await Assert.ThrowsAsync<InvalidOperationException>(

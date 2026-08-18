@@ -4,7 +4,25 @@ namespace DAMS.Application.DTOs.FinanceDtos
     public class FinancialSummaryDto
     {
         public decimal TotalRevenue { get; set; }
+
+        /// <summary>
+        /// Revenue DAMS recognises by itself, as opposed to manually entered revenue: unit sales
+        /// recognised at possession, plus amounts retained when a booking is cancelled.
+        /// <para>
+        /// It is NOT customer receipts. Money taken before possession is a deposit the company owes
+        /// back — see <see cref="CustomerDepositsBalance"/> — and never touches profit. The property
+        /// name is unchanged so existing clients keep working; what it counts is not.
+        /// </para>
+        /// </summary>
         public decimal AutomaticRevenue { get; set; }
+
+        /// <summary>
+        /// Customer money held but not yet earned, as at the END of the selected range — a
+        /// balance, not a period total. Deliberately outside <see cref="TotalRevenue"/> and
+        /// <see cref="NetProfit"/>: it is a liability.
+        /// </summary>
+        public decimal CustomerDepositsBalance { get; set; }
+
         public decimal ManualRevenue { get; set; }
         public decimal TotalExpenses { get; set; }
         public decimal NetProfit { get; set; }
@@ -91,6 +109,39 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? FinanceAccountName { get; set; }
         public string? AccountHolderName { get; set; }
         public FinanceAttachmentDto? Attachment { get; set; }
+    }
+
+    /// <summary>
+    /// One booking's share of the Customer Deposits liability, as at the selected end date.
+    /// Read-only and entirely derived: the authoritative records are the Payment rows and the
+    /// possession/cancellation events that clear them.
+    /// </summary>
+    public class CustomerDepositLineDto
+    {
+        public int BookingId { get; set; }
+        public string BookingReference { get; set; } = string.Empty;
+        public string CustomerName { get; set; } = string.Empty;
+        public int? ProjectId { get; set; }
+        public string ProjectName { get; set; } = "—";
+        public string UnitNumber { get; set; } = string.Empty;
+
+        /// <summary>Booking status today — context only. The balance itself is date-derived.</summary>
+        public string BookingStatus { get; set; } = string.Empty;
+
+        /// <summary>AgreedSalePrice − DiscountAmount: what this deposit is being held against.</summary>
+        public decimal NetSaleValue { get; set; }
+
+        /// <summary>Customer cash received up to and including the as-at date.</summary>
+        public decimal CustomerCashReceived { get; set; }
+
+        /// <summary>The liability still held at the as-at date.</summary>
+        public decimal DepositBalance { get; set; }
+
+        /// <summary>Set once possession recognised the sale — even if that happened after the
+        /// as-at date, which is exactly when it explains why a balance is about to disappear.</summary>
+        public DateTime? RecognitionDate { get; set; }
+
+        public DateTime? CancellationDate { get; set; }
     }
 
     /// <summary>A booking with an unpaid balance (Agreed Sale Price − Received).</summary>

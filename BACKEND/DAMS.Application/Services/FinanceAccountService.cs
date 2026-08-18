@@ -68,7 +68,9 @@ namespace DAMS.Application.Services
                 {
                     a.Type,
                     IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable,
-                    IsRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable
+                    IsRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable,
+                    IsCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits,
+                    IsCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables
                 }).SingleOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
 
@@ -212,6 +214,106 @@ namespace DAMS.Application.Services
                     ProjectName = r.Settlement.Booking.Unit.Project.ProjectName,
                     Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
                 });
+            // ── Customer Deposits ledger ──────────────────────────────────────────────────
+            // Derived, never stored: the authoritative record of the cash is the Payment row, and
+            // writing a second one just to draw this list would be the same money counted twice.
+            // Every payment taken before the sale was recognised is a deposit received…
+            var depositsReceived = _context.Payments.AsNoTracking()
+                .Where(p => account.IsCustomerDeposits
+                    && (p.Booking.SaleRecognition == null
+                        || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer deposit received", RecordId = p.Id, Date = p.PaidAt,
+                    Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                });
+            // …and possession clears exactly those deposits into the recognised sale, dated on the
+            // recognition date rather than the day the cash arrived.
+            var depositsRecognised = _context.Payments.AsNoTracking()
+                .Where(p => account.IsCustomerDeposits && p.Booking.CancellationSettlement == null
+                    && p.Booking.SaleRecognition != null
+                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer deposit recognised", RecordId = p.Id,
+                    Date = p.Booking.SaleRecognition!.RecognitionDate,
+                    Label = p.Booking.Customer.FullName, Reference = p.Booking.BookingReference,
+                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                });
+            // A cancellation clears the deposit too — into the refund payable and retained income,
+            // never into revenue.
+            var depositsCancelled = _context.Payments.AsNoTracking()
+                .Where(p => account.IsCustomerDeposits && p.Booking.CancellationSettlement != null)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer deposit released on cancellation", RecordId = p.Id,
+                    Date = p.Booking.CancellationSettlement!.CancellationDate,
+                    Label = p.Booking.Customer.FullName, Reference = p.Booking.BookingReference,
+                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                });
+
+            // ── Customer Receivables ledger ───────────────────────────────────────────────
+            var receivablesRecognised = _context.BookingSaleRecognitions.AsNoTracking()
+                .Where(_ => account.IsCustomerReceivables)
+                .Select(r => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer receivable recognised", RecordId = r.Id, Date = r.RecognitionDate,
+                    Label = r.Booking.Customer.FullName, Reference = r.Booking.BookingReference,
+                    ProjectName = r.Booking.Unit.Project.ProjectName,
+                    Amount = r.NetSaleValue, GrossAmount = r.NetSaleValue, WhtAmount = 0m
+                });
+            // Every payment on a recognised booking reduces the receivable. Cash taken BEFORE
+            // possession does so on the recognition date (it had already cleared the deposit);
+            // cash taken after does so on the day it arrived.
+            var receivablesSettled = _context.Payments.AsNoTracking()
+                .Where(p => account.IsCustomerReceivables && p.Booking.SaleRecognition != null)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? "Deposit applied to sale" : "Customer receivable collected",
+                    RecordId = p.Id,
+                    Date = p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? p.Booking.SaleRecognition!.RecognitionDate : p.PaidAt,
+                    Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    ProjectName = p.Booking.Unit.Project.ProjectName,
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                });
+            // Non-cash customer credits (balance reduction / credit note / installment adjustment)
+            // reduce what is genuinely still owed. They move no cash, so their only balance-sheet
+            // effect is here — and they count exactly once.
+            var receivablesCredited = _context.RebateDisbursements.AsNoTracking()
+                .Where(d => account.IsCustomerReceivables && d.Rebate.Booking.SaleRecognition != null
+                    && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                        || d.Method == CustomerRebateMethod.InstallmentAdjustment
+                        || d.Method == CustomerRebateMethod.CreditNote))
+                .Select(d => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer credit applied", RecordId = d.Id,
+                    Date = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? d.Rebate.Booking.SaleRecognition!.RecognitionDate : d.AppliedAt,
+                    Label = d.Rebate.Customer.FullName, Reference = d.Reference,
+                    ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
+                });
+            var receivablesCreditsReversed = _context.RebateDisbursementReversals.AsNoTracking()
+                .Where(r => account.IsCustomerReceivables && r.Disbursement.Rebate.Booking.SaleRecognition != null
+                    && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                        || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                        || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
+                .Select(r => new FinanceAccountTransactionDto
+                {
+                    Kind = "Customer credit reversed", RecordId = r.Id,
+                    Date = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : r.ReversedAt,
+                    Label = r.Disbursement.Rebate.Customer.FullName, Reference = r.Reason,
+                    ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                });
+
             var capitalCash = _context.CapitalTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
                 .Select(t => new FinanceAccountTransactionDto
                 {
@@ -288,6 +390,9 @@ namespace DAMS.Application.Services
                 .Concat(loanCash).Concat(loanLiability)
                 .Concat(staffTransfers).Concat(staffCounterpartyTransfers)
                 .Concat(payableWithheld).Concat(payableWithheldOnAssets).Concat(payableDeposited)
+                .Concat(depositsReceived).Concat(depositsRecognised).Concat(depositsCancelled)
+                .Concat(receivablesRecognised).Concat(receivablesSettled)
+                .Concat(receivablesCredited).Concat(receivablesCreditsReversed)
                 .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
                 .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             return new PagedResult<FinanceAccountTransactionDto>
@@ -428,10 +533,15 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// Validates the destination of a fixed-asset purchase. The mirror of
+        /// Validates the destination of a capitalised purchase. The mirror of
         /// <see cref="EnsureSelectableAsync"/>: that one insists on cash going out, this one insists
         /// the value lands somewhere it is actually held. Booking a purchase into a bank account
         /// would count the money twice, and into a liability would invert its sign.
+        /// <para>
+        /// Two destinations qualify, for the same reason. A fixed asset is something the company
+        /// keeps; work in progress is construction cost accumulating into something it is
+        /// building. Neither is consumed, so neither reduces profit at purchase time.
+        /// </para>
         /// </summary>
         public async Task EnsureAssetAccountAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default)
         {
@@ -442,8 +552,9 @@ namespace DAMS.Application.Services
             if (account == null) throw new InvalidOperationException("Selected asset account does not exist.");
             if (!account.IsActive && currentAccountId != accountId)
                 throw new InvalidOperationException("Selected asset account is inactive. Choose an active account.");
-            if (account.Type != FinanceAccountType.FixedAsset)
-                throw new InvalidOperationException("Purchases can only be capitalised into a fixed-asset account.");
+            if (account.Type is not (FinanceAccountType.FixedAsset or FinanceAccountType.WorkInProgress))
+                throw new InvalidOperationException(
+                    "Purchases can only be capitalised into a fixed-asset or work-in-progress account.");
         }
 
         public async Task<List<FinanceAccountResponseDto>> SetupClientChartAsync(CancellationToken cancellationToken = default)
@@ -530,7 +641,10 @@ namespace DAMS.Application.Services
                 new("Work in Progress — Site Office", FinanceAccountType.WorkInProgress, "29", 310),
                 new("Securities & Advances", FinanceAccountType.Receivable, "19", 400),
                 new("WHT TAX", FinanceAccountType.Receivable, "37", 410),
-                new("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500),
+                new("Customer Receivables", FinanceAccountType.Receivable, null, 420,
+                    SystemRole: FinanceSystemAccountRole.CustomerReceivables),
+                new("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500,
+                    SystemRole: FinanceSystemAccountRole.CustomerDeposits),
                 new("Tax Payable", FinanceAccountType.Liability, "11", 510, SystemRole: FinanceSystemAccountRole.TaxPayable),
                 new("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515, SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
                 new("Loan A/C", FinanceAccountType.Liability, "32", 520)
@@ -622,6 +736,47 @@ namespace DAMS.Application.Services
                 ? (_context.BookingCancellationRefunds.Where(r => r.Settlement.RefundPayableAccountId == a.Id)
                     .Sum(r => (decimal?)r.Amount) ?? 0m)
                 : 0m
+            // Customer Deposits: money taken before the sale is recognised. It rises with every
+            // payment received while the booking is still unrecognised, and falls when possession
+            // turns that cash into revenue, or when a cancellation turns it into a refund
+            // obligation plus retained income. Derived from the payments themselves rather than
+            // from a stored snapshot, so what went in and what came out can never disagree.
+            let isCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits
+            let depositIn = isCustomerDeposits
+                ? (_context.Payments.Where(p => p.Booking.SaleRecognition == null
+                        || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                    .Sum(p => (decimal?)p.Amount) ?? 0m)
+                : 0m
+            let depositOut = isCustomerDeposits
+                ? (_context.Payments.Where(p => p.Booking.CancellationSettlement != null
+                        || (p.Booking.SaleRecognition != null
+                            && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                    .Sum(p => (decimal?)p.Amount) ?? 0m)
+                : 0m
+            // Customer Receivables: what buyers still owe on sales that HAVE been recognised.
+            // Raised in full at recognition, then cleared by every payment on that booking (the
+            // pre-possession ones having already cleared the deposit) and by valid non-cash
+            // credits. Nothing here exists for an unrecognised booking.
+            let isCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables
+            let receivableIn = isCustomerReceivables
+                ? (_context.BookingSaleRecognitions.Sum(r => (decimal?)r.NetSaleValue) ?? 0m)
+                    + (_context.RebateDisbursementReversals
+                        .Where(r => r.Disbursement.Rebate.Booking.SaleRecognition != null
+                            && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                                || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                                || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
+                        .Sum(r => (decimal?)r.Amount) ?? 0m)
+                : 0m
+            let receivableOut = isCustomerReceivables
+                ? (_context.Payments.Where(p => p.Booking.SaleRecognition != null)
+                        .Sum(p => (decimal?)p.Amount) ?? 0m)
+                    + (_context.RebateDisbursements
+                        .Where(d => d.Rebate.Booking.SaleRecognition != null
+                            && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                                || d.Method == CustomerRebateMethod.InstallmentAdjustment
+                                || d.Method == CustomerRebateMethod.CreditNote))
+                        .Sum(d => (decimal?)d.Amount) ?? 0m)
+                : 0m
             let debitMovement = genericIn + capitalisedIn + cashCapitalIn + loanCashIn
                 + staffFloatIn + staffCounterpartyIn
                 - genericOut - cashCapitalOut - loanCashOut - staffFloatOut - staffCounterpartyOut
@@ -629,6 +784,8 @@ namespace DAMS.Application.Services
                 ? partnerIn - partnerOut
                 : (isTaxPayable ? taxPayableIn - taxPayableOut
                     : isRefundPayable ? refundPayableIn - refundPayableOut
+                    : isCustomerDeposits ? depositIn - depositOut
+                    : isCustomerReceivables ? receivableIn - receivableOut
                     : debitMovement + loanLiabilityIn - loanLiabilityOut)
             select new FinanceAccountResponseDto
             {
@@ -636,8 +793,8 @@ namespace DAMS.Application.Services
                 OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
                 SystemRole = a.SystemRole,
                 BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : isRefundPayable ? refundPayableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
-                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : isRefundPayable ? refundPayableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
+                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : isRefundPayable ? refundPayableIn : isCustomerDeposits ? depositIn : isCustomerReceivables ? receivableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
+                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : isRefundPayable ? refundPayableOut : isCustomerDeposits ? depositOut : isCustomerReceivables ? receivableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
                 WhtWithheld = isTaxPayable
                     ? taxPayableIn
                     : (a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
@@ -665,6 +822,26 @@ namespace DAMS.Application.Services
                     + (isRefundPayable
                         ? _context.BookingCancellationSettlements.Count(s => s.RefundPayableAccountId == a.Id)
                             + _context.BookingCancellationRefunds.Count(r => r.Settlement.RefundPayableAccountId == a.Id)
+                        : 0)
+                    // Deposits: one line per payment in, one per payment cleared out.
+                    + (isCustomerDeposits
+                        ? _context.Payments.Count(p => p.Booking.SaleRecognition == null
+                                || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                            + _context.Payments.Count(p => p.Booking.CancellationSettlement != null
+                                || (p.Booking.SaleRecognition != null
+                                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                        : 0)
+                    + (isCustomerReceivables
+                        ? _context.BookingSaleRecognitions.Count()
+                            + _context.Payments.Count(p => p.Booking.SaleRecognition != null)
+                            + _context.RebateDisbursements.Count(d => d.Rebate.Booking.SaleRecognition != null
+                                && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                                    || d.Method == CustomerRebateMethod.InstallmentAdjustment
+                                    || d.Method == CustomerRebateMethod.CreditNote))
+                            + _context.RebateDisbursementReversals.Count(r => r.Disbursement.Rebate.Booking.SaleRecognition != null
+                                && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                                    || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                                    || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
                         : 0),
                 CreatedAt = a.CreatedAt, UpdatedAt = a.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
@@ -692,13 +869,21 @@ namespace DAMS.Application.Services
         }
 
         // Canonical definitions for system accounts this service can resolve/create on demand
-        // (not just via SetupClientChartAsync). Only CustomerRefundPayable is created this way
-        // today — TaxPayable is expected to already exist via the client chart.
+        // (not just via SetupClientChartAsync). TaxPayable is expected to already exist via the
+        // client chart. The customer deposit/receivable pair is normally established by the chart
+        // setup or the migration backfill; a definition is kept here so a command workflow can
+        // repair a database that predates them without hand-creating an account.
         private static readonly Dictionary<FinanceSystemAccountRole, ChartAccount> SystemAccountDefinitions = new()
         {
             [FinanceSystemAccountRole.CustomerRefundPayable] =
                 new ChartAccount("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515,
-                    SystemRole: FinanceSystemAccountRole.CustomerRefundPayable)
+                    SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
+            [FinanceSystemAccountRole.CustomerDeposits] =
+                new ChartAccount("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500,
+                    SystemRole: FinanceSystemAccountRole.CustomerDeposits),
+            [FinanceSystemAccountRole.CustomerReceivables] =
+                new ChartAccount("Customer Receivables", FinanceAccountType.Receivable, null, 420,
+                    SystemRole: FinanceSystemAccountRole.CustomerReceivables)
         };
 
         public async Task<int> EnsureSystemAccountAsync(FinanceSystemAccountRole role, CancellationToken cancellationToken = default)
@@ -726,7 +911,7 @@ namespace DAMS.Application.Services
             {
                 if (byName.Type != definition.Type)
                     throw new InvalidOperationException(
-                        $"An account named '{definition.Name}' already exists but is not a {definition.Type} account. Correct it before cancelling with a refund.");
+                        $"An account named '{definition.Name}' already exists but is not a {definition.Type} account. Correct it before continuing.");
                 if (byName.SystemRole != FinanceSystemAccountRole.None)
                     throw new InvalidOperationException($"An account named '{definition.Name}' already exists with a different system role.");
                 byName.SystemRole = role;

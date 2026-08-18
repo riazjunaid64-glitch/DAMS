@@ -270,17 +270,23 @@ namespace DAMS.Application.Services
                     CategoryId = g.Key.RevenueCategoryId, Name = g.Key.Name, Order = g.Key.Order,
                     Amount = g.Sum(r => r.Amount), Count = g.Count()
                 }).ToListAsync(cancellationToken);
-            var receipts = await PaymentsQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (receipts is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "customer-receipts", Name = "Customer Receipts", Order = -1, Amount = receipts.Amount, Count = receipts.Count });
-            // Contra-revenue, recognised at cancellation — never a second entry when the refund
-            // is actually paid out later, and never folded into the receipts line above so the
-            // original "money was really received" figure stays intact and auditable.
-            var refunds = await CancellationSettlementQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(s => s.RefundAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (refunds is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "customer-refunds", Name = "Customer Refunds", Order = 0, Amount = -refunds.Amount, Count = refunds.Count });
+            // Unit sales, recognised at possession — NOT customer receipts. Money taken before
+            // possession is a deposit the company owes back, so counting it as income overstated
+            // revenue by every unfinished sale and understated the liability by the same amount.
+            // The full net sale value lands here once, on its recognition date; what the buyer
+            // still owes becomes a receivable rather than future revenue.
+            var recognisedSales = await SaleRecognitionQuery(projectId, from, toExclusive).GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(r => r.NetSaleValue), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
+            if (recognisedSales is { Amount: not 0m })
+                income.Add(new ReportLine { Key = "unit-sales", Name = "Unit Sales", Order = -1, Amount = recognisedSales.Amount, Count = recognisedSales.Count });
+            // What the company keeps when a booking is cancelled. Recognised once, on the
+            // cancellation date. The refund itself is NOT contra-revenue: the customer's money was
+            // never income, so refunding it cannot reduce income — it converts one liability
+            // (deposit) into another (refund payable).
+            var retained = await RetainedCancellationQuery(projectId, from, toExclusive).GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(s => s.RetainedAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
+            if (retained is { Amount: not 0m })
+                income.Add(new ReportLine { Key = "cancellation-retained", Name = "Cancellation Income (Retained)", Order = 0, Amount = retained.Amount, Count = retained.Count });
 
             var expenses = await ExpenseQuery(projectId, from, toExclusive).GroupBy(e => new
                 {
@@ -301,6 +307,20 @@ namespace DAMS.Application.Services
             var rebateCount = await CashRebateQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
                 + await CashRebateReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
             if (rebate != 0m) expenses.Add(new ReportLine { Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue, Amount = rebate, Count = rebateCount });
+            // The cost of credits granted against a RECOGNISED sale. Once the full net sale value
+            // is income, the slice of it the buyer will never pay has to be a cost — otherwise the
+            // receivable would still be claiming money that was written off. Credits on bookings
+            // that have not reached possession stay invisible here, exactly as before.
+            var nonCashCredit = (await NonCashCreditQuery(projectId, from, toExclusive).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
+                - (await NonCashCreditReversalQuery(projectId, from, toExclusive).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
+            var nonCashCreditCount = await NonCashCreditQuery(projectId, from, toExclusive).CountAsync(cancellationToken)
+                + await NonCashCreditReversalQuery(projectId, from, toExclusive).CountAsync(cancellationToken);
+            if (nonCashCredit != 0m)
+                expenses.Add(new ReportLine
+                {
+                    Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
+                    Amount = nonCashCredit, Count = nonCashCreditCount
+                });
             var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
                 .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
                 .SingleOrDefaultAsync(cancellationToken);
@@ -384,7 +404,7 @@ namespace DAMS.Application.Services
                 + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
                     .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = deposits.Sum(d => d.Amount);
-            // Customer Refunds Payable: created (contra-revenue recognised) at cancellation,
+            // Customer Refunds Payable: created out of the customer deposit at cancellation,
             // cleared when the cash is actually paid out. Both sides are booking-scoped, so —
             // unlike WHT deposits — they can be filtered by project.
             var cancellationRefundsCash = await SumByAccount(_context.BookingCancellationRefunds.AsNoTracking()
@@ -393,6 +413,7 @@ namespace DAMS.Application.Services
             var refundPayableCreated = await CancellationSettlementQuery(projectId, null, end)
                 .SumAsync(s => (decimal?)s.RefundAmount, cancellationToken) ?? 0m;
             var refundPayablePaid = cancellationRefundsCash.Sum(x => x.Amount);
+            var (customerDeposits, customerReceivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
 
             foreach (var account in accounts)
             {
@@ -421,9 +442,73 @@ namespace DAMS.Application.Services
                     account.Balance += Money(wht - deposited);
                 if (account.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
                     account.Balance += Money(refundPayableCreated - refundPayablePaid);
+                if (account.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
+                    account.Balance += customerDeposits;
+                if (account.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
+                    account.Balance += customerReceivables;
                 account.Balance = Money(account.Balance);
             }
             return accounts;
+        }
+
+        /// <summary>
+        /// The customer deposit liability and the customer receivable asset, both as at
+        /// <paramref name="end"/> (exclusive) and both derived entirely from dated domain events —
+        /// never from a booking's current status, and never from a stored snapshot that a
+        /// back-dated payment could quietly invalidate.
+        /// <para>
+        /// Deposit: every payment taken while the sale was still unrecognised, less the ones since
+        /// cleared by possession (into revenue) or by cancellation (into refund payable + retained
+        /// income). Both sides come from the same Payment rows, so they cannot drift apart.
+        /// </para>
+        /// <para>
+        /// Receivable: the recognised net sale value, less every payment on that booking (the
+        /// pre-possession ones having already cleared the deposit) and less valid non-cash credits.
+        /// A booking that has not reached possession contributes nothing — there is no receivable
+        /// until there is a sale.
+        /// </para>
+        /// </summary>
+        private async Task<(decimal Deposits, decimal Receivables)> CustomerBalancesAsync(
+            int? projectId, DateTime? end, CancellationToken cancellationToken)
+        {
+            // "Recognised by the cut-off" and "cancelled by the cut-off". Written as two separate
+            // queryables rather than one expression with a sentinel date, because a sentinel would
+            // have to be compared against a `date` column and SQL Server's conversion rules at the
+            // very end of the calendar are not somewhere financial code should be standing.
+            var recognisedByCutOff = SaleRecognitionQuery(projectId, null, end);
+            var clearedByRecognition = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition != null
+                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1));
+            var collectedOnRecognisedSales = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition != null);
+            var clearedByCancellation = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.CancellationSettlement != null);
+            if (end.HasValue)
+            {
+                clearedByRecognition = clearedByRecognition
+                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
+                collectedOnRecognisedSales = collectedOnRecognisedSales
+                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
+                clearedByCancellation = clearedByCancellation
+                    .Where(p => p.Booking.CancellationSettlement!.CancellationDate < end.Value);
+            }
+
+            var depositsReceived = await PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition == null
+                    || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+            var depositsCleared = (await clearedByRecognition.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
+                + (await clearedByCancellation.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
+
+            var receivablesRaised = await recognisedByCutOff.SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
+            var receivablesCollected = await collectedOnRecognisedSales.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+            var creditsApplied = await NonCashCreditQuery(projectId, null, end)
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var creditsReversed = await NonCashCreditReversalQuery(projectId, null, end)
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+
+            return (Money(depositsReceived - depositsCleared),
+                Money(receivablesRaised - receivablesCollected - creditsApplied + creditsReversed));
         }
 
         private static async Task<List<AccountAmount>> SumByAccount(IQueryable<AccountAmount> query, CancellationToken cancellationToken) =>
@@ -460,6 +545,13 @@ namespace DAMS.Application.Services
                     .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
             if (refundObligation != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable))
                 issues.Add($"No Customer Refunds Payable system account found; outstanding refund obligation of {refundObligation:N2} has nowhere to sit.");
+            // Reported, never created: a report must not write to the database as a side effect of
+            // being read. Setting the account up is Finance ▸ Accounts ▸ chart setup's job.
+            var (deposits, receivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
+            if (deposits != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerDeposits))
+                issues.Add($"No Customer Deposits system account found; customer money held of {deposits:N2} has nowhere to sit.");
+            if (receivables != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerReceivables))
+                issues.Add($"No Customer Receivables system account found; {receivables:N2} owed on recognised sales has nowhere to sit.");
             if (issues.Count == 0)
             {
                 issues.Add("Opening balances or legacy entries are not double-sided");

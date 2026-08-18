@@ -382,8 +382,13 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(50m, (await context.CapitalTransactions.SingleAsync(t => t.Id == profit.Id)).ProfitSharePercentSnapshot);
     }
 
+    /// <summary>
+    /// A cancellation earns the RETAINED amount and nothing else. The customer's payments were a
+    /// deposit, never income, so the refund cannot be negative income either — it converts one
+    /// liability into another.
+    /// </summary>
     [Fact]
-    public async Task CancellationSettlement_PayNow_IsContraRevenue_NotExpense_AndBalances()
+    public async Task CancellationSettlement_PayNow_EarnsOnlyTheRetainedAmount_AndBalances()
     {
         await using var context = Context();
         var (bookingId, bank) = await SeedCancellableBooking(context, paid: 500_000m);
@@ -401,10 +406,11 @@ public sealed class FinanceReportingAndCapitalTests
         // here would flake for report queries run between 00:00 and 04:59 PKT.
         var today = DAMS.Application.Common.PakistanTime.Today;
         var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
-        Assert.Equal(500_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Receipts").Amount);
-        Assert.Equal(-450_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Customer Refunds").Amount);
+        Assert.Equal(50_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Cancellation Income (Retained)").Amount);
+        Assert.DoesNotContain(pnl.IncomeLines, l => l.Name == "Customer Receipts");
+        Assert.DoesNotContain(pnl.IncomeLines, l => l.Name == "Customer Refunds");
         Assert.Equal(50_000m, pnl.TotalIncome);
-        Assert.Equal(0m, pnl.TotalExpenses); // never folded into expenses — it is contra-revenue
+        Assert.Equal(0m, pnl.TotalExpenses); // never folded into expenses — it is income, once
         Assert.Equal(50_000m, pnl.NetProfit);
 
         var accounts = new FinanceAccountService(context);
@@ -418,21 +424,17 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(0m, sheet.TotalLiabilities);
         Assert.Equal(50_000m, sheet.RetainedProfit);
 
-        // The Trial Balance must place the refund's negative income amount on the Debit side, not
-        // leave it as a negative Credit — a negative Credit is not a valid double-entry cell even
-        // when the column totals still happen to net out. GetTrialBalanceAsync snaps a mid-month
-        // "as at" date back to the END OF THE PREVIOUS month, so the current month-end (not
-        // "today") must be passed to actually include today's cancellation in the column.
+        // GetTrialBalanceAsync snaps a mid-month "as at" date back to the END OF THE PREVIOUS
+        // month, so the current month-end (not "today") must be passed to actually include today's
+        // cancellation in the column.
         var monthEnd = new DateTime(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month));
         var trial = await Finance(context).GetTrialBalanceAsync(null, monthEnd, 0);
-        var refundRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Refunds");
-        Assert.Equal(450_000m, Assert.Single(refundRow.DebitBalances));
-        Assert.Equal(0m, Assert.Single(refundRow.CreditBalances));
-        var receiptsRow = Assert.Single(trial.Rows, r => r.AccountName == "Customer Receipts");
-        Assert.Equal(0m, Assert.Single(receiptsRow.DebitBalances));
-        Assert.Equal(500_000m, Assert.Single(receiptsRow.CreditBalances));
-        Assert.Equal(500_000m, Assert.Single(trial.ColumnDebitTotals));
-        Assert.Equal(500_000m, Assert.Single(trial.ColumnCreditTotals));
+        var retainedRow = Assert.Single(trial.Rows, r => r.AccountName == "Cancellation Income (Retained)");
+        Assert.Equal(0m, Assert.Single(retainedRow.DebitBalances));
+        Assert.Equal(50_000m, Assert.Single(retainedRow.CreditBalances));
+        Assert.DoesNotContain(trial.Rows, r => r.AccountName == "Customer Receipts");
+        Assert.Equal(50_000m, Assert.Single(trial.ColumnDebitTotals));
+        Assert.Equal(50_000m, Assert.Single(trial.ColumnCreditTotals));
     }
 
     [Fact]
@@ -484,7 +486,7 @@ public sealed class FinanceReportingAndCapitalTests
     }
 
     [Fact]
-    public async Task CancellationSettlement_NoRefund_LeavesOriginalRevenueUnchanged()
+    public async Task CancellationSettlement_NoRefund_TurnsTheWholeDepositIntoIncome()
     {
         await using var context = Context();
         var (bookingId, _) = await SeedCancellableBooking(context, paid: 500_000m);
@@ -501,6 +503,8 @@ public sealed class FinanceReportingAndCapitalTests
         var today = DAMS.Application.Common.PakistanTime.Today;
         var pnl = await Finance(context).GetProfitAndLossAsync(null, today.AddDays(-1), today.AddDays(1));
         Assert.DoesNotContain(pnl.IncomeLines, l => l.Name == "Customer Refunds");
+        // The whole 500,000 is retained, so the whole 500,000 is earned — once, at cancellation.
+        Assert.Equal(500_000m, Assert.Single(pnl.IncomeLines, l => l.Name == "Cancellation Income (Retained)").Amount);
         Assert.Equal(500_000m, pnl.TotalIncome);
         Assert.Equal(500_000m, pnl.NetProfit);
     }
@@ -541,11 +545,11 @@ public sealed class FinanceReportingAndCapitalTests
 
         var finance = Finance(context);
         var august = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
-        Assert.DoesNotContain(august.IncomeLines, l => l.Name == "Customer Refunds");
+        Assert.Empty(august.IncomeLines);
 
         var september = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), new DateTime(2026, 9, 30));
-        var refundLine = Assert.Single(september.IncomeLines, l => l.Name == "Customer Refunds");
-        Assert.Equal(-100_000m, refundLine.Amount);
+        var retainedLine = Assert.Single(september.IncomeLines, l => l.Name == "Cancellation Income (Retained)");
+        Assert.Equal(400_000m, retainedLine.Amount);
     }
 
     private static async Task<(int BookingId, FinanceAccount Bank)> SeedCancellableBooking(AppDbContext context, decimal paid)

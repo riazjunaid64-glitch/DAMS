@@ -25,6 +25,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -479,6 +480,27 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<BookingSaleRecognition>(entity =>
+            {
+                entity.Property(r => r.NetSaleValue).HasColumnType("decimal(18,2)");
+                // A date, not a timestamp: this is the business day the sale lands on, and every
+                // report compares it against a date boundary.
+                entity.Property(r => r.RecognitionDate).HasColumnType("date");
+
+                // The whole point of the table: one recognition per booking. Possession retried,
+                // raced, or followed by completion must never produce a second sale.
+                entity.HasIndex(r => r.BookingId).IsUnique();
+                entity.HasIndex(r => r.RecognitionDate);
+
+                entity.HasOne(r => r.Booking)
+                      .WithOne(b => b.SaleRecognition)
+                      .HasForeignKey<BookingSaleRecognition>(r => r.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t => t.HasCheckConstraint(
+                    "CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0"));
+            });
+
             modelBuilder.Entity<BookingCancellationSettlement>(entity =>
             {
                 entity.Property(s => s.CustomerCashReceivedSnapshot).HasColumnType("decimal(18,2)");
@@ -847,9 +869,14 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t =>
                 {
-                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 2");
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 4");
                     t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
                     t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
+                    // A deposit is money owed back, so its account must be a Liability (5); a
+                    // receivable is money owed in, so its account must be a Receivable (8). Get
+                    // either the wrong way round and every balance built on it inverts.
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerDepositsRole", "[SystemRole] <> 3 OR [Type] = 5");
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerReceivablesRole", "[SystemRole] <> 4 OR [Type] = 8");
                 });
             });
 

@@ -5,13 +5,19 @@ using Microsoft.EntityFrameworkCore;
 namespace DAMS.Application.Services
 {
     /// <summary>
-    /// Recording the purchase of something the company keeps.
+    /// Recording the purchase of something the company keeps, or is building.
     /// <para>
     /// Mechanically this is the expense flow: same form fields, same attachment handling, same
     /// withholding. What differs is where the money goes. An expense credits cash and lands in the
-    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT — the
-    /// value moved rather than left, so profit must not move. Nothing in this file writes to any
-    /// P&amp;L surface, and that omission is the feature.
+    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET OR
+    /// WORK-IN-PROGRESS ACCOUNT — the value moved rather than left, so profit must not move.
+    /// Nothing in this file writes to any P&amp;L surface, and that omission is the feature.
+    /// </para>
+    /// <para>
+    /// Construction cost accumulating into work in progress is the same event as buying a desk,
+    /// which is why it reuses this flow rather than getting a subsystem of its own. Releasing that
+    /// WIP to cost of sales is intentionally deferred pending the approved per-unit allocation
+    /// policy — nothing here moves it out.
     /// </para>
     /// </summary>
     public partial class FinanceService

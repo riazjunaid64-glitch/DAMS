@@ -40,7 +40,8 @@ namespace DAMS.Domain.Entities
         public DateTime CancelledAt { get; set; } = DateTime.UtcNow;
 
         // The Pakistan business date this cancellation belongs to — what P&L, Trial Balance,
-        // Balance Sheet and every other report use to place the contra-revenue/liability. Set once
+        // Balance Sheet and every other report use to place the retained income and the refund
+        // liability, and to clear the customer deposit they come out of. Set once
         // at cancellation as PakistanTime.Today; never recomputed from CancelledAt.
         public DateTime CancellationDate { get; set; }
 
