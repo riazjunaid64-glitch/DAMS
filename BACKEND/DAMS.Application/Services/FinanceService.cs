@@ -78,8 +78,8 @@ namespace DAMS.Application.Services
             // Buying an asset spends the money, and the client's confirmed rule is that the period
             // bears that spending — so the cost reaches Net Profit by the ordinary route rather than
             // being held outside it as a second figure to reconcile. The asset itself is untouched:
-            // it stays on the Balance Sheet at cost, with the same amount held back out of retained
-            // profit as a capital line so the sheet still balances.
+            // it stays on the Balance Sheet at cost, which is why that sheet reports a difference of
+            // exactly this amount rather than plugging it (see GetBalanceSheetAsync).
             var assetPurchases = await FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals

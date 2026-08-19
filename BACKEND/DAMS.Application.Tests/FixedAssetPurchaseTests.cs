@@ -17,8 +17,15 @@ namespace DAMS.Application.Tests;
 /// <para>
 /// The invariant every test here defends: buying an asset charges the full price to the one Net
 /// Profit figure — the client's confirmed rule — while the asset itself stays on the Balance Sheet at
-/// cost, and the sheet still balances. Those last two are what make it more than an expense: the cost
-/// is held back inside Capital as "Fixed assets charged to profit" rather than written off the asset.
+/// cost and is never written down.
+/// </para>
+/// <para>
+/// Those two rules cannot both hold and still leave a formally balanced statement, because the credit
+/// that would close them has no approved home yet. So the tests below assert the difference is
+/// REPORTED: the sheet is out by exactly the period's purchases, it names that as the reason, and no
+/// equity reserve, contra-asset or depreciation line is conjured up to absorb it. Any future change
+/// that quietly balances these statements will fail here, which is the point — the balancing account
+/// is the client's accountant's decision, not this code's.
 /// </para>
 /// </summary>
 public sealed class FixedAssetPurchaseTests
@@ -54,14 +61,21 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(profitBefore.NetProfit - 200_000m, profitAfter.NetProfit);
         Assert.Equal(200_000m, profitAfter.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
 
-        // And the sheet still balances at the same total — rearranged, not larger or smaller. The
-        // desks are still an asset at cost; the charge to profit is held back inside Capital.
+        // Assets are only rearranged — cash out, desks in — so the total is what it was.
         var sheetAfter = await service.GetBalanceSheetAsync(null, AsAt);
-        Assert.True(sheetAfter.IsBalanced);
+        Assert.True(sheetBefore.IsBalanced);
         Assert.Equal(sheetBefore.TotalAssets, sheetAfter.TotalAssets);
         Assert.Equal(200_000m, Group(sheetAfter, "Fixed Assets").Total);
-        Assert.Equal(200_000m, FixedAssetChargeLine(sheetAfter));
-        Assert.Equal(sheetBefore.TotalCapital, sheetAfter.TotalCapital);
+
+        // Equity, though, is down by the charge, and nothing puts it back: the sheet is out by exactly
+        // that amount and says so in one line, naming the decision it is waiting on. No invented
+        // capital line, and no list of innocent accounts for an admin to go hunting through.
+        Assert.Equal(sheetBefore.TotalCapital - 200_000m, sheetAfter.TotalCapital);
+        Assert.False(sheetAfter.IsBalanced);
+        Assert.Equal(200_000m, sheetAfter.Imbalance);
+        Assert.DoesNotContain(sheetAfter.CapitalLines, l => l.AccountId < 0);
+        // Formatted the way the service formats it, so the assertion is not culture-dependent.
+        Assert.Contains($"Fixed asset purchases of {200_000m:N2}", Assert.Single(sheetAfter.UnbalancedAccounts));
 
         // The dashboard reports the same one figure, with the purchase inside the expense total.
         var summary = await service.GetSummaryAsync(null, null, null);
@@ -102,11 +116,12 @@ public sealed class FixedAssetPurchaseTests
         // And the shortfall sits as a liability to FBR.
         Assert.Equal(10_000m, (await accounts.GetByIdAsync(world.TaxPayable.Id)).CurrentBalance);
 
-        var sheet = await service.GetBalanceSheetAsync(null, AsAt);
-        Assert.True(sheet.IsBalanced);
         // The GROSS price is the cost, not the net that left the bank: the withheld tax is owed to
         // FBR, not saved.
         Assert.Equal(100_000m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).TotalExpenses);
+        // Which is also the whole of the sheet's difference — the tax entry itself is double-sided.
+        var sheet = await service.GetBalanceSheetAsync(null, AsAt);
+        Assert.Equal(100_000m, sheet.Imbalance);
 
         // The FBR payable report counts tax withheld from capital suppliers too.
         var payable = await Wht(context).GetPayableSummaryAsync(null, null);
@@ -184,13 +199,16 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Furniture.Id)).CurrentBalance);
         Assert.Equal(-150_000m, (await accounts.GetByIdAsync(world.Cash.Id)).CurrentBalance);
         Assert.Equal(150_000m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
-        Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
+        // The reported difference follows the correction down to the amount actually spent — it is
+        // derived from the surviving rows, not accumulated as the purchase is edited.
+        Assert.Equal(150_000m, (await service.GetBalanceSheetAsync(null, AsAt)).Imbalance);
 
         await service.DeleteAssetPurchaseAsync(created.Id, updated.ConcurrencyToken);
 
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Cash.Id)).CurrentBalance);
         Assert.Equal(1_000_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
+        // …and it is gone entirely once the purchase is: nothing lingers to keep the sheet out.
         Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
     }
 
@@ -378,12 +396,13 @@ public sealed class FixedAssetPurchaseTests
             }));
     }
 
-    // ── The client's fixed-asset profit rule ─────────────────────────────────────────
+    // ── The client's fixed-asset profit rule, and the question it leaves open ────────
     //
     // The company spent the money, so the period bears it: one Net Profit figure, down by the gross
     // price. The company also still owns the desk, so the asset stays on the sheet at cost. Both are
-    // true at once, and the entry that makes them fit together is the Capital line holding the charge
-    // back inside equity — without it the sheet would be out by every asset ever bought.
+    // confirmed by the client — and together they cannot produce a balanced statement, because the
+    // account that should carry the balancing credit has not been chosen. The reports stop there and
+    // say so rather than picking one.
 
     [Fact]
     public async Task AFixedAssetPurchase_ReducesNetProfitByTheGross_AndKeepsTheAssetOnTheSheet()
@@ -415,20 +434,23 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(0m, summary.NetProfit);
         Assert.Equal(1_000_000m, summary.TotalAssetPurchases);
 
-        // The asset is still an asset at cost, retained profit is down by the charge, and the sheet
-        // balances because the same amount is held back inside Capital.
+        // The asset is still an asset at cost and retained profit is net of the charge — which is
+        // precisely why the sheet is out by it. Reported, not plugged.
         var sheet = await service.GetBalanceSheetAsync(null, AsAt);
-        Assert.True(sheet.IsBalanced);
         Assert.Equal(1_000_000m, Group(sheet, "Fixed Assets").Total);
         Assert.Equal(0m, sheet.RetainedProfit);
-        Assert.Equal(1_000_000m, FixedAssetChargeLine(sheet));
+        Assert.False(sheet.IsBalanced);
+        Assert.Equal(1_000_000m, sheet.Imbalance);
+        Assert.DoesNotContain(sheet.CapitalLines, l => l.AccountId < 0);
 
-        // Both halves of the charge reach the Trial Balance, so its columns still agree.
+        // Same on the Trial Balance: the charge appears as a debit with no counter-credit, so the
+        // column is out by it and the unmatched row is named for what it is. Nothing conjures up an
+        // equity row to make the totals agree.
         var trial = await service.GetTrialBalanceAsync(null, AsAt, 0);
-        Assert.True(Assert.Single(trial.ColumnBalanced));
-        Assert.Equal(Assert.Single(trial.ColumnDebitTotals), Assert.Single(trial.ColumnCreditTotals));
+        Assert.False(Assert.Single(trial.ColumnBalanced));
+        Assert.Equal(1_000_000m, Assert.Single(trial.ColumnDebitTotals) - Assert.Single(trial.ColumnCreditTotals));
         Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Fixed Asset Purchases").DebitBalances[0]);
-        Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Fixed assets charged to profit").CreditBalances[0]);
+        Assert.DoesNotContain(trial.Rows, r => r.Type == FinanceAccountType.Capital && r.AccountId < 0);
     }
 
     /// <summary>
@@ -499,11 +521,17 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(400_000m, august.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
         Assert.Equal(-400_000m, august.NetProfit);
 
-        // …and a balance sheet dated before the purchase carries neither half of the charge.
+        // …and a balance sheet dated the day before is untouched by it: retained profit intact, and
+        // balanced, because there is no charge yet to leave a difference. The difference appears on
+        // the purchase date and not a day earlier.
         var before = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 9));
         Assert.Equal(0m, before.RetainedProfit);
-        Assert.Equal(0m, FixedAssetChargeLine(before));
         Assert.True(before.IsBalanced);
+        Assert.Equal(0m, before.Imbalance);
+
+        var onTheDay = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 10));
+        Assert.Equal(-400_000m, onTheDay.RetainedProfit);
+        Assert.Equal(400_000m, onTheDay.Imbalance);
     }
 
     [Fact]
@@ -616,8 +644,17 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(breakdown.Sum(line => line.WhtWithheld), listed.YearToDateWht);
     }
 
+    /// <summary>
+    /// The withholding half of a purchase ties out; only the charge to profit does not.
+    /// <para>
+    /// Worth pinning on its own, because withholding splits the credit across two places — the paying
+    /// account and the tax payable — and a fault in that split would surface as the same kind of
+    /// difference. Asserting the gap is EXACTLY the fixed-asset charge is what proves the tax entry
+    /// is still fully double-sided underneath it.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task TheTrialBalanceStillTiesOut_WithPurchasesAndWithholdingInPlay()
+    public async Task TheTrialBalance_IsOutByExactlyTheFixedAssetCharge_WithWithholdingInPlay()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -632,8 +669,9 @@ public sealed class FixedAssetPurchaseTests
         }, adminUserId: 1);
 
         var trial = await service.GetTrialBalanceAsync(null, AsAt, 0);
-        Assert.True(Assert.Single(trial.ColumnBalanced));
-        Assert.Equal(Assert.Single(trial.ColumnDebitTotals), Assert.Single(trial.ColumnCreditTotals));
+        Assert.False(Assert.Single(trial.ColumnBalanced));
+        Assert.Equal(100_000m, Assert.Single(trial.ColumnDebitTotals) - Assert.Single(trial.ColumnCreditTotals));
+        Assert.Equal(10_000m, trial.Rows.Single(r => r.AccountName == "Tax Payable").CreditBalances[0]);
     }
 
     // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -677,10 +715,6 @@ public sealed class FixedAssetPurchaseTests
 
     private static BsGroupDto Group(BalanceSheetDto sheet, string name) =>
         sheet.AssetGroups.Single(g => g.Name == name);
-
-    /// <summary>The Capital line holding the fixed-asset charge back inside equity; 0 when absent.</summary>
-    private static decimal FixedAssetChargeLine(BalanceSheetDto sheet) =>
-        sheet.CapitalLines.SingleOrDefault(l => l.Name == "Fixed assets charged to profit")?.Amount ?? 0m;
 
     /// <summary>
     /// A work-in-progress account, as inherited from the previous ERP. Still a legitimate account

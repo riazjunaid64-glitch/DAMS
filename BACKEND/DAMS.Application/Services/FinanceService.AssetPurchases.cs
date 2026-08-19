@@ -18,9 +18,14 @@ namespace DAMS.Application.Services
     /// an asset is spending, and there is one profit figure in this system, so the purchase is an
     /// ordinary cost line on the P&amp;L. That charge is applied where the reports are built
     /// (<c>FinanceService.Reports.cs</c>, <c>GetSummaryAsync</c>) off these same rows — never by
-    /// writing a second entry here. The Balance Sheet and Trial Balance stay in balance because the
-    /// same amount is held back inside Capital as "Fixed assets charged to profit"; the asset account
-    /// itself is never written down.
+    /// writing a second entry here, and the asset account is never written down.
+    /// </para>
+    /// <para>
+    /// One consequence is open on purpose: a cost charged to profit with the asset still on the sheet
+    /// at cost leaves the Balance Sheet and Trial Balance out by that amount. Which account should
+    /// carry the balancing entry is a question for the client's accountant, so the reports state the
+    /// difference and name the reason instead of inventing an equity reserve, a contra-asset or a
+    /// depreciation line to absorb it.
     /// </para>
     /// <para>
     /// Construction / work-in-progress spending does NOT come through here any more. The client

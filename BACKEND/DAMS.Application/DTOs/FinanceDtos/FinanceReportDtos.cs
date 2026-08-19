@@ -65,10 +65,10 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         /// <summary>
         /// The retained result carried in Capital, for the window from the opening baseline to
-        /// <see cref="AsAt"/>. Net of the fixed assets bought in that window, exactly like the P&amp;L
-        /// figure it comes from. The matching amount is held back inside
-        /// <see cref="CapitalLines"/> as "Fixed assets charged to profit", which is what keeps
-        /// <see cref="IsBalanced"/> true while the assets stay on the sheet at cost.
+        /// <see cref="AsAt"/>. Net of the fixed assets bought in that window, exactly like the one
+        /// Net Profit figure it comes from — and with no counter-entry anywhere on this sheet, so a
+        /// window containing fixed-asset purchases leaves <see cref="IsBalanced"/> false by that
+        /// amount. See <see cref="UnbalancedAccounts"/>.
         /// </summary>
         public decimal RetainedProfit { get; set; }
 
@@ -76,6 +76,13 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal TotalLiabilitiesAndCapital { get; set; }
         public bool IsBalanced { get; set; }
         public decimal Imbalance { get; set; }
+
+        /// <summary>
+        /// Why the statement is out, populated only when it is. Never a difference row: no balancing
+        /// figure is invented to make the totals meet. Fixed-asset purchases are reported here first
+        /// and by name, because charging them to Net Profit while keeping the asset at cost cannot
+        /// balance until the client's accountant says which account takes the other side.
+        /// </summary>
         public List<string> UnbalancedAccounts { get; set; } = [];
     }
 

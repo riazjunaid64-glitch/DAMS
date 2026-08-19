@@ -14,16 +14,13 @@ namespace DAMS.Application.Services
         /// <summary>
         /// Key of the P&amp;L expense line carrying the fixed assets bought in the window.
         /// <para>
-        /// The Balance Sheet and Trial Balance read the charge back off that line rather than
-        /// re-querying the purchases, so the amount held back in Capital is by construction the same
-        /// amount that came off retained profit. Two independent sums could differ by a filter or a
-        /// rounding step, and the difference would surface as an unexplained imbalance.
+        /// The Balance Sheet reads the charge back off that line when it has to explain its own
+        /// imbalance, rather than re-querying the purchases. The figure quoted to the reader is then
+        /// by construction the same figure that came off retained profit, and cannot drift from it
+        /// through a filter or a rounding step.
         /// </para>
         /// </summary>
         private const string FixedAssetChargeKey = "fixed-asset-purchases";
-
-        /// <summary>The Capital line that holds the fixed-asset charge back inside equity.</summary>
-        private const string FixedAssetChargeCapitalLine = "Fixed assets charged to profit";
 
         public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
             int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
@@ -92,25 +89,17 @@ namespace DAMS.Application.Services
             }.Where(g => g.Lines.Count > 0).ToList();
             var capitalLines = snapshots.Where(s => s.Type == FinanceAccountType.Capital)
                 .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(ToBsLine).ToList();
-            // The other half of the client's fixed-asset rule. Net Profit — and therefore the
-            // retained profit just derived from it — is already down by what the period spent on
-            // fixed assets, while the assets themselves are still carried above at cost. Left there,
-            // the sheet would be out by exactly that amount and every reader would be told the books
-            // are broken. So the charge is held back inside Capital instead: total equity is
-            // unchanged, the split within it shows how much of the retained result went into assets
-            // the company still owns, and the statement balances. AccountId is a virtual -2 (the
-            // Retained Profit line uses -1) because no real account backs it.
-            var fixedAssetCharge = FixedAssetCharge(pnl);
-            if (fixedAssetCharge != 0m)
-                capitalLines.Add(new BsLineDto
-                {
-                    AccountId = -2, LedgerCode = null,
-                    Name = FixedAssetChargeCapitalLine, Amount = fixedAssetCharge
-                });
             var totalAssets = Money(assetGroups.Sum(g => g.Total));
             var totalLiabilities = Money(liabilityGroups.Sum(g => g.Total));
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
+            // Net Profit — and the retained profit derived from it — is already down by what the
+            // period spent on fixed assets, while the assets themselves are still carried above at
+            // cost. Nothing here closes that gap, and nothing here should: which account carries the
+            // balancing credit has not been decided by the client's accountant, and manufacturing an
+            // equity reserve, a contra-asset or a depreciation line so the two sides meet would be
+            // answering that question in code. The sheet reports the difference and names the reason
+            // instead — see <see cref="DiagnoseImbalanceAsync"/>.
             var imbalance = Money(totalAssets - rhs);
             var result = new BalanceSheetDto
             {
@@ -122,7 +111,8 @@ namespace DAMS.Application.Services
                 IsBalanced = imbalance == 0m
             };
             if (!result.IsBalanced)
-                result.UnbalancedAccounts = await DiagnoseImbalanceAsync(projectId, date, snapshots, cancellationToken);
+                result.UnbalancedAccounts = await DiagnoseImbalanceAsync(
+                    projectId, date, snapshots, imbalance, FixedAssetCharge(pnl), cancellationToken);
             return result;
         }
 
@@ -169,15 +159,14 @@ namespace DAMS.Application.Services
                 foreach (var line in pnl.Expenses)
                     values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other,
                         line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
-                // The credit half of the fixed-asset charge. The expense line above debits profit by
-                // what the period spent on assets; this holds the same amount inside equity, because
-                // the asset it bought is still sitting in the Fixed Assets rows. Omit it and the
-                // column is out by exactly the period's purchases — the same entry the Balance Sheet
-                // makes as a Capital line, read off the same P&L line so the two cannot disagree.
-                var fixedAssetCharge = FixedAssetCharge(pnl);
-                if (fixedAssetCharge != 0m)
-                    values["EQ:fixed-assets"] = new TrialValue(VirtualId("EQ:fixed-assets"), null,
-                        FixedAssetChargeCapitalLine, FinanceAccountType.Capital, 0m, fixedAssetCharge);
+                // The fixed-asset expense line written above has no balancing credit, deliberately.
+                // The purchase's cash side is already double-sided (the asset account is debited, the
+                // paying account and the tax payable are credited); its charge against profit is not,
+                // because the account that should carry that credit has not been decided. So the
+                // column is out by exactly the period's fixed-asset purchases, and the unmatched
+                // debit is the row named "Fixed Asset Purchases" — visible, and traceable to the one
+                // open question behind it. A virtual equity credit here would hide that question
+                // behind a total that merely looks right.
 
                 if (!projectId.HasValue)
                 {
@@ -270,6 +259,15 @@ namespace DAMS.Application.Services
             rows.Add(new object?[] { "Retained Profit", report.RetainedProfit });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
+            // The reason travels with the file. This workbook is what reaches the accountant who has
+            // to decide where a fixed-asset charge's balancing entry belongs, and a bare "No" would
+            // arrive looking like a data fault rather than the open question it is.
+            if (!report.IsBalanced)
+            {
+                rows.Add(new object?[] { "Out of balance by", report.Imbalance });
+                rows.AddRange(report.UnbalancedAccounts.Select(
+                    reason => (IReadOnlyList<object?>)new object?[] { "Reason", reason }));
+            }
             return Workbook("balance-sheet", rows);
         }
 
@@ -372,9 +370,9 @@ namespace DAMS.Application.Services
             // for the same reason an invoice is gross: what was withheld from the supplier is owed to
             // FBR, not saved, so netting it off would understate the cost by exactly the tax.
             //
-            // The asset is NOT written off the sheet by this. It stays in Fixed Assets at cost, and
-            // the Balance Sheet holds this same amount back inside Capital (see
-            // <see cref="FixedAssetChargeCapitalLine"/>) so the statement still balances.
+            // The asset is NOT written off the sheet by this: it stays in Fixed Assets at cost. The
+            // consequence is that the Balance Sheet and Trial Balance are out by this amount, which
+            // they report rather than plug — see the imbalance note in GetBalanceSheetAsync.
             var fixedAssets = await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
                 .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() })
                 .SingleOrDefaultAsync(cancellationToken);
@@ -414,8 +412,7 @@ namespace DAMS.Application.Services
             // A purchase moves two accounts: cash falls by the net paid, the asset account rises by
             // the gross, and the gap between them is the withheld tax, which lands on the payable
             // below. That is what balances the CASH side. The charge the same purchase makes against
-            // profit is balanced separately, by the Capital line above — the asset account itself is
-            // never written down.
+            // profit has no counter-entry anywhere — the asset account itself is never written down.
             var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
                 .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
             var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
@@ -584,7 +581,21 @@ namespace DAMS.Application.Services
         private Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
             FinanceDateRules.BaselineAsync(_context, cancellationToken);
 
-        private async Task<List<string>> DiagnoseImbalanceAsync(int? projectId, DateTime asAt, List<AccountSnapshot> snapshots, CancellationToken cancellationToken)
+        /// <summary>
+        /// Why the sheet is out, in the reader's language. Runs only when it is out.
+        /// <para>
+        /// <paramref name="fixedAssetCharge"/> is the one cause the books cannot close on their own:
+        /// the client's rule charges a fixed-asset purchase to Net Profit while the asset stays on the
+        /// sheet at cost, and which account should take the balancing credit is still an open question
+        /// for their accountant. It is reported first and by name so nobody reads the difference as
+        /// corrupt data — and <paramref name="imbalance"/> is what tells us whether it is the WHOLE
+        /// story, because anything it does not account for is a genuine bookkeeping fault that still
+        /// needs the checks below.
+        /// </para>
+        /// </summary>
+        private async Task<List<string>> DiagnoseImbalanceAsync(
+            int? projectId, DateTime asAt, List<AccountSnapshot> snapshots,
+            decimal imbalance, decimal fixedAssetCharge, CancellationToken cancellationToken)
         {
             var end = asAt.AddDays(1);
             var issues = new List<string>();
@@ -616,11 +627,19 @@ namespace DAMS.Application.Services
                 issues.Add($"No Customer Deposits system account found; customer money held of {deposits:N2} has nowhere to sit.");
             if (receivables != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerReceivables))
                 issues.Add($"No Customer Receivables system account found; {receivables:N2} owed on recognised sales has nowhere to sit.");
-            if (issues.Count == 0)
+            // Gated on the RESIDUAL, not on the raw imbalance: a difference the fixed-asset charge
+            // fully accounts for is explained, and listing the biggest accounts underneath it would
+            // send an admin hunting through sound ledgers for a fault that is not there.
+            if (issues.Count == 0 && Money(imbalance - fixedAssetCharge) != 0m)
             {
                 issues.Add("Opening balances or legacy entries are not double-sided");
                 issues.AddRange(snapshots.Where(s => s.Balance != 0m).OrderByDescending(s => Math.Abs(s.Balance)).Take(8).Select(s => s.Name));
             }
+            if (fixedAssetCharge != 0m)
+                issues.Insert(0, $"Fixed asset purchases of {fixedAssetCharge:N2} were charged to Net Profit "
+                    + "while the assets stay on this sheet at cost, so the two sides differ by that amount. "
+                    + "Which account carries the balancing entry is an open question for the accountant, "
+                    + "and no entry has been made until it is answered.");
             return issues;
         }
 
