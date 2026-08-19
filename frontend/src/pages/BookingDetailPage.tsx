@@ -9,6 +9,8 @@ import BookingCommissionRebatePanel from "../features/commissionRebates/BookingC
 import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
 import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
 import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
+import { pakistanToday } from "../lib/financePeriods.ts";
+import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
 
 type Props = { user: User | null };
 
@@ -142,6 +144,7 @@ export default function BookingDetailPage({ user }: Props) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const bookingId = Number(id);
+  const idempotency = useIdempotencyKeys();
 
   const [booking, setBooking] = useState<BookingDetail | null>(null);
   const [schedule, setSchedule] = useState<InstallmentSchedule | null>(null);
@@ -160,7 +163,7 @@ export default function BookingDetailPage({ user }: Props) {
     financeAccountId: "",
     paymentReference: "",
     notes: "",
-    paidAt: new Date().toISOString().slice(0, 10),
+    paidAt: pakistanToday(),
   });
 
   // Which account the money lands in. Every payment must name one, so the account
@@ -189,7 +192,7 @@ export default function BookingDetailPage({ user }: Props) {
     financeAccountId: "",
     paymentReference: "",
     notes: "",
-    paidAt: new Date().toISOString().slice(0, 10),
+    paidAt: pakistanToday(),
   });
 
   const [transitioning, setTransitioning] = useState(false);
@@ -247,7 +250,7 @@ export default function BookingDetailPage({ user }: Props) {
             ...prev,
             agreedSalePrice: String(b.agreedSalePrice),
             discountPercent: String(b.discountPercent ?? 0),
-            installmentStartDate: toDateInput(b.installmentPlanStartDate) || new Date().toISOString().slice(0, 10),
+            installmentStartDate: toDateInput(b.installmentPlanStartDate) || pakistanToday(),
           }));
         } else {
           setForm((prev) => ({
@@ -341,7 +344,7 @@ export default function BookingDetailPage({ user }: Props) {
       financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
-      paidAt: new Date().toISOString().slice(0, 10),
+      paidAt: pakistanToday(),
     });
     setPayTarget(item);
   };
@@ -364,12 +367,16 @@ export default function BookingDetailPage({ user }: Props) {
         notes: payForm.notes.trim() || null,
         paidAt: payForm.paidAt || null,
       };
-      const res = await api(`/api/Booking/${bookingId}/installments/${payTarget.id}/payment`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      // Same intent keeps the same key, so pressing Save again after a dropped connection is
+      // recognised as the retry it is rather than collecting the installment twice.
+      const signature = `installment:${payTarget.id}:${body.amount}:${body.paidAt}:${body.financeAccountId}`;
+      const res = await api(`/api/Booking/${bookingId}/installments/${payTarget.id}/payment`, moneyRequest(
+        idempotency.key(signature, "installment-payment"),
+        { method: "POST", body: JSON.stringify(body) },
+      ));
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      idempotency.release(signature);
       setSchedule(data);
       setPayTarget(null);
       await load();
@@ -421,7 +428,7 @@ export default function BookingDetailPage({ user }: Props) {
       financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
-      paidAt: new Date().toISOString().slice(0, 10),
+      paidAt: pakistanToday(),
     });
     setShowBookingPay(true);
   };
@@ -443,12 +450,14 @@ export default function BookingDetailPage({ user }: Props) {
         notes: bookingPayForm.notes.trim() || null,
         paidAt: bookingPayForm.paidAt || null,
       };
-      const res = await api(`/api/Booking/${bookingId}/booking-amount-payment`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const signature = `booking-amount:${bookingId}:${body.amount}:${body.paidAt}:${body.financeAccountId}`;
+      const res = await api(`/api/Booking/${bookingId}/booking-amount-payment`, moneyRequest(
+        idempotency.key(signature, "booking-amount-payment"),
+        { method: "POST", body: JSON.stringify(body) },
+      ));
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      idempotency.release(signature);
       setShowBookingPay(false);
       await load();
     } catch (err) {

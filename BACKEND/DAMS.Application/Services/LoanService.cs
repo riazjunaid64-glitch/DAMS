@@ -13,7 +13,6 @@ namespace DAMS.Application.Services
     public sealed class LoanService : ILoanService
     {
         private const decimal MaximumAmount = 999_999_999_999_999.99m;
-        private static readonly DateTime SqlStart = new(1753, 1, 1);
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
 
@@ -336,16 +335,11 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("This liability account is already linked to another loan.");
         }
 
-        private async Task ValidateTransactionDateAsync(DateTime date, CancellationToken cancellationToken)
-        {
-            var value = date.Date;
-            if (value < SqlStart) throw new InvalidOperationException("Transaction date is outside the supported range.");
-            if (value > PakistanTime.Today) throw new InvalidOperationException("Transaction date cannot be in the future.");
-            var openingDate = await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .Select(s => (DateTime?)s.AsAtDate).SingleOrDefaultAsync(cancellationToken);
-            if (openingDate.HasValue && value < openingDate.Value.Date)
-                throw new InvalidOperationException($"Transaction date cannot be before the committed opening balance date ({openingDate:dd MMM yyyy}).");
-        }
+        // The bounds a loan movement has always enforced. They now live in FinanceDateRules, which
+        // is where expenses, revenue, purchases, receipts and FBR deposits read them from too — one
+        // rule and one wording instead of a copy per service.
+        private Task ValidateTransactionDateAsync(DateTime date, CancellationToken cancellationToken) =>
+            FinanceDateRules.EnsureAsync(_context, date, "Transaction date", cancellationToken);
 
         private async Task EnsureNameUniqueAsync(string name, int? excludingId, CancellationToken cancellationToken)
         {

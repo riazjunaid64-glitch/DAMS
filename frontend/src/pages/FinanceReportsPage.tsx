@@ -5,7 +5,7 @@ import { api } from "../api/api";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
-import { buildPeriodRange, financePeriodLabel } from "../lib/financePeriods";
+import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods";
 
 type Tab = "pnl" | "trial" | "balance";
 type Project = { id: number; projectName: string };
@@ -22,10 +22,6 @@ type BalanceSheet = { asAt: string; assetGroups: BsGroup[]; totalAssets: number;
   capitalisedPurchases: number; managementRetainedProfit: number };
 
 const money = (value: number) => `Rs ${value.toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
-const localDate = (date = new Date()) => {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-};
 
 export default function FinanceReportsPage({ user }: { user: User | null }) {
   const navigate = useNavigate();
@@ -34,7 +30,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [projectId, setProjectId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
-  const [asAt, setAsAt] = useState(localDate());
+  const [asAt, setAsAt] = useState(pakistanToday());
   const [monthsBack, setMonthsBack] = useState("12");
   // null until read back — a P&L preset must not name a financial year the client has not set.
   const { startMonth, failed: startMonthFailed } = useFinancialYearStartMonth(user?.role === "Admin");
@@ -107,7 +103,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a"); link.href = url;
-    link.download = `${endpoint}-${localDate()}.xlsx`; document.body.appendChild(link); link.click(); link.remove();
+    link.download = `${endpoint}-${pakistanToday()}.xlsx`; document.body.appendChild(link); link.click(); link.remove();
     URL.revokeObjectURL(url);
   };
 

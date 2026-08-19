@@ -56,6 +56,6 @@ namespace DAMS.Application.Interfaces
         Task<List<WhtDepositDto>> GetDepositsAsync(DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
         Task<WhtDepositDto> CreateDepositAsync(SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default);
         Task<WhtDepositDto> UpdateDepositAsync(int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default);
-        Task DeleteDepositAsync(int id, CancellationToken cancellationToken = default);
+        Task DeleteDepositAsync(int id, string? concurrencyToken = null, CancellationToken cancellationToken = default);
     }
 }

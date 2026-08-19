@@ -16,14 +16,22 @@ namespace DAMS.Infrastructure.Migrations
             // inherited "Securities & Advances" RECEIVABLE account is untouched by this: it keeps
             // its ERP opening balance, and nothing here reclassifies it.
             //
-            // Guarded rather than a plain InsertData. Id 59 is a gap in the original seeded range and
-            // user-created heads take identity values above it, so a collision is unlikely — but a
-            // hand-repaired or partially restored database could hold either that id or that code,
-            // and a migration must not take a deployment down over one reference row. Nothing at
-            // runtime looks this head up by id, so skipping it is safe; failing is not.
+            // Guarded rather than a plain InsertData, and the three cases are kept apart on purpose.
+            // Already there by code: adopt it and do nothing. Id 59 taken by something else: STOP,
+            // loudly — carrying on would leave the client with no head to record securities and
+            // advances against, and nothing would ever say so. Neither: insert it.
+            //
+            // Id 59 is a gap in the original seeded range and user-created heads take identity values
+            // above it, so the collision branch should never fire; a hand-repaired or partially
+            // restored database is the case it exists for. The id is pinned rather than left to
+            // identity because the model seeds this head at 59, and a row whose id disagrees with the
+            // model would make a future generated migration edit the wrong row.
             migrationBuilder.Sql("""
-                IF NOT EXISTS (SELECT 1 FROM [ExpenseCategories] WHERE [Id] = 59 OR [Code] = N'securities_advances')
+                IF NOT EXISTS (SELECT 1 FROM [ExpenseCategories] WHERE [Code] = N'securities_advances')
                 BEGIN
+                    IF EXISTS (SELECT 1 FROM [ExpenseCategories] WHERE [Id] = 59)
+                        THROW 51059, N'Cannot seed the Securities & Advances expense head: ExpenseCategories.Id 59 is already used by a different category. Move that row to a new id, or insert the securities_advances head by hand, then re-run this migration.', 1;
+
                     SET IDENTITY_INSERT [ExpenseCategories] ON;
                     INSERT INTO [ExpenseCategories]
                         ([Id], [AnnualThreshold], [Code], [CreatedAt], [CreatedByUserId], [Description],

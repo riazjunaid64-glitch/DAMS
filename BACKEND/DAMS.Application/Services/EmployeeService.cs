@@ -343,6 +343,10 @@ namespace DAMS.Application.Services
 
             var payDate = dto.PayDate.Date;
             ValidatePayDate(payDate);
+            // A salary writes a real Expense row, so it takes the same posting-date bounds as one
+            // entered on the finance screen — including "not before the committed opening balances",
+            // which the standalone check above cannot see.
+            await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
 
             var alreadyPaid = await _context.EmployeeSalaries
                 .AnyAsync(s => s.EmployeeId == employeeId && s.PayMonth == payDate.Month && s.PayYear == payDate.Year);

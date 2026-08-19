@@ -443,7 +443,18 @@ namespace DAMS.Application.Services
             return new PagedResult<OverdueLineDto> { Items = items, HasMore = raw.Count > take };
         }
 
-        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
+        /// <summary>
+        /// The lines behind one of the two profit figures.
+        /// <para>
+        /// <paramref name="includeManagementAdjustments"/> is what decides WHICH figure this list adds
+        /// up to. False gives revenue and accounting costs only, and totals to <c>NetProfit</c> — the
+        /// figure the Balance Sheet and Trial Balance agree with. True also lists fixed-asset
+        /// purchases as their own kind, and totals to <c>ManagementNetProfit</c>. One list serving
+        /// both cards was worse than it sounds: an operator clicking "Net Profit (accounting)" and
+        /// adding up the rows in front of them arrived at the management figure instead.
+        /// </para>
+        /// </summary>
+        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, bool includeManagementAdjustments = true)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -563,10 +574,8 @@ namespace DAMS.Application.Services
                 });
 
             // Fixed-asset purchases. NOT an accounting cost — which is why they carry their own kind
-            // rather than joining the expense rows. Listing them here is what lets this one drill-down
-            // reconcile to BOTH the accounting net profit (revenue + expense) and the client's
-            // management net profit (revenue + expense + management), instead of silently
-            // contradicting whichever card the operator clicked.
+            // rather than joining the expense rows, and why the accounting view leaves them out
+            // entirely instead of showing them as a line the reader has to know to exclude.
             var capitalised = AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
                 .Select(p => new NetProfitRow
                 {
@@ -576,10 +585,11 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Fixed asset purchase — " + p.ItemName
                 });
 
-            var raw = await recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
+            var accounting = recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
                 .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(loanInterest).Concat(retained)
-                .Concat(nonCashCredits).Concat(nonCashCreditReversals).Concat(capitalised)
+                .Concat(nonCashCredits).Concat(nonCashCreditReversals);
+            var raw = await (includeManagementAdjustments ? accounting.Concat(capitalised) : accounting)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -1118,7 +1128,7 @@ namespace DAMS.Application.Services
                 RevenueType = category.Name,
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
                 Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim(),
-                Date = ResolveFinanceDate(dto.Date, "Revenue date"),
+                Date = await FinanceDateRules.ResolveAsync(_context, dto.Date, "Revenue date", cancellationToken),
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1172,6 +1182,12 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Received In Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, revenue.FinanceAccountId, cancellationToken);
             var category = await ResolveRevenueCategoryAsync(dto.RevenueCategoryId, dto.RevenueType, revenue.RevenueCategoryId, cancellationToken);
+            // Resolved before the attachment is written to disk: a date the rules reject must not
+            // leave an orphaned upload behind. An omitted date keeps whatever the row already has,
+            // so a legacy row can still be corrected without being forced onto a new date.
+            var revenueDate = dto.Date.HasValue
+                ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Revenue date", cancellationToken)
+                : revenue.Date;
 
             var oldStoredFileName = revenue.Attachment?.StoredFileName;
             string? newStoredFileName = null;
@@ -1200,8 +1216,7 @@ namespace DAMS.Application.Services
             revenue.RevenueType = category.Name;
             revenue.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
             revenue.Reference = string.IsNullOrWhiteSpace(dto.Reference) ? null : dto.Reference.Trim();
-            if (dto.Date.HasValue)
-                revenue.Date = ResolveFinanceDate(dto.Date, "Revenue date");
+            revenue.Date = revenueDate;
 
             try
             {
@@ -1258,7 +1273,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim(),
-                Date = ResolveFinanceDate(dto.Date, "Expense date"),
+                Date = await FinanceDateRules.ResolveAsync(_context, dto.Date, "Expense date", cancellationToken),
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1313,6 +1328,12 @@ namespace DAMS.Application.Services
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Paid From Account is required.");
             await _accountService.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, expense.FinanceAccountId, cancellationToken);
+            // Resolved before the threshold transaction opens and before the attachment is written
+            // to disk, so a date the rules reject costs neither a lock nor an orphaned upload. An
+            // omitted date keeps whatever the row already has.
+            var expenseDate = dto.Date.HasValue
+                ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Expense date", cancellationToken)
+                : expense.Date;
 
             // Editing re-decides the threshold too, so it needs the same protection as creating —
             // for the vendor being left as well as the one being joined.
@@ -1342,8 +1363,7 @@ namespace DAMS.Application.Services
             expense.FinanceAccountId = dto.FinanceAccountId;
             expense.Amount = dto.Amount;
             expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
-            if (dto.Date.HasValue)
-                expense.Date = ResolveFinanceDate(dto.Date, "Expense date");
+            expense.Date = expenseDate;
             // Re-resolved after the date and amount move, because both feed the threshold check
             // and therefore the tax.
             await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
@@ -1777,29 +1797,6 @@ namespace DAMS.Application.Services
         }
 
         private static string Token(byte[] rowVersion) => Convert.ToBase64String(rowVersion);
-
-        /// <summary>
-        /// The business date a finance record belongs to, normalised to midnight.
-        /// <para>
-        /// Omitting the date means "today" — and today is the PAKISTAN date, not the UTC one. Taking
-        /// <c>DateTime.UtcNow</c> instead put every entry made between midnight and 5 AM local time
-        /// on the previous calendar day, so a payment and the expense it funded could land in
-        /// different months while the operator saw one evening's work. It also left a time of day on
-        /// a column every report reads as a date.
-        /// </para>
-        /// <para>
-        /// The lower bound is the Trial Balance's own floor: a date SQL Server accepts but the
-        /// reports cannot address is a row that silently never appears anywhere.
-        /// </para>
-        /// </summary>
-        private static DateTime ResolveFinanceDate(DateTime? date, string field)
-        {
-            var value = date?.Date ?? PakistanTime.Today;
-            if (value < SqlStart || value.Year > 9998)
-                throw new InvalidOperationException(
-                    $"{field} must be between {SqlStart:dd MMM yyyy} and 31 Dec 9998.");
-            return value;
-        }
 
         private static void ValidateRevenue(decimal amount, string revenueType, int? categoryId)
         {

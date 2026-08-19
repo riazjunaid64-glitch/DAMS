@@ -79,6 +79,13 @@ namespace DAMS.Application.Services
             if (installment.Status == InstallmentStatus.Paid)
                 throw new InvalidOperationException("This installment is already fully paid.");
 
+            // The receipt date decides which month collected this money, and the whole balance model
+            // assumes it is neither in the future nor before the committed opening balances. Nothing
+            // filters movements to "up to today", so a post-dated receipt would reduce the customer's
+            // outstanding balance — and potentially close the installment — the moment it was saved.
+            var paidAt = await FinanceDateRules.ResolveInstantAsync(
+                _context, dto.PaidAt, "Payment date", CancellationToken.None);
+
             var alreadyPaid = await _context.Payments
                 .Where(p => p.InstallmentId == installmentId && p.Type == PaymentType.Installment)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
@@ -105,7 +112,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? PakistanTime.Now,
+                PaidAt = paidAt,
                 CreatedAt = DateTime.UtcNow
             };
 

@@ -249,7 +249,7 @@ namespace DAMS.Application.Services
             RecordCommissionPayoutDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
             SerializableAsync(async () =>
             {
-                ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.PaymentDate);
+                await ValidateMovementAsync(dto.Amount, dto.IdempotencyKey, dto.PaymentDate, cancellationToken);
                 if (!Enum.IsDefined(dto.PaymentMethod)) throw new InvalidOperationException("Select a valid payout payment method.");
                 var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
                 var paymentDate = dto.PaymentDate.Date;
@@ -557,12 +557,15 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled) throw new InvalidOperationException("Cancelled bookings cannot create or pay commissions.");
         }
         private static void RequireReason(string? reason, string message) { if (string.IsNullOrWhiteSpace(reason)) throw new InvalidOperationException(message); }
-        private static void ValidateMovement(decimal amount, string? idempotencyKey, DateTime date)
+        // The date bounds are shared with every other financial posting date (FinanceDateRules), so a
+        // payout or rebate cannot be dated into a period the opening balances already cover.
+        private async Task ValidateMovementAsync(
+            decimal amount, string? idempotencyKey, DateTime date, CancellationToken cancellationToken)
         {
             if (Money(amount) <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
             Required(idempotencyKey, "Idempotency key", 80);
             if (date == default) throw new InvalidOperationException("Transaction date is required.");
-            if (date.Date > PakistanTime.Today) throw new InvalidOperationException("Transaction date cannot be in the future.");
+            await FinanceDateRules.EnsureAsync(_context, date, "Transaction date", cancellationToken);
         }
         private static void ValidateReversal(ReverseMoneyMovementDto dto)
         {

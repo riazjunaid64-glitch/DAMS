@@ -86,6 +86,8 @@ namespace DAMS.Application.Services
 
             // Same guard as expenses: the year-to-date read and the insert that depends on it must
             // not interleave with another save for the same vendor.
+            var purchaseDate = await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken);
+
             await using var thresholdGuard = await BeginThresholdGuardAsync(new[] { dto.VendorId }, cancellationToken);
 
             var purchase = new AssetPurchase
@@ -95,7 +97,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Description = Clean(dto.Description),
-                Date = ResolveFinanceDate(dto.Date, "Purchase date"),
+                Date = purchaseDate,
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
@@ -150,6 +152,13 @@ namespace DAMS.Application.Services
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, purchase.FinanceAccountId, cancellationToken);
             await _accountService.EnsureAssetAccountAsync(dto.AssetAccountId, purchase.AssetAccountId, cancellationToken);
 
+            // Before the threshold transaction opens and before any upload is written: a rejected
+            // date should cost neither a lock nor an orphaned file. An omitted date keeps the one
+            // the row already carries.
+            var purchaseDate = dto.Date.HasValue
+                ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken)
+                : purchase.Date;
+
             await using var thresholdGuard = await BeginThresholdGuardAsync(
                 new[] { purchase.VendorId, dto.VendorId }, cancellationToken);
 
@@ -174,8 +183,7 @@ namespace DAMS.Application.Services
             purchase.FinanceAccountId = dto.FinanceAccountId;
             purchase.Amount = dto.Amount;
             purchase.Description = Clean(dto.Description);
-            if (dto.Date.HasValue)
-                purchase.Date = ResolveFinanceDate(dto.Date, "Purchase date");
+            purchase.Date = purchaseDate;
             // After the date and amount have moved, because both feed the threshold and so the tax.
             await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
 

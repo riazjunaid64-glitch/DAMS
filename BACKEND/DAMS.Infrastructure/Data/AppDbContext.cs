@@ -38,6 +38,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<Vendor> Vendors { get; set; }
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
+        public DbSet<IdempotentRequest> IdempotentRequests { get; set; }
+        public DbSet<FinanceRecordAudit> FinanceRecordAudits { get; set; }
         public DbSet<FinanceSetting> FinanceSettings { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<RevenueCategory> RevenueCategories { get; set; }
@@ -1436,10 +1438,92 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<BookingCancellationRefund>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking cancellation refunds are append-only.");
+            if (ChangeTracker.Entries<FinanceRecordAudit>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Finance record audit entries are append-only.");
         }
+
+        /// <summary>
+        /// The user whose request is being served, for the correction trail. Set per request by the
+        /// API; null in background work and in tests, where an entry is attributed to no one rather
+        /// than to whoever happened to be last.
+        /// </summary>
+        public int? ActorUserId { get; set; }
+
+        // Editable money records. A correction to any of these restates a period that has already
+        // been reported, so it leaves evidence. See FinanceRecordAudit.
+        private static readonly HashSet<Type> AuditedFinancialTypes =
+        [
+            typeof(Expense), typeof(ManualRevenue), typeof(AssetPurchase), typeof(WhtDeposit)
+        ];
+
+        /// <summary>
+        /// Records what changed on an editable money record, in the same SaveChanges as the change.
+        /// <para>
+        /// Done here rather than in each service on purpose: a service can forget, and a service added
+        /// later starts out forgetting. Anything that reaches the database through this context is
+        /// covered, including a correction made by a script or a background job.
+        /// </para>
+        /// </summary>
+        private void CaptureFinancialCorrections()
+        {
+            var entries = ChangeTracker.Entries()
+                .Where(e => e.State is EntityState.Modified or EntityState.Deleted
+                    && AuditedFinancialTypes.Contains(e.Metadata.ClrType))
+                .ToList();
+            foreach (var entry in entries)
+            {
+                var deleted = entry.State == EntityState.Deleted;
+                var fields = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var property in entry.Properties)
+                {
+                    if (property.Metadata.IsPrimaryKey()) continue;
+                    // RowVersion moves on every save and says nothing about what an operator did.
+                    if (property.Metadata.Name == nameof(Expense.RowVersion)) continue;
+                    if (deleted)
+                    {
+                        fields[property.Metadata.Name] = Describe(property.OriginalValue);
+                    }
+                    else if (property.IsModified
+                        && !Equals(property.OriginalValue, property.CurrentValue))
+                    {
+                        fields[property.Metadata.Name] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["from"] = Describe(property.OriginalValue),
+                            ["to"] = Describe(property.CurrentValue)
+                        };
+                    }
+                }
+                // An update that moved nothing (a re-save of identical values) is not a correction.
+                if (fields.Count == 0) continue;
+                var key = entry.Property("Id");
+                FinanceRecordAudits.Add(new FinanceRecordAudit
+                {
+                    RecordType = entry.Metadata.ClrType.Name,
+                    RecordId = (int)(key.OriginalValue ?? key.CurrentValue ?? 0),
+                    Action = deleted ? "Deleted" : "Updated",
+                    Changes = System.Text.Json.JsonSerializer.Serialize(fields),
+                    ActorUserId = ActorUserId,
+                    OccurredAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        // Culture-independent, so a figure read back out of the trail years later means what it meant
+        // when it was written.
+        private static object? Describe(object? value) => value switch
+        {
+            null => null,
+            decimal number => number.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture),
+            DateTime moment => moment.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            byte[] bytes => Convert.ToBase64String(bytes),
+            Enum flag => flag.ToString(),
+            _ => value.ToString()
+        };
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
@@ -1447,6 +1531,7 @@ namespace DAMS.Infrastructure.Data
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
@@ -1524,6 +1609,29 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.WhtDeposits)
                       .HasForeignKey(d => d.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Retry safety for money-creating requests. The unique key is the whole mechanism: it is
+            // what makes "reserve, then do the work" atomic under two simultaneous copies of the same
+            // request. See IdempotentRequest.
+            // The correction trail for editable money records. Indexed by the record it describes,
+            // because that is the only way it is ever read.
+            modelBuilder.Entity<FinanceRecordAudit>(entity =>
+            {
+                entity.Property(a => a.RecordType).IsRequired().HasMaxLength(40);
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(20);
+                entity.Property(a => a.Changes).IsRequired();
+                entity.HasIndex(a => new { a.RecordType, a.RecordId });
+                entity.HasIndex(a => a.OccurredAt);
+            });
+
+            modelBuilder.Entity<IdempotentRequest>(entity =>
+            {
+                entity.Property(r => r.Key).IsRequired().HasMaxLength(120);
+                entity.Property(r => r.Operation).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.Fingerprint).IsRequired().HasMaxLength(64);
+                entity.HasIndex(r => r.Key).IsUnique();
+                entity.HasIndex(r => r.CreatedAt);
             });
 
             modelBuilder.Entity<FinanceSetting>(entity =>

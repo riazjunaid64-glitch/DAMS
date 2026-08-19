@@ -29,6 +29,12 @@ export interface DistributionSlice {
 export interface FinanceChartData {
   series: ChartBucket[];
   distribution: DistributionSlice[];
+  /**
+   * How many of the underlying summary requests failed. A failed slice contributes zero, and zero
+   * revenue is a legitimate reading — so the count has to travel with the data and be shown, or a
+   * timeout looks exactly like a month in which the business earned nothing.
+   */
+  failedRequests: number;
 }
 
 export type FinancePeriod = "today" | "month" | "year" | "lastYear" | "all" | "custom";
@@ -213,13 +219,17 @@ export async function fetchFinanceChartData(
 ): Promise<FinanceChartData> {
   const buckets = buildBuckets(filters.from, filters.to, filters.period, filters.financialYearStartMonth);
 
-  // One flaky per-bucket / per-project request must not blank the whole chart. Treat an
-  // individual failure as zero for that slice; a real abort re-throws so the effect cancels.
+  // One flaky per-bucket / per-project request must not blank the whole chart, so a failed slice
+  // still contributes zero — but it is COUNTED, and the caller shows that the picture is incomplete.
+  // Silently drawing a zero bar would state that there was no revenue, which is a different claim
+  // from "this could not be loaded". A real abort re-throws so the effect cancels.
+  let failedRequests = 0;
   const safeSummary = async (from: string, to: string, projectIdOverride?: string): Promise<SummaryTotals> => {
     try {
       return await fetchSummary(filters, from, to, projectIdOverride, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
+      failedRequests += 1;
       return { totalRevenue: 0, totalExpenses: 0 };
     }
   };
@@ -251,5 +261,5 @@ export async function fetchFinanceChartData(
     ? [{ name: filters.projects.find((p) => String(p.id) === filters.projectId)?.projectName ?? "Selected project", revenue: total.totalRevenue, percent: 100 }]
     : buildDistribution(total.totalRevenue, perProject);
 
-  return { series, distribution };
+  return { series, distribution, failedRequests };
 }

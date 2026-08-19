@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -90,13 +91,19 @@ namespace DAMS.Api.Controllers
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
-                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                // Two views over one query, and the difference matters: the accounting list adds up
+                // to the accounting profit card, the management list to the management profit card.
+                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(
+                    projectId, from, to, skip, take, accountId, unassigned, includeManagementAdjustments: false)),
+                "managementprofit" => Ok(await _financeService.GetNetProfitPageAsync(
+                    projectId, from, to, skip, take, accountId, unassigned, includeManagementAdjustments: true)),
                 "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue, netProfit or managementProfit." })
             };
         }
 
         // ── Manual revenue ──
+        [IdempotentMoneyOperation]
         [HttpPost("revenue")]
         [Consumes("application/json")]
         public async Task<IActionResult> CreateRevenue([FromBody] CreateManualRevenueDto dto)
@@ -121,6 +128,7 @@ namespace DAMS.Api.Controllers
             return false;
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("revenue/form")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
@@ -217,6 +225,7 @@ namespace DAMS.Api.Controllers
         }
 
         // ── Expenses ──
+        [IdempotentMoneyOperation]
         [HttpPost("expenses")]
         [Consumes("application/json")]
         public async Task<IActionResult> CreateExpense([FromBody] CreateExpenseDto dto)
@@ -232,6 +241,7 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("expenses/form")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
@@ -328,6 +338,7 @@ namespace DAMS.Api.Controllers
         }
 
         // ── Fixed-asset purchases ──
+        [IdempotentMoneyOperation]
         [HttpPost("asset-purchases")]
         [Consumes("application/json")]
         public async Task<IActionResult> CreateAssetPurchase([FromBody] CreateAssetPurchaseDto dto, CancellationToken cancellationToken)
@@ -336,6 +347,7 @@ namespace DAMS.Api.Controllers
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("asset-purchases/form")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]

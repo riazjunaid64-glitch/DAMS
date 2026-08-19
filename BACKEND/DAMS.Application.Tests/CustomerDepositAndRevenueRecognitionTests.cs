@@ -751,7 +751,7 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         };
         FinanceAccount? refundPayable = withRefundPayable ? new FinanceAccount
         {
-            Name = "Customer Refunds Payable", LedgerCode = "REFUND-PAY", AccountHolderName = "Seven Ventures",
+            Name = "Customer Refunds Payable", AccountHolderName = "Seven Ventures",
             Type = FinanceAccountType.Liability, SystemRole = FinanceSystemAccountRole.CustomerRefundPayable, DisplayOrder = 515, IsActive = true
         } : null;
 

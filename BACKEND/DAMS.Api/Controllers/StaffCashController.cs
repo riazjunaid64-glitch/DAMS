@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -44,6 +45,7 @@ namespace DAMS.Api.Controllers
                 staffFinanceAccountId, cursor, Math.Clamp(take, 1, 200), cancellationToken));
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("{staffFinanceAccountId:int}/transfers")]
         public Task<IActionResult> RecordTransfer(
             int staffFinanceAccountId,

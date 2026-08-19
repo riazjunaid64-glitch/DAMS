@@ -9,6 +9,7 @@ import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceChartData, type FinanceChartData, type FinancePeriod } from "../lib/financeChartData.ts";
 import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods.ts";
+import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
@@ -204,7 +205,7 @@ interface NetProfitLine {
 
 type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | CustomerDepositLine | OutstandingLine | OverdueLine | NetProfitLine;
 
-type View = "revenue" | "expense" | "assetPurchase" | "customerDeposits" | "netProfit" | "outstanding" | "overdue";
+type View = "revenue" | "expense" | "assetPurchase" | "customerDeposits" | "netProfit" | "managementProfit" | "outstanding" | "overdue";
 
 // API view query value for each card view.
 const VIEW_PARAM: Record<View, string> = {
@@ -213,6 +214,7 @@ const VIEW_PARAM: Record<View, string> = {
   assetPurchase: "assetPurchase",
   customerDeposits: "customerDeposits",
   netProfit: "netProfit",
+  managementProfit: "managementProfit",
   outstanding: "outstanding",
   overdue: "overdue",
 };
@@ -224,7 +226,11 @@ const VIEW_TITLES: Record<View, string> = {
   // accounting profit, and inside the client's management-profit deduction.
   assetPurchase: "Fixed Asset Purchases",
   customerDeposits: "Customer Deposits",
-  netProfit: "Net Profit Breakdown",
+  // Two lists, because they add up to two different figures. The accounting one is what the Balance
+  // Sheet and Trial Balance agree with; the management one adds the fixed assets the client counts
+  // as spending. Sending both cards to one mixed list made the accounting card contradict itself.
+  netProfit: "Net Profit Breakdown (accounting)",
+  managementProfit: "Management Net Profit Breakdown",
   outstanding: "Outstanding Balances",
   overdue: "Overdue Installments",
 };
@@ -430,6 +436,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [chartData, setChartData] = useState<FinanceChartData | null>(null);
   const [chartLoading, setChartLoading] = useState(true);
+  const [chartError, setChartError] = useState<string | null>(null);
   const [chartTick, setChartTick] = useState(0);
 
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
@@ -441,6 +448,9 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [assetForm, setAssetForm] = useState<AssetPurchaseFormState | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // savingRef stops a double click; this stops the retry after a lost response — the one the
+  // operator cannot tell from a genuine failure. See lib/idempotency.
+  const idempotency = useIdempotencyKeys();
   const [formError, setFormError] = useState<string | null>(null);
 
   const loadProjects = useCallback(async () => {
@@ -600,12 +610,18 @@ export default function FinanceDashboardPage({ user }: Props) {
       .then((data) => {
         if (!controller.signal.aborted) {
           setChartData(data);
+          // A slice that failed to load contributes zero, and zero is a legitimate figure. Saying so
+          // is the difference between "the business earned nothing" and "this did not load".
+          setChartError(data.failedRequests > 0
+            ? `${data.failedRequests} of the chart's figures could not be loaded, so the bars and slices below are incomplete.`
+            : null);
           setChartLoading(false);
         }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setChartData({ series: [], distribution: [] });
+          setChartData(null);
+          setChartError("The charts could not be loaded. The totals and tables above are unaffected.");
           setChartLoading(false);
         }
       });
@@ -628,7 +644,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       // and Trial Balance agree with; the management one is what the client judges the period by.
       // Showing one without the other is what would make two screens contradict each other.
       { label: "Net Profit (accounting)", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
-      { label: "Management Net Profit", value: s?.managementNetProfit ?? 0, valueColor: (s?.managementNetProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#0ea5e9", view: "netProfit" as View },
+      { label: "Management Net Profit", value: s?.managementNetProfit ?? 0, valueColor: (s?.managementNetProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#0ea5e9", view: "managementProfit" as View },
       { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
@@ -695,13 +711,19 @@ export default function FinanceDashboardPage({ user }: Props) {
       // The version the form was opened with. Without it a second admin's save would overwrite
       // the first's silently; with it the server refuses and the operator is told to reload.
       if (revenueForm.id) body.append("concurrencyToken", revenueForm.concurrencyToken);
+      // Creates carry an idempotency key so a retry after a lost response is recognised instead of
+      // recording the income twice; the key is tied to what is being saved, so correcting the amount
+      // and saving again is treated as the new entry it is.
+      const signature = `revenue:${revenueForm.financeAccountId}:${amount}:${revenueForm.date}:${revenueForm.revenueCategoryId}`;
       const res = revenueForm.id
         ? await api(`/api/Finance/revenue/${revenueForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/revenue/form", { method: "POST", body });
+        : await api("/api/Finance/revenue/form",
+            moneyRequest(idempotency.key(signature, "revenue"), { method: "POST", body }));
       if (!res.ok) {
         setFormError(await financeApiError(res, "Failed to save revenue entry."));
         return;
       }
+      if (!revenueForm.id) idempotency.release(signature);
       resetForms();
       await refreshAll();
     } catch {
@@ -755,13 +777,16 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (expenseForm.selectedAttachment) body.append("attachment", expenseForm.selectedAttachment);
       if (expenseForm.removeAttachment) body.append("removeAttachment", "true");
       if (expenseForm.id) body.append("concurrencyToken", expenseForm.concurrencyToken);
+      const signature = `expense:${expenseForm.financeAccountId}:${amount}:${expenseForm.date}:${expenseForm.categoryId}`;
       const res = expenseForm.id
         ? await api(`/api/Finance/expenses/${expenseForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/expenses/form", { method: "POST", body });
+        : await api("/api/Finance/expenses/form",
+            moneyRequest(idempotency.key(signature, "expense"), { method: "POST", body }));
       if (!res.ok) {
         setFormError(await financeApiError(res, "Failed to save expense."));
         return;
       }
+      if (!expenseForm.id) idempotency.release(signature);
       resetForms();
       await refreshAll();
     } catch {
@@ -818,13 +843,16 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (assetForm.selectedAttachment) body.append("attachment", assetForm.selectedAttachment);
       if (assetForm.removeAttachment) body.append("removeAttachment", "true");
       if (assetForm.id) body.append("concurrencyToken", assetForm.concurrencyToken);
+      const signature = `asset:${assetForm.financeAccountId}:${assetForm.assetAccountId}:${amount}:${assetForm.date}`;
       const res = assetForm.id
         ? await api(`/api/Finance/asset-purchases/${assetForm.id}/form`, { method: "PUT", body })
-        : await api("/api/Finance/asset-purchases/form", { method: "POST", body });
+        : await api("/api/Finance/asset-purchases/form",
+            moneyRequest(idempotency.key(signature, "asset-purchase"), { method: "POST", body }));
       if (!res.ok) {
         setFormError(await financeApiError(res, "Failed to save the asset purchase."));
         return;
       }
+      if (!assetForm.id) idempotency.release(signature);
       resetForms();
       await refreshAll();
     } catch {
@@ -1144,6 +1172,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           ],
         };
       case "netProfit":
+      case "managementProfit":
         return {
           minWidth: 760,
           emptyText: "No activity for the selected filters.",
@@ -1415,6 +1444,11 @@ export default function FinanceDashboardPage({ user }: Props) {
         />
 
         {/* Charts — driven by the same filters as everything above */}
+        {chartError && !chartLoading && (
+          <div className="mt-6 rounded-2xl border border-amber-500/25 bg-amber-500/[0.07] px-5 py-4 text-sm text-amber-200">
+            {chartError} <button className="underline" onClick={() => setChartTick((tick) => tick + 1)}>Retry</button>
+          </div>
+        )}
         <FinanceCharts data={chartData} loading={chartLoading} formatMoney={formatMoney} />
       </div>
 

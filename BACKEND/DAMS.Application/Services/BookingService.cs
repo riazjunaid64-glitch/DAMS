@@ -126,11 +126,17 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Application amount received cannot exceed the booking amount required.");
             // Money received with the form becomes a real payment below, so it has to say
             // which account it landed in — same rule the finance forms apply.
+            // Money received with the form becomes a real payment below, so its date is a posting
+            // date and takes the same bounds as every other one: not in the future, not before the
+            // committed opening balances. Resolved out here, before the transaction opens.
+            var applicationPaidAt = PakistanTime.Now;
             if (applicationAmountReceived > 0m)
             {
                 if (!dto.ApplicationFinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required when an amount is received with the application.");
                 await _accountService.EnsureSelectableAsync(dto.ApplicationFinanceAccountId.Value, null, cancellationToken);
+                applicationPaidAt = await FinanceDateRules.ResolveInstantAsync(
+                    _context, dto.ApplicationDate, "Application date", cancellationToken);
             }
 
             var booking = new Booking
@@ -197,7 +203,7 @@ namespace DAMS.Application.Services
                         PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
                         Notes = "Received with the application form.",
                         RecordedByUserId = adminUserId,
-                        PaidAt = dto.ApplicationDate ?? PakistanTime.Now,
+                        PaidAt = applicationPaidAt,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.Payments.Add(payment);
@@ -372,6 +378,12 @@ namespace DAMS.Application.Services
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Received In Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
+            // A receipt date is a posting date: it decides which month took the money, and both the
+            // booking's own progress and every finance balance move the instant it is saved. So it
+            // takes the same bounds as an expense — never in the future, never before the committed
+            // opening balances.
+            var paidAt = await FinanceDateRules.ResolveInstantAsync(
+                _context, dto.PaidAt, "Payment date", cancellationToken);
 
             var booking = await _context.Bookings
                 .Include(b => b.Unit)
@@ -415,7 +427,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? PakistanTime.Now,
+                PaidAt = paidAt,
                 CreatedAt = DateTime.UtcNow
             };
 

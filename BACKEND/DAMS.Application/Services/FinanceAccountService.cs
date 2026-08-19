@@ -663,7 +663,11 @@ namespace DAMS.Application.Services
                 new("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500,
                     SystemRole: FinanceSystemAccountRole.CustomerDeposits),
                 new("Tax Payable", FinanceAccountType.Liability, "11", 510, SystemRole: FinanceSystemAccountRole.TaxPayable),
-                new("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515, SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
+                // No ledger code. The numeric codes above are the client's real ERP codes; this
+                // account has no counterpart in that chart, and inventing an official-looking one
+                // would put a code DAMS made up into the Trial Balance and its exports as though the
+                // accountant had issued it. Null until they tell us what it should be.
+                new("Customer Refunds Payable", FinanceAccountType.Liability, null, 515, SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
                 new("Loan A/C", FinanceAccountType.Liability, "32", 520)
             };
             rows.AddRange(ClientPartnerNames.Select((name, index) =>
@@ -893,7 +897,7 @@ namespace DAMS.Application.Services
         private static readonly Dictionary<FinanceSystemAccountRole, ChartAccount> SystemAccountDefinitions = new()
         {
             [FinanceSystemAccountRole.CustomerRefundPayable] =
-                new ChartAccount("Customer Refunds Payable", FinanceAccountType.Liability, "REFUND-PAY", 515,
+                new ChartAccount("Customer Refunds Payable", FinanceAccountType.Liability, null, 515,
                     SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
             [FinanceSystemAccountRole.CustomerDeposits] =
                 new ChartAccount("Customer General Account / Customer Deposits", FinanceAccountType.Liability, "1", 500,

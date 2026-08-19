@@ -1,5 +1,6 @@
 import { api } from "../../api/api.ts";
 import { apiJson, jsonRequest } from "../leads/leadApi.ts";
+import { moneyRequest, newIdempotencyKey } from "../../lib/idempotency.ts";
 import type {
   ExpenseCategory,
   FinanceSettings,
@@ -49,12 +50,22 @@ export const byVendor = (from?: string, to?: string) =>
 export const listDeposits = (from?: string, to?: string) =>
   apiJson<WhtDeposit[]>(`/api/finance/wht/deposits${range(from, to)}`);
 
-export const saveDeposit = (id: number | null, body: unknown) =>
+/**
+ * Recording a deposit is a money movement, so a create carries an idempotency key: a retry after a
+ * lost response must not hand FBR the same challan twice. An edit is protected by its row version
+ * instead — it changes a record that already exists.
+ */
+export const saveDeposit = (id: number | null, body: unknown, idempotencyKey?: string) =>
   apiJson<WhtDeposit>(id ? `/api/finance/wht/deposits/${id}` : "/api/finance/wht/deposits",
-    jsonRequest(id ? "PUT" : "POST", body));
+    id
+      ? jsonRequest("PUT", body)
+      : moneyRequest(idempotencyKey ?? newIdempotencyKey("wht-deposit"), jsonRequest("POST", body)));
 
-export const deleteDeposit = (id: number) =>
-  apiJson<{ message: string }>(`/api/finance/wht/deposits/${id}`, { method: "DELETE" });
+/** Deleting a deposit puts the tax back on the payable, so it sends the version it is deleting. */
+export const deleteDeposit = (id: number, concurrencyToken: string) =>
+  apiJson<{ message: string }>(
+    `/api/finance/wht/deposits/${id}?concurrencyToken=${encodeURIComponent(concurrencyToken)}`,
+    { method: "DELETE" });
 
 /**
  * Preview only — nothing is saved. Called as the expense form changes so the operator sees the

@@ -6,6 +6,7 @@ import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import { pakistanToday } from "../lib/financePeriods";
+import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency";
 
 type Props = { user: User | null };
 
@@ -92,6 +93,7 @@ export default function StaffCashPage({ user }: Props) {
   const [holderName, setHolderName] = useState<string | null>(null);
   const [transfer, setTransfer] = useState<TransferForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const idempotency = useIdempotencyKeys();
 
   // Mirrors selectedId so `load` can read the current selection without listing it as a dependency.
   const selectedRef = useRef<number | null>(null);
@@ -205,7 +207,7 @@ export default function StaffCashPage({ user }: Props) {
       const url = transfer.id
         ? `/api/finance/staff-cash/${selectedId}/transfers/${transfer.id}`
         : `/api/finance/staff-cash/${selectedId}/transfers`;
-      const response = await api(url, {
+      const init: RequestInit = {
         method: transfer.id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -214,8 +216,16 @@ export default function StaffCashPage({ user }: Props) {
           reference: transfer.reference.trim() || null, note: transfer.note.trim() || null,
           concurrencyToken: transfer.concurrencyToken,
         }),
-      });
+      };
+      // New movements only: an edit is already protected by its row version, and it is the insert a
+      // lost response can duplicate.
+      const signature = `staff-cash:${selectedId}:${transfer.type}:${amount}:${transfer.date}`;
+      const response = await api(
+        url,
+        transfer.id ? init : moneyRequest(idempotency.key(signature, "staff-cash-transfer"), init),
+      );
       if (!response.ok) throw new Error(await message(response, "Could not record this movement."));
+      if (!transfer.id) idempotency.release(signature);
       setTransfer(null);
       await load();
     } catch (saveError) {

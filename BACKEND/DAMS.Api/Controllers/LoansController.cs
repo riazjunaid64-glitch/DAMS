@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -36,6 +37,7 @@ namespace DAMS.Api.Controllers
             CancellationToken cancellationToken = default) =>
             Execute(() => _service.GetStatementAsync(id, skip, take, cancellationToken));
 
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/transactions")]
         public Task<IActionResult> Record(int id, [FromBody] SaveLoanTransactionDto dto, CancellationToken cancellationToken) =>
             Execute(() => _service.RecordTransactionAsync(id, dto, UserId(), cancellationToken));

@@ -524,7 +524,7 @@ public sealed class FinanceReportingAndCapitalTests
         var payable = new FinanceAccount
         {
             Name = "Customer Refunds Payable", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability,
-            IsActive = true, SystemRole = FinanceSystemAccountRole.CustomerRefundPayable, LedgerCode = "REFUND-PAY", DisplayOrder = 515
+            IsActive = true, SystemRole = FinanceSystemAccountRole.CustomerRefundPayable, DisplayOrder = 515
         };
         var (bookingId, _) = await SeedCancellableBooking(context, paid: 500_000m);
         context.AddRange(bank, payable);

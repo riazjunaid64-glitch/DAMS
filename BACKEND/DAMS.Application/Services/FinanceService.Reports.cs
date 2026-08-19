@@ -7,7 +7,9 @@ namespace DAMS.Application.Services
 {
     public partial class FinanceService
     {
-        private static readonly DateTime SqlStart = new(1753, 1, 1);
+        // The same floor the write side enforces, so a report window can never start earlier than
+        // the earliest date a row is allowed to carry.
+        private static readonly DateTime SqlStart = FinanceDateRules.SqlMin;
 
         public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
             int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
@@ -563,9 +565,8 @@ namespace DAMS.Application.Services
 
         private static decimal Amount(IEnumerable<AccountAmount> rows, int id) => rows.FirstOrDefault(x => x.Id == id)?.Amount ?? 0m;
 
-        private async Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
-            await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .OrderByDescending(s => s.AsAtDate).Select(s => (DateTime?)s.AsAtDate).FirstOrDefaultAsync(cancellationToken);
+        private Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
+            FinanceDateRules.BaselineAsync(_context, cancellationToken);
 
         private async Task<List<string>> DiagnoseImbalanceAsync(int? projectId, DateTime asAt, List<AccountSnapshot> snapshots, CancellationToken cancellationToken)
         {

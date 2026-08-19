@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
@@ -157,6 +158,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Record a (possibly partial) booking-amount payment.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/booking-amount-payment")]
         public async Task<IActionResult> RecordBookingAmountPayment(int id, [FromBody] RecordBookingAmountPaymentDto dto)
         {
@@ -216,6 +218,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Record a (possibly partial) payment against a single installment.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/installments/{installmentId:int}/payment")]
         public async Task<IActionResult> RecordInstallmentPayment(int id, int installmentId, [FromBody] RecordInstallmentPaymentDto dto)
         {

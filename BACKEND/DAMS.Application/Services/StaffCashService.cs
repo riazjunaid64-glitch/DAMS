@@ -21,7 +21,6 @@ namespace DAMS.Application.Services
         /// float is answered by one page, small enough that an unusual one still cannot pull a
         /// whole history into memory.</summary>
         private const int AgingPageSize = 200;
-        private static readonly DateTime SqlStart = new(1753, 1, 1);
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
 
@@ -625,16 +624,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("This staff float is inactive.");
         }
 
-        private async Task ValidateDateAsync(DateTime date, CancellationToken cancellationToken)
-        {
-            var value = date.Date;
-            if (value < SqlStart) throw new InvalidOperationException("Transfer date is outside the supported range.");
-            if (value > PakistanTime.Today) throw new InvalidOperationException("Transfer date cannot be in the future.");
-            var openingDate = await OpeningDateAsync(cancellationToken);
-            if (openingDate.HasValue && value < openingDate.Value.Date)
-                throw new InvalidOperationException(
-                    $"Transfer date cannot be before the committed opening balance date ({openingDate:dd MMM yyyy}).");
-        }
+        // Same three bounds as every other financial posting date — see FinanceDateRules.
+        private Task ValidateDateAsync(DateTime date, CancellationToken cancellationToken) =>
+            FinanceDateRules.EnsureAsync(_context, date, "Transfer date", cancellationToken);
 
         private static void ValidateTransfer(SaveStaffCashTransferDto dto)
         {
@@ -670,8 +662,7 @@ namespace DAMS.Application.Services
         }
 
         private Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
-            _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .Select(s => (DateTime?)s.AsAtDate).SingleOrDefaultAsync(cancellationToken);
+            FinanceDateRules.BaselineAsync(_context, cancellationToken);
 
         private static StaffCashHistoryItemDto MapHistory(LedgerRow row, decimal runningBalance) => new()
         {

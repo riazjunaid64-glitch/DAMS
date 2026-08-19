@@ -213,7 +213,7 @@ namespace DAMS.Application.Services
             RecordRebateDisbursementDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
             SerializableAsync(async () =>
             {
-                ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.AppliedAt);
+                await ValidateMovementAsync(dto.Amount, dto.IdempotencyKey, dto.AppliedAt, cancellationToken);
                 ValidateRebateMethod(dto);
                 var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
                 var appliedAt = dto.AppliedAt.Date;
