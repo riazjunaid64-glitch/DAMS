@@ -1364,12 +1364,12 @@ public sealed class SqlServerProductionInvariantTests
             await db.Database.MigrateAsync();
             var bank = new FinanceAccount
             {
-                Name = "HBL Bank", AccountHolderName = "Seven Ventures",
+                Name = "Cutover Bank Probe", AccountHolderName = "Seven Ventures",
                 Type = FinanceAccountType.Bank, IsActive = true
             };
             var capital = new FinanceAccount
             {
-                Name = "Partner Capital", AccountHolderName = "Partner One",
+                Name = "Cutover Capital Probe", AccountHolderName = "Partner One",
                 Type = FinanceAccountType.Capital, IsActive = true
             };
             db.FinanceAccounts.AddRange(bank, capital);

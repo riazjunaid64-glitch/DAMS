@@ -521,8 +521,14 @@ export default function FinanceDashboardPage({ user }: Props) {
   // Deposits and Outstanding: a failed load that leaves them showing Rs 0 reads as "the business did
   // nothing", and one that leaves the PREVIOUS filter's figures on screen reads as an answer to a
   // question nobody asked. Both are worse than saying nothing, so a failure clears the figures and
-  // says so, and a response that arrives after the filters moved on is dropped rather than shown.
+  // says so, and only the newest request may write.
+  //
+  // The ticket is what enforces that last part, not the abort signal: refreshAll calls this after a
+  // save with nothing to abort it, so two loads can genuinely be in flight and the slower one must
+  // lose regardless of which of them was cancelled.
+  const summaryRequest = useRef(0);
   const loadSummary = useCallback(async (signal?: AbortSignal) => {
+    const ticket = ++summaryRequest.current;
     setSummaryLoading(true);
     try {
       const params = new URLSearchParams();
@@ -534,15 +540,15 @@ export default function FinanceDashboardPage({ user }: Props) {
       const res = await api(`/api/Finance/summary${qs ? `?${qs}` : ""}`, { signal });
       if (!res.ok) throw new Error("Failed to load summary");
       const loaded = await res.json();
-      if (signal?.aborted) return;
+      if (ticket !== summaryRequest.current) return;
       setSummary(loaded);
       setSummaryError(null);
     } catch {
-      if (signal?.aborted) return;
+      if (ticket !== summaryRequest.current) return;
       setSummary(null);
       setSummaryError("The finance totals could not be loaded, so the figures below are unavailable.");
     } finally {
-      if (!signal?.aborted) setSummaryLoading(false);
+      if (ticket === summaryRequest.current) setSummaryLoading(false);
     }
   }, [projectId, fromDate, toDate, accountFilter]);
 
