@@ -34,9 +34,18 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal TotalExpenses { get; set; }
 
         /// <summary>
-        /// The result: <see cref="TotalRevenue"/> − <see cref="TotalExpenses"/>. The only profit
-        /// figure in the system — the same number the P&amp;L reports, the Balance Sheet carries as
-        /// retained profit, and the Net Profit drill-down adds up to.
+        /// The result: <see cref="TotalRevenue"/> − <see cref="TotalExpenses"/>, and the figure the
+        /// Net Profit drill-down adds up to. One profit figure, with the client's fixed-asset rule
+        /// applied: buying an asset spends the money, so the period bears it.
+        /// <para>
+        /// This is a management figure, and showing it commits no accounting entry — which is why the
+        /// rule can be honoured here. The FORMAL P&amp;L cannot honour it yet: deducting a cost there
+        /// requires a credit somewhere, and the account that carries it is undecided, so
+        /// <see cref="ProfitAndLossDto.NetProfit"/> is higher than this by
+        /// <see cref="ProfitAndLossDto.PendingFixedAssetCharge"/> whenever the period contains
+        /// purchases. That difference is the open accounting decision, not a second profit measure,
+        /// and it closes the moment the accountant names the account.
+        /// </para>
         /// </summary>
         public decimal NetProfit { get; set; }
 
@@ -53,8 +62,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// previous ERP — are outside this, exactly as they are outside the charge to profit.
         /// A BREAKDOWN of <see cref="TotalExpenses"/>, not an addition to it: the cost is
         /// already inside that total and inside <see cref="NetProfit"/>. The asset itself still sits
-        /// on the Balance Sheet at cost; what keeps the sheet balanced is a capital line holding the
-        /// same amount back out of retained profit.</summary>
+        /// on the Balance Sheet at cost, and nothing is written off against it — the Balance Sheet and
+        /// formal P&amp;L simply leave this deduction out until its balancing account is decided.</summary>
         public decimal TotalAssetPurchases { get; set; }
 
         // Populated only when a single finance account is selected. Opening balance and the

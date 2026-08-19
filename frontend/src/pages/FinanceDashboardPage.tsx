@@ -83,7 +83,10 @@ interface FinancialSummary {
   manualRevenue: number;
   /** Every cost of the period, including the fixed assets bought in it. */
   totalExpenses: number;
-  /** The result: totalRevenue − totalExpenses. The only profit figure in the system. */
+  /** The result: totalRevenue − totalExpenses, with the client's fixed-asset rule applied — buying an
+   *  asset spends the money. Presenting this posts nothing, which is why the rule can be honoured here.
+   *  The formal P&L cannot honour it until the accountant names the account carrying the balancing
+   *  entry, so that statement's Net Profit is higher by its pendingFixedAssetCharge until then. */
   netProfit: number;
   whtWithheld: number;
   /** Fixed assets bought in the period, at cost. A breakdown of totalExpenses, not an addition to
@@ -1339,7 +1342,12 @@ export default function FinanceDashboardPage({ user }: Props) {
             <p className="mt-2 text-xs text-sky-300/90">
               Total Expenses and Net Profit already include {formatMoney(summary.totalAssetPurchases)} of
               fixed assets bought in this period, at cost — buying an asset spends the money. The assets
-              themselves stay on the Balance Sheet.
+              themselves stay on the Balance Sheet.{" "}
+              <span className="text-amber-300/90">
+                The formal Profit &amp; Loss statement does not deduct this yet: the account carrying the
+                balancing entry is still an open question for the accountant, so nothing has been posted.{" "}
+                <Link to="/finance/reports" className="underline hover:text-amber-200">See Reports</Link>
+              </span>
             </p>
           )}
 
@@ -1494,11 +1502,13 @@ export default function FinanceDashboardPage({ user }: Props) {
                 {assetForm.id ? "Edit Fixed Asset Purchase" : "Record Fixed Asset Purchase"}
               </h3>
               {/* Both halves of the truth, on the form that creates it: the money is gone from profit
-                  and the company still owns the thing it bought. */}
+                  and the company still owns the thing it bought — plus the one part still undecided,
+                  so nobody records a purchase expecting the formal statements to move. */}
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Net Profit falls by the full purchase price, and the asset still appears on the Balance
-                Sheet at cost. For construction, site work or materials being consumed, use Expenses
-                instead.
+                Net Profit on this dashboard falls by the full purchase price, and the asset still
+                appears on the Balance Sheet at cost. The formal Profit &amp; Loss statement does not
+                deduct it yet — that awaits the accountant's decision on the balancing entry. For
+                construction, site work or materials being consumed, use Expenses instead.
               </p>
             </div>
             <div className="space-y-4 p-6">

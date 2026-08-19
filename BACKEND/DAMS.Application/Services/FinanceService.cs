@@ -78,8 +78,12 @@ namespace DAMS.Application.Services
             // Buying an asset spends the money, and the client's confirmed rule is that the period
             // bears that spending — so the cost reaches Net Profit by the ordinary route rather than
             // being held outside it as a second figure to reconcile. The asset itself is untouched:
-            // it stays on the Balance Sheet at cost, which is why that sheet reports a difference of
-            // exactly this amount rather than plugging it (see GetBalanceSheetAsync).
+            // it stays on the Balance Sheet at cost and nothing is written off against it.
+            //
+            // This total is a management figure: presenting it commits no journal entry, so the rule
+            // can be applied here honestly. The formal statements cannot do the same — a deduction
+            // there needs a credit, and no account has been approved to take it — so the P&L reports
+            // the amount as an outstanding deduction instead. See ProfitAndLossDto.PendingFixedAssetCharge.
             var assetPurchases = await FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals

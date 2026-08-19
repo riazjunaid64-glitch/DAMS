@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -15,23 +16,27 @@ namespace DAMS.Application.Tests;
 /// <summary>
 /// Recording the purchase of something the company keeps.
 /// <para>
-/// The invariant every test here defends: buying an asset charges the full price to the one Net
-/// Profit figure — the client's confirmed rule — while the asset itself stays on the Balance Sheet at
-/// cost and is never written down.
+/// The books hold one entry per purchase: Dr Fixed Asset, Cr the account that paid. The asset stays on
+/// the Balance Sheet at cost and is never written down.
 /// </para>
 /// <para>
-/// Those two rules cannot both hold and still leave a formally balanced statement, because the credit
-/// that would close them has no approved home yet. So the tests below assert the difference is
-/// REPORTED: the sheet is out by exactly the period's purchases, it names that as the reason, and no
-/// equity reserve, contra-asset or depreciation line is conjured up to absorb it. Any future change
-/// that quietly balances these statements will fail here, which is the point — the balancing account
-/// is the client's accountant's decision, not this code's.
+/// The client also wants the purchase to reduce Net Profit at once. That rule is applied on the
+/// DASHBOARD, where a figure is presented and no journal entry is implied, and it is deliberately NOT
+/// applied to the formal P&amp;L, Trial Balance or Balance Sheet — deducting a cost there needs a
+/// matching credit, and no account has been approved to carry it. So the statements stay balanced on
+/// real double entry alone and DISCLOSE the amount as an outstanding deduction.
+/// </para>
+/// <para>
+/// Two failure modes are pinned here on purpose. A future change that posts the deduction into the
+/// formal statements without an approved credit will fail (it would be a half-entry). So will one that
+/// invents a capital reserve, contra-asset or depreciation account to absorb it. Both are the
+/// accountant's decision, not this code's.
 /// </para>
 /// </summary>
 public sealed class FixedAssetPurchaseTests
 {
     [Fact]
-    public async Task BuyingFurniture_MovesCashIntoTheAssetAccount_AndChargesTheCostToProfit()
+    public async Task BuyingFurniture_MovesCashIntoTheAssetAccount_AndReducesTheDashboardNetProfit()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -55,29 +60,25 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(800_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
         Assert.Equal(200_000m, (await accounts.GetByIdAsync(world.Furniture.Id)).CurrentBalance);
 
-        // The money was spent, so the period bears it: one cost line, one profit figure.
+        // The FORMAL statement does not move. There is no approved entry to make, so no line is
+        // written and no total shifts — the amount is disclosed as the deduction still outstanding.
         var profitAfter = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
-        Assert.Equal(profitBefore.TotalExpenses + 200_000m, profitAfter.TotalExpenses);
-        Assert.Equal(profitBefore.NetProfit - 200_000m, profitAfter.NetProfit);
-        Assert.Equal(200_000m, profitAfter.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
+        Assert.Equal(profitBefore.TotalExpenses, profitAfter.TotalExpenses);
+        Assert.Equal(profitBefore.NetProfit, profitAfter.NetProfit);
+        Assert.DoesNotContain(profitAfter.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
+        Assert.Equal(200_000m, profitAfter.PendingFixedAssetCharge);
 
-        // Assets are only rearranged — cash out, desks in — so the total is what it was.
+        // Assets are only rearranged — cash out, desks in — so the sheet still balances on the real
+        // double entry, with the desks carried at cost and equity untouched. Nothing invented.
         var sheetAfter = await service.GetBalanceSheetAsync(null, AsAt);
         Assert.True(sheetBefore.IsBalanced);
+        Assert.True(sheetAfter.IsBalanced);
         Assert.Equal(sheetBefore.TotalAssets, sheetAfter.TotalAssets);
         Assert.Equal(200_000m, Group(sheetAfter, "Fixed Assets").Total);
-
-        // Equity, though, is down by the charge, and nothing puts it back: the sheet is out by exactly
-        // that amount and says so in one line, naming the decision it is waiting on. No invented
-        // capital line, and no list of innocent accounts for an admin to go hunting through.
-        Assert.Equal(sheetBefore.TotalCapital - 200_000m, sheetAfter.TotalCapital);
-        Assert.False(sheetAfter.IsBalanced);
-        Assert.Equal(200_000m, sheetAfter.Imbalance);
+        Assert.Equal(sheetBefore.TotalCapital, sheetAfter.TotalCapital);
         Assert.DoesNotContain(sheetAfter.CapitalLines, l => l.AccountId < 0);
-        // Formatted the way the service formats it, so the assertion is not culture-dependent.
-        Assert.Contains($"Fixed asset purchases of {200_000m:N2}", Assert.Single(sheetAfter.UnbalancedAccounts));
 
-        // The dashboard reports the same one figure, with the purchase inside the expense total.
+        // The dashboard DOES apply the client's rule — presenting a figure posts nothing.
         var summary = await service.GetSummaryAsync(null, null, null);
         Assert.Equal(200_000m, summary.TotalAssetPurchases);
         Assert.Equal(200_000m, summary.TotalExpenses);
@@ -116,12 +117,13 @@ public sealed class FixedAssetPurchaseTests
         // And the shortfall sits as a liability to FBR.
         Assert.Equal(10_000m, (await accounts.GetByIdAsync(world.TaxPayable.Id)).CurrentBalance);
 
-        // The GROSS price is the cost, not the net that left the bank: the withheld tax is owed to
-        // FBR, not saved.
-        Assert.Equal(100_000m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).TotalExpenses);
-        // Which is also the whole of the sheet's difference — the tax entry itself is double-sided.
-        var sheet = await service.GetBalanceSheetAsync(null, AsAt);
-        Assert.Equal(100_000m, sheet.Imbalance);
+        // The pending deduction is the GROSS price, not the net that left the bank: the withheld tax is
+        // owed to FBR, not saved, so netting it off would understate the cost by exactly the tax.
+        var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
+        Assert.Equal(100_000m, pnl.PendingFixedAssetCharge);
+        Assert.Equal(0m, pnl.TotalExpenses);
+        // And the withholding is fully double-sided on its own, so the sheet still balances.
+        Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
 
         // The FBR payable report counts tax withheld from capital suppliers too.
         var payable = await Wht(context).GetPayableSummaryAsync(null, null);
@@ -199,17 +201,19 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Furniture.Id)).CurrentBalance);
         Assert.Equal(-150_000m, (await accounts.GetByIdAsync(world.Cash.Id)).CurrentBalance);
         Assert.Equal(150_000m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
-        // The reported difference follows the correction down to the amount actually spent — it is
-        // derived from the surviving rows, not accumulated as the purchase is edited.
-        Assert.Equal(150_000m, (await service.GetBalanceSheetAsync(null, AsAt)).Imbalance);
+        // Still balanced, and the disclosed deduction follows the correction down to what was actually
+        // spent — it is derived from the surviving row, not accumulated as the purchase is edited.
+        Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
+        Assert.Equal(150_000m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).PendingFixedAssetCharge);
 
         await service.DeleteAssetPurchaseAsync(created.Id, updated.ConcurrencyToken);
 
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Equipment.Id)).CurrentBalance);
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Cash.Id)).CurrentBalance);
         Assert.Equal(1_000_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
-        // …and it is gone entirely once the purchase is: nothing lingers to keep the sheet out.
+        // …and the disclosure is gone entirely once the purchase is: nothing lingers.
         Assert.True((await service.GetBalanceSheetAsync(null, AsAt)).IsBalanced);
+        Assert.Equal(0m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).PendingFixedAssetCharge);
     }
 
     [Fact]
@@ -398,14 +402,14 @@ public sealed class FixedAssetPurchaseTests
 
     // ── The client's fixed-asset profit rule, and the question it leaves open ────────
     //
-    // The company spent the money, so the period bears it: one Net Profit figure, down by the gross
-    // price. The company also still owns the desk, so the asset stays on the sheet at cost. Both are
-    // confirmed by the client — and together they cannot produce a balanced statement, because the
-    // account that should carry the balancing credit has not been chosen. The reports stop there and
-    // say so rather than picking one.
+    // The client has told us two things: the asset stays on the sheet at its full cost, and the same
+    // amount reduces Net Profit at once. They have NOT told us which account carries the balancing
+    // credit for that reduction. So the reduction is applied where presenting it posts nothing (the
+    // dashboard) and disclosed where posting it would be a half-entry (the formal statements). The
+    // line these tests hold: the statements balance on real entries only, and none is invented.
 
     [Fact]
-    public async Task AFixedAssetPurchase_ReducesNetProfitByTheGross_AndKeepsTheAssetOnTheSheet()
+    public async Task TheProfitRule_AppliesOnTheDashboard_AndIsDisclosedNotPostedOnTheStatements()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -422,35 +426,38 @@ public sealed class FixedAssetPurchaseTests
             ItemName = "Generator", CategoryId = world.NoTaxHead.Id, Date = new DateTime(2026, 8, 10)
         }, adminUserId: 1);
 
-        var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
-        // The money was spent, so the period broke even. One figure, no adjustment to apply.
-        Assert.Equal(1_000_000m, pnl.TotalExpenses);
-        Assert.Equal(0m, pnl.NetProfit);
-        Assert.Equal(1_000_000m, pnl.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
-
-        // The dashboard tells the same story with the same numbers.
+        // The dashboard applies the client's rule: the money was spent, so the period broke even.
         var summary = await service.GetSummaryAsync(null, null, null);
         Assert.Equal(1_000_000m, summary.TotalExpenses);
         Assert.Equal(0m, summary.NetProfit);
         Assert.Equal(1_000_000m, summary.TotalAssetPurchases);
 
-        // The asset is still an asset at cost and retained profit is net of the charge — which is
-        // precisely why the sheet is out by it. Reported, not plugged.
+        // The formal statement does not, and says so. Its Net Profit is the dashboard's plus the
+        // deduction still waiting on an account — the gap IS the open decision, quantified.
+        var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
+        Assert.Equal(0m, pnl.TotalExpenses);
+        Assert.Equal(1_000_000m, pnl.NetProfit);
+        Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
+        Assert.Equal(1_000_000m, pnl.PendingFixedAssetCharge);
+        Assert.Equal(summary.NetProfit + pnl.PendingFixedAssetCharge, pnl.NetProfit);
+
+        // The asset is on the sheet at cost, retained profit matches the statement, and the sheet
+        // balances on real double entry — no reserve, no contra-asset, no depreciation line.
         var sheet = await service.GetBalanceSheetAsync(null, AsAt);
         Assert.Equal(1_000_000m, Group(sheet, "Fixed Assets").Total);
-        Assert.Equal(0m, sheet.RetainedProfit);
-        Assert.False(sheet.IsBalanced);
-        Assert.Equal(1_000_000m, sheet.Imbalance);
+        Assert.Equal(1_000_000m, sheet.RetainedProfit);
+        Assert.True(sheet.IsBalanced);
         Assert.DoesNotContain(sheet.CapitalLines, l => l.AccountId < 0);
 
-        // Same on the Trial Balance: the charge appears as a debit with no counter-credit, so the
-        // column is out by it and the unmatched row is named for what it is. Nothing conjures up an
-        // equity row to make the totals agree.
+        // Same on the Trial Balance: every debit has its credit, because every row is a real entry.
+        // No orphan "Fixed Asset Purchases" debit, and no invented equity row to offset one.
         var trial = await service.GetTrialBalanceAsync(null, AsAt, 0);
-        Assert.False(Assert.Single(trial.ColumnBalanced));
-        Assert.Equal(1_000_000m, Assert.Single(trial.ColumnDebitTotals) - Assert.Single(trial.ColumnCreditTotals));
-        Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Fixed Asset Purchases").DebitBalances[0]);
+        Assert.True(Assert.Single(trial.ColumnBalanced));
+        Assert.Equal(Assert.Single(trial.ColumnDebitTotals), Assert.Single(trial.ColumnCreditTotals));
+        Assert.DoesNotContain(trial.Rows, r => r.AccountName == "Fixed Asset Purchases");
         Assert.DoesNotContain(trial.Rows, r => r.Type == FinanceAccountType.Capital && r.AccountId < 0);
+        // The purchase still shows where it genuinely happened: the asset account itself.
+        Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Office Equipment").DebitBalances[0]);
     }
 
     /// <summary>
@@ -497,11 +504,40 @@ public sealed class FixedAssetPurchaseTests
     }
 
     /// <summary>
-    /// Historical integrity for the charge. Buying an asset today must not reach into a period that
-    /// closed before it happened.
+    /// The disclosure travels with the exported workbook, not just the screen.
+    /// <para>
+    /// The spreadsheet is what gets emailed to the accountant who has to decide where the balancing
+    /// entry belongs. If the omission is flagged only in the browser, the file that reaches the person
+    /// answering the question is the one copy that quietly hides it.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task TheFixedAssetCharge_LandsOnlyInThePeriodThePurchaseHappened()
+    public async Task TheExportedProfitAndLoss_FlagsTheUnappliedDeduction()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var service = Finance(context);
+
+        var export = await service.ExportProfitAndLossAsync(null, Year.Start, Year.End);
+        Assert.DoesNotContain("NOT APPLIED ABOVE", SheetXml(export));
+
+        await service.CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            AssetAccountId = world.Furniture.Id, FinanceAccountId = world.Hbl.Id, Amount = 250_000m,
+            ItemName = "Filing cabinets", CategoryId = world.NoTaxHead.Id, Date = new DateTime(2026, 8, 10)
+        }, adminUserId: 1);
+
+        var flagged = SheetXml(await service.ExportProfitAndLossAsync(null, Year.Start, Year.End));
+        Assert.Contains("NOT APPLIED ABOVE", flagged);
+        Assert.Contains("250000", flagged);
+    }
+
+    /// <summary>
+    /// Historical integrity for the disclosure. Buying an asset today must not reach into a period
+    /// that closed before it happened, on either side.
+    /// </summary>
+    [Fact]
+    public async Task TheDisclosedDeduction_LandsOnlyInThePeriodThePurchaseHappened()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -513,25 +549,28 @@ public sealed class FixedAssetPurchaseTests
             ItemName = "Server rack", CategoryId = world.NoTaxHead.Id, Date = new DateTime(2026, 8, 10)
         }, adminUserId: 1);
 
+        // July closed before the purchase, so it discloses nothing.
         var july = await service.GetProfitAndLossAsync(null, new DateTime(2026, 7, 1), new DateTime(2026, 7, 31));
-        Assert.DoesNotContain(july.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
+        Assert.Equal(0m, july.PendingFixedAssetCharge);
         Assert.Equal(0m, july.NetProfit);
 
+        // August discloses it — and still posts nothing, so its Net Profit is untouched.
         var august = await service.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
-        Assert.Equal(400_000m, august.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
-        Assert.Equal(-400_000m, august.NetProfit);
+        Assert.Equal(400_000m, august.PendingFixedAssetCharge);
+        Assert.DoesNotContain(august.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
+        Assert.Equal(0m, august.NetProfit);
 
-        // …and a balance sheet dated the day before is untouched by it: retained profit intact, and
-        // balanced, because there is no charge yet to leave a difference. The difference appears on
-        // the purchase date and not a day earlier.
-        var before = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 9));
-        Assert.Equal(0m, before.RetainedProfit);
-        Assert.True(before.IsBalanced);
-        Assert.Equal(0m, before.Imbalance);
+        // The dashboard's deduction is period-correct too: August only.
+        Assert.Equal(0m, (await service.GetSummaryAsync(null, new DateTime(2026, 7, 1), new DateTime(2026, 7, 31))).NetProfit);
+        Assert.Equal(-400_000m, (await service.GetSummaryAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31))).NetProfit);
 
-        var onTheDay = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 10));
-        Assert.Equal(-400_000m, onTheDay.RetainedProfit);
-        Assert.Equal(400_000m, onTheDay.Imbalance);
+        // Balance sheets either side of the purchase both balance, and neither carries a deduction.
+        foreach (var asAt in new[] { new DateTime(2026, 8, 9), new DateTime(2026, 8, 10) })
+        {
+            var sheet = await service.GetBalanceSheetAsync(null, asAt);
+            Assert.Equal(0m, sheet.RetainedProfit);
+            Assert.True(sheet.IsBalanced);
+        }
     }
 
     [Fact]
@@ -645,16 +684,14 @@ public sealed class FixedAssetPurchaseTests
     }
 
     /// <summary>
-    /// The withholding half of a purchase ties out; only the charge to profit does not.
+    /// The trial balance ties out with a withheld purchase in play.
     /// <para>
     /// Worth pinning on its own, because withholding splits the credit across two places — the paying
-    /// account and the tax payable — and a fault in that split would surface as the same kind of
-    /// difference. Asserting the gap is EXACTLY the fixed-asset charge is what proves the tax entry
-    /// is still fully double-sided underneath it.
+    /// account and the tax payable — and a fault in that split would leave the column out by the tax.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task TheTrialBalance_IsOutByExactlyTheFixedAssetCharge_WithWithholdingInPlay()
+    public async Task TheTrialBalanceTiesOut_WithPurchasesAndWithholdingInPlay()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -669,8 +706,8 @@ public sealed class FixedAssetPurchaseTests
         }, adminUserId: 1);
 
         var trial = await service.GetTrialBalanceAsync(null, AsAt, 0);
-        Assert.False(Assert.Single(trial.ColumnBalanced));
-        Assert.Equal(100_000m, Assert.Single(trial.ColumnDebitTotals) - Assert.Single(trial.ColumnCreditTotals));
+        Assert.True(Assert.Single(trial.ColumnBalanced));
+        Assert.Equal(Assert.Single(trial.ColumnDebitTotals), Assert.Single(trial.ColumnCreditTotals));
         Assert.Equal(10_000m, trial.Rows.Single(r => r.AccountName == "Tax Payable").CreditBalances[0]);
     }
 
@@ -715,6 +752,14 @@ public sealed class FixedAssetPurchaseTests
 
     private static BsGroupDto Group(BalanceSheetDto sheet, string name) =>
         sheet.AssetGroups.Single(g => g.Name == name);
+
+    /// <summary>The first worksheet of an exported workbook, as raw XML.</summary>
+    private static string SheetXml(FinanceExportDto export)
+    {
+        using var archive = new ZipArchive(new MemoryStream(export.Content), ZipArchiveMode.Read);
+        using var reader = new StreamReader(archive.GetEntry("xl/worksheets/sheet1.xml")!.Open());
+        return reader.ReadToEnd();
+    }
 
     /// <summary>
     /// A work-in-progress account, as inherited from the previous ERP. Still a legitimate account

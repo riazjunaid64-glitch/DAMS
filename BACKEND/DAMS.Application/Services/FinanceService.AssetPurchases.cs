@@ -14,18 +14,19 @@ namespace DAMS.Application.Services
     /// Balance Sheet at cost.
     /// </para>
     /// <para>
-    /// Net Profit still falls by the gross purchase price: the client's confirmed rule is that buying
-    /// an asset is spending, and there is one profit figure in this system, so the purchase is an
-    /// ordinary cost line on the P&amp;L. That charge is applied where the reports are built
-    /// (<c>FinanceService.Reports.cs</c>, <c>GetSummaryAsync</c>) off these same rows — never by
-    /// writing a second entry here, and the asset account is never written down.
+    /// The books hold exactly one entry per purchase — Dr Fixed Asset, Cr the paying account (and Cr
+    /// tax payable for anything withheld). Nothing here writes a second entry, and the asset account
+    /// is never written down.
     /// </para>
     /// <para>
-    /// One consequence is open on purpose: a cost charged to profit with the asset still on the sheet
-    /// at cost leaves the Balance Sheet and Trial Balance out by that amount. Which account should
-    /// carry the balancing entry is a question for the client's accountant, so the reports state the
-    /// difference and name the reason instead of inventing an equity reserve, a contra-asset or a
-    /// depreciation line to absorb it.
+    /// The client also wants the purchase to reduce Net Profit immediately, and that rule is applied in
+    /// <c>GetSummaryAsync</c> and the Net Profit drill-down, where a figure is being presented and no
+    /// journal entry is implied. It is deliberately NOT applied in the formal P&amp;L, Trial Balance or
+    /// Balance Sheet: a deduction there needs a matching credit, and which account carries it has not
+    /// been decided by the client's accountant. Writing the debit alone would put a half-entry into a
+    /// double-entry statement, so the P&amp;L discloses the amount as an outstanding deduction
+    /// (<c>ProfitAndLossDto.PendingFixedAssetCharge</c>) and no equity reserve, contra-asset or
+    /// depreciation account is invented to absorb it. That decision is the one open item here.
     /// </para>
     /// <para>
     /// Construction / work-in-progress spending does NOT come through here any more. The client
@@ -311,9 +312,9 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// The purchases that are charged to profit: the ones whose destination is a fixed-asset
-        /// account. Used by the P&amp;L line, the Net Profit drill-down and the dashboard card, so all
-        /// three count the same rows.
+        /// The purchases the client's profit rule applies to: the ones whose destination is a
+        /// fixed-asset account. Used by the dashboard total, the Net Profit drill-down and the P&amp;L's
+        /// pending-deduction disclosure, so all three count the same rows.
         /// <para>
         /// Work-in-progress destinations are deliberately outside it. New construction spend cannot
         /// reach this table at all any more (<see cref="IFinanceAccountService.EnsureAssetAccountAsync"/>
