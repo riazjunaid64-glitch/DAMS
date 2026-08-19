@@ -1,5 +1,6 @@
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
@@ -8,17 +9,18 @@ namespace DAMS.Application.Services
     /// Recording the purchase of a fixed asset — something the company keeps.
     /// <para>
     /// Mechanically this is the expense flow: same form fields, same attachment handling, same
-    /// withholding. What differs is where the money goes. An expense credits cash and lands in the
-    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT — the
-    /// value moved rather than left, so the ACCOUNTING profit must not move. Nothing in this file
-    /// writes to any accounting P&amp;L surface, and that omission is deliberate: it is what keeps
-    /// the Balance Sheet and Trial Balance in balance.
+    /// withholding. What differs is what the company is left holding. An expense credits cash and is
+    /// gone. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT, so the asset stays on the
+    /// Balance Sheet at cost.
     /// </para>
     /// <para>
-    /// The client's MANAGEMENT profit does move, by the gross purchase price. That adjustment is
-    /// applied where the reports are built (<c>FinanceService.Reports.cs</c>, <c>GetSummaryAsync</c>)
-    /// as a clearly separated figure — never by writing a second, unbalanced entry here. Both
-    /// numbers come off the same rows, so they cannot drift apart.
+    /// Net Profit still falls by the gross purchase price: the client's confirmed rule is that buying
+    /// an asset is spending, and there is one profit figure in this system, so the purchase is an
+    /// ordinary cost line on the P&amp;L. That charge is applied where the reports are built
+    /// (<c>FinanceService.Reports.cs</c>, <c>GetSummaryAsync</c>) off these same rows — never by
+    /// writing a second entry here. The Balance Sheet and Trial Balance stay in balance because the
+    /// same amount is held back inside Capital as "Fixed assets charged to profit"; the asset account
+    /// itself is never written down.
     /// </para>
     /// <para>
     /// Construction / work-in-progress spending does NOT come through here any more. The client
@@ -302,6 +304,26 @@ namespace DAMS.Application.Services
             if (accountId.HasValue) query = query.Where(p => p.FinanceAccountId == accountId.Value);
             return query;
         }
+
+        /// <summary>
+        /// The purchases that are charged to profit: the ones whose destination is a fixed-asset
+        /// account. Used by the P&amp;L line, the Net Profit drill-down and the dashboard card, so all
+        /// three count the same rows.
+        /// <para>
+        /// Work-in-progress destinations are deliberately outside it. New construction spend cannot
+        /// reach this table at all any more (<see cref="IFinanceAccountService.EnsureAssetAccountAsync"/>
+        /// refuses a work-in-progress destination, and it is recorded as an ordinary expense instead),
+        /// so the only rows excluded here are the ones inherited from the previous ERP, where
+        /// construction was accumulated as an asset. Those carry a real historical balance and what
+        /// becomes of it is still an open question with the client — charging them to profit would
+        /// answer that question by writing the whole inherited balance off, silently, on the day this
+        /// shipped.
+        /// </para>
+        /// </summary>
+        private IQueryable<AssetPurchase> FixedAssetChargeQuery(
+            int? projectId, DateTime? fromValue, DateTime? toExclusive, int? accountId, bool unassigned) =>
+            AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                .Where(p => p.AssetAccount!.Type == FinanceAccountType.FixedAsset);
 
         private async Task<AssetPurchaseResponseDto> MapAssetPurchaseAsync(AssetPurchase p)
         {

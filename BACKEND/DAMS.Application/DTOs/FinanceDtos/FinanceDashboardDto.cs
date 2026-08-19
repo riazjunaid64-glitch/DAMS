@@ -24,40 +24,37 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal CustomerDepositsBalance { get; set; }
 
         public decimal ManualRevenue { get; set; }
+
+        /// <summary>
+        /// Every cost of the period, gross of any tax withheld — including the full purchase price
+        /// of the fixed assets bought in it (<see cref="TotalAssetPurchases"/>). The client's
+        /// confirmed rule is that buying an asset spends money, so the period bears that spending
+        /// like any other cost; there is no separate capital total held outside this one.
+        /// </summary>
         public decimal TotalExpenses { get; set; }
 
         /// <summary>
-        /// The ACCOUNTING result: revenue less costs. Capitalised purchases are absent by
-        /// construction — they are not costs — which is what keeps this figure tied to the Balance
-        /// Sheet's retained profit and the Trial Balance.
+        /// The result: <see cref="TotalRevenue"/> − <see cref="TotalExpenses"/>. The only profit
+        /// figure in the system — the same number the P&amp;L reports, the Balance Sheet carries as
+        /// retained profit, and the Net Profit drill-down adds up to.
         /// </summary>
         public decimal NetProfit { get; set; }
-
-        /// <summary>
-        /// The client's MANAGEMENT result: <see cref="NetProfit"/> less the gross cost of every
-        /// fixed asset bought in the period (<see cref="TotalAssetPurchases"/>).
-        /// <para>
-        /// The client judges a period by what the business spent, and buying an asset spends money
-        /// even though accounting says value only changed form. Both readings are true and they
-        /// disagree, so both are reported. This one is deliberately NOT what the Balance Sheet or
-        /// Trial Balance use: subtracting an asset from retained profit while the asset also sits on
-        /// the sheet would put the statements out by exactly this amount.
-        /// </para>
-        /// </summary>
-        public decimal ManagementNetProfit { get; set; }
 
         public decimal OutstandingAmount { get; set; }
         public decimal OverdueAmount { get; set; }
 
-        /// <summary>Tax withheld from expenses in the period. Money that is inside
-        /// <see cref="TotalExpenses"/> but has not left the bank — it is owed to FBR.</summary>
+        /// <summary>Tax withheld from expenses and from fixed-asset purchases in the period. Money
+        /// that is inside <see cref="TotalExpenses"/> but has not left the bank — it is owed to FBR,
+        /// and it is the same figure the WHT payable account moves by.</summary>
         public decimal WhtWithheld { get; set; }
 
         /// <summary>Fixed assets bought in the period, at cost (gross of any tax withheld from the
-        /// supplier). Deliberately NOT part of <see cref="TotalExpenses"/> or
-        /// <see cref="NetProfit"/>: for accounting purposes the company still owns what this bought,
-        /// so nothing was consumed. It IS the whole of the adjustment between
-        /// <see cref="NetProfit"/> and <see cref="ManagementNetProfit"/>.</summary>
+        /// supplier). Purchases into a work-in-progress account — only ever rows inherited from the
+        /// previous ERP — are outside this, exactly as they are outside the charge to profit.
+        /// A BREAKDOWN of <see cref="TotalExpenses"/>, not an addition to it: the cost is
+        /// already inside that total and inside <see cref="NetProfit"/>. The asset itself still sits
+        /// on the Balance Sheet at cost; what keeps the sheet balanced is a capital line holding the
+        /// same amount back out of retained profit.</summary>
         public decimal TotalAssetPurchases { get; set; }
 
         // Populated only when a single finance account is selected. Opening balance and the
@@ -210,19 +207,14 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string Label { get; set; } = string.Empty;
 
         /// <summary>
-        /// "revenue", "expense", or "management".
-        /// <para>
-        /// The first two sum to the accounting net profit. "management" lines are fixed-asset
-        /// purchases: not accounting costs, but deductions the client's management profit makes —
-        /// so revenue + expense + management sums to
-        /// <see cref="FinancialSummaryDto.ManagementNetProfit"/>. Keeping them a distinct kind is
-        /// what lets one list reconcile to both totals instead of contradicting one of them.
-        /// </para>
+        /// "revenue" or "expense". The two together sum to
+        /// <see cref="FinancialSummaryDto.NetProfit"/>. A fixed-asset purchase is an expense line
+        /// like any other cost of the period, so there is no third kind and no row the reader has to
+        /// know to exclude before the list agrees with the card above it.
         /// </summary>
         public string Kind { get; set; } = string.Empty;
 
-        /// <summary>Signed amount: positive for revenue, negative for an expense or a management
-        /// deduction.</summary>
+        /// <summary>Signed amount: positive for revenue, negative for a cost.</summary>
         public decimal Amount { get; set; }
     }
 

@@ -13,30 +13,17 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public List<PnlLineDto> ExpenseLines { get; set; } = [];
         public decimal TotalExpenses { get; set; }
 
-        /// <summary>The accounting result. Ties to the Balance Sheet's retained profit for the same
-        /// window, and to the Trial Balance.</summary>
+        /// <summary>
+        /// The result: <see cref="TotalIncome"/> − <see cref="TotalExpenses"/>. The one profit figure
+        /// in the system. Fixed-asset purchases are inside <see cref="ExpenseLines"/> as an ordinary
+        /// cost of the period, so nothing has to be added to or taken off this to arrive at the
+        /// figure the dashboard and the Balance Sheet's retained profit show.
+        /// </summary>
         public decimal NetProfit { get; set; }
-
-        /// <summary>
-        /// Fixed assets bought in the period, at their gross cost — a MEMORANDUM line, not an
-        /// expense line. It is not inside <see cref="TotalExpenses"/> and must never be added to
-        /// <see cref="ExpenseLines"/>: doing so would put the Trial Balance out by this amount.
-        /// </summary>
-        public decimal CapitalisedPurchases { get; set; }
-
-        /// <summary>
-        /// <see cref="NetProfit"/> − <see cref="CapitalisedPurchases"/>. The client's management
-        /// view of the period: asset purchases spend money, so they reduce it. Reported beside the
-        /// accounting result rather than instead of it, because only the accounting result
-        /// reconciles to the statements.
-        /// </summary>
-        public decimal ManagementNetProfit { get; set; }
 
         public decimal? PriorTotalIncome { get; set; }
         public decimal? PriorTotalExpenses { get; set; }
         public decimal? PriorNetProfit { get; set; }
-        public decimal? PriorCapitalisedPurchases { get; set; }
-        public decimal? PriorManagementNetProfit { get; set; }
     }
 
     public sealed class PnlLineDto
@@ -76,9 +63,13 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal TotalLiabilities { get; set; }
         public List<BsLineDto> CapitalLines { get; set; } = [];
 
-        /// <summary>The accounting retained result carried in Capital. This — not
-        /// <see cref="ManagementRetainedProfit"/> — is the figure <see cref="IsBalanced"/> is
-        /// computed from.</summary>
+        /// <summary>
+        /// The retained result carried in Capital, for the window from the opening baseline to
+        /// <see cref="AsAt"/>. Net of the fixed assets bought in that window, exactly like the P&amp;L
+        /// figure it comes from. The matching amount is held back inside
+        /// <see cref="CapitalLines"/> as "Fixed assets charged to profit", which is what keeps
+        /// <see cref="IsBalanced"/> true while the assets stay on the sheet at cost.
+        /// </summary>
         public decimal RetainedProfit { get; set; }
 
         public decimal TotalCapital { get; set; }
@@ -86,21 +77,6 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public bool IsBalanced { get; set; }
         public decimal Imbalance { get; set; }
         public List<string> UnbalancedAccounts { get; set; } = [];
-
-        /// <summary>
-        /// Gross cost of every fixed asset bought in the same window <see cref="RetainedProfit"/>
-        /// covers. A MEMORANDUM figure: the assets it bought are already carried in the Fixed Assets
-        /// group above, so this is emphatically not a second deduction from the sheet.
-        /// </summary>
-        public decimal CapitalisedPurchases { get; set; }
-
-        /// <summary>
-        /// <see cref="RetainedProfit"/> − <see cref="CapitalisedPurchases"/>: what the client's
-        /// management reporting treats as the result. Shown as a note beneath the statement, never
-        /// substituted into Capital — substituting it would break <see cref="IsBalanced"/> by exactly
-        /// <see cref="CapitalisedPurchases"/>, which is the trap this pair of fields exists to avoid.
-        /// </summary>
-        public decimal ManagementRetainedProfit { get; set; }
     }
 
     public sealed class BsGroupDto

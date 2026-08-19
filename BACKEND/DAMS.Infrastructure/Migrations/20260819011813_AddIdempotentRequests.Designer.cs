@@ -2859,21 +2859,6 @@ namespace DAMS.Infrastructure.Migrations
                         },
                         new
                         {
-                            Id = 59,
-                            AnnualThreshold = 0m,
-                            Code = "securities_advances",
-                            CreatedAt = new DateTime(2026, 8, 11, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Security deposits and advances paid out — recorded as a cost when paid. The historical Securities & Advances balance carried over from the previous ERP stays on its own balance-sheet account and is unaffected.",
-                            DisplayOrder = 575,
-                            FilerRate = 0m,
-                            IsActive = true,
-                            IsWhtApplicable = false,
-                            Name = "Securities & Advances",
-                            NonFilerRate = 0m,
-                            RowVersion = new byte[0]
-                        },
-                        new
-                        {
                             Id = 57,
                             AnnualThreshold = 0m,
                             Code = "donation_charity",

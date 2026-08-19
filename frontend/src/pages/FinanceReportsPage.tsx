@@ -10,16 +10,12 @@ import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/fina
 type Tab = "pnl" | "trial" | "balance";
 type Project = { id: number; projectName: string };
 type PnlLine = { categoryId: number | null; name: string; amount: number; priorAmount: number | null; transactionCount: number };
-type Pnl = { periodStart: string; periodEnd: string; periodLabel: string; projectName: string | null; incomeLines: PnlLine[]; totalIncome: number; expenseLines: PnlLine[]; totalExpenses: number; netProfit: number; priorTotalIncome: number; priorTotalExpenses: number; priorNetProfit: number;
-  /** Fixed assets bought in the period, at gross cost. A memo line — never inside expenseLines. */
-  capitalisedPurchases: number; managementNetProfit: number; priorCapitalisedPurchases: number; priorManagementNetProfit: number };
+type Pnl = { periodStart: string; periodEnd: string; periodLabel: string; projectName: string | null; incomeLines: PnlLine[]; totalIncome: number; expenseLines: PnlLine[]; totalExpenses: number; netProfit: number; priorTotalIncome: number; priorTotalExpenses: number; priorNetProfit: number };
 type TrialRow = { accountId: number; ledgerCode: string | null; accountName: string; debitBalances: number[]; creditBalances: number[] };
 type Trial = { columnDates: string[]; rows: TrialRow[]; columnDebitTotals: number[]; columnCreditTotals: number[]; columnBalanced: boolean[] };
 type BsLine = { accountId: number; ledgerCode: string | null; name: string; amount: number };
 type BsGroup = { name: string; lines: BsLine[]; total: number };
-type BalanceSheet = { asAt: string; assetGroups: BsGroup[]; totalAssets: number; liabilityGroups: BsGroup[]; totalLiabilities: number; capitalLines: BsLine[]; retainedProfit: number; totalCapital: number; totalLiabilitiesAndCapital: number; isBalanced: boolean; imbalance: number; unbalancedAccounts: string[];
-  /** Memo only. The assets these bought are already in the Fixed Assets group above. */
-  capitalisedPurchases: number; managementRetainedProfit: number };
+type BalanceSheet = { asAt: string; assetGroups: BsGroup[]; totalAssets: number; liabilityGroups: BsGroup[]; totalLiabilities: number; capitalLines: BsLine[]; retainedProfit: number; totalCapital: number; totalLiabilitiesAndCapital: number; isBalanced: boolean; imbalance: number; unbalancedAccounts: string[] };
 
 const money = (value: number) => `Rs ${value.toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
 
@@ -138,17 +134,8 @@ function PnlView({ report }: { report: Pnl }) {
   return <ReportCard title={`Profit & Loss · ${report.periodLabel}`}>
     <TableHeader/><SectionRows title="Income" lines={report.incomeLines}/><TotalRow label="Total Income" current={report.totalIncome} prior={report.priorTotalIncome}/>
     <SectionRows title="Expenses" lines={report.expenseLines}/><TotalRow label="Total Expenses" current={report.totalExpenses} prior={report.priorTotalExpenses}/>
-    <div className={`mt-4 grid grid-cols-3 rounded-xl p-4 font-bold ${report.netProfit >= 0 ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}><span>Net Profit (accounting)</span><span className="text-right">{money(report.netProfit)}</span><span className="text-right">{money(report.priorNetProfit)}</span></div>
-    {/* The client's management view, shown BELOW the accounting result and visibly separated from
-        it. Both figures are true of the same period and they differ by exactly one thing, so the
-        adjustment is spelled out rather than folded into either total. */}
-    <div className="mt-4 rounded-xl border border-sky-500/30 bg-sky-500/[0.06] p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-sky-300">Management view</p>
-      <div className="mt-2 grid grid-cols-3 text-sm"><span>Less: fixed asset purchases (at cost)</span><span className="text-right">{money(report.capitalisedPurchases)}</span><span className="text-right text-[var(--text-muted)]">{money(report.priorCapitalisedPurchases)}</span></div>
-      <div className={`mt-2 grid grid-cols-3 border-t border-sky-500/20 pt-2 font-bold ${report.managementNetProfit >= 0 ? "text-emerald-300" : "text-rose-300"}`}><span>Management Net Profit</span><span className="text-right">{money(report.managementNetProfit)}</span><span className="text-right">{money(report.priorManagementNetProfit)}</span></div>
-      <p className="mt-2 text-xs text-[var(--text-muted)]">Buying an asset spends money, so management profit falls by the full purchase price. Accounting keeps the asset on the Balance Sheet instead, which is why the two figures differ and why only the accounting one appears on the Trial Balance.</p>
-    </div>
-    <p className="mt-4 text-xs text-amber-300">Unit sales are recognised in full at possession, on the possession date. Customer payments taken before possession are a deposit liability, not income, and do not appear here. Construction and site work is an expense on the day it is paid — it is not held as work in progress.</p>
+    <div className={`mt-4 grid grid-cols-3 rounded-xl p-4 font-bold ${report.netProfit >= 0 ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}><span>Net Profit</span><span className="text-right">{money(report.netProfit)}</span><span className="text-right">{money(report.priorNetProfit)}</span></div>
+    <p className="mt-4 text-xs text-amber-300">Unit sales are recognised in full at possession, on the possession date. Customer payments taken before possession are a deposit liability, not income, and do not appear here. Construction and site work is an expense on the day it is paid — it is not held as work in progress. Fixed assets bought in the period are a cost of it, at their full price, and appear above as Fixed Asset Purchases; the assets themselves stay on the Balance Sheet.</p>
   </ReportCard>;
 }
 function TableHeader(){return <div className="grid grid-cols-3 border-b border-[var(--border)] px-3 pb-2 text-xs font-semibold uppercase text-[var(--text-muted)]"><span>Account</span><span className="text-right">Current</span><span className="text-right">Prior year</span></div>}
@@ -163,14 +150,10 @@ function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard 
   {report.liabilityGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}
   <div className="mt-5"><h3 className="font-bold">Capital</h3>{report.capitalLines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<BsLineView line={{accountId:-1,ledgerCode:null,name:"Retained Profit",amount:report.retainedProfit}}/></div>
   <BsTotal label="Total Liabilities & Capital" amount={report.totalLiabilitiesAndCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
-  {/* Deliberately after the balanced/unbalanced verdict: the statement is complete and reconciled
-      before the management note is even mentioned, so nobody reads it as part of the arithmetic. */}
-  <div className="mt-4 rounded-xl border border-sky-500/30 bg-sky-500/[0.06] p-4 text-sm">
-    <p className="text-xs font-semibold uppercase tracking-wide text-sky-300">Memorandum — management view</p>
-    <div className="mt-2 flex justify-between"><span>Fixed asset purchases since the opening baseline</span><span>{money(report.capitalisedPurchases)}</span></div>
-    <div className="mt-1 flex justify-between font-semibold"><span>Retained profit after the management adjustment</span><span>{money(report.managementRetainedProfit)}</span></div>
-    <p className="mt-2 text-xs text-[var(--text-muted)]">Not part of the statement above. The assets these purchases bought are already carried in Fixed Assets, so deducting them from Capital as well would put the Balance Sheet out by this amount.</p>
-  </div>
+  {/* Named on the statement itself, because a Capital line nobody can explain is worse than no line
+      at all: Retained Profit is already down by what the period spent on fixed assets, and this is
+      where that amount went. Together they still add up to the profit the company actually made. */}
+  {report.capitalLines.some((line) => line.accountId === -2) && <p className="mt-4 text-xs text-[var(--text-muted)]">Fixed assets bought are charged to Net Profit in full, so Retained Profit is net of them. The assets stay in Fixed Assets above at cost, and "Fixed assets charged to profit" holds the same amount inside Capital — which is what keeps the statement balanced.</p>}
   </ReportCard> }
 function BsGroupView({group}:{group:BsGroup}){return <div className="mt-5"><h3 className="font-bold">{group.name}</h3>{group.lines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<div className="flex justify-between border-t border-[var(--border)] px-3 py-2 font-semibold"><span>Total {group.name}</span><span>{money(group.total)}</span></div></div>}
 function BsLineView({line}:{line:BsLine}){return <div className="flex justify-between px-3 py-2 text-sm"><span>{line.ledgerCode ? `${line.ledgerCode} · ` : ""}{line.name}</span><span>{money(line.amount)}</span></div>}

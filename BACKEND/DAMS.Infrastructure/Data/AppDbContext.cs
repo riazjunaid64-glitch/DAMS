@@ -1727,14 +1727,6 @@ namespace DAMS.Infrastructure.Data
             //    so the form says "no tax withheld" instead of showing an empty tax block.
             Head(55, "Site Expenses", "site_expenses", null, 0m, 0m, 0m, 550, isWhtApplicable: false),
             Head(56, "Preliminary", "preliminary", null, 0m, 0m, 0m, 560, isWhtApplicable: false),
-            // Keeps the previous ERP's own vocabulary for this spend so it stays recognisable on the
-            // P&L, rather than disappearing into Miscellaneous. New security deposits and advances
-            // are a COST when paid — the client's confirmed direction — so this is an expense head,
-            // not a route back into the old "Securities & Advances" receivable. That account keeps
-            // its inherited opening balance and is not reclassified by anything here.
-            Head(59, "Securities & Advances", "securities_advances", null, 0m, 0m, 0m, 575,
-                isWhtApplicable: false,
-                description: "Security deposits and advances paid out — recorded as a cost when paid. The historical Securities & Advances balance carried over from the previous ERP stays on its own balance-sheet account and is unaffected."),
             Head(57, "Donation / Charity", "donation_charity", null, 0m, 0m, 0m, 570, isWhtApplicable: false),
             Head(58, "Miscellaneous", "miscellaneous", null, 0m, 0m, 0m, 580, isWhtApplicable: false),
         ];

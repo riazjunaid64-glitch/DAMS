@@ -474,9 +474,11 @@ namespace DAMS.Application.Services
         /// last month after this runs.
         /// </para>
         /// <para>
-        /// WIP-to-cost-of-sales allocation is intentionally deferred pending approved per-unit
-        /// allocation policy: possession recognises REVENUE only, and accumulated construction
-        /// cost stays in Work in Progress.
+        /// Possession recognises REVENUE only. There is no cost-of-sales entry: construction and site
+        /// work are already an expense on the day they are paid, so there is nothing left to release.
+        /// The Work in Progress accounts on the chart hold balances inherited from the previous ERP,
+        /// and allocating those to units is still deferred pending an approved per-unit policy —
+        /// nothing here touches them.
         /// </para>
         /// </summary>
         public async Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId)

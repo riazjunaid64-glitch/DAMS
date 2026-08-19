@@ -19,9 +19,9 @@ namespace DAMS.Application.Interfaces
         Task<PagedResult<CustomerDepositLineDto>> GetCustomerDepositPageAsync(int? projectId, DateTime? to, int skip, int take);
         Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take);
         Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take);
-        /// <summary>The lines behind one profit figure. With management adjustments the list totals to
-        /// ManagementNetProfit; without them, to the accounting NetProfit.</summary>
-        Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, bool includeManagementAdjustments = true);
+        /// <summary>Every line behind Net Profit — revenue, costs, and the fixed assets bought in the
+        /// period. The signed amounts total to <c>FinancialSummaryDto.NetProfit</c>.</summary>
+        Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false);
         Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? assetAccountId = null, int? accountId = null, bool unassigned = false);
 
         Task<ProfitAndLossDto> GetProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);

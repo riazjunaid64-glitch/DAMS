@@ -15,15 +15,16 @@ namespace DAMS.Application.Tests;
 /// <summary>
 /// Recording the purchase of something the company keeps.
 /// <para>
-/// The invariant every test here defends: buying an asset moves value between two balance-sheet
-/// accounts and changes profit by nothing at all. If any of these start asserting a movement in the
-/// P&amp;L, the feature has silently become an expense again.
+/// The invariant every test here defends: buying an asset charges the full price to the one Net
+/// Profit figure — the client's confirmed rule — while the asset itself stays on the Balance Sheet at
+/// cost, and the sheet still balances. Those last two are what make it more than an expense: the cost
+/// is held back inside Capital as "Fixed assets charged to profit" rather than written off the asset.
 /// </para>
 /// </summary>
 public sealed class FixedAssetPurchaseTests
 {
     [Fact]
-    public async Task BuyingFurniture_MovesCashIntoTheAssetAccount_AndLeavesProfitUntouched()
+    public async Task BuyingFurniture_MovesCashIntoTheAssetAccount_AndChargesTheCostToProfit()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -47,27 +48,26 @@ public sealed class FixedAssetPurchaseTests
         Assert.Equal(800_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
         Assert.Equal(200_000m, (await accounts.GetByIdAsync(world.Furniture.Id)).CurrentBalance);
 
-        // The whole point: for ACCOUNTING purposes nothing was spent, so nothing about accounting
-        // profit moves.
+        // The money was spent, so the period bears it: one cost line, one profit figure.
         var profitAfter = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
-        Assert.Equal(profitBefore.TotalExpenses, profitAfter.TotalExpenses);
-        Assert.Equal(profitBefore.NetProfit, profitAfter.NetProfit);
-        // The client's management profit does move, by the gross price, and only by that.
-        Assert.Equal(200_000m, profitAfter.CapitalisedPurchases);
-        Assert.Equal(profitBefore.ManagementNetProfit - 200_000m, profitAfter.ManagementNetProfit);
+        Assert.Equal(profitBefore.TotalExpenses + 200_000m, profitAfter.TotalExpenses);
+        Assert.Equal(profitBefore.NetProfit - 200_000m, profitAfter.NetProfit);
+        Assert.Equal(200_000m, profitAfter.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
 
-        // And the sheet still balances at the same total — rearranged, not larger or smaller.
+        // And the sheet still balances at the same total — rearranged, not larger or smaller. The
+        // desks are still an asset at cost; the charge to profit is held back inside Capital.
         var sheetAfter = await service.GetBalanceSheetAsync(null, AsAt);
         Assert.True(sheetAfter.IsBalanced);
         Assert.Equal(sheetBefore.TotalAssets, sheetAfter.TotalAssets);
         Assert.Equal(200_000m, Group(sheetAfter, "Fixed Assets").Total);
+        Assert.Equal(200_000m, FixedAssetChargeLine(sheetAfter));
+        Assert.Equal(sheetBefore.TotalCapital, sheetAfter.TotalCapital);
 
-        // The dashboard reports it beside the expense total, never inside it.
+        // The dashboard reports the same one figure, with the purchase inside the expense total.
         var summary = await service.GetSummaryAsync(null, null, null);
         Assert.Equal(200_000m, summary.TotalAssetPurchases);
-        Assert.Equal(0m, summary.TotalExpenses);
-        Assert.Equal(0m, summary.NetProfit);
-        Assert.Equal(-200_000m, summary.ManagementNetProfit);
+        Assert.Equal(200_000m, summary.TotalExpenses);
+        Assert.Equal(-200_000m, summary.NetProfit);
     }
 
     [Fact]
@@ -104,7 +104,9 @@ public sealed class FixedAssetPurchaseTests
 
         var sheet = await service.GetBalanceSheetAsync(null, AsAt);
         Assert.True(sheet.IsBalanced);
-        Assert.Equal(0m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).TotalExpenses);
+        // The GROSS price is the cost, not the net that left the bank: the withheld tax is owed to
+        // FBR, not saved.
+        Assert.Equal(100_000m, (await service.GetProfitAndLossAsync(null, Year.Start, Year.End)).TotalExpenses);
 
         // The FBR payable report counts tax withheld from capital suppliers too.
         var payable = await Wht(context).GetPayableSummaryAsync(null, null);
@@ -138,17 +140,18 @@ public sealed class FixedAssetPurchaseTests
             AssetAccountId = world.Furniture.Id, FinanceAccountId = world.Hbl.Id,
             Amount = 60_000m, ItemName = "Reception counter",
             CategoryId = world.GoodsHead.Id, VendorId = world.Supplier.Id,
-            Date = new DateTime(2026, 8, 20)
+            Date = new DateTime(2026, 8, 5)
         }, adminUserId: 1);
         Assert.True(purchase.WhtApplied);
         Assert.Equal(6_000m, purchase.WhtAmount);
 
-        // It works in the other direction too: the expense form now sees the purchase.
+        // It works in the other direction too: the expense form now sees the purchase. Dated inside
+        // the same financial year and in the past — a money row cannot carry a future date.
         var later = await service.CreateExpenseAsync(new CreateExpenseDto
         {
             FinanceAccountId = world.Hbl.Id, Amount = 10_000m,
             CategoryId = world.GoodsHead.Id, VendorId = world.Supplier.Id,
-            Date = new DateTime(2026, 9, 1)
+            Date = new DateTime(2026, 8, 10)
         }, adminUserId: 1);
         Assert.Equal(1_000m, later.WhtAmount);
     }
@@ -265,9 +268,8 @@ public sealed class FixedAssetPurchaseTests
         var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
         Assert.Equal(300_000m, pnl.TotalExpenses);
         Assert.Equal(-300_000m, pnl.NetProfit);
-        // And no management adjustment: an expense is already a cost, so there is nothing to adjust.
-        Assert.Equal(0m, pnl.CapitalisedPurchases);
-        Assert.Equal(-300_000m, pnl.ManagementNetProfit);
+        // Recorded under its own head, not as a fixed-asset purchase — there is no asset to carry.
+        Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
 
         // Cash left the bank, and no accounting WIP asset was created for it.
         Assert.Equal(700_000m, (await accounts.GetByIdAsync(world.Hbl.Id)).CurrentBalance);
@@ -376,15 +378,15 @@ public sealed class FixedAssetPurchaseTests
             }));
     }
 
-    // ── The client's fixed-asset management-profit rule ──────────────────────────────
+    // ── The client's fixed-asset profit rule ─────────────────────────────────────────
     //
-    // Two true statements that disagree: the company still owns the desk (so accounting profit is
-    // unmoved) and the company spent the money (so the client's management profit falls). The
-    // feature is reporting BOTH, from the same rows, without letting the management number touch
-    // the statements that have to balance.
+    // The company spent the money, so the period bears it: one Net Profit figure, down by the gross
+    // price. The company also still owns the desk, so the asset stays on the sheet at cost. Both are
+    // true at once, and the entry that makes them fit together is the Capital line holding the charge
+    // back inside equity — without it the sheet would be out by every asset ever bought.
 
     [Fact]
-    public async Task AFixedAssetPurchase_LeavesAccountingProfitFlat_ButReducesManagementProfitByTheGross()
+    public async Task AFixedAssetPurchase_ReducesNetProfitByTheGross_AndKeepsTheAssetOnTheSheet()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -402,44 +404,39 @@ public sealed class FixedAssetPurchaseTests
         }, adminUserId: 1);
 
         var pnl = await service.GetProfitAndLossAsync(null, Year.Start, Year.End);
-        // Accounting: no cost, so the whole million is profit.
-        Assert.Equal(0m, pnl.TotalExpenses);
-        Assert.Equal(1_000_000m, pnl.NetProfit);
-        // And the purchase is nowhere in the expense LINES — putting it there is what would break
-        // the Trial Balance.
-        Assert.DoesNotContain(pnl.ExpenseLines, l => l.Amount == 1_000_000m);
-        // Management: the money was spent, so the period broke even.
-        Assert.Equal(1_000_000m, pnl.CapitalisedPurchases);
-        Assert.Equal(0m, pnl.ManagementNetProfit);
+        // The money was spent, so the period broke even. One figure, no adjustment to apply.
+        Assert.Equal(1_000_000m, pnl.TotalExpenses);
+        Assert.Equal(0m, pnl.NetProfit);
+        Assert.Equal(1_000_000m, pnl.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
 
         // The dashboard tells the same story with the same numbers.
         var summary = await service.GetSummaryAsync(null, null, null);
-        Assert.Equal(0m, summary.TotalExpenses);
-        Assert.Equal(1_000_000m, summary.NetProfit);
+        Assert.Equal(1_000_000m, summary.TotalExpenses);
+        Assert.Equal(0m, summary.NetProfit);
         Assert.Equal(1_000_000m, summary.TotalAssetPurchases);
-        Assert.Equal(0m, summary.ManagementNetProfit);
 
-        // The asset is still an asset, the sheet still balances, and the management figure is a
-        // memo beside it rather than inside it.
+        // The asset is still an asset at cost, retained profit is down by the charge, and the sheet
+        // balances because the same amount is held back inside Capital.
         var sheet = await service.GetBalanceSheetAsync(null, AsAt);
         Assert.True(sheet.IsBalanced);
         Assert.Equal(1_000_000m, Group(sheet, "Fixed Assets").Total);
-        Assert.Equal(1_000_000m, sheet.RetainedProfit);
-        Assert.Equal(1_000_000m, sheet.CapitalisedPurchases);
-        Assert.Equal(0m, sheet.ManagementRetainedProfit);
+        Assert.Equal(0m, sheet.RetainedProfit);
+        Assert.Equal(1_000_000m, FixedAssetChargeLine(sheet));
 
-        // The formal statement is untouched by the management rule.
+        // Both halves of the charge reach the Trial Balance, so its columns still agree.
         var trial = await service.GetTrialBalanceAsync(null, AsAt, 0);
         Assert.True(Assert.Single(trial.ColumnBalanced));
         Assert.Equal(Assert.Single(trial.ColumnDebitTotals), Assert.Single(trial.ColumnCreditTotals));
+        Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Fixed Asset Purchases").DebitBalances[0]);
+        Assert.Equal(1_000_000m, trial.Rows.Single(r => r.AccountName == "Fixed assets charged to profit").CreditBalances[0]);
     }
 
     /// <summary>
-    /// The drill-down behind the profit cards. One list has to reconcile to BOTH totals, or the
-    /// operator sees a breakdown that contradicts the card they clicked.
+    /// The drill-down behind the Net Profit card. Adding up the rows in front of the operator has to
+    /// land on the figure they clicked — nothing to add back, nothing to exclude.
     /// </summary>
     [Fact]
-    public async Task TheNetProfitDrillDown_ReconcilesToBothProfitFigures()
+    public async Task TheNetProfitDrillDown_ReconcilesToTheNetProfitCard()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -464,25 +461,25 @@ public sealed class FixedAssetPurchaseTests
         var page = await service.GetNetProfitPageAsync(null, Year.Start, Year.End, 0, 100);
         var summary = await service.GetSummaryAsync(null, Year.Start, Year.End);
 
-        // Revenue + expense = the accounting figure.
-        Assert.Equal(summary.NetProfit,
-            page.Items.Where(i => i.Kind != "management").Sum(i => i.Amount));
-        // Everything = the management figure.
-        Assert.Equal(summary.ManagementNetProfit, page.Items.Sum(i => i.Amount));
+        // Every row, added up, is the card.
+        Assert.Equal(summary.NetProfit, page.Items.Sum(i => i.Amount));
+        Assert.Equal(180_000m, summary.NetProfit);
+        // Two kinds only. A third would be a row the reader has to know to treat differently.
+        Assert.All(page.Items, i => Assert.True(i.Kind is "revenue" or "expense", "unexpected kind: " + i.Kind));
 
-        // The management row is signed as a deduction and named for what it is.
-        var management = Assert.Single(page.Items, i => i.Kind == "management");
-        Assert.Equal(-200_000m, management.Amount);
-        Assert.Contains("Boardroom table", management.Label);
-        Assert.Equal(new DateTime(2026, 8, 10), management.Date);
+        // The purchase is an ordinary cost row, signed as a deduction and named for what it is.
+        var purchase = Assert.Single(page.Items, i => i.Label.Contains("Boardroom table"));
+        Assert.Equal("expense", purchase.Kind);
+        Assert.Equal(-200_000m, purchase.Amount);
+        Assert.Equal(new DateTime(2026, 8, 10), purchase.Date);
     }
 
     /// <summary>
-    /// Historical integrity for the management figure. Buying an asset today must not reach into a
-    /// period that closed before it happened.
+    /// Historical integrity for the charge. Buying an asset today must not reach into a period that
+    /// closed before it happened.
     /// </summary>
     [Fact]
-    public async Task AManagementAdjustment_LandsOnlyInThePeriodThePurchaseHappened()
+    public async Task TheFixedAssetCharge_LandsOnlyInThePeriodThePurchaseHappened()
     {
         await using var context = Context();
         var world = await SeedAsync(context);
@@ -495,17 +492,18 @@ public sealed class FixedAssetPurchaseTests
         }, adminUserId: 1);
 
         var july = await service.GetProfitAndLossAsync(null, new DateTime(2026, 7, 1), new DateTime(2026, 7, 31));
-        Assert.Equal(0m, july.CapitalisedPurchases);
-        Assert.Equal(july.NetProfit, july.ManagementNetProfit);
+        Assert.DoesNotContain(july.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
+        Assert.Equal(0m, july.NetProfit);
 
         var august = await service.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
-        Assert.Equal(400_000m, august.CapitalisedPurchases);
-        Assert.Equal(august.NetProfit - 400_000m, august.ManagementNetProfit);
+        Assert.Equal(400_000m, august.ExpenseLines.Single(l => l.Name == "Fixed Asset Purchases").Amount);
+        Assert.Equal(-400_000m, august.NetProfit);
 
-        // …and a balance sheet dated before the purchase does not carry the memo either.
+        // …and a balance sheet dated before the purchase carries neither half of the charge.
         var before = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 9));
-        Assert.Equal(0m, before.CapitalisedPurchases);
-        Assert.Equal(before.RetainedProfit, before.ManagementRetainedProfit);
+        Assert.Equal(0m, before.RetainedProfit);
+        Assert.Equal(0m, FixedAssetChargeLine(before));
+        Assert.True(before.IsBalanced);
     }
 
     [Fact]
@@ -679,6 +677,10 @@ public sealed class FixedAssetPurchaseTests
 
     private static BsGroupDto Group(BalanceSheetDto sheet, string name) =>
         sheet.AssetGroups.Single(g => g.Name == name);
+
+    /// <summary>The Capital line holding the fixed-asset charge back inside equity; 0 when absent.</summary>
+    private static decimal FixedAssetChargeLine(BalanceSheetDto sheet) =>
+        sheet.CapitalLines.SingleOrDefault(l => l.Name == "Fixed assets charged to profit")?.Amount ?? 0m;
 
     /// <summary>
     /// A work-in-progress account, as inherited from the previous ERP. Still a legitimate account

@@ -567,6 +567,11 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         Assert.Equal(800_000m, after);
         var pnl = await Finance(context).GetProfitAndLossAsync(null, Jan.AddDays(-1), Mar);
         Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name.Contains("Cost of Sales", StringComparison.OrdinalIgnoreCase));
+        // Nor by the other route: fixed-asset purchases are charged to profit, but an INHERITED
+        // work-in-progress row is not a fixed-asset purchase. Charging it would write the whole
+        // carried-over construction balance off against profit on the day the rule shipped, which is
+        // a decision for the client and not a side effect of this feature.
+        Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
         Assert.Equal(0m, pnl.TotalExpenses);
     }
 

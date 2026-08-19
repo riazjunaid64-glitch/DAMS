@@ -81,18 +81,13 @@ interface FinancialSummary {
   /** Customer money held but not yet earned, as at the END of the range. A balance, not income. */
   customerDepositsBalance: number;
   manualRevenue: number;
+  /** Every cost of the period, including the fixed assets bought in it. */
   totalExpenses: number;
-  /** The ACCOUNTING result. Ties to the Balance Sheet and Trial Balance. */
+  /** The result: totalRevenue − totalExpenses. The only profit figure in the system. */
   netProfit: number;
-  /**
-   * The client's MANAGEMENT result: netProfit less the gross cost of fixed assets bought in the
-   * period. Buying an asset spends money even though accounting says value only changed form, so
-   * both readings are reported and neither is allowed to overwrite the other.
-   */
-  managementNetProfit: number;
   whtWithheld: number;
-  /** Fixed assets bought in the period, at cost. Outside totalExpenses and netProfit; it IS the
-   *  whole of the gap between netProfit and managementNetProfit. */
+  /** Fixed assets bought in the period, at cost. A breakdown of totalExpenses, not an addition to
+   *  it — the cost is already inside that total and inside netProfit. */
   totalAssetPurchases: number;
   outstandingAmount: number;
   overdueAmount: number;
@@ -195,17 +190,14 @@ interface NetProfitLine {
   date: string;
   projectName: string;
   label: string;
-  /**
-   * "revenue" + "expense" sum to the accounting net profit; adding "management" (fixed-asset
-   * purchases) gives the client's management net profit. One list, both totals.
-   */
-  kind: "revenue" | "expense" | "management";
+  /** "revenue" and "expense" together sum to netProfit. A fixed-asset purchase is an expense row. */
+  kind: "revenue" | "expense";
   amount: number;
 }
 
 type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | CustomerDepositLine | OutstandingLine | OverdueLine | NetProfitLine;
 
-type View = "revenue" | "expense" | "assetPurchase" | "customerDeposits" | "netProfit" | "managementProfit" | "outstanding" | "overdue";
+type View = "revenue" | "expense" | "assetPurchase" | "customerDeposits" | "netProfit" | "outstanding" | "overdue";
 
 // API view query value for each card view.
 const VIEW_PARAM: Record<View, string> = {
@@ -214,7 +206,6 @@ const VIEW_PARAM: Record<View, string> = {
   assetPurchase: "assetPurchase",
   customerDeposits: "customerDeposits",
   netProfit: "netProfit",
-  managementProfit: "managementProfit",
   outstanding: "outstanding",
   overdue: "overdue",
 };
@@ -222,15 +213,10 @@ const VIEW_PARAM: Record<View, string> = {
 const VIEW_TITLES: Record<View, string> = {
   revenue: "Revenue",
   expense: "Expenses",
-  // Things the company keeps. Money that changed form rather than being consumed — so it is outside
-  // accounting profit, and inside the client's management-profit deduction.
+  // Things the company keeps — and still a cost of the period the client's rule charges to profit.
   assetPurchase: "Fixed Asset Purchases",
   customerDeposits: "Customer Deposits",
-  // Two lists, because they add up to two different figures. The accounting one is what the Balance
-  // Sheet and Trial Balance agree with; the management one adds the fixed assets the client counts
-  // as spending. Sending both cards to one mixed list made the accounting card contradict itself.
-  netProfit: "Net Profit Breakdown (accounting)",
-  managementProfit: "Management Net Profit Breakdown",
+  netProfit: "Net Profit Breakdown",
   outstanding: "Outstanding Balances",
   overdue: "Overdue Installments",
 };
@@ -633,18 +619,14 @@ export default function FinanceDashboardPage({ user }: Props) {
     return [
       { label: "Total Revenue", value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View },
       { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "expense" as View },
-      // Sits between expenses and profit on purpose: it is spending that is NOT an accounting cost,
-      // and the adjacency is what stops someone reading the two as the same kind of number. It is
-      // also exactly the gap between the two profit cards below.
+      // Sits next to Total Expenses because it is part of it: the same spending, broken out so the
+      // reader can see how much of the period's cost went on things the company still owns.
       { label: "Fixed Assets Bought", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
       // A balance, not a period total, and deliberately next to Revenue: this is the money
       // customers have handed over that the company has NOT yet earned.
       { label: "Customer Deposits", value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View },
-      // Both profit readings, adjacent and labelled. The accounting one is what the Balance Sheet
-      // and Trial Balance agree with; the management one is what the client judges the period by.
-      // Showing one without the other is what would make two screens contradict each other.
-      { label: "Net Profit (accounting)", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
-      { label: "Management Net Profit", value: s?.managementNetProfit ?? 0, valueColor: (s?.managementNetProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#0ea5e9", view: "managementProfit" as View },
+      // One profit figure, and the same one every other screen reports.
+      { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
       { label: "Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
@@ -1172,7 +1154,6 @@ export default function FinanceDashboardPage({ user }: Props) {
           ],
         };
       case "netProfit":
-      case "managementProfit":
         return {
           minWidth: 760,
           emptyText: "No activity for the selected filters.",
@@ -1180,18 +1161,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as NetProfitLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).projectName}</span> },
             { key: "item", header: "Item", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as NetProfitLine).label}</span> },
-            // Three kinds, not two. Revenue and Expense sum to the accounting profit; adding the
-            // Management rows gives the management profit. Badging a fixed-asset purchase as an
-            // "Expense" here would make this list contradict the Trial Balance.
+            // Two kinds. Revenue and Expense, and the signed amounts add up to the Net Profit card.
             { key: "kind", header: "Type", width: "150px", render: (r) => {
               const row = r as NetProfitLine;
               const style = row.kind === "revenue"
                 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                : row.kind === "management"
-                  ? "text-sky-300 bg-sky-500/10 border-sky-500/20"
-                  : "text-rose-400 bg-rose-500/10 border-rose-500/20";
-              const label = row.kind === "revenue" ? "Revenue" : row.kind === "management" ? "Mgmt adjustment" : "Expense";
-              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{label}</span>;
+                : "text-rose-400 bg-rose-500/10 border-rose-500/20";
+              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{row.kind === "revenue" ? "Revenue" : "Expense"}</span>;
             } },
             { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
               const row = r as NetProfitLine;
@@ -1357,13 +1333,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             </p>
           )}
 
-          {/* Spelled out rather than left to be inferred: two profit numbers on one screen are only
-              trustworthy if the screen says why they differ. */}
+          {/* Spelled out rather than left to be inferred: the same amount appears in two cards, and a
+              reader who assumes those are separate totals will double-count the period's spending. */}
           {summary && summary.totalAssetPurchases > 0 && (
             <p className="mt-2 text-xs text-sky-300/90">
-              Management Net Profit is {formatMoney(summary.netProfit)} accounting profit less{" "}
-              {formatMoney(summary.totalAssetPurchases)} of fixed assets bought. The assets stay on the
-              Balance Sheet — only the management figure treats buying them as spending.
+              Total Expenses and Net Profit already include {formatMoney(summary.totalAssetPurchases)} of
+              fixed assets bought in this period, at cost — buying an asset spends the money. The assets
+              themselves stay on the Balance Sheet.
             </p>
           )}
 
@@ -1517,12 +1493,12 @@ export default function FinanceDashboardPage({ user }: Props) {
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {assetForm.id ? "Edit Fixed Asset Purchase" : "Record Fixed Asset Purchase"}
               </h3>
-              {/* Both halves of the truth, on the form that creates it. Saying only "profit is not
-                  affected" was the wording that let someone believe buying a generator was free. */}
+              {/* Both halves of the truth, on the form that creates it: the money is gone from profit
+                  and the company still owns the thing it bought. */}
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                The asset stays on the Balance Sheet, so accounting profit does not move — but
-                Management Net Profit falls by the full purchase price. For construction, site work
-                or materials being consumed, use Expenses instead.
+                Net Profit falls by the full purchase price, and the asset still appears on the Balance
+                Sheet at cost. For construction, site work or materials being consumed, use Expenses
+                instead.
               </p>
             </div>
             <div className="space-y-4 p-6">

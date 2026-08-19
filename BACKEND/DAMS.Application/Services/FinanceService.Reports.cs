@@ -11,6 +11,20 @@ namespace DAMS.Application.Services
         // the earliest date a row is allowed to carry.
         private static readonly DateTime SqlStart = FinanceDateRules.SqlMin;
 
+        /// <summary>
+        /// Key of the P&amp;L expense line carrying the fixed assets bought in the window.
+        /// <para>
+        /// The Balance Sheet and Trial Balance read the charge back off that line rather than
+        /// re-querying the purchases, so the amount held back in Capital is by construction the same
+        /// amount that came off retained profit. Two independent sums could differ by a filter or a
+        /// rounding step, and the difference would surface as an unexplained imbalance.
+        /// </para>
+        /// </summary>
+        private const string FixedAssetChargeKey = "fixed-asset-purchases";
+
+        /// <summary>The Capital line that holds the fixed-asset charge back inside equity.</summary>
+        private const string FixedAssetChargeCapitalLine = "Fixed assets charged to profit";
+
         public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
             int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
         {
@@ -20,11 +34,6 @@ namespace DAMS.Application.Services
             var priorEnd = end.AddYears(-1);
             var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), cancellationToken);
             var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
-            // The management adjustment, for this period and the comparative. Read from the same
-            // purchase rows the Fixed Assets group on the Balance Sheet is built from, so the memo
-            // line and the asset it refers to cannot disagree.
-            var capitalised = await CapitalisedPurchasesAsync(projectId, start, end.AddDays(1), cancellationToken);
-            var priorCapitalised = await CapitalisedPurchasesAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
             var projectName = projectId.HasValue
                 ? await _context.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.ProjectName).SingleAsync(cancellationToken)
                 : null;
@@ -38,34 +47,15 @@ namespace DAMS.Application.Services
                 TotalIncome = Money(current.Income.Sum(l => l.Amount)),
                 TotalExpenses = Money(current.Expenses.Sum(l => l.Amount)),
                 NetProfit = netProfit,
-                CapitalisedPurchases = capitalised,
-                ManagementNetProfit = Money(netProfit - capitalised),
                 PriorTotalIncome = Money(prior.Income.Sum(l => l.Amount)),
                 PriorTotalExpenses = Money(prior.Expenses.Sum(l => l.Amount)),
-                PriorNetProfit = priorNetProfit,
-                PriorCapitalisedPurchases = priorCapitalised,
-                PriorManagementNetProfit = Money(priorNetProfit - priorCapitalised)
+                PriorNetProfit = priorNetProfit
             };
         }
 
-        /// <summary>
-        /// Gross cost of the fixed assets bought in a window — the whole of the difference between
-        /// the accounting result and the client's management result.
-        /// <para>
-        /// GROSS, not net of withholding, for the same reason an expense is gross: what was withheld
-        /// from the supplier is owed to FBR, not saved. Net would understate the management
-        /// deduction by exactly the tax and leave the two profit figures reconciling to nothing.
-        /// </para>
-        /// <para>
-        /// This is read-only and is never written into <c>ExpenseLines</c>, the Trial Balance or the
-        /// Balance Sheet's Capital section. Its counterpart entry already exists on the sheet: the
-        /// asset itself.
-        /// </para>
-        /// </summary>
-        private async Task<decimal> CapitalisedPurchasesAsync(
-            int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken) =>
-            Money(await AssetPurchaseQuery(projectId, from, toExclusive, null, null, false)
-                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
+        /// <summary>The fixed-asset charge inside a built period, read off the P&amp;L line itself.</summary>
+        private static decimal FixedAssetCharge(PnlPeriod period) =>
+            Money(period.Expenses.Where(l => l.Key == FixedAssetChargeKey).Sum(l => l.Amount));
 
         public async Task<BalanceSheetDto> GetBalanceSheetAsync(
             int? projectId, DateTime asAt, CancellationToken cancellationToken = default)
@@ -102,16 +92,26 @@ namespace DAMS.Application.Services
             }.Where(g => g.Lines.Count > 0).ToList();
             var capitalLines = snapshots.Where(s => s.Type == FinanceAccountType.Capital)
                 .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).Select(ToBsLine).ToList();
+            // The other half of the client's fixed-asset rule. Net Profit — and therefore the
+            // retained profit just derived from it — is already down by what the period spent on
+            // fixed assets, while the assets themselves are still carried above at cost. Left there,
+            // the sheet would be out by exactly that amount and every reader would be told the books
+            // are broken. So the charge is held back inside Capital instead: total equity is
+            // unchanged, the split within it shows how much of the retained result went into assets
+            // the company still owns, and the statement balances. AccountId is a virtual -2 (the
+            // Retained Profit line uses -1) because no real account backs it.
+            var fixedAssetCharge = FixedAssetCharge(pnl);
+            if (fixedAssetCharge != 0m)
+                capitalLines.Add(new BsLineDto
+                {
+                    AccountId = -2, LedgerCode = null,
+                    Name = FixedAssetChargeCapitalLine, Amount = fixedAssetCharge
+                });
             var totalAssets = Money(assetGroups.Sum(g => g.Total));
             var totalLiabilities = Money(liabilityGroups.Sum(g => g.Total));
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
             var imbalance = Money(totalAssets - rhs);
-            // The management memo. Computed over exactly the window retainedProfit covers, and
-            // deliberately applied AFTER totalCapital/rhs/imbalance are settled: the accounting
-            // statement is finished before the management view is even mentioned, so no ordering
-            // mistake can leak the adjustment into the figures IsBalanced is checked against.
-            var capitalisedToDate = await CapitalisedPurchasesAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
             var result = new BalanceSheetDto
             {
                 AsAt = date, AssetGroups = assetGroups, TotalAssets = totalAssets,
@@ -119,9 +119,7 @@ namespace DAMS.Application.Services
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
-                IsBalanced = imbalance == 0m,
-                CapitalisedPurchases = capitalisedToDate,
-                ManagementRetainedProfit = Money(retainedProfit - capitalisedToDate)
+                IsBalanced = imbalance == 0m
             };
             if (!result.IsBalanced)
                 result.UnbalancedAccounts = await DiagnoseImbalanceAsync(projectId, date, snapshots, cancellationToken);
@@ -171,6 +169,15 @@ namespace DAMS.Application.Services
                 foreach (var line in pnl.Expenses)
                     values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other,
                         line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
+                // The credit half of the fixed-asset charge. The expense line above debits profit by
+                // what the period spent on assets; this holds the same amount inside equity, because
+                // the asset it bought is still sitting in the Fixed Assets rows. Omit it and the
+                // column is out by exactly the period's purchases — the same entry the Balance Sheet
+                // makes as a Capital line, read off the same P&L line so the two cannot disagree.
+                var fixedAssetCharge = FixedAssetCharge(pnl);
+                if (fixedAssetCharge != 0m)
+                    values["EQ:fixed-assets"] = new TrialValue(VirtualId("EQ:fixed-assets"), null,
+                        FixedAssetChargeCapitalLine, FinanceAccountType.Capital, 0m, fixedAssetCharge);
 
                 if (!projectId.HasValue)
                 {
@@ -221,12 +228,7 @@ namespace DAMS.Application.Services
             rows.Add(new object?[] { "Expenses", "Current", "Prior" });
             rows.AddRange(report.ExpenseLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount, l.PriorAmount }));
             rows.Add(new object?[] { "Total Expenses", report.TotalExpenses, report.PriorTotalExpenses });
-            rows.Add(new object?[] { "Net Profit (accounting)", report.NetProfit, report.PriorNetProfit });
-            // Below the accounting total and labelled as an adjustment, mirroring the screen. An
-            // export that showed only one of the two profit figures would be the disagreement this
-            // report exists to prevent.
-            rows.Add(new object?[] { "Less: fixed asset purchases (management adjustment)", report.CapitalisedPurchases, report.PriorCapitalisedPurchases });
-            rows.Add(new object?[] { "Management Net Profit", report.ManagementNetProfit, report.PriorManagementNetProfit });
+            rows.Add(new object?[] { "Net Profit", report.NetProfit, report.PriorNetProfit });
             return Workbook("profit-and-loss", rows);
         }
 
@@ -268,11 +270,6 @@ namespace DAMS.Application.Services
             rows.Add(new object?[] { "Retained Profit", report.RetainedProfit });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
-            // Memorandum, outside the statement totals above — the assets these purchases bought are
-            // already in the Fixed Assets group, so this is a second READING of them, not a second
-            // entry.
-            rows.Add(new object?[] { "Memo — fixed asset purchases since the opening baseline", report.CapitalisedPurchases });
-            rows.Add(new object?[] { "Memo — management retained profit", report.ManagementRetainedProfit });
             return Workbook("balance-sheet", rows);
         }
 
@@ -370,6 +367,23 @@ namespace DAMS.Application.Services
                     Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
                     Amount = nonCashCredit, Count = nonCashCreditCount
                 });
+            // Fixed assets bought in the window, at their GROSS cost — an expense line like any
+            // other, because the client's confirmed rule is that buying an asset is spending. Gross
+            // for the same reason an invoice is gross: what was withheld from the supplier is owed to
+            // FBR, not saved, so netting it off would understate the cost by exactly the tax.
+            //
+            // The asset is NOT written off the sheet by this. It stays in Fixed Assets at cost, and
+            // the Balance Sheet holds this same amount back inside Capital (see
+            // <see cref="FixedAssetChargeCapitalLine"/>) so the statement still balances.
+            var fixedAssets = await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
+                .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (fixedAssets is { Amount: not 0m })
+                expenses.Add(new ReportLine
+                {
+                    Key = FixedAssetChargeKey, Name = "Fixed Asset Purchases", Order = int.MaxValue - 3,
+                    Amount = fixedAssets.Amount, Count = fixedAssets.Count
+                });
             var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
                 .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
                 .SingleOrDefaultAsync(cancellationToken);
@@ -397,9 +411,11 @@ namespace DAMS.Application.Services
                 .GroupBy(r => r.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
             var expense = await SumByAccount(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
                 .GroupBy(e => e.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(e => e.Amount - e.WhtAmount))), cancellationToken);
-            // A purchase moves two accounts and touches no income statement line. Cash falls by the
-            // net paid; the asset account rises by the gross. The gap between them is the withheld
-            // tax, which lands on the payable below — which is exactly why the sheet still balances.
+            // A purchase moves two accounts: cash falls by the net paid, the asset account rises by
+            // the gross, and the gap between them is the withheld tax, which lands on the payable
+            // below. That is what balances the CASH side. The charge the same purchase makes against
+            // profit is balanced separately, by the Capital line above — the asset account itself is
+            // never written down.
             var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
                 .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
             var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)

@@ -549,6 +549,11 @@ public sealed class WithholdingTaxTests
     public async Task DuplicateChallanNumbers_AreRejected()
     {
         await using var context = Seeded();
+        // Tax has to have been withheld before any of it can be deposited, or the deposit is refused
+        // for having nothing behind it and the challan is never looked at. 1,000,000 of goods from a
+        // filer withholds 10,000, which covers both deposits below.
+        await Finance(context).CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
         var wht = Wht(context);
         await wht.CreateDepositAsync(new SaveWhtDepositDto
         { FinanceAccountId = 1, Amount = 5_000m, ChallanNumber = "CPR-77" }, 1);

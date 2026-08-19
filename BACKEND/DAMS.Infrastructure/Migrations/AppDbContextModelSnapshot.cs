@@ -2856,21 +2856,6 @@ namespace DAMS.Infrastructure.Migrations
                         },
                         new
                         {
-                            Id = 59,
-                            AnnualThreshold = 0m,
-                            Code = "securities_advances",
-                            CreatedAt = new DateTime(2026, 8, 11, 0, 0, 0, 0, DateTimeKind.Utc),
-                            Description = "Security deposits and advances paid out — recorded as a cost when paid. The historical Securities & Advances balance carried over from the previous ERP stays on its own balance-sheet account and is unaffected.",
-                            DisplayOrder = 575,
-                            FilerRate = 0m,
-                            IsActive = true,
-                            IsWhtApplicable = false,
-                            Name = "Securities & Advances",
-                            NonFilerRate = 0m,
-                            RowVersion = new byte[0]
-                        },
-                        new
-                        {
                             Id = 57,
                             AnnualThreshold = 0m,
                             Code = "donation_charity",
@@ -3374,6 +3359,46 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1");
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinanceRecordAudit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<int?>("ActorUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Changes")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RecordId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RecordType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.HasIndex("RecordType", "RecordId");
+
+                    b.ToTable("FinanceRecordAudits");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceSetting", b =>

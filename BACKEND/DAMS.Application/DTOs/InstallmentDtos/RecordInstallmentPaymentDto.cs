@@ -21,7 +21,8 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         [StringLength(1000)]
         public string? Notes { get; set; }
 
-        // Optional. Defaults to now (UTC) when omitted.
+        // Optional. Defaults to the current Pakistan business time when omitted, and can never be
+        // in the future or before the committed opening-balance date.
         public DateTime? PaidAt { get; set; }
     }
 }

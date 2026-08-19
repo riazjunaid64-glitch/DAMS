@@ -51,8 +51,13 @@ namespace DAMS.Application.Services
             // so the expense and profit figures are unaffected by withholding.
             var ordinaryExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(e => (decimal?)e.Amount) ?? 0m;
-            var whtWithheld = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(e => (decimal?)e.WhtAmount) ?? 0m;
+            // Both withholding sources, because both raise the same payable to FBR. Expenses alone
+            // under-reported the card against the Tax Payable account and against the WHT screen,
+            // which read purchases too.
+            var whtWithheld = (await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                    .SumAsync(e => (decimal?)e.WhtAmount) ?? 0m)
+                + (await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                    .SumAsync(p => (decimal?)p.WhtAmount) ?? 0m);
             var commissionPayouts = await CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var commissionReversals = await CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
@@ -69,15 +74,16 @@ namespace DAMS.Application.Services
                     .SumAsync(r => (decimal?)r.Amount) ?? 0m);
             var loanInterest = await LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(t => (decimal?)t.InterestAmount) ?? 0m;
-            var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals
-                + rebatePayments - rebateReversals + nonCashCredits + loanInterest;
-            // Reported alongside the expense total, never inside it. For ACCOUNTING purposes
-            // capitalising a purchase is the whole point: the money changed form rather than being
-            // consumed, so it must not reach NetProfit by any route — that is what keeps NetProfit
-            // tied to the Balance Sheet. It is subtracted once, separately, to give the client's
-            // ManagementNetProfit below.
-            var assetPurchases = await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+            // Fixed assets bought in the period, at their gross cost, INSIDE the expense total.
+            // Buying an asset spends the money, and the client's confirmed rule is that the period
+            // bears that spending — so the cost reaches Net Profit by the ordinary route rather than
+            // being held outside it as a second figure to reconcile. The asset itself is untouched:
+            // it stays on the Balance Sheet at cost, with the same amount held back out of retained
+            // profit as a capital line so the sheet still balances.
+            var assetPurchases = await FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals
+                + rebatePayments - rebateReversals + nonCashCredits + loanInterest + assetPurchases;
 
             // Outstanding/overdue are balance snapshots (not date-filtered). The summary and
             // paged tables share these SQL projections so their totals always reconcile.
@@ -140,9 +146,6 @@ namespace DAMS.Application.Services
                 TotalRevenue = totalRevenue,
                 TotalExpenses = totalExpenses,
                 NetProfit = totalRevenue - totalExpenses,
-                // Same rows, same filters, one subtraction apart — so the two profit figures can
-                // never tell different stories about the same period.
-                ManagementNetProfit = totalRevenue - totalExpenses - assetPurchases,
                 WhtWithheld = whtWithheld,
                 TotalAssetPurchases = assetPurchases,
                 OutstandingAmount = outstandingTotal,
@@ -444,24 +447,19 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// The lines behind one of the two profit figures.
-        /// <para>
-        /// <paramref name="includeManagementAdjustments"/> is what decides WHICH figure this list adds
-        /// up to. False gives revenue and accounting costs only, and totals to <c>NetProfit</c> — the
-        /// figure the Balance Sheet and Trial Balance agree with. True also lists fixed-asset
-        /// purchases as their own kind, and totals to <c>ManagementNetProfit</c>. One list serving
-        /// both cards was worse than it sounds: an operator clicking "Net Profit (accounting)" and
-        /// adding up the rows in front of them arrived at the management figure instead.
-        /// </para>
+        /// Every line behind Net Profit: revenue (+), costs (−), and the fixed assets bought in the
+        /// period (−, as ordinary costs). The signed amounts add up to the Net Profit card for the
+        /// same filters, so an operator can total the rows in front of them and arrive at the figure
+        /// they clicked.
         /// </summary>
-        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, bool includeManagementAdjustments = true)
+        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
 
-            // Every revenue line (+), expense line (−) and management adjustment (−), unioned,
-            // ordered and paged in SQL. Customer payments are absent by design: they move cash
-            // between a bank and a deposit or receivable, and never touch profit.
+            // Every revenue line (+) and cost line (−), unioned, ordered and paged in SQL. Customer
+            // payments are absent by design: they move cash between a bank and a deposit or
+            // receivable, and never touch profit.
             var recognisedSales = SaleRecognitionQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new NetProfitRow
                 {
@@ -573,23 +571,23 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Customer credit reversal"
                 });
 
-            // Fixed-asset purchases. NOT an accounting cost — which is why they carry their own kind
-            // rather than joining the expense rows, and why the accounting view leaves them out
-            // entirely instead of showing them as a line the reader has to know to exclude.
-            var capitalised = AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+            // Fixed-asset purchases, as ordinary cost rows: the client's rule is that buying an asset
+            // is spending, so it belongs in the same list as every other cost with nothing for the
+            // reader to add back. The item name is kept in the label so the row is still recognisable
+            // as a purchase rather than an invoice.
+            var assetPurchases = FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(p => new NetProfitRow
                 {
                     SortId = p.Id, Date = p.Date,
                     ProjectName = p.Project != null ? p.Project.ProjectName : "General",
-                    Kind = "management", Amount = p.Amount, IsPayment = false, PaymentType = null,
+                    Kind = "expense", Amount = p.Amount, IsPayment = false, PaymentType = null,
                     InstallmentType = null, Label = "Fixed asset purchase — " + p.ItemName
                 });
 
-            var accounting = recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
+            var raw = await recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
                 .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(loanInterest).Concat(retained)
-                .Concat(nonCashCredits).Concat(nonCashCreditReversals);
-            var raw = await (includeManagementAdjustments ? accounting.Concat(capitalised) : accounting)
+                .Concat(nonCashCredits).Concat(nonCashCreditReversals).Concat(assetPurchases)
                 .OrderByDescending(x => x.Date)
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
@@ -602,9 +600,9 @@ namespace DAMS.Application.Services
                 ProjectName = r.ProjectName ?? "General",
                 Kind = r.Kind,
                 Label = r.Label ?? string.Empty,
-                // Anything that is not revenue reduces one of the two profit figures, so it is
-                // negative. Naming "revenue" as the positive case rather than "expense" as the
-                // negative one means a future kind cannot default itself into income.
+                // Anything that is not revenue reduces profit, so it is negative. Naming "revenue"
+                // as the positive case rather than "expense" as the negative one means a future kind
+                // cannot default itself into income.
                 Amount = r.Kind == "revenue" ? r.Amount : -r.Amount
             }).ToList();
 

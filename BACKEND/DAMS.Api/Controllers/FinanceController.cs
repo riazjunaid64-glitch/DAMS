@@ -91,14 +91,10 @@ namespace DAMS.Api.Controllers
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
-                // Two views over one query, and the difference matters: the accounting list adds up
-                // to the accounting profit card, the management list to the management profit card.
                 "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(
-                    projectId, from, to, skip, take, accountId, unassigned, includeManagementAdjustments: false)),
-                "managementprofit" => Ok(await _financeService.GetNetProfitPageAsync(
-                    projectId, from, to, skip, take, accountId, unassigned, includeManagementAdjustments: true)),
+                    projectId, from, to, skip, take, accountId, unassigned)),
                 "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue, netProfit or managementProfit." })
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
             };
         }
 
