@@ -116,25 +116,40 @@ namespace DAMS.Api.Filters
                 return;
             }
 
-            await next();
+            var executed = await next();
 
-            var status = context.Result == null ? context.HttpContext.Response.StatusCode : StatusOf(context.Result);
-            var succeeded = status is >= 200 and < 300;
+            // The outcome is on the context next() RETURNS. The one passed in only carries a result
+            // when a filter short-circuits BEFORE the action runs — MVC never copies the action's own
+            // result onto it — and at this point that result has not been executed either, so
+            // Response.StatusCode is still its unwritten default of 200. Reading those two therefore
+            // recorded EVERY outcome as an empty success: a rejected amount marked the key done and
+            // answered the operator's corrected retry with 200 {}, and a genuine save stored no body
+            // at all, so the retry this whole mechanism exists for replayed {} instead of the record
+            // it had just created.
+            var status = OutcomeOf(executed);
             try
             {
-                if (succeeded)
+                if (status is >= 200 and < 300)
                 {
                     reservation.IsCompleted = true;
                     reservation.CompletedAt = DateTime.UtcNow;
                     reservation.StatusCode = status;
-                    reservation.ResponseBody = context.Result == null ? null : Body(context.Result);
+                    reservation.ResponseBody = Body(executed.Result);
+                }
+                else if (status < 500)
+                {
+                    // Understood and refused: nothing was recorded, so the key has to be free again.
+                    // The operator must be able to correct the amount and submit the same intent.
+                    store.IdempotentRequests.Remove(reservation);
                 }
                 else
                 {
-                    // Rejected input, or a failure: nothing was recorded, so the key has to be free
-                    // again. The operator must be able to correct the amount and submit the same
-                    // intent, and a transient failure has to stay genuinely retryable.
-                    store.IdempotentRequests.Remove(reservation);
+                    // A fault, and it is NOT known whether the money was written — the exception can
+                    // just as easily have come after the service committed as before. Releasing the
+                    // key here would let the retry post the same amount a second time, which is the
+                    // precise failure this filter exists to prevent. So the reservation stays,
+                    // uncompleted, and a retry gets the 409 that asks a human to check first.
+                    reservation.StatusCode = status;
                 }
                 await store.SaveChangesAsync(CancellationToken.None);
             }
@@ -168,8 +183,9 @@ namespace DAMS.Api.Filters
             }
             if (!existing.IsCompleted)
             {
-                // Still running, or the process died between committing and recording the response.
-                // Both need a human to look: re-running it could double the money.
+                // Still running, or it faulted, or the process died between committing and recording
+                // the response. None of the three can say whether the money was written, and all
+                // three need a human to look: re-running blind could double it.
                 return new ConflictObjectResult(new
                 {
                     message = "An identical request is still being processed. Reload the page to check whether it was recorded before trying again."
@@ -183,7 +199,17 @@ namespace DAMS.Api.Filters
             };
         }
 
-        private static int StatusOf(IActionResult result) => result switch
+        /// <summary>
+        /// The status the caller will actually receive. An exception the action did not handle never
+        /// becomes a result at all — the exception middleware turns it into a 500 further out — so it
+        /// has to be read from the exception rather than from a result that is still null here.
+        /// </summary>
+        private static int OutcomeOf(ActionExecutedContext executed) =>
+            executed.Exception != null && !executed.ExceptionHandled
+                ? StatusCodes.Status500InternalServerError
+                : StatusOf(executed.Result);
+
+        private static int StatusOf(IActionResult? result) => result switch
         {
             ObjectResult o => o.StatusCode ?? StatusCodes.Status200OK,
             StatusCodeResult s => s.StatusCode,
@@ -191,7 +217,7 @@ namespace DAMS.Api.Filters
             _ => StatusCodes.Status200OK
         };
 
-        private static string? Body(IActionResult result) => result switch
+        private static string? Body(IActionResult? result) => result switch
         {
             ObjectResult o when o.Value != null => JsonSerializer.Serialize(o.Value, ResponseOptions),
             ContentResult c => c.Content,

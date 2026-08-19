@@ -1,6 +1,6 @@
 import { api } from "../../api/api.ts";
 import { apiJson, jsonRequest } from "../leads/leadApi.ts";
-import { moneyRequest, newIdempotencyKey } from "../../lib/idempotency.ts";
+import { moneyRequest } from "../../lib/idempotency.ts";
 import type {
   ExpenseCategory,
   FinanceSettings,
@@ -54,12 +54,15 @@ export const listDeposits = (from?: string, to?: string) =>
  * Recording a deposit is a money movement, so a create carries an idempotency key: a retry after a
  * lost response must not hand FBR the same challan twice. An edit is protected by its row version
  * instead — it changes a record that already exists.
+ *
+ * The key is required rather than defaulted. A default would be generated per CALL, which is a fresh
+ * key on every retry — it passes the server's check every time and protects nothing, silently.
  */
-export const saveDeposit = (id: number | null, body: unknown, idempotencyKey?: string) =>
+export const saveDeposit = (id: number | null, body: unknown, idempotencyKey: string) =>
   apiJson<WhtDeposit>(id ? `/api/finance/wht/deposits/${id}` : "/api/finance/wht/deposits",
     id
       ? jsonRequest("PUT", body)
-      : moneyRequest(idempotencyKey ?? newIdempotencyKey("wht-deposit"), jsonRequest("POST", body)));
+      : moneyRequest(idempotencyKey, jsonRequest("POST", body)));
 
 /** Deleting a deposit puts the tax back on the payable, so it sends the version it is deleting. */
 export const deleteDeposit = (id: number, concurrencyToken: string) =>

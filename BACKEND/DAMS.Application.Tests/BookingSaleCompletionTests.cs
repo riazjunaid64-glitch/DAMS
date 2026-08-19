@@ -1,3 +1,4 @@
+using DAMS.Application.DTOs.InstallmentDtos;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -40,6 +41,115 @@ public sealed class BookingSaleCompletionTests
         Assert.Contains("Give possession before completing the sale", error.Message);
         Assert.Equal(BookingStatus.PaymentPlanActive, db.Bookings.Single().Status);
         Assert.Empty(db.BookingSaleRecognitions);
+    }
+
+    /// <summary>
+    /// A schedule may be built after possession — it is the only route DAMS has for collecting a
+    /// recognised receivable — but it must not RESTATE the sale it collects.
+    /// <para>
+    /// BookingSaleRecognition.NetSaleValue is what was booked as revenue and what the Balance Sheet
+    /// reports as Accounts Receivable, and it is immutable by design. Writing a new price onto the
+    /// booking would leave the formal statements on the recognised figure while the dashboard's
+    /// outstanding, the completion requirement and every commission basis moved to the new one: one
+    /// sale, three different amounts, and no way to tell from any single screen which is right.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task GeneratingAScheduleAfterPossession_CannotRepriceTheRecognisedSale()
+    {
+        await using var db = Context();
+        var booking = await SeedAsync(db, BookingStatus.PossessionGiven, recognised: true);
+        db.Installments.RemoveRange(db.Installments);
+        await db.SaveChangesAsync();
+        var service = new InstallmentService(db, new FinanceAccountService(db));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
+            {
+                AgreedSalePrice = 120_000m, DiscountPercent = 0m,
+                Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
+                InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+            }, adminUserId: 5));
+
+        Assert.Contains("recognised at possession", error.Message);
+        Assert.Contains("cannot be repriced", error.Message);
+        // The booking is untouched: no half-applied reprice, and no schedule built against one.
+        var stored = await db.Bookings.AsNoTracking().SingleAsync();
+        Assert.Equal(100_000m, stored.AgreedSalePrice);
+        Assert.Equal(0m, stored.DiscountAmount);
+        Assert.Empty(db.Installments);
+        Assert.Equal(100_000m, db.BookingSaleRecognitions.Single().NetSaleValue);
+    }
+
+    /// <summary>
+    /// The same call at the recognised price still works. Blocking the reprice must not strand the
+    /// receivable with no way to collect it — that was the reason post-possession generation was
+    /// allowed in the first place.
+    /// </summary>
+    [Fact]
+    public async Task GeneratingAScheduleAfterPossession_AtTheRecognisedPrice_IsAllowed()
+    {
+        await using var db = Context();
+        var booking = await SeedAsync(db, BookingStatus.PossessionGiven, recognised: true);
+        db.Installments.RemoveRange(db.Installments);
+        await db.SaveChangesAsync();
+        var service = new InstallmentService(db, new FinanceAccountService(db));
+
+        var schedule = await service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
+        {
+            AgreedSalePrice = 100_000m, DiscountPercent = 0m,
+            Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
+            InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+        }, adminUserId: 5);
+
+        Assert.Equal(4, schedule.Items.Count);
+        Assert.Equal(100_000m, (await db.Bookings.AsNoTracking().SingleAsync()).AgreedSalePrice);
+    }
+
+    /// <summary>
+    /// A discount that arrives at the same net sale value is not a reprice. The recognised figure is
+    /// the net one, so that is what the guard compares — not the gross price it was derived from.
+    /// </summary>
+    [Fact]
+    public async Task GeneratingAScheduleAfterPossession_AllowsADifferentSplitAtTheSameNetValue()
+    {
+        await using var db = Context();
+        var booking = await SeedAsync(db, BookingStatus.PossessionGiven, recognised: true);
+        db.Installments.RemoveRange(db.Installments);
+        await db.SaveChangesAsync();
+        var service = new InstallmentService(db, new FinanceAccountService(db));
+
+        // 125,000 less 20% is the same 100,000 the sale was recognised at.
+        var schedule = await service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
+        {
+            AgreedSalePrice = 125_000m, DiscountPercent = 20m,
+            Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
+            InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+        }, adminUserId: 5);
+
+        Assert.Equal(4, schedule.Items.Count);
+        var stored = await db.Bookings.AsNoTracking().SingleAsync();
+        Assert.Equal(100_000m, stored.AgreedSalePrice - stored.DiscountAmount);
+    }
+
+    /// <summary>Before possession there is no recognised sale, so the terms are still negotiable.</summary>
+    [Fact]
+    public async Task GeneratingAScheduleBeforePossession_CanStillSetTheTerms()
+    {
+        await using var db = Context();
+        var booking = await SeedAsync(db, BookingStatus.PaymentPlanActive, recognised: false);
+        db.Installments.RemoveRange(db.Installments);
+        await db.SaveChangesAsync();
+        var service = new InstallmentService(db, new FinanceAccountService(db));
+
+        await service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
+        {
+            AgreedSalePrice = 120_000m, DiscountPercent = 0m,
+            Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
+            InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+        }, adminUserId: 5);
+
+        Assert.Equal(120_000m, (await db.Bookings.AsNoTracking().SingleAsync()).AgreedSalePrice);
     }
 
     private static async Task<Booking> SeedAsync(AppDbContext db, BookingStatus status, bool recognised)

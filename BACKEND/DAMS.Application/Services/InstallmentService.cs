@@ -289,6 +289,23 @@ namespace DAMS.Application.Services
             var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
             var netSalePrice = dto.AgreedSalePrice - discountAmount;
 
+            // A schedule may be built after possession — that is the only route DAMS has for
+            // collecting a recognised receivable — but it must not RESTATE the sale it is collecting.
+            // BookingSaleRecognition.NetSaleValue is what was booked as revenue and what the Balance
+            // Sheet reports as Accounts Receivable, and it is immutable by design. Writing a new
+            // price onto the booking below would leave the formal statements on the recognised figure
+            // while the dashboard's outstanding, the completion check and every commission basis all
+            // moved to the new one — the same sale, three different amounts.
+            var recognisedNetSale = await _context.BookingSaleRecognitions.AsNoTracking()
+                .Where(r => r.BookingId == bookingId)
+                .Select(r => (decimal?)r.NetSaleValue)
+                .FirstOrDefaultAsync();
+            if (recognisedNetSale.HasValue
+                && Math.Round(netSalePrice, 2, MidpointRounding.AwayFromZero) != recognisedNetSale.Value)
+                throw new InvalidOperationException(
+                    $"This sale was recognised at possession for {recognisedNetSale.Value:0.00} and cannot be repriced. "
+                    + "Generate the schedule with the same agreed sale price and discount.");
+
             if (nonCashCredits > netSalePrice - booking.BookingAmountReceived)
                 throw new InvalidOperationException("Existing rebate credits exceed the revised booking balance. Reverse or adjust them before changing the plan terms.");
             var installmentPool = netSalePrice - booking.BookingAmountReceived - nonCashCredits - possessionAmount;

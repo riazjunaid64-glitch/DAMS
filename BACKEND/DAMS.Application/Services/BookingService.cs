@@ -491,11 +491,14 @@ namespace DAMS.Application.Services
             if (booking.Status != BookingStatus.PaymentPlanActive)
                 throw new InvalidOperationException("Possession can only be given while the payment plan is active.");
 
-            // The business date the revenue belongs to. A future date would book revenue into a
-            // period that has not happened yet, which no later correction can undo cleanly.
+            // The business date the revenue belongs to, and the largest single posting DAMS makes:
+            // it books the sale as revenue and raises the whole receivable. So it takes exactly the
+            // bounds every other financial posting takes — never in the future (revenue into a period
+            // that has not happened yet, which no later correction undoes cleanly), and never before
+            // the committed opening balances, where the receivable is already inside the figure the
+            // accountant typed and would be counted a second time here.
             var recognitionDate = (possessionDate?.Date ?? PakistanTime.Today);
-            if (recognitionDate > PakistanTime.Today)
-                throw new InvalidOperationException("Possession date cannot be in the future.");
+            await FinanceDateRules.EnsureAsync(_context, recognitionDate, "Possession date", CancellationToken.None);
 
             // …and it cannot precede the booking either. The caller supplies this date, so without
             // a lower bound a 2026 booking could recognise its revenue in 2024 — into a period that

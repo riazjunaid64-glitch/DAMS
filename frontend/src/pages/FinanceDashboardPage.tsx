@@ -421,6 +421,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   const [summary, setSummary] = useState<FinancialSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [view, setView] = useState<View>("revenue");
 
   const [chartData, setChartData] = useState<FinanceChartData | null>(null);
@@ -516,7 +517,12 @@ export default function FinanceDashboardPage({ user }: Props) {
     }
   }, []);
 
-  const loadSummary = useCallback(async () => {
+  // The signal matters as much as the request. These seven cards are Revenue, Expenses, Net Profit,
+  // Deposits and Outstanding: a failed load that leaves them showing Rs 0 reads as "the business did
+  // nothing", and one that leaves the PREVIOUS filter's figures on screen reads as an answer to a
+  // question nobody asked. Both are worse than saying nothing, so a failure clears the figures and
+  // says so, and a response that arrives after the filters moved on is dropped rather than shown.
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
     setSummaryLoading(true);
     try {
       const params = new URLSearchParams();
@@ -525,13 +531,18 @@ export default function FinanceDashboardPage({ user }: Props) {
       if (toDate) params.set("to", toDate);
       if (accountFilter) params.set("account", accountFilter);
       const qs = params.toString();
-      const res = await api(`/api/Finance/summary${qs ? `?${qs}` : ""}`);
+      const res = await api(`/api/Finance/summary${qs ? `?${qs}` : ""}`, { signal });
       if (!res.ok) throw new Error("Failed to load summary");
-      setSummary(await res.json());
+      const loaded = await res.json();
+      if (signal?.aborted) return;
+      setSummary(loaded);
+      setSummaryError(null);
     } catch {
-      /* summary cards fall back to 0 */
+      if (signal?.aborted) return;
+      setSummary(null);
+      setSummaryError("The finance totals could not be loaded, so the figures below are unavailable.");
     } finally {
-      setSummaryLoading(false);
+      if (!signal?.aborted) setSummaryLoading(false);
     }
   }, [projectId, fromDate, toDate, accountFilter]);
 
@@ -555,7 +566,10 @@ export default function FinanceDashboardPage({ user }: Props) {
   }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadWhtLookups, loadRevenueCategories]);
 
   useEffect(() => {
-    if (isAdmin) loadSummary();
+    if (!isAdmin) return;
+    const controller = new AbortController();
+    void loadSummary(controller.signal);
+    return () => controller.abort();
   }, [isAdmin, loadSummary]);
 
   // Which quick-period chip (if any) matches the current from/to selection.
@@ -1318,13 +1332,21 @@ export default function FinanceDashboardPage({ user }: Props) {
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {card.label}
                   </p>
-                  <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${card.valueColor}`}>
-                    {summaryLoading ? "…" : formatMoney(card.value)}
+                  <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${
+                    summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
+                    {summaryLoading ? "…" : summaryError ? "—" : formatMoney(card.value)}
                   </p>
                 </button>
               );
             })}
           </div>
+
+          {summaryError && !summaryLoading && (
+            <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/[0.08] px-5 py-4 text-sm text-rose-200">
+              {summaryError}{" "}
+              <button className="underline" onClick={() => void loadSummary()}>Retry</button>
+            </div>
+          )}
 
           {summary && (
             <p className="mt-3 text-xs text-[var(--text-muted)]">

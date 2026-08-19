@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.CommissionRebateDtos;
@@ -9,11 +10,17 @@ using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.IO.Compression;
 using Xunit;
@@ -1266,6 +1273,173 @@ public sealed class SqlServerProductionInvariantTests
             "SELECT COUNT(*) FROM [ExternalIntegrationConnections] " +
             "WHERE [ExternalAccountId] = 'race-account' AND [DisplayName] = N'Race Co'"));
     }
+
+    /// <summary>
+    /// The retry half of the idempotency guard, which only a real database can prove.
+    /// <para>
+    /// The whole mechanism rests on <c>IX_IdempotentRequests_Key</c> being UNIQUE: the filter inserts
+    /// its reservation and lets the index decide whether the key was already taken, deliberately
+    /// rather than reading first and writing after — a read-then-write loses the race it exists to
+    /// win. The EF in-memory provider does not enforce unique indexes, so under it the second insert
+    /// simply succeeds and the action runs a second time. Every in-memory assertion about a replay
+    /// would pass while production duplicated the payment, which is exactly the wrong way round.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task RepeatingAMoneyRequestKey_ReplaysTheStoredResponse_RatherThanRecordingItAgain()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var migrator = new AppDbContext(options))
+            await migrator.Database.MigrateAsync();
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString));
+        await using var provider = services.BuildServiceProvider();
+        var filter = new IdempotentMoneyOperationFilter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<IdempotentMoneyOperationFilter>.Instance);
+
+        const string key = "sql-replay-key";
+        var runs = 0;
+
+        // First attempt: reserves the key, runs the action, stores what it returned.
+        var first = FilterContexts(provider, key, new { amount = 250_000m });
+        await filter.OnActionExecutionAsync(first.Executing, () =>
+        {
+            runs++;
+            return Task.FromResult(Executed(first.ActionContext, new OkObjectResult(new { id = 7, amount = 250_000m })));
+        });
+        Assert.Equal(1, runs);
+        Assert.Null(first.Executing.Result);
+
+        // The retry after a lost response: same key, same arguments. The action must not run again,
+        // and the caller must get the record the first attempt created — not an empty body.
+        var retry = FilterContexts(provider, key, new { amount = 250_000m });
+        await filter.OnActionExecutionAsync(retry.Executing, () =>
+        {
+            runs++;
+            return Task.FromResult(Executed(retry.ActionContext, new OkObjectResult(new { id = 8, amount = 250_000m })));
+        });
+        Assert.Equal(1, runs);
+        var replayed = Assert.IsType<ContentResult>(retry.Executing.Result);
+        Assert.Equal(200, replayed.StatusCode);
+        Assert.Equal("{\"id\":7,\"amount\":250000}", replayed.Content);
+
+        // Same key, different amount: that is a different intent wearing a used key, and answering it
+        // from the earlier record would hide a real second payment. It is refused, not replayed.
+        var changed = FilterContexts(provider, key, new { amount = 999_000m });
+        await filter.OnActionExecutionAsync(changed.Executing, () =>
+        {
+            runs++;
+            return Task.FromResult(Executed(changed.ActionContext, new OkObjectResult(new { id = 9 })));
+        });
+        Assert.Equal(1, runs);
+        var conflict = Assert.IsType<ConflictObjectResult>(changed.Executing.Result);
+        Assert.Equal(409, conflict.StatusCode);
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [IdempotentRequests] WHERE [Key] = '{key}'"));
+    }
+
+    /// <summary>
+    /// The cutover preflight, against a real database, because that is the only place its SQL exists.
+    /// <para>
+    /// It probes fifteen tables for a count and an earliest date, and it runs at exactly one moment in
+    /// the system's life — the go-live commit. An in-memory test proves the logic and nothing about
+    /// the translation: if any of those probes cannot be turned into SQL, the failure surfaces as an
+    /// exception during the client's cutover, which is the worst possible time to find out.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheCutoverPreflight_RunsAsRealSql_AndBlocksACommitOverExistingHistory()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var goLive = new DateTime(2026, 8, 1);
+        int bankId, capitalId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var bank = new FinanceAccount
+            {
+                Name = "HBL Bank", AccountHolderName = "Seven Ventures",
+                Type = FinanceAccountType.Bank, IsActive = true
+            };
+            var capital = new FinanceAccount
+            {
+                Name = "Partner Capital", AccountHolderName = "Partner One",
+                Type = FinanceAccountType.Capital, IsActive = true
+            };
+            db.FinanceAccounts.AddRange(bank, capital);
+            await db.SaveChangesAsync();
+            bankId = bank.Id;
+            capitalId = capital.Id;
+        }
+
+        // Clean database, nothing behind the cutover: every probe must translate and come back empty.
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.Empty(await FinanceDateRules.PreBaselineEventsAsync(db, goLive, default));
+            var service = new OpeningBalanceService(db);
+            var set = await service.CreateAsync(goLive, 1);
+            set = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
+            {
+                ConcurrencyToken = set.ConcurrencyToken,
+                Entries =
+                [
+                    new() { FinanceAccountId = bankId, DebitAmount = 1_000_000m },
+                    new() { FinanceAccountId = capitalId, CreditAmount = 1_000_000m }
+                ]
+            }, 1);
+            var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
+            Assert.True(committed.IsCommitted);
+        }
+
+        // Now put a July expense in — the pilot-month case — and prove the reopened set cannot be
+        // recommitted over it. The probe has to find it and name the date.
+        await using (var db = new AppDbContext(options))
+        {
+            db.Expenses.Add(new Expense
+            {
+                FinanceAccountId = bankId, Amount = 40_000m, Category = "Rent",
+                Date = new DateTime(2026, 7, 25)
+            });
+            await db.SaveChangesAsync();
+
+            var found = Assert.Single(await FinanceDateRules.PreBaselineEventsAsync(db, goLive, default));
+            Assert.Equal("expenses", found.Label);
+            Assert.Equal(1, found.Count);
+            Assert.Equal(new DateTime(2026, 7, 25), found.Earliest);
+
+            var service = new OpeningBalanceService(db);
+            var current = await service.GetCurrentAsync();
+            var reopened = await service.ReopenAsync(current!.Id, new ReopenOpeningBalanceSetDto
+            {
+                WarningAccepted = true, ConcurrencyToken = current.ConcurrencyToken
+            }, 1);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.CommitAsync(reopened.Id, reopened.ConcurrencyToken, 1));
+            Assert.Contains("1 expenses", error.Message);
+            Assert.Contains("25 Jul 2026", error.Message);
+        }
+    }
+
+    private static (ActionContext ActionContext, ActionExecutingContext Executing) FilterContexts(
+        IServiceProvider provider, string key, object arguments)
+    {
+        var http = new DefaultHttpContext { RequestServices = provider };
+        http.Request.Method = "POST";
+        http.Request.Path = "/api/Finance/expenses";
+        http.Request.Headers[IdempotentMoneyOperationFilter.HeaderName] = key;
+        var actionContext = new ActionContext(http, new RouteData(), new ActionDescriptor());
+        return (actionContext, new ActionExecutingContext(actionContext, new List<IFilterMetadata>(),
+            new Dictionary<string, object?> { ["dto"] = arguments }, new object()));
+    }
+
+    private static ActionExecutedContext Executed(ActionContext actionContext, IActionResult result) =>
+        new(actionContext, new List<IFilterMetadata>(), new object()) { Result = result };
 
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)

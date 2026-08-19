@@ -79,6 +79,28 @@ namespace DAMS.Application.Services
             if (debit != credit)
                 throw new InvalidOperationException($"Opening balances do not balance. Debits are {debit:N2}, credits are {credit:N2}, difference is {debit - credit:N2}.");
 
+            // Balancing internally proves the figures were typed correctly; it says nothing about
+            // whether they sit cleanly on top of what DAMS already holds. Every report reads this
+            // baseline as an as-at position and then adds every movement ever recorded, so a record
+            // dated before the cutover is counted twice — once inside the figure the accountant typed
+            // and again as a movement on top of it. Both halves look right in isolation, the sheet
+            // still balances, and nothing downstream can tell. The commit is the only point where the
+            // question is still answerable, so it is a precondition here.
+            var preBaseline = await FinanceDateRules.PreBaselineEventsAsync(_context, set.AsAtDate, cancellationToken);
+            if (preBaseline.Count > 0)
+            {
+                var earliest = preBaseline.Min(p => p.Earliest);
+                throw new InvalidOperationException(
+                    $"DAMS already holds financial records dated before {set.AsAtDate:dd MMM yyyy}: "
+                    + string.Join(", ", preBaseline.Select(p => $"{p.Count} {p.Label}"))
+                    + $". The earliest is dated {earliest:dd MMM yyyy}. Committing would count every one "
+                    + "of them twice — once inside these opening balances and again as a movement on top "
+                    + "of them. Either move the go-live date to "
+                    + $"{earliest:dd MMM yyyy} or earlier and enter the balances as at that date, or remove "
+                    + "the records that the opening figures already contain. "
+                    + FinanceDateRules.BoundaryConvention);
+            }
+
             // Accounts can be created after the draft baseline. Include every current account on
             // commit so a new account cannot retain an uncontrolled OpeningBalance value.
             var accounts = await _context.FinanceAccounts.ToListAsync(cancellationToken);
