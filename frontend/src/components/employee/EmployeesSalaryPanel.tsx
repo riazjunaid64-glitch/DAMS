@@ -46,6 +46,12 @@ type ReceiptData = {
   notes?: string | null;
 };
 
+interface FinanceAccountOption {
+  id: number;
+  name: string;
+  accountHolderName: string;
+}
+
 function currentMonthYear() {
   const d = new Date();
   return { month: d.getMonth() + 1, year: d.getFullYear() };
@@ -66,6 +72,27 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
   const [rows, setRows] = useState<BatchRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Which account the payroll is paid from. A salary writes a real expense row, and an expense with
+  // no paying account has no credit side — the Trial Balance and Balance Sheet then go out by the
+  // salary amount. One account for the run, because a payroll is paid out of one account.
+  const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
+  const [payFromId, setPayFromId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api("/api/finance/accounts/options");
+        if (!res.ok) return;
+        const options = await res.json() as FinanceAccountOption[];
+        if (cancelled) return;
+        setAccounts(options);
+        // Only pre-selected when there is nothing to choose between.
+        if (options.length === 1) setPayFromId(String(options[0].id));
+      } catch { /* The selector stays empty and paying is refused until it loads. */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +124,7 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
     const row = rows.find(r => r.employeeId === employeeId);
     if (!row || row.isPaid || !checked) return;
     if (row.amount <= 0) { setError("Salary amount must be greater than zero."); return; }
+    if (!payFromId) { setError("Choose the account this payroll is paid from first."); return; }
 
     setError(null);
     setRows(prev => prev.map(r => r.employeeId === employeeId ? { ...r, saving: true } : r));
@@ -104,7 +132,7 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
       const payDate = `${year}-${String(month).padStart(2, "0")}-01`;
       const res = await api(`/api/Employee/${employeeId}/salary`, {
         method: "POST",
-        body: JSON.stringify({ amount: row.amount, payDate }),
+        body: JSON.stringify({ amount: row.amount, payDate, financeAccountId: Number(payFromId) }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -144,17 +172,34 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
           <h2 className="section-title mb-1">Payroll Run — {monthLabel}</h2>
           <p className="text-sm text-[var(--text-muted)]">Process monthly salary for every employee</p>
         </div>
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Month</label>
-          <input
-            type="month"
-            value={`${year}-${String(month).padStart(2, "0")}`}
-            onChange={e => {
-              const [y, m] = e.target.value.split("-").map(Number);
-              if (y && m) setPeriod({ year: y, month: m });
-            }}
-            className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-          />
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-paid-from">Paid From Account</label>
+            <select
+              id="payroll-paid-from"
+              value={payFromId}
+              onChange={e => setPayFromId(e.target.value)}
+              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            >
+              <option value="">Select account</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-month">Month</label>
+            <input
+              id="payroll-month"
+              type="month"
+              value={`${year}-${String(month).padStart(2, "0")}`}
+              onChange={e => {
+                const [y, m] = e.target.value.split("-").map(Number);
+                if (y && m) setPeriod({ year: y, month: m });
+              }}
+              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+          </div>
         </div>
       </div>
 
@@ -245,7 +290,8 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
                   <td className="px-5 py-4">
                     <button
                       type="button"
-                      disabled={row.isPaid || row.saving}
+                      disabled={row.isPaid || row.saving || !payFromId}
+                      title={!row.isPaid && !payFromId ? "Choose the account this payroll is paid from" : undefined}
                       onClick={() => togglePaid(row.employeeId, true)}
                       className={`flex h-5 w-5 items-center justify-center rounded border text-[10px] font-bold transition-colors ${
                         row.isPaid

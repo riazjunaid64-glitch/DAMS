@@ -11,15 +11,22 @@ namespace DAMS.Application.Services
     public class EmployeeService : IEmployeeService
     {
         private readonly AppDbContext _context;
+        private readonly IFinanceAccountService _accounts;
         private readonly INotificationEventService? _notifications;
 
+        /// <param name="accounts">
+        /// Paying a salary is a finance posting, so the account it was paid from is validated by the
+        /// same service the expense screens use — one definition of "an account money can leave".
+        /// </param>
         /// <param name="notifications">
         /// Optional: employee administration must work with or without the notification
         /// platform, so it is only ever called after the change is committed.
         /// </param>
-        public EmployeeService(AppDbContext context, INotificationEventService? notifications = null)
+        public EmployeeService(AppDbContext context, IFinanceAccountService accounts,
+            INotificationEventService? notifications = null)
         {
             _context = context;
+            _accounts = accounts;
             _notifications = notifications;
         }
 
@@ -341,6 +348,14 @@ namespace DAMS.Application.Services
             if (dto.Amount <= 0)
                 throw new Exception("Salary amount must be greater than zero.");
 
+            // Which account the money left is not optional. The row written below is a real Expense,
+            // and the reports pair an expense with the account that paid it: one with no account
+            // reduces profit with no matching credit, so the Trial Balance and Balance Sheet go out
+            // by the salary. Validated by the finance rules — cash, bank, wallet or a staff float.
+            if (!dto.FinanceAccountId.HasValue)
+                throw new Exception("Paid From Account is required.");
+            await _accounts.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, null, CancellationToken.None);
+
             var payDate = dto.PayDate.Date;
             ValidatePayDate(payDate);
             // A salary writes a real Expense row, so it takes the same posting-date bounds as one
@@ -358,6 +373,7 @@ namespace DAMS.Application.Services
             var expense = new Expense
             {
                 ProjectId = projectInfo.ProjectId,
+                FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Category = "Salary",
                 Description = $"Salary — {employee.FullName} ({payDate:MMMM yyyy})",
@@ -447,6 +463,11 @@ namespace DAMS.Application.Services
             {
                 var payDate = dto.PayDate.Value.Date;
                 ValidatePayDate(payDate);
+                // The edit moves the linked expense's date as well, so it takes the same bounds the
+                // generation path does. ValidatePayDate alone cannot see the opening-balance
+                // baseline, and a salary moved behind it is counted twice: once inside the committed
+                // opening figures and again as a movement on top of them.
+                await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
 
                 // Moving to a different month must not collide with an existing salary for that month.
                 if (payDate.Month != salary.PayMonth || payDate.Year != salary.PayYear)

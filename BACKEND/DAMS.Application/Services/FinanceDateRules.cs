@@ -84,6 +84,29 @@ namespace DAMS.Application.Services
             return value;
         }
 
+        /// <summary>
+        /// The two bounds that apply to a date with no baseline behind it — the go-live date itself.
+        /// <para>
+        /// The baseline cannot be judged against the baseline, so <see cref="EnsureAsync"/> is the
+        /// wrong rule for it; but the other two bounds matter more here than anywhere else. A future
+        /// go-live date is committed as the position at the start of a day that has not happened,
+        /// and every posting between today and that date is then rejected for being "before the
+        /// committed opening balance date" — the business is locked out of its own finance module
+        /// until the calendar catches up.
+        /// </para>
+        /// </summary>
+        public static void EnsureBaselineDate(DateTime date, string field)
+        {
+            var value = date.Date;
+            if (value < SqlMin)
+                throw new InvalidOperationException($"{field} cannot be before {SqlMin:dd MMM yyyy}.");
+            if (value > PakistanTime.Today)
+                throw new InvalidOperationException(
+                    $"{field} cannot be in the future. Opening balances are the position at the start of "
+                    + "a day that has already begun, and every entry dated before the go-live date is "
+                    + "refused — so a future date would block all finance entry until it arrives.");
+        }
+
         /// <summary>Validates an already-resolved business date. Use when the caller owns the value.</summary>
         public static async Task EnsureAsync(
             AppDbContext context, DateTime date, string field, CancellationToken cancellationToken)

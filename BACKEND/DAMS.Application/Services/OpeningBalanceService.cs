@@ -22,6 +22,7 @@ namespace DAMS.Application.Services
         public async Task<OpeningBalanceSetDto> CreateAsync(DateTime asAtDate, int? userId, CancellationToken cancellationToken = default)
         {
             if (asAtDate == default) throw new InvalidOperationException("Opening balance date is required.");
+            FinanceDateRules.EnsureBaselineDate(asAtDate, "Go-live date");
             if (await _context.OpeningBalanceSets.AnyAsync(cancellationToken))
                 throw new InvalidOperationException("An opening balance set already exists. Reopen it instead of creating a second baseline.");
             var accounts = await _context.FinanceAccounts.OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name).ToListAsync(cancellationToken);
@@ -41,6 +42,17 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Opening balance set not found.");
             if (set.IsCommitted) throw new InvalidOperationException("This opening balance set is committed. Explicitly reopen it before editing.");
             ApplyToken(set, dto.ConcurrencyToken);
+            // A mistyped go-live date has to be correctable. Only one set may exist, so without this
+            // a typo in the month left the client with a draft it could neither use nor replace, and
+            // recovering meant editing the database by hand. Omitted means unchanged: the panel that
+            // only edits amounts must not blank the date it never sent.
+            string? dateChange = null;
+            if (dto.AsAtDate.HasValue && dto.AsAtDate.Value.Date != set.AsAtDate.Date)
+            {
+                FinanceDateRules.EnsureBaselineDate(dto.AsAtDate.Value, "Go-live date");
+                dateChange = $"Go-live date changed from {set.AsAtDate:dd MMM yyyy} to {dto.AsAtDate.Value:dd MMM yyyy}.";
+                set.AsAtDate = dto.AsAtDate.Value.Date;
+            }
             if (dto.Entries.GroupBy(e => e.FinanceAccountId).Any(g => g.Count() > 1))
                 throw new InvalidOperationException("Each account may appear only once.");
             var accountIds = await _context.FinanceAccounts.Select(a => a.Id).ToListAsync(cancellationToken);
@@ -62,7 +74,12 @@ namespace DAMS.Application.Services
                 entry.Note = Clean(input?.Note);
             }
             _context.Entry(set).Property(s => s.IsCommitted).IsModified = true;
-            set.AuditEntries.Add(new OpeningBalanceAuditEntry { Action = "Saved", UserId = userId, OccurredAt = DateTime.UtcNow });
+            set.AuditEntries.Add(new OpeningBalanceAuditEntry
+            {
+                // The date is on the audit line because moving it moves the baseline every report is
+                // measured from — a bigger change than any amount on the sheet.
+                Action = "Saved", UserId = userId, OccurredAt = DateTime.UtcNow, Note = dateChange
+            });
             await _context.SaveChangesAsync(cancellationToken);
             return await MapAsync(id, cancellationToken);
         }

@@ -109,50 +109,60 @@ namespace DAMS.Application.Services
 
             ValidateAssignment(dto.AssignmentMode, dto.SelectedCustomerIds);
             var now = DateTime.UtcNow;
-            await using var transaction = await BeginSerializableAsync(cancellationToken);
-            var category = new CustomerDocumentCategory
-            {
-                Name = values.Name,
-                Code = values.Code,
-                Description = values.Description,
-                IsRequiredByDefault = dto.IsRequiredByDefault,
-                DisplayOrder = dto.DisplayOrder,
-                AllowedFileTypes = values.AllowedTypes,
-                MaxFileSizeBytes = dto.MaxFileSizeBytes,
-                IsActive = true,
-                AssignToNewCustomers = dto.AssignmentMode == CustomerDocumentAssignmentMode.NewCustomersOnly,
-                DefaultDueDays = dto.DefaultDueDays,
-                CreatedByUserId = actor.UserId,
-                CreatedByName = actor.DisplayName,
-                CreatedAt = now
-            };
+            var attempt = 0;
+            CustomerDocumentCategory category = null!;
 
-            try
+            await ExecuteResilientlyAsync(async () =>
             {
-                _context.CustomerDocumentCategories.Add(category);
-                RecordAudit(CustomerDocumentAction.CategoryCreated, actor, category: category,
-                    notes: $"Category '{category.Name}' created with assignment mode {dto.AssignmentMode}.");
-                await _context.SaveChangesAsync(cancellationToken);
-
-                if (dto.AssignmentMode is CustomerDocumentAssignmentMode.AllActiveCustomers
-                    or CustomerDocumentAssignmentMode.SelectedCustomers)
+                // Each attempt starts clean and builds its own row. A retry cannot reuse the previous
+                // attempt's entity: that insert was rolled back with its transaction, but EF still
+                // holds the key it had been given, so re-saving it would try to insert an explicit
+                // identity value. Rebuilding is also what keeps the audit entry one-per-row.
+                if (attempt++ > 0) _context.ChangeTracker.Clear();
+                category = new CustomerDocumentCategory
                 {
-                    await AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
-                    {
-                        AssignmentMode = dto.AssignmentMode,
-                        SelectedCustomerIds = dto.SelectedCustomerIds
-                    }, actor, cancellationToken);
-                }
+                    Name = values.Name,
+                    Code = values.Code,
+                    Description = values.Description,
+                    IsRequiredByDefault = dto.IsRequiredByDefault,
+                    DisplayOrder = dto.DisplayOrder,
+                    AllowedFileTypes = values.AllowedTypes,
+                    MaxFileSizeBytes = dto.MaxFileSizeBytes,
+                    IsActive = true,
+                    AssignToNewCustomers = dto.AssignmentMode == CustomerDocumentAssignmentMode.NewCustomersOnly,
+                    DefaultDueDays = dto.DefaultDueDays,
+                    CreatedByUserId = actor.UserId,
+                    CreatedByName = actor.DisplayName,
+                    CreatedAt = now
+                };
+                await using var transaction = await BeginSerializableAsync(cancellationToken);
+                try
+                {
+                    _context.CustomerDocumentCategories.Add(category);
+                    RecordAudit(CustomerDocumentAction.CategoryCreated, actor, category: category,
+                        notes: $"Category '{category.Name}' created with assignment mode {dto.AssignmentMode}.");
+                    await _context.SaveChangesAsync(cancellationToken);
 
-                if (transaction != null)
-                    await transaction.CommitAsync(cancellationToken);
-            }
-            catch
-            {
-                if (transaction != null)
-                    await transaction.RollbackAsync(CancellationToken.None);
-                throw;
-            }
+                    if (dto.AssignmentMode is CustomerDocumentAssignmentMode.AllActiveCustomers
+                        or CustomerDocumentAssignmentMode.SelectedCustomers)
+                    {
+                        await AssignCategoryAsync(category.Id, new AssignCustomerDocumentCategoryDto
+                        {
+                            AssignmentMode = dto.AssignmentMode,
+                            SelectedCustomerIds = dto.SelectedCustomerIds
+                        }, actor, cancellationToken);
+                    }
+
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
 
             return await LoadCategoryAsync(category.Id, cancellationToken);
         }
@@ -251,57 +261,63 @@ namespace DAMS.Application.Services
             // does not silently opt future customers into the category.
             category.AssignToNewCustomers = false;
 
-            var result = new CustomerDocumentAssignmentResultDto();
-            await using var transaction = await BeginSerializableAsync(cancellationToken);
-            try
+            CustomerDocumentAssignmentResultDto result = null!;
+            await ExecuteResilientlyAsync(async () =>
             {
-                if (dto.AssignmentMode == CustomerDocumentAssignmentMode.AllActiveCustomers)
+                // Rebuilt on each attempt: the counters below accumulate as batches are assigned, so
+                // a retry must start its tally from zero rather than add to a half-finished one.
+                result = new CustomerDocumentAssignmentResultDto();
+                await using var transaction = await BeginSerializableAsync(cancellationToken);
+                try
                 {
-                    result.EligibleCustomers = await _context.Customers
-                        .CountAsync(c => c.Status == CustomerStatus.Active, cancellationToken);
-
-                    var afterId = 0;
-                    while (true)
+                    if (dto.AssignmentMode == CustomerDocumentAssignmentMode.AllActiveCustomers)
                     {
-                        var customers = await _context.Customers
-                            .Where(c => c.Status == CustomerStatus.Active && c.Id > afterId)
-                            .OrderBy(c => c.Id)
-                            .Take(AssignmentBatchSize)
-                            .ToListAsync(cancellationToken);
-                        if (customers.Count == 0)
-                            break;
-                        afterId = customers[^1].Id;
-                        result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
+                        result.EligibleCustomers = await _context.Customers
+                            .CountAsync(c => c.Status == CustomerStatus.Active, cancellationToken);
+
+                        var afterId = 0;
+                        while (true)
+                        {
+                            var customers = await _context.Customers
+                                .Where(c => c.Status == CustomerStatus.Active && c.Id > afterId)
+                                .OrderBy(c => c.Id)
+                                .Take(AssignmentBatchSize)
+                                .ToListAsync(cancellationToken);
+                            if (customers.Count == 0)
+                                break;
+                            afterId = customers[^1].Id;
+                            result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
+                        }
                     }
+                    else
+                    {
+                        var selected = dto.SelectedCustomerIds.Distinct().ToArray();
+                        foreach (var ids in selected.Chunk(AssignmentBatchSize))
+                        {
+                            var customers = await _context.Customers
+                                .Where(c => ids.Contains(c.Id))
+                                .OrderBy(c => c.Id)
+                                .ToListAsync(cancellationToken);
+                            result.EligibleCustomers += customers.Count;
+                            result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
+                        }
+                    }
+
+                    result.AlreadyAssignedCustomers = result.EligibleCustomers - result.AssignedCustomers;
+                    RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
+                        notes: $"Assigned to {result.AssignedCustomers} customer(s); {result.AlreadyAssignedCustomers} already assigned.");
+                    category.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
                 }
-                else
+                catch (DbUpdateException ex) when (IsUniqueViolation(ex))
                 {
-                    var selected = dto.SelectedCustomerIds.Distinct().ToArray();
-                    foreach (var ids in selected.Chunk(AssignmentBatchSize))
-                    {
-                        var customers = await _context.Customers
-                            .Where(c => ids.Contains(c.Id))
-                            .OrderBy(c => c.Id)
-                            .ToListAsync(cancellationToken);
-                        result.EligibleCustomers += customers.Count;
-                        result.AssignedCustomers += await AssignBatchAsync(category, customers, actor, cancellationToken);
-                    }
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw new InvalidOperationException("The category assignment conflicted with another request. No duplicate was created; refresh and retry.", ex);
                 }
-
-                result.AlreadyAssignedCustomers = result.EligibleCustomers - result.AssignedCustomers;
-                RecordAudit(CustomerDocumentAction.BulkCategoryAssignment, actor, category: category,
-                    notes: $"Assigned to {result.AssignedCustomers} customer(s); {result.AlreadyAssignedCustomers} already assigned.");
-                category.UpdatedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync(cancellationToken);
-                if (transaction != null)
-                    await transaction.CommitAsync(cancellationToken);
-            }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-            {
-                if (transaction != null)
-                    await transaction.RollbackAsync(CancellationToken.None);
-                throw new InvalidOperationException("The category assignment conflicted with another request. No duplicate was created; refresh and retry.", ex);
-            }
+            });
 
             return result;
         }
@@ -518,48 +534,59 @@ namespace DAMS.Application.Services
             if (!SplitTypes(metadata.AllowedFileTypes).Contains(validated.Extension, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"This requirement accepts only {metadata.AllowedFileTypes} files.");
 
+            // Written to storage once, outside the retriable unit below: a retry that re-saved it
+            // would leave the first copy orphaned with nothing pointing at it.
             var storedFileName = await _storage.SaveAsync(upload.Content, validated.Extension, cancellationToken);
             var committed = false;
-            await using var transaction = await BeginSerializableAsync(cancellationToken);
+            var attempt = 0;
             try
             {
-                var requirement = await LoadRequirementForWriteAsync(customerId, requirementId, cancellationToken);
-                ApplyConcurrencyToken(requirement, concurrencyToken);
-                EnsureUploadAllowed(requirement.Status);
-
-                var current = requirement.Versions.SingleOrDefault(v => v.IsCurrent);
-                if (current != null)
-                    current.IsCurrent = false;
-
-                var now = DateTime.UtcNow;
-                var version = new CustomerDocumentVersion
+                await ExecuteResilientlyAsync(async () =>
                 {
-                    Requirement = requirement,
-                    RequirementId = requirement.Id,
-                    VersionNumber = requirement.Versions.Count == 0 ? 1 : requirement.Versions.Max(v => v.VersionNumber) + 1,
-                    IsCurrent = true,
-                    StoredFileName = storedFileName,
-                    OriginalFileName = validated.OriginalFileName,
-                    ContentType = validated.ContentType,
-                    FileSize = validated.FileSize,
-                    UploadedByUserId = actor.UserId,
-                    UploadedByName = actor.DisplayName,
-                    UploadedAt = now,
-                    ReviewStatus = CustomerDocumentVersionStatus.UnderReview
-                };
-                var previous = requirement.Status;
-                requirement.Status = CustomerDocumentStatus.UnderReview;
-                requirement.PostponedUntil = null;
-                Touch(requirement, actor, now);
-                _context.CustomerDocumentVersions.Add(version);
-                RecordAudit(current == null ? CustomerDocumentAction.FileUploaded : CustomerDocumentAction.ReplacementUploaded,
-                    actor, requirement.Customer, requirement, requirement.Category, version,
-                    previous, requirement.Status, current == null ? "Document uploaded for review." : "A new document version was uploaded for review.");
+                    // A retry re-reads and rebuilds everything below, so the failed attempt's pending
+                    // version row has to go first — replaying it would leave two current versions.
+                    if (attempt++ > 0) _context.ChangeTracker.Clear();
+                    await using var transaction = await BeginSerializableAsync(cancellationToken);
+                    var requirement = await LoadRequirementForWriteAsync(customerId, requirementId, cancellationToken);
+                    ApplyConcurrencyToken(requirement, concurrencyToken);
+                    EnsureUploadAllowed(requirement.Status);
 
-                await SaveWithConcurrencyMessageAsync(cancellationToken);
-                if (transaction != null)
-                    await transaction.CommitAsync(cancellationToken);
-                committed = true;
+                    var current = requirement.Versions.SingleOrDefault(v => v.IsCurrent);
+                    if (current != null)
+                        current.IsCurrent = false;
+
+                    var now = DateTime.UtcNow;
+                    var version = new CustomerDocumentVersion
+                    {
+                        Requirement = requirement,
+                        RequirementId = requirement.Id,
+                        VersionNumber = requirement.Versions.Count == 0 ? 1 : requirement.Versions.Max(v => v.VersionNumber) + 1,
+                        IsCurrent = true,
+                        StoredFileName = storedFileName,
+                        OriginalFileName = validated.OriginalFileName,
+                        ContentType = validated.ContentType,
+                        FileSize = validated.FileSize,
+                        UploadedByUserId = actor.UserId,
+                        UploadedByName = actor.DisplayName,
+                        UploadedAt = now,
+                        ReviewStatus = CustomerDocumentVersionStatus.UnderReview
+                    };
+                    var previous = requirement.Status;
+                    requirement.Status = CustomerDocumentStatus.UnderReview;
+                    requirement.PostponedUntil = null;
+                    Touch(requirement, actor, now);
+                    _context.CustomerDocumentVersions.Add(version);
+                    RecordAudit(current == null ? CustomerDocumentAction.FileUploaded : CustomerDocumentAction.ReplacementUploaded,
+                        actor, requirement.Customer, requirement, requirement.Category, version,
+                        previous, requirement.Status, current == null ? "Document uploaded for review." : "A new document version was uploaded for review.");
+
+                    await SaveWithConcurrencyMessageAsync(cancellationToken);
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                    committed = true;
+                });
+                // Read back outside the retriable unit. A transient failure while re-reading must not
+                // re-run the insert above — the version is already committed by this point.
                 return await LoadRequirementAsync(customerId, requirementId, cancellationToken);
             }
             finally
@@ -940,6 +967,21 @@ namespace DAMS.Application.Services
             _context.Database.IsRelational() && _context.Database.CurrentTransaction == null
                 ? await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
                 : null;
+
+        /// <summary>
+        /// Wraps one <see cref="BeginSerializableAsync"/> unit so it can actually run.
+        /// <para>
+        /// SQL Server is registered with <c>EnableRetryOnFailure</c>, and EF refuses to execute any
+        /// operation inside a transaction the caller opened itself unless the whole unit goes through
+        /// the retrying strategy — it throws "the configured execution strategy
+        /// 'SqlServerRetryingExecutionStrategy' does not support user-initiated transactions". Every
+        /// path below that opens its own transaction therefore has to be a retriable unit; without
+        /// this they failed outright on the real database. Nested calls are a pass-through, because
+        /// EF suspends the strategy for the duration of an outer execution.
+        /// </para>
+        /// </summary>
+        private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         private async Task SafeDeleteAsync(string storedFileName)
         {

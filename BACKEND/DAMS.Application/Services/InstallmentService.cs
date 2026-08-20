@@ -291,20 +291,29 @@ namespace DAMS.Application.Services
 
             // A schedule may be built after possession — that is the only route DAMS has for
             // collecting a recognised receivable — but it must not RESTATE the sale it is collecting.
-            // BookingSaleRecognition.NetSaleValue is what was booked as revenue and what the Balance
-            // Sheet reports as Accounts Receivable, and it is immutable by design. Writing a new
-            // price onto the booking below would leave the formal statements on the recognised figure
-            // while the dashboard's outstanding, the completion check and every commission basis all
-            // moved to the new one — the same sale, three different amounts.
+            // Once BookingSaleRecognition exists the commercial terms are history: the gross price,
+            // the discount and the reason for it are what the parties agreed on the day possession
+            // was handed over, and the formal statements are already built on them.
+            // <para>
+            // Holding the NET value alone is not enough, which is what this guard used to do. A
+            // different gross-and-discount split that lands on the same net leaves revenue and
+            // Accounts Receivable untouched but still moves AgreedSalePrice — and that is a
+            // commission basis in its own right (FinancialCalculationBasis.AgreedSalePrice), so a
+            // 100,000 sale rewritten as 125,000 less 20% pays commission on 125,000. It also leaves
+            // the booking no longer saying what was actually agreed.
+            // </para>
             var recognisedNetSale = await _context.BookingSaleRecognitions.AsNoTracking()
                 .Where(r => r.BookingId == bookingId)
                 .Select(r => (decimal?)r.NetSaleValue)
                 .FirstOrDefaultAsync();
-            if (recognisedNetSale.HasValue
-                && Math.Round(netSalePrice, 2, MidpointRounding.AwayFromZero) != recognisedNetSale.Value)
+            var isRecognised = recognisedNetSale.HasValue;
+            if (isRecognised
+                && (dto.AgreedSalePrice != booking.AgreedSalePrice || discountAmount != booking.DiscountAmount))
                 throw new InvalidOperationException(
-                    $"This sale was recognised at possession for {recognisedNetSale.Value:0.00} and cannot be repriced. "
-                    + "Generate the schedule with the same agreed sale price and discount.");
+                    $"This sale was recognised at possession on agreed terms of {booking.AgreedSalePrice:0.00} "
+                    + $"less {booking.DiscountAmount:0.00} discount — a net {recognisedNetSale!.Value:0.00} — and "
+                    + "those terms cannot be rewritten afterwards. Generate the schedule with the same agreed "
+                    + "sale price and discount; the installment dates and amounts are still yours to change.");
 
             if (nonCashCredits > netSalePrice - booking.BookingAmountReceived)
                 throw new InvalidOperationException("Existing rebate credits exceed the revised booking balance. Reverse or adjust them before changing the plan terms.");
@@ -318,10 +327,17 @@ namespace DAMS.Application.Services
                 booking.Installments.Clear();
             }
 
-            booking.AgreedSalePrice = dto.AgreedSalePrice;
-            booking.DiscountPercent = dto.DiscountPercent;
-            booking.DiscountAmount = discountAmount;
-            booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            // Left alone once recognised — including the reason, which the schedule form does not
+            // send back, so writing it would erase the discount's justification on every
+            // regeneration. The two figures are equal by the guard above; not assigning them is what
+            // keeps the other two commercial fields from being silently overwritten with nothing.
+            if (!isRecognised)
+            {
+                booking.AgreedSalePrice = dto.AgreedSalePrice;
+                booking.DiscountPercent = dto.DiscountPercent;
+                booking.DiscountAmount = discountAmount;
+                booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            }
             booking.InstallmentFrequency = dto.Frequency;
             booking.NumberOfInstallments = dto.NumberOfInstallments;
             booking.InstallmentPlanStartDate = dto.InstallmentStartDate.Date;

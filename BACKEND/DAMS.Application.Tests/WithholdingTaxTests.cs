@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
@@ -230,6 +231,135 @@ public sealed class WithholdingTaxTests
 
         Assert.Equal(0m, (await Wht(context).GetPayableSummaryAsync(null, null)).OutstandingPayable);
         Assert.Equal(0m, (await new FinanceAccountService(context).GetByIdAsync(1)).CurrentBalance);
+    }
+
+    /// <summary>
+    /// Codex finding 4. Once the tax has been handed to FBR, the record it was deducted from cannot
+    /// simply vanish underneath it.
+    /// <para>
+    /// The deposit path already refuses to pay over more than was withheld, because Tax Payable is
+    /// a liability and a negative liability is not a state this business has. The same invariant is
+    /// reachable from the other side: withhold 10,000, deposit 10,000, delete the expense, and the
+    /// payable is left at minus 10,000 — with the money genuinely gone to FBR and nothing on the
+    /// books to say why.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task DeletingAnExpense_IsRefused_OnceItsTaxHasBeenDepositedWithFbr()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var created = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
+        await Wht(context).CreateDepositAsync(new SaveWhtDepositDto
+        { FinanceAccountId = 1, Amount = 10_000m, ChallanNumber = "CPR-DEL" }, 1);
+        Assert.Equal(0m, (await Wht(context).GetPayableSummaryAsync(null, null)).OutstandingPayable);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => finance.DeleteExpenseAsync(created.Id));
+
+        Assert.Contains("already deposited with FBR", error.Message);
+        Assert.Contains("Correct or remove the FBR deposit first", error.Message);
+        // Nothing moved: the expense is still there and the payable is still exactly zero.
+        Assert.True(await context.Expenses.AnyAsync(e => e.Id == created.Id));
+        var payable = await Wht(context).GetPayableSummaryAsync(null, null);
+        Assert.Equal(0m, payable.OutstandingPayable);
+        Assert.Equal(10_000m, payable.TotalWithheldAllTime);
+    }
+
+    [Fact]
+    public async Task ReducingAnExpense_IsRefused_WhenItWouldUncoverADeposit_AndAllowedAfterTheDepositIsCorrected()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var created = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
+        var wht = Wht(context);
+        var deposit = await wht.CreateDepositAsync(new SaveWhtDepositDto
+        { FinanceAccountId = 1, Amount = 10_000m, ChallanNumber = "CPR-RED" }, 1);
+        // SQL Server stamps a rowversion; the in-memory provider does not, so the token the
+        // correction below has to send would come back empty.
+        var depositRow = await context.WhtDeposits.SingleAsync();
+        depositRow.RowVersion = [1];
+        await context.SaveChangesAsync();
+
+        // Halving the invoice halves the tax to 5,000 — less than the 10,000 already paid over.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => finance.UpdateExpenseAsync(
+            created.Id, new UpdateExpenseDto
+            { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 500_000m }));
+        Assert.Contains("already deposited with FBR", error.Message);
+        Assert.Equal(1_000_000m, (await context.Expenses.AsNoTracking().SingleAsync()).Amount);
+        Assert.Equal(10_000m, (await context.Expenses.AsNoTracking().SingleAsync()).WhtAmount);
+
+        // Correct the deposit to what was actually due, and the same correction goes through.
+        await wht.UpdateDepositAsync(deposit.Id, new SaveWhtDepositDto
+        {
+            FinanceAccountId = 1, Amount = 5_000m, ChallanNumber = "CPR-RED",
+            ConcurrencyToken = Convert.ToBase64String(depositRow.RowVersion)
+        });
+        var corrected = await finance.UpdateExpenseAsync(created.Id, new UpdateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 500_000m });
+
+        Assert.Equal(500_000m, corrected.Amount);
+        Assert.Equal(5_000m, corrected.WhtAmount);
+        var payable = await Wht(context).GetPayableSummaryAsync(null, null);
+        Assert.Equal(5_000m, payable.TotalWithheldAllTime);
+        Assert.Equal(5_000m, payable.TotalDepositedAllTime);
+        Assert.Equal(0m, payable.OutstandingPayable);
+    }
+
+    /// <summary>
+    /// Raising the tax is never blocked — more withheld can only widen the gap the deposit sits in.
+    /// This is the case the guard must not get in the way of.
+    /// </summary>
+    [Fact]
+    public async Task RaisingAnExpense_IsUnaffectedByTheDepositCheck()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var created = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m }, 1);
+        await Wht(context).CreateDepositAsync(new SaveWhtDepositDto
+        { FinanceAccountId = 1, Amount = 10_000m, ChallanNumber = "CPR-UP" }, 1);
+
+        var raised = await finance.UpdateExpenseAsync(created.Id, new UpdateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 2_000_000m });
+
+        Assert.Equal(20_000m, raised.WhtAmount);
+        Assert.Equal(10_000m, (await Wht(context).GetPayableSummaryAsync(null, null)).OutstandingPayable);
+    }
+
+    /// <summary>
+    /// Tax withheld from a capital supplier is owed to FBR on identical terms, so the asset side
+    /// takes the same protection. Withheld on an expense, deposited, then the PURCHASE deleted is
+    /// the same negative payable by a different route — the check reads both sources.
+    /// </summary>
+    [Fact]
+    public async Task DeletingAFixedAssetPurchase_IsRefused_OnceItsTaxHasBeenDeposited()
+    {
+        await using var context = Seeded();
+        context.FinanceAccounts.Add(new FinanceAccount
+        {
+            Id = 2, Name = "Office Equipment", Type = FinanceAccountType.FixedAsset,
+            AccountHolderName = "Seven Ventures", IsActive = true
+        });
+        await context.SaveChangesAsync();
+
+        var finance = Finance(context);
+        var purchase = await finance.CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+        {
+            FinanceAccountId = 1, AssetAccountId = 2, VendorId = 1, CategoryId = 1,
+            Amount = 1_000_000m, ItemName = "Site office generator"
+        }, 1);
+        Assert.Equal(10_000m, purchase.WhtAmount);
+        await Wht(context).CreateDepositAsync(new SaveWhtDepositDto
+        { FinanceAccountId = 1, Amount = 10_000m, ChallanNumber = "CPR-ASSET" }, 1);
+
+        var stored = await context.AssetPurchases.AsNoTracking().SingleAsync();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            finance.DeleteAssetPurchaseAsync(purchase.Id, Convert.ToBase64String(stored.RowVersion ?? [])));
+
+        Assert.Contains("already deposited with FBR", error.Message);
+        Assert.True(await context.AssetPurchases.AnyAsync(p => p.Id == purchase.Id));
     }
 
     [Fact]

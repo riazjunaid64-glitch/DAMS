@@ -43,6 +43,14 @@ namespace DAMS.Application.Interfaces
         /// tax section — only the accounting treatment differs.</summary>
         Task ApplyToAssetPurchaseAsync(Domain.Entities.AssetPurchase purchase, decimal? requestedRate, decimal? requestedAmount, string? overrideReason, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Refuses a signed reduction in withheld tax that would drop the total below what has
+        /// already been deposited with FBR — the source-record half of the "Tax Payable is never
+        /// negative" invariant that deposit creation guards from the other side. Call it inside the
+        /// same transaction as the change it is checking.
+        /// </summary>
+        Task EnsureDepositsStayCoveredAsync(decimal withheldChange, CancellationToken cancellationToken = default);
+
         Task<FinanceSettingsDto> GetSettingsAsync(CancellationToken cancellationToken = default);
         Task<FinanceSettingsDto> UpdateSettingsAsync(SaveFinanceSettingsDto dto, string? actorName, CancellationToken cancellationToken = default);
 

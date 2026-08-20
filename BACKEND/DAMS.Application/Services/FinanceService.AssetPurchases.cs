@@ -92,11 +92,7 @@ namespace DAMS.Application.Services
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
             await _accountService.EnsureAssetAccountAsync(dto.AssetAccountId, null, cancellationToken);
 
-            // Same guard as expenses: the year-to-date read and the insert that depends on it must
-            // not interleave with another save for the same vendor.
             var purchaseDate = await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken);
-
-            await using var thresholdGuard = await BeginThresholdGuardAsync(new[] { dto.VendorId }, cancellationToken);
 
             var purchase = new AssetPurchase
             {
@@ -109,7 +105,6 @@ namespace DAMS.Application.Services
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
-            await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
 
             string? newStoredFileName = null;
             if (attachment != null)
@@ -126,12 +121,20 @@ namespace DAMS.Application.Services
                 };
             }
 
-            _context.AssetPurchases.Add(purchase);
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    // Same guard as expenses: the year-to-date read and the insert that depends on it
+                    // must not interleave with another save for the same vendor.
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { dto.VendorId }, cancellationToken);
+                    await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+                    _context.AssetPurchases.Add(purchase);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -167,39 +170,53 @@ namespace DAMS.Application.Services
                 ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken)
                 : purchase.Date;
 
-            await using var thresholdGuard = await BeginThresholdGuardAsync(
-                new[] { purchase.VendorId, dto.VendorId }, cancellationToken);
-
             var oldStoredFileName = purchase.Attachment?.StoredFileName;
             string? newStoredFileName = null;
-
+            (string StoredFileName, ValidatedFinanceAttachment Metadata)? savedAttachment = null;
             if (attachment != null)
             {
-                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
-                newStoredFileName = saved.StoredFileName;
-                purchase.Attachment ??= new FinanceAttachment { AssetPurchaseId = purchase.Id };
-                ApplyAttachment(purchase.Attachment, saved);
-            }
-            else if (removeAttachment && purchase.Attachment != null)
-            {
-                _context.FinanceAttachments.Remove(purchase.Attachment);
-                purchase.Attachment = null;
+                savedAttachment = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = savedAttachment.Value.StoredFileName;
             }
 
-            purchase.ProjectId = dto.ProjectId;
-            purchase.AssetAccountId = dto.AssetAccountId;
-            purchase.FinanceAccountId = dto.FinanceAccountId;
-            purchase.Amount = dto.Amount;
-            purchase.Description = Clean(dto.Description);
-            purchase.Date = purchaseDate;
-            // After the date and amount have moved, because both feed the threshold and so the tax.
-            await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+            // Tax withheld from a capital supplier is owed to FBR on the same terms as an expense, so
+            // reducing it needs the same check against what has already been deposited.
+            var withheldBefore = purchase.WhtAmount;
 
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { purchase.VendorId, dto.VendorId }, cancellationToken,
+                        serialisable: withheldBefore > 0m);
+
+                    if (savedAttachment.HasValue)
+                    {
+                        purchase.Attachment ??= new FinanceAttachment { AssetPurchaseId = purchase.Id };
+                        ApplyAttachment(purchase.Attachment, savedAttachment.Value);
+                    }
+                    else if (removeAttachment && purchase.Attachment != null)
+                    {
+                        _context.FinanceAttachments.Remove(purchase.Attachment);
+                        purchase.Attachment = null;
+                    }
+
+                    purchase.ProjectId = dto.ProjectId;
+                    purchase.AssetAccountId = dto.AssetAccountId;
+                    purchase.FinanceAccountId = dto.FinanceAccountId;
+                    purchase.Amount = dto.Amount;
+                    purchase.Description = Clean(dto.Description);
+                    purchase.Date = purchaseDate;
+                    // After the date and amount have moved, because both feed the threshold and so the tax.
+                    await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+                    await _whtService.EnsureDepositsStayCoveredAsync(
+                        purchase.WhtAmount - withheldBefore, cancellationToken);
+
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -221,15 +238,19 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Asset purchase not found.");
             ApplyAssetPurchaseToken(purchase, concurrencyToken);
 
-            // Deleting lowers the vendor's year-to-date total, which is the same aggregate a save
-            // reads — so it takes the lock for the same reason deleting an expense does.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(new[] { purchase.VendorId }, cancellationToken);
-
             var storedFileName = purchase.Attachment?.StoredFileName;
-            _context.AssetPurchases.Remove(purchase);
-            await _context.SaveChangesAsync(cancellationToken);
-            if (thresholdGuard != null)
-                await thresholdGuard.CommitAsync(cancellationToken);
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // Deleting lowers the vendor's year-to-date total, which is the same aggregate a save
+                // reads — so it takes the lock for the same reason deleting an expense does.
+                await using var thresholdGuard = await BeginThresholdGuardAsync(
+                    new[] { purchase.VendorId }, cancellationToken, serialisable: purchase.WhtAmount > 0m);
+                await _whtService.EnsureDepositsStayCoveredAsync(-purchase.WhtAmount, cancellationToken);
+                _context.AssetPurchases.Remove(purchase);
+                await _context.SaveChangesAsync(cancellationToken);
+                if (thresholdGuard != null)
+                    await thresholdGuard.CommitAsync(cancellationToken);
+            });
             await DeleteObsoleteFileAsync(storedFileName);
         }
 

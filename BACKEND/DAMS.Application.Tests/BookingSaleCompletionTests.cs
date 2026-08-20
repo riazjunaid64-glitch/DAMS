@@ -72,7 +72,7 @@ public sealed class BookingSaleCompletionTests
             }, adminUserId: 5));
 
         Assert.Contains("recognised at possession", error.Message);
-        Assert.Contains("cannot be repriced", error.Message);
+        Assert.Contains("cannot be rewritten", error.Message);
         // The booking is untouched: no half-applied reprice, and no schedule built against one.
         var stored = await db.Bookings.AsNoTracking().SingleAsync();
         Assert.Equal(100_000m, stored.AgreedSalePrice);
@@ -107,11 +107,18 @@ public sealed class BookingSaleCompletionTests
     }
 
     /// <summary>
-    /// A discount that arrives at the same net sale value is not a reprice. The recognised figure is
-    /// the net one, so that is what the guard compares — not the gross price it was derived from.
+    /// A different gross-and-discount split landing on the same net value is still a rewrite of the
+    /// recognised terms, and is refused.
+    /// <para>
+    /// Holding the net value alone was not enough. Revenue and Accounts Receivable are both built on
+    /// the net figure and would not have moved — but AgreedSalePrice is a commission basis in its own
+    /// right (<see cref="FinancialCalculationBasis.AgreedSalePrice"/>), so 100,000 restated as 125,000
+    /// less 20% pays commission on 125,000 for a sale that was agreed at 100,000. It also leaves the
+    /// booking no longer saying what the parties actually agreed on the day possession was given.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task GeneratingAScheduleAfterPossession_AllowsADifferentSplitAtTheSameNetValue()
+    public async Task GeneratingAScheduleAfterPossession_RejectsADifferentSplitAtTheSameNetValue()
     {
         await using var db = Context();
         var booking = await SeedAsync(db, BookingStatus.PossessionGiven, recognised: true);
@@ -119,17 +126,51 @@ public sealed class BookingSaleCompletionTests
         await db.SaveChangesAsync();
         var service = new InstallmentService(db, new FinanceAccountService(db));
 
-        // 125,000 less 20% is the same 100,000 the sale was recognised at.
+        // 125,000 less 20% is the same 100,000 net — and still not what was agreed.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
+            {
+                AgreedSalePrice = 125_000m, DiscountPercent = 20m,
+                Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
+                InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+            }, adminUserId: 5));
+
+        Assert.Contains("recognised at possession", error.Message);
+        Assert.Contains("cannot be rewritten", error.Message);
+        var stored = await db.Bookings.AsNoTracking().SingleAsync();
+        Assert.Equal(100_000m, stored.AgreedSalePrice);
+        Assert.Equal(0m, stored.DiscountAmount);
+        Assert.Empty(db.Installments);
+    }
+
+    /// <summary>
+    /// What a recognised sale CAN still do: restructure the collection. Dates, frequency and the
+    /// number of installments are how the receivable is brought in, not what the sale was worth.
+    /// The discount reason survives too — the schedule form does not send it back, so writing the
+    /// incoming value would erase the justification on every regeneration.
+    /// </summary>
+    [Fact]
+    public async Task GeneratingAScheduleAfterPossession_MayRestructureTheCollection_AndKeepsTheDiscountReason()
+    {
+        await using var db = Context();
+        var booking = await SeedAsync(db, BookingStatus.PossessionGiven, recognised: true);
+        db.Installments.RemoveRange(db.Installments);
+        (await db.Bookings.SingleAsync()).DiscountReason = "Early-payment concession approved by the director";
+        await db.SaveChangesAsync();
+        var service = new InstallmentService(db, new FinanceAccountService(db));
+
         var schedule = await service.GenerateScheduleAsync(booking.Id, new GenerateInstallmentPlanDto
         {
-            AgreedSalePrice = 125_000m, DiscountPercent = 20m,
-            Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 4,
-            InstallmentStartDate = DateTime.UtcNow.AddDays(30)
+            AgreedSalePrice = 100_000m, DiscountPercent = 0m,
+            Frequency = InstallmentFrequency.Quarterly, NumberOfInstallments = 6,
+            InstallmentStartDate = DateTime.UtcNow.AddDays(15), DiscountReason = null
         }, adminUserId: 5);
 
-        Assert.Equal(4, schedule.Items.Count);
+        Assert.Equal(6, schedule.Items.Count);
+        Assert.Equal(InstallmentFrequency.Quarterly, schedule.Frequency);
         var stored = await db.Bookings.AsNoTracking().SingleAsync();
-        Assert.Equal(100_000m, stored.AgreedSalePrice - stored.DiscountAmount);
+        Assert.Equal(100_000m, stored.AgreedSalePrice);
+        Assert.Equal("Early-payment concession approved by the director", stored.DiscountReason);
     }
 
     /// <summary>Before possession there is no recognised sale, so the terms are still negotiable.</summary>

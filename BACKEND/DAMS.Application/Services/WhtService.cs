@@ -824,6 +824,40 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
+        /// Refuses a correction to a source record that would leave less tax withheld than has
+        /// already been handed to FBR.
+        /// <para>
+        /// <see cref="ValidateDepositAsync"/> guards this invariant from the deposit side: never pay
+        /// over more than was withheld. It can be broken from the other side just as easily —
+        /// withhold 10,000, deposit 10,000, then delete or reduce the expense the tax came from, and
+        /// Tax Payable is left at minus 10,000. A negative liability is not a state this business
+        /// has: the money really did go to FBR, so the record it was deducted from cannot simply
+        /// vanish underneath it.
+        /// </para>
+        /// <para>
+        /// The change is signed, and only a reduction is checked: raising the tax or adding a record
+        /// can never uncover a deposit. The caller passes the delta rather than the new figure
+        /// because the stored total is read here, inside the caller's serialisable window, where the
+        /// deposit path cannot slip between the read and the write.
+        /// </para>
+        /// </summary>
+        public async Task EnsureDepositsStayCoveredAsync(
+            decimal withheldChange, CancellationToken cancellationToken = default)
+        {
+            if (withheldChange >= 0m) return;
+            var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
+            var deposited = await _context.WhtDeposits.AsNoTracking()
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var proposed = Math.Round(withheld + withheldChange, 2, MidpointRounding.AwayFromZero);
+            if (proposed < Math.Round(deposited, 2, MidpointRounding.AwayFromZero))
+                throw new InvalidOperationException(
+                    $"This change would leave {proposed:N2} of withholding tax recorded against "
+                    + $"{deposited:N2} already deposited with FBR, which would make Tax Payable negative. "
+                    + "Correct or remove the FBR deposit first, then change this record.");
+        }
+
+        /// <summary>
         /// Withheld tax that has not yet been handed to FBR, across expenses AND asset purchases — the
         /// same figure the payable summary and the Tax Payable account balance show. All-time on
         /// purpose: the liability is a running balance, not a period total, so an August deposit can

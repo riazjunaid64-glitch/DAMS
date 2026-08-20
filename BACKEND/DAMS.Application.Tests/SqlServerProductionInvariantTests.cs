@@ -5,6 +5,7 @@ using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
+using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
@@ -39,6 +40,10 @@ public sealed class SqlServerFactAttribute : FactAttribute
 public sealed class SqlServerProductionInvariantTests
 {
     private static readonly FinancialWorkflowActor Actor = new(901, "SQL Concurrency Admin");
+
+    /// <summary>The smallest byte sequence the upload validator accepts as a PDF.</summary>
+    private static readonly byte[] ProbePdf =
+        System.Text.Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF");
 
     [SqlServerFact]
     public async Task MigrationsTransactionsAndConcurrentPayouts_PreserveProductionInvariants()
@@ -1423,6 +1428,178 @@ public sealed class SqlServerProductionInvariantTests
                 service.CommitAsync(reopened.Id, reopened.ConcurrencyToken, 1));
             Assert.Contains("1 expenses", error.Message);
             Assert.Contains("25 Jul 2026", error.Message);
+        }
+    }
+
+    /// <summary>
+    /// Every write that opens its own transaction, against a database configured the way production
+    /// is.
+    /// <para>
+    /// The API registers SQL Server with <c>EnableRetryOnFailure</c>. EF then refuses to execute ANY
+    /// operation inside a transaction the caller opened itself unless the whole unit runs through the
+    /// retrying strategy: <c>ExecutionStrategy.OnFirstExecution</c> throws "the configured execution
+    /// strategy 'SqlServerRetryingExecutionStrategy' does not support user-initiated transactions".
+    /// </para>
+    /// <para>
+    /// Three paths opened one without that wrapper, and every one of them failed outright on the real
+    /// database while passing every in-memory test — the in-memory provider is not relational, so the
+    /// transaction was skipped and the strategy never involved. An expense entered against a VENDOR
+    /// took the vendor threshold lock, which is every expense that can carry withholding tax; a
+    /// fixed-asset purchase did the same; and creating, assigning or uploading against a customer
+    /// document category took a serialisable one. This is the test that can tell.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task EveryWriteThatOpensItsOwnTransaction_RunsOnARetryConfiguredDatabase()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int accountId, assetAccountId, vendorId, headId, expenseId, purchaseId;
+        await using (var db = new AppDbContext(options))
+        {
+            var account = new FinanceAccount
+            {
+                Name = "Retry Probe Bank", AccountHolderName = "DAMS",
+                Type = FinanceAccountType.Bank, OpeningBalance = 5_000_000m, IsActive = true
+            };
+            var assetAccount = new FinanceAccount
+            {
+                Name = "Retry Probe Equipment", AccountHolderName = "DAMS",
+                Type = FinanceAccountType.FixedAsset, IsActive = true
+            };
+            var vendor = new Vendor { Name = "Retry Probe Supplier", IsActive = true, FilerStatus = FilerStatus.Filer };
+            db.AddRange(account, assetAccount, vendor);
+            await db.SaveChangesAsync();
+            accountId = account.Id;
+            assetAccountId = assetAccount.Id;
+            vendorId = vendor.Id;
+            // A seeded head that DOES withhold, so the threshold lock is genuinely taken.
+            headId = await db.ExpenseCategories.Where(c => c.IsWhtApplicable && c.IsActive)
+                .OrderBy(c => c.Id).Select(c => c.Id).FirstAsync();
+        }
+
+        // ── An expense against a vendor: create, edit, delete ──
+        await using (var db = new AppDbContext(options))
+        {
+            var finance = Finance(db);
+            var expense = await finance.CreateExpenseAsync(new CreateExpenseDto
+            {
+                FinanceAccountId = accountId, VendorId = vendorId, CategoryId = headId,
+                Amount = 1_000_000m, Description = "Threshold-locked entry", Date = new DateTime(2026, 8, 3)
+            }, adminUserId: 1);
+            expenseId = expense.Id;
+            Assert.True(expense.WhtAmount > 0m, "The head under test has to withhold, or the lock is never taken.");
+
+            var stored = await db.Expenses.AsNoTracking().SingleAsync(e => e.Id == expenseId);
+            var edited = await finance.UpdateExpenseAsync(expenseId, new UpdateExpenseDto
+            {
+                FinanceAccountId = accountId, VendorId = vendorId, CategoryId = headId,
+                Amount = 1_200_000m, Description = "Corrected", Date = new DateTime(2026, 8, 3),
+                ConcurrencyToken = Convert.ToBase64String(stored.RowVersion)
+            });
+            Assert.Equal(1_200_000m, edited.Amount);
+        }
+
+        // ── A fixed-asset purchase against the same vendor ──
+        await using (var db = new AppDbContext(options))
+        {
+            var purchase = await Finance(db).CreateAssetPurchaseAsync(new CreateAssetPurchaseDto
+            {
+                FinanceAccountId = accountId, AssetAccountId = assetAccountId, VendorId = vendorId,
+                CategoryId = headId, Amount = 400_000m, ItemName = "Site generator",
+                Date = new DateTime(2026, 8, 4)
+            }, adminUserId: 1);
+            purchaseId = purchase.Id;
+            Assert.True(purchase.WhtAmount > 0m);
+        }
+
+        // ── The deposit-coverage rule, on real SQL and through the serialisable window ──
+        await using (var db = new AppDbContext(options))
+        {
+            var accounts = new FinanceAccountService(db);
+            var wht = new WhtService(db, accounts);
+            var outstanding = (await wht.GetPayableSummaryAsync(null, null)).OutstandingPayable;
+            Assert.True(outstanding > 0m);
+            await wht.CreateDepositAsync(new SaveWhtDepositDto
+            {
+                FinanceAccountId = accountId, Amount = outstanding, ChallanNumber = "CPR-RETRY",
+                DepositDate = new DateTime(2026, 8, 5)
+            }, adminUserId: 1);
+
+            var finance = Finance(db);
+            var expense = await db.Expenses.AsNoTracking().SingleAsync(e => e.Id == expenseId);
+            var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                finance.DeleteExpenseAsync(expenseId, Convert.ToBase64String(expense.RowVersion)));
+            Assert.Contains("already deposited with FBR", refused.Message);
+
+            var purchase = await db.AssetPurchases.AsNoTracking().SingleAsync(p => p.Id == purchaseId);
+            var refusedPurchase = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                finance.DeleteAssetPurchaseAsync(purchaseId, Convert.ToBase64String(purchase.RowVersion)));
+            Assert.Contains("already deposited with FBR", refusedPurchase.Message);
+        }
+
+        // Both are still there, and the payable is still exactly zero rather than negative.
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.True(await db.Expenses.AnyAsync(e => e.Id == expenseId));
+            Assert.True(await db.AssetPurchases.AnyAsync(p => p.Id == purchaseId));
+            Assert.Equal(0m, (await new WhtService(db, new FinanceAccountService(db))
+                .GetPayableSummaryAsync(null, null)).OutstandingPayable);
+        }
+
+        // ── And once the deposit is out of the way, the deletes go through ──
+        await using (var db = new AppDbContext(options))
+        {
+            var deposit = await db.WhtDeposits.AsNoTracking().SingleAsync();
+            await new WhtService(db, new FinanceAccountService(db))
+                .DeleteDepositAsync(deposit.Id, Convert.ToBase64String(deposit.RowVersion));
+            var finance = Finance(db);
+            var expense = await db.Expenses.AsNoTracking().SingleAsync(e => e.Id == expenseId);
+            await finance.DeleteExpenseAsync(expenseId, Convert.ToBase64String(expense.RowVersion));
+            var purchase = await db.AssetPurchases.AsNoTracking().SingleAsync(p => p.Id == purchaseId);
+            await finance.DeleteAssetPurchaseAsync(purchaseId, Convert.ToBase64String(purchase.RowVersion));
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.False(await db.Expenses.AnyAsync(e => e.Id == expenseId));
+            Assert.False(await db.AssetPurchases.AnyAsync(p => p.Id == purchaseId));
+        }
+
+        // ── The customer-document paths that open a serialisable transaction of their own ──
+        await using (var db = new AppDbContext(options))
+        {
+            var customer = new Customer { FullName = "Retry Probe Buyer", Phone = "03009990000", Status = CustomerStatus.Active };
+            db.Add(customer);
+            await db.SaveChangesAsync();
+
+            var documents = new CustomerDocumentService(db, new NullPrivateStorage(),
+                NullLogger<CustomerDocumentService>.Instance);
+            var actor = new CustomerDocumentActor(Actor.UserId, Actor.DisplayName);
+            var category = await documents.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
+            {
+                Name = "Retry probe proof", Code = "retry_probe_proof", IsRequiredByDefault = true,
+                AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024 * 1024,
+                AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
+                SelectedCustomerIds = [customer.Id]
+            }, actor);
+
+            // Assignment ran inside the create, so the requirement exists.
+            var requirement = await db.CustomerDocumentRequirements.AsNoTracking()
+                .SingleAsync(r => r.CategoryId == category.Id && r.CustomerId == customer.Id);
+
+            var uploaded = await documents.UploadAsync(customer.Id, requirement.Id,
+                Convert.ToBase64String(requirement.RowVersion),
+                new CustomerDocumentUpload
+                {
+                    Content = new MemoryStream(ProbePdf), FileName = "probe.pdf", Length = ProbePdf.LongLength
+                }, actor);
+            Assert.Equal(CustomerDocumentStatus.UnderReview, uploaded.Status);
+            Assert.Single(await db.CustomerDocumentVersions.AsNoTracking()
+                .Where(v => v.RequirementId == requirement.Id && v.IsCurrent).ToListAsync());
         }
     }
 

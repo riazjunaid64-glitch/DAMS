@@ -44,6 +44,11 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
     public sealed class SaveOpeningBalanceSetDto
     {
+        /// <summary>
+        /// Corrects the go-live date of a draft that has not been committed. Nullable because an
+        /// omitted date must leave the stored one alone rather than reset it to default(DateTime).
+        /// </summary>
+        public DateTime? AsAtDate { get; set; }
         public List<SaveOpeningBalanceEntryDto> Entries { get; set; } = [];
         public string ConcurrencyToken { get; set; } = string.Empty;
     }

@@ -105,7 +105,7 @@ namespace DAMS.Api.Filters
             {
                 await store.SaveChangesAsync(context.HttpContext.RequestAborted);
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException ex) when (IsDuplicateKey(ex))
             {
                 // The key is already on file: a retry, a duplicate still in flight, or a key reused
                 // for something else. The unique index decided that, not a read-then-write.
@@ -160,6 +160,20 @@ namespace DAMS.Api.Filters
                 _logger.LogError(ex, "Failed to finalise idempotency record {Key} for {Operation}.", key, operation);
             }
         }
+
+        /// <summary>
+        /// Whether the reservation failed because <c>IX_IdempotentRequests_Key</c> rejected it, and
+        /// not for some other reason.
+        /// <para>
+        /// Narrow on purpose. Catching every <see cref="DbUpdateException"/> meant a full log, a
+        /// dropped connection or a schema problem was reported to the operator as "this request was
+        /// already processed" — a message that says the opposite of what happened and invites them to
+        /// stop retrying something that never ran. 2601 and 2627 are SQL Server's unique-index and
+        /// unique-constraint violations; anything else propagates and is answered as the fault it is.
+        /// </para>
+        /// </summary>
+        private static bool IsDuplicateKey(DbUpdateException ex) =>
+            ex.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 };
 
         /// <summary>How to answer a repeat of a key that is already on file.</summary>
         private static IActionResult Replay(IdempotentRequest? existing, string operation, string fingerprint)

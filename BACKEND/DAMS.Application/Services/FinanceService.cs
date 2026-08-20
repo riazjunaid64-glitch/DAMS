@@ -1,3 +1,4 @@
+using System.Data;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -1264,11 +1265,6 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Paid From Account is required.");
             await _accountService.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, null, cancellationToken);
 
-            // Held until after SaveChanges so the year-to-date read and the insert that depends on
-            // it cannot be interleaved with another save for the same vendor.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(
-                new[] { dto.VendorId }, cancellationToken);
-
             var expense = new Expense
             {
                 ProjectId = dto.ProjectId,
@@ -1279,7 +1275,6 @@ namespace DAMS.Application.Services
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
-            await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
 
             string? newStoredFileName = null;
             if (attachment != null)
@@ -1296,12 +1291,22 @@ namespace DAMS.Application.Services
                 };
             }
 
-            _context.Expenses.Add(expense);
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    // Held until after SaveChanges so the year-to-date read and the insert that
+                    // depends on it cannot be interleaved with another save for the same vendor.
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { dto.VendorId }, cancellationToken);
+                    // Inside the guard because this is where the threshold is read and the tax
+                    // decided. Re-runnable: it recomputes onto the same entity.
+                    await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
+                    _context.Expenses.Add(expense);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -1337,44 +1342,55 @@ namespace DAMS.Application.Services
                 ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Expense date", cancellationToken)
                 : expense.Date;
 
-            // Editing re-decides the threshold too, so it needs the same protection as creating —
-            // for the vendor being left as well as the one being joined.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(
-                new[] { expense.VendorId, dto.VendorId }, cancellationToken);
-
             var oldStoredFileName = expense.Attachment?.StoredFileName;
             string? newStoredFileName = null;
-
+            (string StoredFileName, ValidatedFinanceAttachment Metadata)? savedAttachment = null;
             if (attachment != null)
             {
-                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
-                newStoredFileName = saved.StoredFileName;
-                if (expense.Attachment == null)
-                {
-                    expense.Attachment = new FinanceAttachment { ExpenseId = expense.Id };
-                }
-                ApplyAttachment(expense.Attachment, saved);
-            }
-            else if (removeAttachment && expense.Attachment != null)
-            {
-                _context.FinanceAttachments.Remove(expense.Attachment);
-                expense.Attachment = null;
+                savedAttachment = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = savedAttachment.Value.StoredFileName;
             }
 
-            expense.ProjectId = dto.ProjectId;
-            expense.FinanceAccountId = dto.FinanceAccountId;
-            expense.Amount = dto.Amount;
-            expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
-            expense.Date = expenseDate;
-            // Re-resolved after the date and amount move, because both feed the threshold check
-            // and therefore the tax.
-            await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
+            // Tax already withheld on this row is the amount FBR may have been paid, so a lower
+            // figure has to be checked against the deposits — which needs the serialisable window.
+            var withheldBefore = expense.WhtAmount;
 
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    // Editing re-decides the threshold too, so it needs the same protection as
+                    // creating — for the vendor being left as well as the one being joined.
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { expense.VendorId, dto.VendorId }, cancellationToken,
+                        serialisable: withheldBefore > 0m);
+
+                    if (savedAttachment.HasValue)
+                    {
+                        expense.Attachment ??= new FinanceAttachment { ExpenseId = expense.Id };
+                        ApplyAttachment(expense.Attachment, savedAttachment.Value);
+                    }
+                    else if (removeAttachment && expense.Attachment != null)
+                    {
+                        _context.FinanceAttachments.Remove(expense.Attachment);
+                        expense.Attachment = null;
+                    }
+
+                    expense.ProjectId = dto.ProjectId;
+                    expense.FinanceAccountId = dto.FinanceAccountId;
+                    expense.Amount = dto.Amount;
+                    expense.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description.Trim();
+                    expense.Date = expenseDate;
+                    // Re-resolved after the date and amount move, because both feed the threshold check
+                    // and therefore the tax.
+                    await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
+                    await _whtService.EnsureDepositsStayCoveredAsync(
+                        expense.WhtAmount - withheldBefore, cancellationToken);
+
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -1397,17 +1413,22 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Expense not found.");
             ApplyRowVersion(expense, concurrencyToken, "expense");
 
-            // Removing an expense lowers the vendor's year-to-date total, so it moves the same
-            // aggregate a save reads. Without the lock a concurrent entry can decide the threshold
-            // against a row that is about to disappear.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(
-                new[] { expense.VendorId }, cancellationToken);
-
             var storedFileName = expense.Attachment?.StoredFileName;
-            _context.Expenses.Remove(expense);
-            await _context.SaveChangesAsync(cancellationToken);
-            if (thresholdGuard != null)
-                await thresholdGuard.CommitAsync(cancellationToken);
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // Removing an expense lowers the vendor's year-to-date total, so it moves the same
+                // aggregate a save reads. Without the lock a concurrent entry can decide the threshold
+                // against a row that is about to disappear.
+                await using var thresholdGuard = await BeginThresholdGuardAsync(
+                    new[] { expense.VendorId }, cancellationToken, serialisable: expense.WhtAmount > 0m);
+                // Deleting takes the whole withheld amount off the payable. If FBR has already been
+                // paid it, there is nothing left for the deposit to have come from.
+                await _whtService.EnsureDepositsStayCoveredAsync(-expense.WhtAmount, cancellationToken);
+                _context.Expenses.Remove(expense);
+                await _context.SaveChangesAsync(cancellationToken);
+                if (thresholdGuard != null)
+                    await thresholdGuard.CommitAsync(cancellationToken);
+            });
             await DeleteObsoleteFileAsync(storedFileName);
         }
 
@@ -1510,16 +1531,28 @@ namespace DAMS.Application.Services
         /// locked in ascending id order so two moves in opposite directions queue instead of
         /// deadlocking.
         /// </para>
+        /// <para>
+        /// <paramref name="serialisable"/> escalates the window for the one case a row lock cannot
+        /// cover: a record that already carries withholding tax, where the check is "is this still
+        /// at least what has been deposited with FBR". That reads the deposit history, which no
+        /// vendor lock protects, so under READ COMMITTED a deposit could commit between the read and
+        /// the delete and leave Tax Payable negative. Serialisable holds the range it read until
+        /// commit, which is the same protection the deposit path takes from its side — and it is
+        /// asked for only when the stored row has tax on it, so ordinary expense entry keeps the
+        /// cheaper row lock.
+        /// </para>
         /// </summary>
         private async Task<IDbContextTransaction?> BeginThresholdGuardAsync(
-            IEnumerable<int?> vendorIds, CancellationToken cancellationToken)
+            IEnumerable<int?> vendorIds, CancellationToken cancellationToken, bool serialisable = false)
         {
             var ids = vendorIds.Where(id => id.HasValue).Select(id => id!.Value)
                 .Distinct().OrderBy(id => id).ToList();
-            if (ids.Count == 0) return null;
+            if (ids.Count == 0 && !serialisable) return null;
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
 
-            var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            var transaction = serialisable
+                ? await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
+                : await _context.Database.BeginTransactionAsync(cancellationToken);
             try
             {
                 foreach (var id in ids)
@@ -1534,6 +1567,28 @@ namespace DAMS.Application.Services
                 throw;
             }
         }
+
+        /// <summary>
+        /// Runs one transactional unit through the retrying execution strategy.
+        /// <para>
+        /// Not optional. The API registers SQL Server with <c>EnableRetryOnFailure</c>, and EF
+        /// refuses to execute ANY operation inside a transaction the caller opened itself while a
+        /// retrying strategy is configured — <c>OnFirstExecution</c> throws "the configured execution
+        /// strategy 'SqlServerRetryingExecutionStrategy' does not support user-initiated
+        /// transactions". So every path that takes the threshold guard has to be a retriable unit or
+        /// it cannot run at all on the real database: saving an expense against a vendor threw before
+        /// this wrapper existed, which is every expense that carries withholding tax.
+        /// </para>
+        /// <para>
+        /// The delegate can be re-executed, so it must hold only work that is safe to repeat:
+        /// database mutations on entities the change tracker already knows about. Entity
+        /// construction, file writes and file deletions stay outside it — a retry that built a
+        /// second entity would insert both, and one that re-saved an upload would leave the first
+        /// copy orphaned on disk.
+        /// </para>
+        /// </summary>
+        private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         /// <summary>
         /// Resolves the category and vendor an expense was entered against, snapshots their names
