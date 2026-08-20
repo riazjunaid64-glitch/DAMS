@@ -535,6 +535,63 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         await AssertBalancedAsync(finance, Mar);
     }
 
+    // ── 21b. Same-day possession: which side of it the cash falls on ─────────────────────────
+
+    /// <summary>
+    /// RecognitionDate is a Pakistan BUSINESS DATE with no time of day — deliberately, because the
+    /// UTC instant lands on the wrong calendar day either side of Pakistan midnight. Classifying a
+    /// receipt by that date alone therefore treated every rupee taken on the possession day as
+    /// pre-possession, including the buyer settling their brand-new receivable at 3 PM after a
+    /// 10 AM handover.
+    /// <para>
+    /// The amounts were never wrong: the invented deposit receipt and its immediate clearing cancel
+    /// on the Customer Deposits account, and the receivable side counts every payment on a
+    /// recognised booking regardless. So this is a ledger-description defect, and the test asserts
+    /// both halves — the description is corrected AND the balances are exactly what they already
+    /// were.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task OnPossessionDay_CashTakenAfterHandover_SettlesTheReceivable_NotADeposit()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, netSalePrice: 1_000_000m);
+
+        // 400,000 taken in the morning, before the handover was recorded…
+        await PayAsync(context, world, 400_000m, Feb, createdAt: new DateTime(2026, 2, 15, 5, 0, 0, DateTimeKind.Utc));
+        context.Bookings.Single().Status = BookingStatus.PossessionGiven;
+        context.Bookings.Single().PossessionDate = Feb;
+        context.BookingSaleRecognitions.Add(new BookingSaleRecognition
+        {
+            BookingId = world.BookingId, RecognitionDate = Feb, NetSaleValue = 1_000_000m,
+            RecognizedAt = new DateTime(2026, 2, 15, 5, 30, 0, DateTimeKind.Utc)   // 10:30 AM Pakistan
+        });
+        await context.SaveChangesAsync();
+        // …and 600,000 that afternoon, against the receivable the handover had just raised.
+        await PayAsync(context, world, 600_000m, Feb, createdAt: new DateTime(2026, 2, 15, 10, 0, 0, DateTimeKind.Utc));
+
+        var accounts = new FinanceAccountService(context);
+        var ledger = (await accounts.GetTransactionsAsync(world.Deposits.Id, 0, 500)).Items;
+
+        // The morning receipt is a deposit, taken and then cleared by possession. The afternoon one
+        // is not a deposit at all — it never was economically, and now the ledger says so.
+        Assert.Equal(400_000m, ledger.Where(t => t.Kind == "Customer deposit received").Sum(t => t.Amount));
+        Assert.Equal(-400_000m, ledger.Where(t => t.Kind == "Customer deposit recognised").Sum(t => t.Amount));
+        Assert.DoesNotContain(ledger, t => t.GrossAmount == 600_000m);
+
+        var arLedger = (await accounts.GetTransactionsAsync(world.Receivables.Id, 0, 500)).Items;
+        Assert.Contains(arLedger, t => t.GrossAmount == 400_000m && t.Kind == "Deposit applied to sale");
+        Assert.Contains(arLedger, t => t.GrossAmount == 600_000m && t.Kind == "Customer receivable collected");
+
+        // And every balance is exactly what it was before: fully collected, nothing held, nothing owed.
+        Assert.Equal(0m, (await accounts.GetByIdAsync(world.Deposits.Id)).CurrentBalance);
+        Assert.Equal(0m, (await accounts.GetByIdAsync(world.Receivables.Id)).CurrentBalance);
+        var finance = Finance(context);
+        Assert.Equal(0m, (await finance.GetSummaryAsync(null, null, Mar)).CustomerDepositsBalance);
+        Assert.Equal(1_000_000m, (await finance.GetProfitAndLossAsync(null, Jan, Mar)).TotalIncome);
+        await AssertBalancedAsync(finance, Mar);
+    }
+
     // ── 22. WIP is not released at possession ────────────────────────────────────────────────
 
     [Fact]
@@ -807,13 +864,19 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         return (booking.Id, project.Id);
     }
 
-    private static async Task PayAsync(AppDbContext context, World world, decimal amount, DateTime paidAt, int? bookingId = null)
+    private static async Task PayAsync(
+        AppDbContext context, World world, decimal amount, DateTime paidAt, int? bookingId = null,
+        DateTime? createdAt = null)
     {
-        context.Payments.Add(new Payment
+        var payment = new Payment
         {
             BookingId = bookingId ?? world.BookingId, FinanceAccountId = world.Bank.Id, Amount = amount,
             Type = PaymentType.Installment, PaymentMethod = PaymentMethod.BankTransfer, PaidAt = paidAt
-        });
+        };
+        // The audit instant decides same-day ordering against possession, so a test that cares about
+        // it says so explicitly rather than racing the wall clock.
+        if (createdAt.HasValue) payment.CreatedAt = createdAt.Value;
+        context.Payments.Add(payment);
         await context.SaveChangesAsync();
     }
 

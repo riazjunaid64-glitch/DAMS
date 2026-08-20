@@ -68,6 +68,14 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// Not period-filtered, because a liability is a balance, not a flow.</summary>
         public decimal OutstandingPayable { get; set; }
 
+        /// <summary>
+        /// The Tax Payable liability brought over from the client's previous system on the committed
+        /// opening-balance sheet. Part of <see cref="OutstandingPayable"/>, and shown separately so a
+        /// figure that is owed to FBR but was never withheld inside DAMS can be explained rather than
+        /// looking like an error.
+        /// </summary>
+        public decimal OpeningPayable { get; set; }
+
         public decimal TotalWithheldAllTime { get; set; }
         public decimal TotalDepositedAllTime { get; set; }
         public int PaymentCount { get; set; }

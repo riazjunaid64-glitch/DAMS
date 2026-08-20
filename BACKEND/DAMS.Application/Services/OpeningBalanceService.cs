@@ -49,6 +49,22 @@ namespace DAMS.Application.Services
             string? dateChange = null;
             if (dto.AsAtDate.HasValue && dto.AsAtDate.Value.Date != set.AsAtDate.Date)
             {
+                // Correctable only while the date has NEVER been committed, which is a stricter
+                // test than "not currently committed". Reopening deliberately leaves CommittedAt
+                // populated so the old baseline stays the ACTIVE one while the accountant edits
+                // amounts — FinanceDateRules.BaselineAsync selects on CommittedAt != null, not on
+                // IsCommitted. Letting the date move under that retires the live baseline to a date
+                // the amounts on this sheet were never measured at: every posting between the two
+                // dates changes meaning immediately, before anything is recommitted, and the
+                // recommit that would have reconciled them can itself fail and strand the database
+                // in exactly that state. Amounts may still be corrected; the date may not.
+                if (set.CommittedAt.HasValue)
+                    throw new InvalidOperationException(
+                        $"The go-live date was committed on {set.CommittedAt:dd MMM yyyy} and cannot be "
+                        + "changed. Reopening lets you correct the opening amounts, but the baseline "
+                        + $"date stays {set.AsAtDate:dd MMM yyyy} — it is still the date every report "
+                        + "and every posting-date check is measured against, and moving it would "
+                        + "silently re-date financial history already recorded on top of it.");
                 FinanceDateRules.EnsureBaselineDate(dto.AsAtDate.Value, "Go-live date");
                 dateChange = $"Go-live date changed from {set.AsAtDate:dd MMM yyyy} to {dto.AsAtDate.Value:dd MMM yyyy}.";
                 set.AsAtDate = dto.AsAtDate.Value.Date;
@@ -117,6 +133,38 @@ namespace DAMS.Application.Services
                     + "the records that the opening figures already contain. "
                     + FinanceDateRules.BoundaryConvention);
             }
+
+            // Customer Deposits and Customer Receivables are the two liabilities/assets on this
+            // sheet that are NOT free-standing GL balances: both are derived, per booking, from
+            // Payment rows and recognition events. An aggregate opening figure has no booking
+            // behind it, so nothing can ever clear it — give possession later and the receivable is
+            // raised for the FULL sale value while the opening deposit sits untouched, because the
+            // clearing side counts payments and there are none. The sheet still balances; the
+            // customer is simply chased for money they already paid. The cutover fix is data, not
+            // code: enter those bookings' receipts as Payment rows and leave these two accounts at
+            // zero — either behind an earlier go-live date on the dates the cash was taken, or on
+            // or after go-live with that cash left out of the opening bank figure. This is the only
+            // moment that choice is still reversible, which is why it is a precondition here.
+            var unbacked = set.Entries
+                .Where(e => e.FinanceAccount != null
+                    && (e.FinanceAccount.SystemRole == FinanceSystemAccountRole.CustomerDeposits
+                        || e.FinanceAccount.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
+                    && (e.DebitAmount != 0m || e.CreditAmount != 0m))
+                .ToList();
+            if (unbacked.Count > 0)
+                throw new InvalidOperationException(
+                    "These opening balances cannot be entered as a single figure: "
+                    + string.Join(", ", unbacked.Select(e =>
+                        $"{e.FinanceAccount!.Name} {Money(e.DebitAmount + e.CreditAmount):N2}"))
+                    + ". DAMS works both balances out per booking from the customer's own payments "
+                    + "and possession date, so an aggregate here belongs to no customer and can "
+                    + "never be cleared — the buyer would be invoiced again at possession for money "
+                    + "already paid. Enter each affected booking's receipts as payments instead, and "
+                    + "leave these two accounts at zero. Either move the go-live date back before "
+                    + "those receipts and enter them on the dates they were taken, or enter them on "
+                    + "or after the go-live date and leave that cash out of the opening bank figure "
+                    + "— what must not happen is the same money appearing in an opening balance and "
+                    + "as a payment.");
 
             // Accounts can be created after the draft baseline. Include every current account on
             // commit so a new account cannot retain an uncontrolled OpeningBalance value.

@@ -217,11 +217,22 @@ namespace DAMS.Application.Services
             // ── Customer Deposits ledger ──────────────────────────────────────────────────
             // Derived, never stored: the authoritative record of the cash is the Payment row, and
             // writing a second one just to draw this list would be the same money counted twice.
+            // "Before the sale was recognised" is an EARLIER BUSINESS DATE, or the same date entered
+            // before possession was recorded. RecognitionDate is a Pakistan business date with no
+            // time of day, so comparing against it alone made every receipt on the possession day a
+            // pre-possession deposit — including the buyer settling their new receivable at 3 PM
+            // after a 10 AM handover. The amounts came out right either way (the invented deposit
+            // receipt and its immediate clearing cancel), but the ledger described the cash wrongly.
+            // The same-day tiebreak is CreatedAt vs RecognizedAt: both are raw UTC audit instants
+            // set by the server, so their ordering is the real one and is safe to compare, which
+            // neither PaidAt nor RecognitionDate would be. It is <= rather than <, so the one case
+            // the two instants cannot separate — a receipt and a handover inside the same clock tick
+            // — resolves the way it always did, as a deposit, rather than flipping on a tie.
             // Every payment taken before the sale was recognised is a deposit received…
             var depositsReceived = _context.Payments.AsNoTracking()
                 .Where(p => account.IsCustomerDeposits
                     && (p.Booking.SaleRecognition == null
-                        || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                        || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Customer deposit received", RecordId = p.Id, Date = p.PaidAt,
@@ -234,7 +245,7 @@ namespace DAMS.Application.Services
             var depositsRecognised = _context.Payments.AsNoTracking()
                 .Where(p => account.IsCustomerDeposits && p.Booking.CancellationSettlement == null
                     && p.Booking.SaleRecognition != null
-                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                    && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Customer deposit recognised", RecordId = p.Id,
@@ -273,10 +284,10 @@ namespace DAMS.Application.Services
                 .Where(p => account.IsCustomerReceivables && p.Booking.SaleRecognition != null)
                 .Select(p => new FinanceAccountTransactionDto
                 {
-                    Kind = p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                    Kind = (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition!.RecognizedAt))
                         ? "Deposit applied to sale" : "Customer receivable collected",
                     RecordId = p.Id,
-                    Date = p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                    Date = (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition!.RecognizedAt))
                         ? p.Booking.SaleRecognition!.RecognitionDate : p.PaidAt,
                     Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
@@ -765,13 +776,13 @@ namespace DAMS.Application.Services
             let isCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits
             let depositIn = isCustomerDeposits
                 ? (_context.Payments.Where(p => p.Booking.SaleRecognition == null
-                        || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                        || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
                     .Sum(p => (decimal?)p.Amount) ?? 0m)
                 : 0m
             let depositOut = isCustomerDeposits
                 ? (_context.Payments.Where(p => p.Booking.CancellationSettlement != null
                         || (p.Booking.SaleRecognition != null
-                            && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                            && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
                     .Sum(p => (decimal?)p.Amount) ?? 0m)
                 : 0m
             // Customer Receivables: what buyers still owe on sales that HAVE been recognised.
@@ -847,10 +858,10 @@ namespace DAMS.Application.Services
                     // Deposits: one line per payment in, one per payment cleared out.
                     + (isCustomerDeposits
                         ? _context.Payments.Count(p => p.Booking.SaleRecognition == null
-                                || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                                || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
                             + _context.Payments.Count(p => p.Booking.CancellationSettlement != null
                                 || (p.Booking.SaleRecognition != null
-                                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)))
+                                    && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
                         : 0)
                     + (isCustomerReceivables
                         ? _context.BookingSaleRecognitions.Count()

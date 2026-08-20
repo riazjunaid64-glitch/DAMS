@@ -356,17 +356,26 @@ namespace DAMS.Application.Services
                 throw new Exception("Paid From Account is required.");
             await _accounts.EnsureExpenseSourceAsync(dto.FinanceAccountId.Value, null, CancellationToken.None);
 
+            // Two different dates, deliberately kept apart. PayDate is when the cash actually moved,
+            // and it is what the Expense and the bank movement are posted on. The payroll PERIOD is
+            // which month the salary is FOR, and it is what "already paid this month" and the salary
+            // history are grouped by. Deriving one from the other cannot represent August's payroll
+            // settled on 5 September, and the old code did exactly that — it posted every run on the
+            // first of the selected month, so the bank balance was wrong for every day between the
+            // 1st and the day the money really left.
             var payDate = dto.PayDate.Date;
             ValidatePayDate(payDate);
             // A salary writes a real Expense row, so it takes the same posting-date bounds as one
             // entered on the finance screen — including "not before the committed opening balances",
             // which the standalone check above cannot see.
             await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
+            var (payMonth, payYear) = ResolvePayrollPeriod(dto.PayMonth, dto.PayYear, payDate);
+            var periodLabel = PeriodLabel(payMonth, payYear);
 
             var alreadyPaid = await _context.EmployeeSalaries
-                .AnyAsync(s => s.EmployeeId == employeeId && s.PayMonth == payDate.Month && s.PayYear == payDate.Year);
+                .AnyAsync(s => s.EmployeeId == employeeId && s.PayMonth == payMonth && s.PayYear == payYear);
             if (alreadyPaid)
-                throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+                throw new Exception($"Salary for {periodLabel} has already been recorded for this employee.");
 
             var projectInfo = await ResolveEmployeeProjectAsync(employeeId);
 
@@ -376,7 +385,7 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Category = "Salary",
-                Description = $"Salary — {employee.FullName} ({payDate:MMMM yyyy})",
+                Description = SalaryDescription(employee.FullName, payMonth, payYear, payDate),
                 Vendor = employee.FullName,
                 Date = payDate,
                 CreatedByUserId = adminUserId,
@@ -402,8 +411,8 @@ namespace DAMS.Application.Services
                     EmployeeId = employeeId,
                     Amount = dto.Amount,
                     PayDate = payDate,
-                    PayMonth = payDate.Month,
-                    PayYear = payDate.Year,
+                    PayMonth = payMonth,
+                    PayYear = payYear,
                     ProjectId = projectInfo.ProjectId,
                     ProjectName = projectInfo.ProjectName,
                     ExpenseId = expense.Id,
@@ -423,7 +432,7 @@ namespace DAMS.Application.Services
                 {
                     // Unique index (EmployeeId, PayYear, PayMonth) — a concurrent request
                     // (e.g. a double-click) recorded this month first.
-                    throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+                    throw new Exception($"Salary for {periodLabel} has already been recorded for this employee.");
                 }
             });
 
@@ -438,6 +447,41 @@ namespace DAMS.Application.Services
             if (payDate.Year < 2000)
                 throw new Exception("Pay date is not valid.");
         }
+
+        /// <summary>
+        /// The payroll period a salary belongs to, which is not necessarily the month it was paid in.
+        /// Omitting both parts means "the month the payment falls in" — the behaviour before the
+        /// period existed, and still the right answer whenever payroll is settled inside its own
+        /// month. Sending only one part is refused rather than guessed: a caller that means August
+        /// 2026 and sends the month alone would otherwise silently get August of whatever year the
+        /// payment happens to fall in.
+        /// </summary>
+        private static (int Month, int Year) ResolvePayrollPeriod(int? month, int? year, DateTime payDate)
+        {
+            if (!month.HasValue && !year.HasValue) return (payDate.Month, payDate.Year);
+            if (!month.HasValue || !year.HasValue)
+                throw new Exception("Give the payroll month and year together, or neither.");
+            if (month.Value is < 1 or > 12)
+                throw new Exception("Payroll month must be between 1 and 12.");
+            // One year ahead is allowed because payroll can legitimately be paid in advance across a
+            // year boundary; anything beyond that is a typo, not a period.
+            if (year.Value < 2000 || year.Value > PakistanTime.Today.Year + 1)
+                throw new Exception("Payroll year is not valid.");
+            return (month.Value, year.Value);
+        }
+
+        private static string PeriodLabel(int month, int year) =>
+            new DateTime(year, month, 1).ToString("MMMM yyyy");
+
+        /// <summary>
+        /// Names the period the salary is for, and — only when the cash moved in a different month —
+        /// the day it was actually paid, so the expense line explains itself on a report that is
+        /// ordered by posting date.
+        /// </summary>
+        private static string SalaryDescription(string employeeName, int month, int year, DateTime payDate) =>
+            month == payDate.Month && year == payDate.Year
+                ? $"Salary — {employeeName} ({PeriodLabel(month, year)})"
+                : $"Salary — {employeeName} ({PeriodLabel(month, year)}, paid {payDate:dd MMM yyyy})";
 
         private static bool IsDuplicateSalaryMonth(DbUpdateException ex)
         {
@@ -468,22 +512,27 @@ namespace DAMS.Application.Services
                 // baseline, and a salary moved behind it is counted twice: once inside the committed
                 // opening figures and again as a movement on top of them.
                 await FinanceDateRules.EnsureAsync(_context, payDate, "Pay date", CancellationToken.None);
+                // Only the cash date. It deliberately no longer drags the payroll period with it:
+                // correcting "we actually paid on the 5th of September" must not silently move
+                // August's payroll into September and free August up to be paid a second time.
+                salary.PayDate = payDate;
+            }
 
-                // Moving to a different month must not collide with an existing salary for that month.
-                if (payDate.Month != salary.PayMonth || payDate.Year != salary.PayYear)
+            if (dto.PayMonth.HasValue || dto.PayYear.HasValue)
+            {
+                var (payMonth, payYear) = ResolvePayrollPeriod(dto.PayMonth, dto.PayYear, salary.PayDate);
+                if (payMonth != salary.PayMonth || payYear != salary.PayYear)
                 {
                     var clash = await _context.EmployeeSalaries.AnyAsync(s =>
                         s.EmployeeId == salary.EmployeeId &&
                         s.Id != salary.Id &&
-                        s.PayMonth == payDate.Month &&
-                        s.PayYear == payDate.Year);
+                        s.PayMonth == payMonth &&
+                        s.PayYear == payYear);
                     if (clash)
-                        throw new Exception($"Salary for {payDate:MMMM yyyy} has already been recorded for this employee.");
+                        throw new Exception($"Salary for {PeriodLabel(payMonth, payYear)} has already been recorded for this employee.");
                 }
-
-                salary.PayDate = payDate;
-                salary.PayMonth = payDate.Month;
-                salary.PayYear = payDate.Year;
+                salary.PayMonth = payMonth;
+                salary.PayYear = payYear;
             }
 
             if (dto.Notes != null)
@@ -496,7 +545,8 @@ namespace DAMS.Application.Services
                 {
                     expense.Amount = salary.Amount;
                     expense.Date = salary.PayDate;
-                    expense.Description = $"Salary — {salary.Employee.FullName} ({salary.PayDate:MMMM yyyy})";
+                    expense.Description = SalaryDescription(
+                        salary.Employee.FullName, salary.PayMonth, salary.PayYear, salary.PayDate);
                 }
             }
 

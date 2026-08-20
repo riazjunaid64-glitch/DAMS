@@ -317,6 +317,124 @@ public sealed class FinanceCutoverBoundaryTests
         Assert.DoesNotContain(set.AuditEntries, a => a.Note != null && a.Note.Contains("Go-live date changed"));
     }
 
+    /// <summary>
+    /// Reopening exists so the ACCOUNTANT can correct amounts, not so the baseline can be moved.
+    /// <para>
+    /// Reopen deliberately leaves <c>CommittedAt</c> populated, and
+    /// <see cref="FinanceDateRules.BaselineAsync"/> selects the active baseline on exactly that
+    /// column — so a reopened set is still the live cutover date while its amounts are being edited.
+    /// The draft-date correction added for a mistyped go-live date keyed off <c>IsCommitted</c>,
+    /// which reopen clears, and that combination let the ACTIVE date move to a day the amounts on
+    /// the sheet were never measured at. Every posting between the two dates changes meaning
+    /// immediately, before anything is recommitted — and the recommit that would have reconciled
+    /// them can itself fail on the records now sitting behind the new date, stranding the database
+    /// in that state.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AReopenedBaseline_CanHaveItsAmountsCorrected_ButNotItsGoLiveDate()
+    {
+        await using var context = Context();
+        var accounts = await SeedAccountsAsync(context);
+        var service = new OpeningBalanceService(context);
+        var set = await Draft(service, GoLive, accounts.BankId, accounts.CapitalAccountId);
+        var committed = await service.CommitAsync(set.Id, set.ConcurrencyToken, 1);
+
+        var reopened = await service.ReopenAsync(committed.Id, new ReopenOpeningBalanceSetDto
+        {
+            WarningAccepted = true, ConcurrencyToken = committed.ConcurrencyToken
+        }, 1);
+        Assert.False(reopened.IsCommitted);
+        // The old baseline is still the ACTIVE one — that is the whole point of keeping CommittedAt.
+        Assert.NotNull(reopened.CommittedAt);
+        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SaveAsync(reopened.Id, new SaveOpeningBalanceSetDto
+            {
+                AsAtDate = new DateTime(2026, 8, 15), ConcurrencyToken = reopened.ConcurrencyToken,
+                Entries =
+                [
+                    new() { FinanceAccountId = accounts.BankId, DebitAmount = 1_000_000m },
+                    new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 1_000_000m }
+                ]
+            }, 1));
+        Assert.Contains("cannot be", error.Message);
+        Assert.Equal(GoLive, context.OpeningBalanceSets.Single().AsAtDate);
+        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
+
+        // The amounts, which are what reopening is for, still save — and the date is untouched.
+        var edited = await service.SaveAsync(reopened.Id, new SaveOpeningBalanceSetDto
+        {
+            ConcurrencyToken = reopened.ConcurrencyToken,
+            Entries =
+            [
+                new() { FinanceAccountId = accounts.BankId, DebitAmount = 1_250_000m },
+                new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 1_250_000m }
+            ]
+        }, 1);
+        Assert.Equal(GoLive, edited.AsAtDate);
+        Assert.Equal(1_250_000m, edited.TotalDebits);
+        Assert.Equal(GoLive, await FinanceDateRules.BaselineAsync(context, default));
+    }
+
+    /// <summary>
+    /// Customer Deposits and Customer Receivables are worked out per booking from the customer's own
+    /// payments and possession date. A single aggregate opening figure belongs to no booking, so
+    /// nothing can ever clear it: give possession later and the receivable is raised for the FULL
+    /// sale value while the opening deposit sits untouched — the buyer is invoiced a second time for
+    /// money they already paid, and the sheet balances throughout. Commit is the last moment that
+    /// choice is reversible.
+    /// </summary>
+    [Fact]
+    public async Task AnAggregateOpeningCustomerDepositOrReceivable_IsRefusedAtCommit()
+    {
+        await using var context = Context();
+        var accounts = await SeedAccountsAsync(context);
+        var deposits = new FinanceAccount
+        {
+            Name = "Customer Deposits", AccountHolderName = "Seven Ventures",
+            Type = FinanceAccountType.Liability, IsActive = true,
+            SystemRole = FinanceSystemAccountRole.CustomerDeposits
+        };
+        context.FinanceAccounts.Add(deposits);
+        await context.SaveChangesAsync();
+
+        var service = new OpeningBalanceService(context);
+        var set = await service.CreateAsync(GoLive, 1);
+        var draft = await service.SaveAsync(set.Id, new SaveOpeningBalanceSetDto
+        {
+            ConcurrencyToken = set.ConcurrencyToken,
+            Entries =
+            [
+                new() { FinanceAccountId = accounts.BankId, DebitAmount = 4_000_000m },
+                new() { FinanceAccountId = deposits.Id, CreditAmount = 4_000_000m }
+            ]
+        }, 1);
+        Assert.Equal(0m, draft.Difference);   // it balances, which is exactly why nothing else catches it
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CommitAsync(draft.Id, draft.ConcurrencyToken, 1));
+        Assert.Contains("Customer Deposits", error.Message);
+        Assert.Contains("receipts as payments", error.Message);
+        Assert.False(context.OpeningBalanceSets.Single().IsCommitted);
+        Assert.Equal(0m, context.FinanceAccounts.Single(a => a.Id == deposits.Id).OpeningBalance);
+
+        // Zero on that account is the supported cutover: the bank cash is brought over, and each
+        // booking's pre-go-live receipts are entered as Payment rows dated on or after go-live.
+        var fixedUp = await service.SaveAsync(draft.Id, new SaveOpeningBalanceSetDto
+        {
+            ConcurrencyToken = draft.ConcurrencyToken,
+            Entries =
+            [
+                new() { FinanceAccountId = accounts.BankId, DebitAmount = 4_000_000m },
+                new() { FinanceAccountId = accounts.CapitalAccountId, CreditAmount = 4_000_000m }
+            ]
+        }, 1);
+        var committed = await service.CommitAsync(fixedUp.Id, fixedUp.ConcurrencyToken, 1);
+        Assert.True(committed.IsCommitted);
+    }
+
     // ── Helpers ──
 
     private static async Task<OpeningBalanceSetDto> Draft(

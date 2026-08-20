@@ -6,6 +6,7 @@ import SalarySlip from "../SalarySlip.tsx";
 import DateRangeFilter from "./DateRangeFilter.tsx";
 import { defaultRange, todayIso, type DateRange } from "./dateRange";
 import { formatPkr } from "../../utils/currency.ts";
+import { pakistanToday } from "../../lib/financePeriods.ts";
 
 interface BatchRow {
   employeeId: number;
@@ -77,6 +78,12 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
   // salary amount. One account for the run, because a payroll is paid out of one account.
   const [accounts, setAccounts] = useState<FinanceAccountOption[]>([]);
   const [payFromId, setPayFromId] = useState("");
+  // The day the money actually leaves the account, which is not the same thing as the payroll
+  // month beside it. This used to be hard-coded to the 1st of the selected month, so August payroll
+  // settled on the 20th posted the salary expense and the bank movement on 1 August and every
+  // bank balance in between was wrong. The period is sent separately, so August payroll paid on
+  // 5 September is now expressible.
+  const [paymentDate, setPaymentDate] = useState(pakistanToday);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,14 +132,20 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
     if (!row || row.isPaid || !checked) return;
     if (row.amount <= 0) { setError("Salary amount must be greater than zero."); return; }
     if (!payFromId) { setError("Choose the account this payroll is paid from first."); return; }
+    if (!paymentDate) { setError("Enter the date this payroll was actually paid."); return; }
 
     setError(null);
     setRows(prev => prev.map(r => r.employeeId === employeeId ? { ...r, saving: true } : r));
     try {
-      const payDate = `${year}-${String(month).padStart(2, "0")}-01`;
       const res = await api(`/api/Employee/${employeeId}/salary`, {
         method: "POST",
-        body: JSON.stringify({ amount: row.amount, payDate, financeAccountId: Number(payFromId) }),
+        body: JSON.stringify({
+          amount: row.amount,
+          payDate: paymentDate,
+          payMonth: month,
+          payYear: year,
+          financeAccountId: Number(payFromId),
+        }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -188,7 +201,19 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
             </select>
           </div>
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-month">Month</label>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-paid-on">Paid On</label>
+            <input
+              id="payroll-paid-on"
+              type="date"
+              max={pakistanToday()}
+              value={paymentDate}
+              onChange={e => setPaymentDate(e.target.value)}
+              title="The date the money actually left the account. The payroll month it pays for is set separately."
+              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-month">Payroll Month</label>
             <input
               id="payroll-month"
               type="month"
@@ -290,8 +315,8 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
                   <td className="px-5 py-4">
                     <button
                       type="button"
-                      disabled={row.isPaid || row.saving || !payFromId}
-                      title={!row.isPaid && !payFromId ? "Choose the account this payroll is paid from" : undefined}
+                      disabled={row.isPaid || row.saving || !payFromId || !paymentDate}
+                      title={!row.isPaid && (!payFromId || !paymentDate) ? "Choose the account this payroll is paid from and the date it was paid" : undefined}
                       onClick={() => togglePaid(row.employeeId, true)}
                       className={`flex h-5 w-5 items-center justify-center rounded border text-[10px] font-bold transition-colors ${
                         row.isPaid

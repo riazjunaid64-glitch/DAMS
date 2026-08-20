@@ -922,6 +922,98 @@ public sealed class WithholdingTaxTests
         Assert.All(lines, l => Assert.Equal("1234567-8", l.Ntn));
     }
 
+    /// <summary>
+    /// An ERP opening Tax Payable is owed to FBR on exactly the same terms as tax withheld inside
+    /// DAMS, and the Tax Payable ACCOUNT has always counted it: its balance is
+    /// <c>OpeningBalance + withheld − deposited</c>. The WHT screen computed the same liability
+    /// without the opening term, so the two contradicted each other — the Balance Sheet said the
+    /// business owed FBR the brought-forward tax while the only screen that can pay FBR said nothing
+    /// was outstanding and refused the deposit outright. One formula now, used by the summary, the
+    /// deposit ceiling and the source-correction guard alike.
+    /// </summary>
+    [Fact]
+    public async Task AnOpeningTaxPayable_IsOutstanding_CanBeDepositedInFull_AndNotAPaisaMore()
+    {
+        await using var context = Seeded();
+        var payable = new FinanceAccount
+        {
+            Id = 9, Name = "Tax Payable", Type = FinanceAccountType.Liability,
+            AccountHolderName = "Seven Ventures", IsActive = true,
+            SystemRole = FinanceSystemAccountRole.TaxPayable,
+            // Written by the opening-balance commit; nothing else sets it.
+            OpeningBalance = 50_000m
+        };
+        context.FinanceAccounts.Add(payable);
+        await context.SaveChangesAsync();
+        var wht = Wht(context);
+
+        // No new withholding at all — the whole liability is the brought-forward figure.
+        var before = await wht.GetPayableSummaryAsync(null, null);
+        Assert.Equal(50_000m, before.OutstandingPayable);
+        Assert.Equal(50_000m, before.OpeningPayable);
+        Assert.Equal(0m, before.TotalWithheldAllTime);
+
+        var tooMuch = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            wht.CreateDepositAsync(new SaveWhtDepositDto
+            {
+                FinanceAccountId = 1, Amount = 50_001m, DepositDate = PakistanTime.Today
+            }, 1));
+        Assert.Contains("50,000.00", tooMuch.Message);
+
+        await wht.CreateDepositAsync(new SaveWhtDepositDto
+        {
+            FinanceAccountId = 1, Amount = 50_000m, DepositDate = PakistanTime.Today, ChallanNumber = "CH-1"
+        }, 1);
+
+        var after = await wht.GetPayableSummaryAsync(null, null);
+        Assert.Equal(0m, after.OutstandingPayable);
+        Assert.Equal(50_000m, after.TotalDepositedAllTime);
+
+        // And the account the Balance Sheet reads agrees, which is the whole point.
+        var account = await new FinanceAccountService(context).GetByIdAsync(payable.Id);
+        Assert.Equal(0m, account.CurrentBalance);
+    }
+
+    /// <summary>
+    /// The mirror case: with an opening liability in place, deleting the source of some LATER
+    /// withholding is only a problem if it would take the whole payable below zero. The guard used
+    /// to compare withheld against deposited with no opening term, so it refused a correction that
+    /// left the business comfortably in credit with FBR.
+    /// </summary>
+    [Fact]
+    public async Task WithAnOpeningLiability_AReductionIsJudgedOnTheWholePayable_NotOnWithholdingAlone()
+    {
+        await using var context = Seeded();
+        context.FinanceAccounts.Add(new FinanceAccount
+        {
+            Id = 9, Name = "Tax Payable", Type = FinanceAccountType.Liability,
+            AccountHolderName = "Seven Ventures", IsActive = true,
+            SystemRole = FinanceSystemAccountRole.TaxPayable, OpeningBalance = 50_000m
+        });
+        await context.SaveChangesAsync();
+        var finance = Finance(context);
+        var wht = Wht(context);
+
+        var expense = await finance.CreateExpenseAsync(new CreateExpenseDto
+        {
+            Amount = 1_000_000m, CategoryId = 1, VendorId = 1, FinanceAccountId = 1,
+            Description = "Cement", Date = PakistanTime.Today
+        }, 1);
+        Assert.True(expense.WhtAmount > 0m);
+
+        // Deposit less than the opening liability, so removing every rupee of DAMS withholding
+        // still leaves the payable positive.
+        await wht.CreateDepositAsync(new SaveWhtDepositDto
+        {
+            FinanceAccountId = 1, Amount = 30_000m, DepositDate = PakistanTime.Today, ChallanNumber = "CH-2"
+        }, 1);
+
+        await finance.DeleteExpenseAsync(expense.Id);
+        var summary = await wht.GetPayableSummaryAsync(null, null);
+        Assert.Equal(20_000m, summary.OutstandingPayable);
+        Assert.Equal(0m, summary.TotalWithheldAllTime);
+    }
+
     private static AppDbContext Seeded()
     {
         var context = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()

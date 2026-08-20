@@ -448,6 +448,8 @@ namespace DAMS.Application.Services
                 + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var totalDepositedAllTime = await DepositQuery(null, null)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var openingPayable = await OpeningPayableAsync(cancellationToken);
+            var outstanding = await OutstandingPayableAsync(null, cancellationToken);
 
             // Distinct across both kinds, so a supplier who was paid for a desk and for cement is
             // one vendor on the statement, not two.
@@ -460,8 +462,11 @@ namespace DAMS.Application.Services
                 WithheldInPeriod = bySection.Sum(s => s.WhtAmount),
                 DepositedInPeriod = await DepositQuery(from, to).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m,
                 // A liability is a balance, so it is deliberately not date-filtered: what is still
-                // owed to FBR does not change because the user picked a narrower period.
-                OutstandingPayable = totalWithheldAllTime - totalDepositedAllTime,
+                // owed to FBR does not change because the user picked a narrower period. It goes
+                // through the same helper the deposit screen validates against, so the number this
+                // summary shows is the number a deposit is allowed to clear — to the paisa.
+                OutstandingPayable = outstanding,
+                OpeningPayable = openingPayable,
                 TotalWithheldAllTime = totalWithheldAllTime,
                 TotalDepositedAllTime = totalDepositedAllTime,
                 PaymentCount = bySection.Sum(s => s.PaymentCount),
@@ -845,32 +850,52 @@ namespace DAMS.Application.Services
             decimal withheldChange, CancellationToken cancellationToken = default)
         {
             if (withheldChange >= 0m) return;
-            var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
-                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
-            var deposited = await _context.WhtDeposits.AsNoTracking()
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
-            var proposed = Math.Round(withheld + withheldChange, 2, MidpointRounding.AwayFromZero);
-            if (proposed < Math.Round(deposited, 2, MidpointRounding.AwayFromZero))
+            var remaining = await OutstandingPayableAsync(null, cancellationToken);
+            var proposed = Math.Round(remaining + withheldChange, 2, MidpointRounding.AwayFromZero);
+            if (proposed < 0m)
                 throw new InvalidOperationException(
-                    $"This change would leave {proposed:N2} of withholding tax recorded against "
-                    + $"{deposited:N2} already deposited with FBR, which would make Tax Payable negative. "
-                    + "Correct or remove the FBR deposit first, then change this record.");
+                    $"This change would take Tax Payable to {proposed:N2}. Only {remaining:N2} is "
+                    + "still outstanding, so removing more than that would leave less withholding "
+                    + "tax recorded than the amount already deposited with FBR. Correct or remove "
+                    + "the FBR deposit first, then change this record.");
         }
 
         /// <summary>
-        /// Withheld tax that has not yet been handed to FBR, across expenses AND asset purchases — the
-        /// same figure the payable summary and the Tax Payable account balance show. All-time on
-        /// purpose: the liability is a running balance, not a period total, so an August deposit can
-        /// legitimately clear tax withheld in July.
+        /// The opening Tax Payable brought over from the client's previous system, as committed on
+        /// the opening-balance sheet. Zero until a baseline is committed, because that is the only
+        /// point <see cref="FinanceAccount.OpeningBalance"/> is written.
+        /// <para>
+        /// It is part of the liability for the same reason every other opening balance is part of
+        /// its account: the Balance Sheet and the Tax Payable account both read
+        /// <c>OpeningBalance + withheld - deposited</c>. Leaving it out here is what made the two
+        /// disagree — the account said the business owed FBR the brought-forward tax while the only
+        /// screen that can pay FBR said nothing was outstanding and refused the deposit.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> OpeningPayableAsync(CancellationToken cancellationToken) =>
+            await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                .SumAsync(a => (decimal?)a.OpeningBalance, cancellationToken) ?? 0m;
+
+        /// <summary>
+        /// Everything still owed to FBR: the opening liability brought over at cutover, plus tax
+        /// withheld on expenses AND on asset purchases, less what has been deposited. The one
+        /// authoritative formula — identical to the Tax Payable account balance and the Balance
+        /// Sheet line, so no screen can contradict another about what the business owes.
+        /// <para>
+        /// All-time on purpose: the liability is a running balance, not a period total, so an August
+        /// deposit can legitimately clear tax withheld in July.
+        /// </para>
         /// </summary>
         private async Task<decimal> OutstandingPayableAsync(int? excludingDepositId, CancellationToken cancellationToken)
         {
+            var opening = await OpeningPayableAsync(cancellationToken);
             var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
                 + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = await _context.WhtDeposits.AsNoTracking()
                 .Where(d => !excludingDepositId.HasValue || d.Id != excludingDepositId.Value)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
-            return Math.Round(withheld - deposited, 2, MidpointRounding.AwayFromZero);
+            return Math.Round(opening + withheld - deposited, 2, MidpointRounding.AwayFromZero);
         }
 
         // The same shape LoanService uses: a serializable window around a read-then-write, skipped on

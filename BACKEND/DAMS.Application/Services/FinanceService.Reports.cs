@@ -497,7 +497,9 @@ namespace DAMS.Application.Services
         /// never from a booking's current status, and never from a stored snapshot that a
         /// back-dated payment could quietly invalidate.
         /// <para>
-        /// Deposit: every payment taken while the sale was still unrecognised, less the ones since
+        /// Deposit: every payment taken while the sale was still unrecognised — an earlier business
+        /// date, or the possession date itself but entered before possession was recorded (the
+        /// same-day ordering comes from the UTC audit instants, CreatedAt vs RecognizedAt) — less the ones since
         /// cleared by possession (into revenue) or by cancellation (into refund payable + retained
         /// income). Both sides come from the same Payment rows, so they cannot drift apart.
         /// </para>
@@ -518,7 +520,7 @@ namespace DAMS.Application.Services
             var recognisedByCutOff = SaleRecognitionQuery(projectId, null, end);
             var clearedByRecognition = PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.SaleRecognition != null
-                    && p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1));
+                    && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)));
             var collectedOnRecognisedSales = PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.SaleRecognition != null);
             var clearedByCancellation = PaymentsQuery(projectId, null, end)
@@ -535,7 +537,7 @@ namespace DAMS.Application.Services
 
             var depositsReceived = await PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.SaleRecognition == null
-                    || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1))
+                    || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
                 .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var depositsCleared = (await clearedByRecognition.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
                 + (await clearedByCancellation.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);

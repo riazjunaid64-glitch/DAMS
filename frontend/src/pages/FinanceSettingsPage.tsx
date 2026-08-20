@@ -703,7 +703,9 @@ function PayableTab() {
         <>
           <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
-              hint="All time, withheld less deposited" />
+              hint={summary.openingPayable !== 0
+                ? `All time: ${formatRs(summary.openingPayable)} brought forward at go-live, plus withheld, less deposited`
+                : "All time, withheld less deposited"} />
             <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
               hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
             <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />

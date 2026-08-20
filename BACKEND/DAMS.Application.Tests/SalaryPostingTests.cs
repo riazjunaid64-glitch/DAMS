@@ -147,6 +147,159 @@ public sealed class SalaryPostingTests
         Assert.Equal(PayDay, (await context.EmployeeSalaries.AsNoTracking().SingleAsync()).PayDate);
     }
 
+    /// <summary>
+    /// The payroll period and the day the cash moved are two different dates, and the posting takes
+    /// the second one. The payroll screen used to send the 1st of the selected month whatever the
+    /// admin did, so August payroll settled on the 20th was posted on 1 August: the totals balanced
+    /// perfectly and the bank balance was wrong for every day in between.
+    /// </summary>
+    [Fact]
+    public async Task PayrollSettledMidMonth_PostsTheCashOnTheDayItMoved_NotTheFirst()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var paidOn = new DateTime(2026, 8, 20);
+
+        var salary = await Employees(context).GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+        {
+            Amount = 100_000m, PayDate = paidOn, PayMonth = 8, PayYear = 2026,
+            FinanceAccountId = world.BankId
+        }, adminUserId: 1);
+
+        Assert.Equal(paidOn, salary.PayDate);
+        Assert.Equal(8, salary.PayMonth);
+        Assert.Equal(2026, salary.PayYear);
+        Assert.Equal(paidOn, (await context.Expenses.AsNoTracking().SingleAsync()).Date);
+
+        var finance = Finance(context);
+        // The bank still holds the full float on the 19th and is down by the salary on the 20th.
+        // Under the old behaviour both of these read 400,000.
+        var before = await finance.GetBalanceSheetAsync(null, new DateTime(2026, 8, 19));
+        Assert.Equal(0m, (await finance.GetProfitAndLossAsync(null, PayDay, new DateTime(2026, 8, 19))).TotalExpenses);
+        Assert.True(before.IsBalanced);
+        var after = await finance.GetProfitAndLossAsync(null, PayDay, new DateTime(2026, 8, 21));
+        Assert.Equal(100_000m, after.TotalExpenses);
+    }
+
+    /// <summary>
+    /// The case the old model could not express at all: a payroll period paid out in a LATER month.
+    /// PayMonth/PayYear were derived from PayDate, so recording July's payroll on 5 August either
+    /// dated the cash to 1 July (wrong bank history) or turned it into August's payroll (wrong
+    /// period, and July silently free to be paid again).
+    /// </summary>
+    [Fact]
+    public async Task PayrollPaidInTheFollowingMonth_KeepsItsOwnPeriod_AndDoesNotConsumeTheNewOne()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var employees = Employees(context);
+        var paidOn = new DateTime(2026, 8, 5);
+
+        var july = await employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+        {
+            Amount = 100_000m, PayDate = paidOn, PayMonth = 7, PayYear = 2026,
+            FinanceAccountId = world.BankId
+        }, adminUserId: 1);
+
+        Assert.Equal(7, july.PayMonth);
+        Assert.Equal(2026, july.PayYear);
+        Assert.Equal(paidOn, july.PayDate);
+
+        // The expense is dated when the money left, and names both facts so a report ordered by
+        // posting date still explains itself.
+        var expense = await context.Expenses.AsNoTracking().SingleAsync();
+        Assert.Equal(paidOn, expense.Date);
+        Assert.Contains("July 2026", expense.Description);
+        Assert.Contains("paid 05 Aug 2026", expense.Description);
+
+        // August's payroll is still owed and can still be recorded — the July run did not take it.
+        var august = await employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+        {
+            Amount = 100_000m, PayDate = new DateTime(2026, 8, 20), PayMonth = 8, PayYear = 2026,
+            FinanceAccountId = world.BankId
+        }, adminUserId: 1);
+        Assert.Equal(8, august.PayMonth);
+        Assert.Equal(2, await context.EmployeeSalaries.CountAsync());
+
+        // …and July still cannot be paid twice.
+        var duplicate = await Assert.ThrowsAsync<Exception>(() =>
+            employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+            {
+                Amount = 100_000m, PayDate = new DateTime(2026, 8, 6), PayMonth = 7, PayYear = 2026,
+                FinanceAccountId = world.BankId
+            }, adminUserId: 1));
+        Assert.Contains("July 2026", duplicate.Message);
+    }
+
+    /// <summary>
+    /// Correcting when the money actually left must not silently re-file the payroll period — that
+    /// would move August's salary into September and free August up to be paid a second time.
+    /// </summary>
+    [Fact]
+    public async Task CorrectingTheActualPaymentDate_LeavesThePayrollPeriodWhereItIs()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var employees = Employees(context);
+        var salary = await employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+        {
+            Amount = 100_000m, PayDate = new DateTime(2026, 7, 31), PayMonth = 7, PayYear = 2026,
+            FinanceAccountId = world.BankId
+        }, adminUserId: 1);
+
+        var moved = await employees.UpdateSalaryAsync(salary.Id, new UpdateSalaryDto
+        {
+            PayDate = new DateTime(2026, 8, 5)
+        });
+
+        Assert.Equal(new DateTime(2026, 8, 5), moved.PayDate);
+        Assert.Equal(7, moved.PayMonth);
+        Assert.Equal(2026, moved.PayYear);
+        Assert.Equal(new DateTime(2026, 8, 5), (await context.Expenses.AsNoTracking().SingleAsync()).Date);
+
+        // The period is still movable, deliberately and explicitly.
+        var refiled = await employees.UpdateSalaryAsync(salary.Id, new UpdateSalaryDto
+        {
+            PayMonth = 8, PayYear = 2026
+        });
+        Assert.Equal(8, refiled.PayMonth);
+        Assert.Equal(new DateTime(2026, 8, 5), refiled.PayDate);
+    }
+
+    /// <summary>Half a period is refused rather than guessed — a bare month would otherwise be filed
+    /// under whatever year the payment happened to fall in.</summary>
+    [Fact]
+    public async Task APartOrOutOfRangePayrollPeriod_IsRefused()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context);
+        var employees = Employees(context);
+
+        var half = await Assert.ThrowsAsync<Exception>(() =>
+            employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+            {
+                Amount = 100_000m, PayDate = PayDay, PayMonth = 7, FinanceAccountId = world.BankId
+            }, adminUserId: 1));
+        Assert.Contains("together", half.Message);
+
+        var bad = await Assert.ThrowsAsync<Exception>(() =>
+            employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+            {
+                Amount = 100_000m, PayDate = PayDay, PayMonth = 13, PayYear = 2026,
+                FinanceAccountId = world.BankId
+            }, adminUserId: 1));
+        Assert.Contains("between 1 and 12", bad.Message);
+        Assert.Empty(context.EmployeeSalaries);
+
+        // Omitting both still means "the month the payment falls in" — the old callers keep working.
+        var derived = await employees.GenerateSalaryAsync(world.EmployeeId, new GenerateSalaryDto
+        {
+            Amount = 100_000m, PayDate = PayDay, FinanceAccountId = world.BankId
+        }, adminUserId: 1);
+        Assert.Equal(8, derived.PayMonth);
+        Assert.Equal(2026, derived.PayYear);
+    }
+
     // ── Helpers ──
 
     private sealed record World(int EmployeeId, int BankId, int CapitalAccountId);
