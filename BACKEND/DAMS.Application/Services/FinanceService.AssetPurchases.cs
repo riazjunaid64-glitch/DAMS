@@ -1,26 +1,52 @@
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
 {
     /// <summary>
-    /// Recording the purchase of something the company keeps.
+    /// Recording the purchase of a fixed asset — something the company keeps.
     /// <para>
     /// Mechanically this is the expense flow: same form fields, same attachment handling, same
-    /// withholding. What differs is where the money goes. An expense credits cash and lands in the
-    /// Profit &amp; Loss as a cost. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT — the
-    /// value moved rather than left, so profit must not move. Nothing in this file writes to any
-    /// P&amp;L surface, and that omission is the feature.
+    /// withholding. What differs is what the company is left holding. An expense credits cash and is
+    /// gone. A purchase credits cash and DEBITS A FIXED-ASSET ACCOUNT, so the asset stays on the
+    /// Balance Sheet at cost.
+    /// </para>
+    /// <para>
+    /// The books hold exactly one entry per purchase — Dr Fixed Asset, Cr the paying account (and Cr
+    /// tax payable for anything withheld). Nothing here writes a second entry, and the asset account
+    /// is never written down.
+    /// </para>
+    /// <para>
+    /// The client's rule is that the purchase reduces Net Profit immediately, and DAMS has exactly one
+    /// Net Profit: the rule is applied in <c>GetSummaryAsync</c>, in the Net Profit drill-down, and in
+    /// the formal P&amp;L and its export, which all report the same figure for the same period.
+    /// </para>
+    /// <para>
+    /// It is NOT applied to the Trial Balance or to the Balance Sheet's retained profit. Those two are
+    /// double-entry positions and the asset above is still carried at full cost, so charging it there
+    /// as well needs a credit no account has been approved to take — the deduction would not make them
+    /// righter, it would put them out by exactly this amount. They disclose it instead
+    /// (<c>BalanceSheetDto.UnpostedFixedAssetCharge</c>); no equity reserve, contra-asset or
+    /// depreciation account is invented to absorb it. That ledger decision is the one open item here.
+    /// </para>
+    /// <para>
+    /// Construction / work-in-progress spending does NOT come through here any more. The client
+    /// confirmed it is a cost on the day it is paid, so it is recorded as an ordinary expense under
+    /// its construction head. <see cref="IFinanceAccountService.EnsureAssetAccountAsync"/> refuses a
+    /// work-in-progress destination for that reason; rows that already point at one stay editable so
+    /// their history survives.
     /// </para>
     /// </summary>
     public partial class FinanceService
     {
         public async Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(
             int? projectId, DateTime? from, DateTime? to, int skip, int take,
-            int? assetAccountId = null, int? accountId = null, bool unassigned = false)
+            int? assetAccountId = null, int? accountId = null, bool unassigned = false,
+            CancellationToken cancellationToken = default)
         {
-            var rows = await AssetPurchaseQuery(projectId, from?.Date, to?.Date.AddDays(1), assetAccountId, accountId, unassigned)
+            var rows = await AssetPurchaseQuery(projectId, from?.Date, ExclusiveEnd(to), assetAccountId, accountId, unassigned)
                 .OrderByDescending(p => p.Date)
                 .ThenByDescending(p => p.Id)
                 .Skip(skip).Take(take + 1)
@@ -55,7 +81,7 @@ namespace DAMS.Application.Services
                         UploadedAt = p.Attachment.UploadedAt
                     }
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return Page(rows, take);
         }
@@ -70,9 +96,7 @@ namespace DAMS.Application.Services
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
             await _accountService.EnsureAssetAccountAsync(dto.AssetAccountId, null, cancellationToken);
 
-            // Same guard as expenses: the year-to-date read and the insert that depends on it must
-            // not interleave with another save for the same vendor.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(new[] { dto.VendorId }, cancellationToken);
+            var purchaseDate = await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken);
 
             var purchase = new AssetPurchase
             {
@@ -81,11 +105,10 @@ namespace DAMS.Application.Services
                 FinanceAccountId = dto.FinanceAccountId,
                 Amount = dto.Amount,
                 Description = Clean(dto.Description),
-                Date = dto.Date?.Date ?? DateTime.UtcNow,
+                Date = purchaseDate,
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow
             };
-            await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
 
             string? newStoredFileName = null;
             if (attachment != null)
@@ -102,12 +125,20 @@ namespace DAMS.Application.Services
                 };
             }
 
-            _context.AssetPurchases.Add(purchase);
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    // Same guard as expenses: the year-to-date read and the insert that depends on it
+                    // must not interleave with another save for the same vendor.
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { dto.VendorId }, cancellationToken);
+                    await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+                    _context.AssetPurchases.Add(purchase);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -136,40 +167,60 @@ namespace DAMS.Application.Services
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, purchase.FinanceAccountId, cancellationToken);
             await _accountService.EnsureAssetAccountAsync(dto.AssetAccountId, purchase.AssetAccountId, cancellationToken);
 
-            await using var thresholdGuard = await BeginThresholdGuardAsync(
-                new[] { purchase.VendorId, dto.VendorId }, cancellationToken);
+            // Before the threshold transaction opens and before any upload is written: a rejected
+            // date should cost neither a lock nor an orphaned file. An omitted date keeps the one
+            // the row already carries.
+            var purchaseDate = dto.Date.HasValue
+                ? await FinanceDateRules.ResolveAsync(_context, dto.Date, "Purchase date", cancellationToken)
+                : purchase.Date;
 
             var oldStoredFileName = purchase.Attachment?.StoredFileName;
             string? newStoredFileName = null;
-
+            (string StoredFileName, ValidatedFinanceAttachment Metadata)? savedAttachment = null;
             if (attachment != null)
             {
-                var saved = await SaveAttachmentAsync(attachment, cancellationToken);
-                newStoredFileName = saved.StoredFileName;
-                purchase.Attachment ??= new FinanceAttachment { AssetPurchaseId = purchase.Id };
-                ApplyAttachment(purchase.Attachment, saved);
-            }
-            else if (removeAttachment && purchase.Attachment != null)
-            {
-                _context.FinanceAttachments.Remove(purchase.Attachment);
-                purchase.Attachment = null;
+                savedAttachment = await SaveAttachmentAsync(attachment, cancellationToken);
+                newStoredFileName = savedAttachment.Value.StoredFileName;
             }
 
-            purchase.ProjectId = dto.ProjectId;
-            purchase.AssetAccountId = dto.AssetAccountId;
-            purchase.FinanceAccountId = dto.FinanceAccountId;
-            purchase.Amount = dto.Amount;
-            purchase.Description = Clean(dto.Description);
-            if (dto.Date.HasValue)
-                purchase.Date = dto.Date.Value.Date;
-            // After the date and amount have moved, because both feed the threshold and so the tax.
-            await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+            // Tax withheld from a capital supplier is owed to FBR on the same terms as an expense, so
+            // reducing it needs the same check against what has already been deposited.
+            var withheldBefore = purchase.WhtAmount;
 
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                if (thresholdGuard != null)
-                    await thresholdGuard.CommitAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    await using var thresholdGuard = await BeginThresholdGuardAsync(
+                        new[] { purchase.VendorId, dto.VendorId }, cancellationToken,
+                        serialisable: withheldBefore > 0m);
+
+                    if (savedAttachment.HasValue)
+                    {
+                        purchase.Attachment ??= new FinanceAttachment { AssetPurchaseId = purchase.Id };
+                        ApplyAttachment(purchase.Attachment, savedAttachment.Value);
+                    }
+                    else if (removeAttachment && purchase.Attachment != null)
+                    {
+                        _context.FinanceAttachments.Remove(purchase.Attachment);
+                        purchase.Attachment = null;
+                    }
+
+                    purchase.ProjectId = dto.ProjectId;
+                    purchase.AssetAccountId = dto.AssetAccountId;
+                    purchase.FinanceAccountId = dto.FinanceAccountId;
+                    purchase.Amount = dto.Amount;
+                    purchase.Description = Clean(dto.Description);
+                    purchase.Date = purchaseDate;
+                    // After the date and amount have moved, because both feed the threshold and so the tax.
+                    await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
+                    await _whtService.EnsureDepositsStayCoveredAsync(
+                        purchase.WhtAmount - withheldBefore, cancellationToken);
+
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (thresholdGuard != null)
+                        await thresholdGuard.CommitAsync(cancellationToken);
+                });
             }
             catch
             {
@@ -191,15 +242,19 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Asset purchase not found.");
             ApplyAssetPurchaseToken(purchase, concurrencyToken);
 
-            // Deleting lowers the vendor's year-to-date total, which is the same aggregate a save
-            // reads — so it takes the lock for the same reason deleting an expense does.
-            await using var thresholdGuard = await BeginThresholdGuardAsync(new[] { purchase.VendorId }, cancellationToken);
-
             var storedFileName = purchase.Attachment?.StoredFileName;
-            _context.AssetPurchases.Remove(purchase);
-            await _context.SaveChangesAsync(cancellationToken);
-            if (thresholdGuard != null)
-                await thresholdGuard.CommitAsync(cancellationToken);
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // Deleting lowers the vendor's year-to-date total, which is the same aggregate a save
+                // reads — so it takes the lock for the same reason deleting an expense does.
+                await using var thresholdGuard = await BeginThresholdGuardAsync(
+                    new[] { purchase.VendorId }, cancellationToken, serialisable: purchase.WhtAmount > 0m);
+                await _whtService.EnsureDepositsStayCoveredAsync(-purchase.WhtAmount, cancellationToken);
+                _context.AssetPurchases.Remove(purchase);
+                await _context.SaveChangesAsync(cancellationToken);
+                if (thresholdGuard != null)
+                    await thresholdGuard.CommitAsync(cancellationToken);
+            });
             await DeleteObsoleteFileAsync(storedFileName);
         }
 
@@ -280,6 +335,26 @@ namespace DAMS.Application.Services
             if (accountId.HasValue) query = query.Where(p => p.FinanceAccountId == accountId.Value);
             return query;
         }
+
+        /// <summary>
+        /// The purchases the client's profit rule applies to: the ones whose destination is a
+        /// fixed-asset account. Used by the dashboard total, the Net Profit drill-down and the P&amp;L's
+        /// pending-deduction disclosure, so all three count the same rows.
+        /// <para>
+        /// Work-in-progress destinations are deliberately outside it. New construction spend cannot
+        /// reach this table at all any more (<see cref="IFinanceAccountService.EnsureAssetAccountAsync"/>
+        /// refuses a work-in-progress destination, and it is recorded as an ordinary expense instead),
+        /// so the only rows excluded here are the ones inherited from the previous ERP, where
+        /// construction was accumulated as an asset. Those carry a real historical balance and what
+        /// becomes of it is still an open question with the client — charging them to profit would
+        /// answer that question by writing the whole inherited balance off, silently, on the day this
+        /// shipped.
+        /// </para>
+        /// </summary>
+        private IQueryable<AssetPurchase> FixedAssetChargeQuery(
+            int? projectId, DateTime? fromValue, DateTime? toExclusive, int? accountId, bool unassigned) =>
+            AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                .Where(p => p.AssetAccount!.Type == FinanceAccountType.FixedAsset);
 
         private async Task<AssetPurchaseResponseDto> MapAssetPurchaseAsync(AssetPurchase p)
         {

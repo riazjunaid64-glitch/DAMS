@@ -82,6 +82,7 @@ export interface WhtPayableSummary {
   withheldInPeriod: number;
   depositedInPeriod: number;
   outstandingPayable: number;
+  openingPayable: number;
   totalWithheldAllTime: number;
   totalDepositedAllTime: number;
   paymentCount: number;

@@ -23,7 +23,19 @@ namespace DAMS.Domain.Enums
     {
         None = 0,
         TaxPayable = 1,
-        CustomerRefundPayable = 2
+        CustomerRefundPayable = 2,
+
+        /// <summary>
+        /// Customer money received before the sale is recognised. A liability, not income: until
+        /// possession the company owes the buyer either the unit or the money back.
+        /// </summary>
+        CustomerDeposits = 3,
+
+        /// <summary>
+        /// What buyers still owe on sales that HAVE been recognised. Raised at possession for the
+        /// unpaid part of the net sale value, cleared by later collections and valid credits.
+        /// </summary>
+        CustomerReceivables = 4
     }
 
     public static class AccountBalanceDirection

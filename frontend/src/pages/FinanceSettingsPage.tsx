@@ -5,6 +5,8 @@ import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
 import * as whtApi from "../features/finance/whtApi.ts";
+import { pakistanToday } from "../lib/financePeriods.ts";
+import { newIdempotencyKey } from "../lib/idempotency.ts";
 import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
 import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
 import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
@@ -662,7 +664,7 @@ function PayableTab() {
 
   const removeDeposit = async (deposit: WhtDeposit) => {
     if (!window.confirm(`Delete the ${formatRs(deposit.amount)} deposit${deposit.challanNumber ? ` (${deposit.challanNumber})` : ""}? The amount goes back to being owed to FBR.`)) return;
-    try { await whtApi.deleteDeposit(deposit.id); await load(); }
+    try { await whtApi.deleteDeposit(deposit.id, deposit.concurrencyToken); await load(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "The deposit could not be deleted."); }
   };
 
@@ -701,7 +703,9 @@ function PayableTab() {
         <>
           <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
-              hint="All time, withheld less deposited" />
+              hint={summary.openingPayable !== 0
+                ? `All time: ${formatRs(summary.openingPayable)} brought forward at go-live, plus withheld, less deposited`
+                : "All time, withheld less deposited"} />
             <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
               hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
             <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />
@@ -832,7 +836,7 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
   const [form, setForm] = useState({
     financeAccountId: item ? String(item.financeAccountId) : "",
     amount: item ? String(item.amount) : suggested > 0 ? String(suggested) : "",
-    depositDate: (item?.depositDate ?? new Date().toISOString()).slice(0, 10),
+    depositDate: item?.depositDate?.slice(0, 10) ?? pakistanToday(),
     challanNumber: item?.challanNumber ?? "",
     periodFrom: item?.periodFrom?.slice(0, 10) ?? "",
     periodTo: item?.periodTo?.slice(0, 10) ?? "",
@@ -840,6 +844,9 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One key per open dialog: retrying the same deposit reuses it, so a save that committed before
+  // the connection dropped is recognised instead of paying the same challan twice.
+  const [requestKey] = useState(() => newIdempotencyKey("wht-deposit"));
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
@@ -856,7 +863,7 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
         periodTo: form.periodTo || null,
         notes: form.notes || null,
         concurrencyToken: item?.concurrencyToken ?? null,
-      });
+      }, requestKey);
       await onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The deposit could not be saved.");

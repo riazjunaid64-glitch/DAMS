@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -29,6 +30,7 @@ namespace DAMS.Api.Controllers
         [HttpGet("{id:int}/statement")]
         public Task<IActionResult> Statement(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
             Execute(() => _service.GetStatementAsync(id, from, to, cancellationToken));
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/transactions")]
         public Task<IActionResult> Transaction(int id, SaveCapitalTransactionDto dto, CancellationToken cancellationToken) =>
             Execute(() => _service.RecordTransactionAsync(id, dto, UserId(), cancellationToken));

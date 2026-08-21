@@ -5,6 +5,7 @@ import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import { pakistanToday } from "../lib/financePeriods";
+import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency";
 
 type Loan = {
   id:number; name:string; lenderName:string|null; financeAccountId:number; financeAccountName:string;
@@ -45,6 +46,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
   const [loanForm,setLoanForm]=useState<LoanForm|null>(null);
   const [transactionForm,setTransactionForm]=useState<TransactionForm|null>(null);
   const [saving,setSaving]=useState(false);
+  const idempotency=useIdempotencyKeys();
 
   const loadLoans=useCallback(async()=>{
     setLoading(true);setError(null);
@@ -132,13 +134,21 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
       const path=transactionForm.id
         ?`/api/finance/loans/${selected.id}/transactions/${transactionForm.id}`
         :`/api/finance/loans/${selected.id}/transactions`;
-      const response=await api(path,{method:transactionForm.id?"PUT":"POST",body:JSON.stringify({
+      const body=JSON.stringify({
         type:transactionForm.type,principalAmount:principal,
         interestAmount:transactionForm.type==="Drawdown"?0:interest,date:transactionForm.date,
         financeAccountId:Number(transactionForm.financeAccountId),reference:transactionForm.reference.trim()||null,
         note:transactionForm.note.trim()||null,concurrencyToken:transactionForm.concurrencyToken
-      })});
+      });
+      // New movements only: an edit already carries a row version, and it is the insert that can be
+      // duplicated by a retry the operator cannot see the result of.
+      const signature=`loan:${selected.id}:${transactionForm.type}:${principal}:${interest}:${transactionForm.date}`;
+      const request=transactionForm.id
+        ?{method:"PUT",body}
+        :moneyRequest(idempotency.key(signature,"loan-movement"),{method:"POST",body});
+      const response=await api(path,request);
       if(!response.ok)throw new Error((await response.json().catch(()=>null))?.message??"Loan movement could not be saved.");
+      if(!transactionForm.id)idempotency.release(signature);
       setTransactionForm(null);await loadLoans();await loadStatement(selected.id);
     } catch(caught) { setError(caught instanceof Error?caught.message:"Loan movement could not be saved."); }
     finally { setSaving(false); }

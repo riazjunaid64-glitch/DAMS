@@ -733,6 +733,42 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("BookingRequests");
                 });
 
+            modelBuilder.Entity("DAMS.Domain.Entities.BookingSaleRecognition", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("BookingId")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("NetSaleValue")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("RecognitionDate")
+                        .HasColumnType("date");
+
+                    b.Property<DateTime>("RecognizedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("RecognizedByUserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId")
+                        .IsUnique();
+
+                    b.HasIndex("RecognitionDate");
+
+                    b.ToTable("BookingSaleRecognitions", t =>
+                        {
+                            t.HasCheckConstraint("CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0");
+                        });
+                });
+
             modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
                 {
                     b.Property<int>("Id")
@@ -1976,6 +2012,12 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
                     b.HasKey("Id");
 
                     b.HasIndex("EmployeeId");
@@ -2077,6 +2119,12 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Property<int?>("ProjectId")
                         .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
 
                     b.Property<string>("Vendor")
                         .HasMaxLength(200)
@@ -3249,9 +3297,13 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.ToTable("FinanceAccounts", t =>
                         {
+                            t.HasCheckConstraint("CK_FinanceAccounts_CustomerDepositsRole", "[SystemRole] <> 3 OR [Type] = 5");
+
+                            t.HasCheckConstraint("CK_FinanceAccounts_CustomerReceivablesRole", "[SystemRole] <> 4 OR [Type] = 8");
+
                             t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
 
-                            t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 2");
+                            t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 4");
 
                             t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
                         });
@@ -3313,6 +3365,46 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("CK_FinanceAttachments_ExactlyOneOwner", "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1");
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.FinanceRecordAudit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<int?>("ActorUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Changes")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("RecordId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("RecordType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.HasIndex("RecordType", "RecordId");
+
+                    b.ToTable("FinanceRecordAudits");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinanceSetting", b =>
@@ -3515,6 +3607,57 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("RebateId", "OccurredAt");
 
                     b.ToTable("FinancialWorkflowAuditEntries");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.IdempotentRequest", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<bool>("IsCompleted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("ResponseBody")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("StatusCode")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.ToTable("IdempotentRequests");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Installment", b =>
@@ -4912,6 +5055,12 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
 
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Date");
@@ -6097,7 +6246,7 @@ namespace DAMS.Infrastructure.Migrations
                             CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, 0, DateTimeKind.Utc),
                             DisplayOrder = 100,
                             IsActive = true,
-                            Name = "Cancellation / Forfeiture",
+                            Name = "External / Legacy Cancellation Income",
                             RowVersion = new byte[0]
                         },
                         new
@@ -6962,6 +7111,17 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Unit");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.BookingSaleRecognition", b =>
+                {
+                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
+                        .WithOne("SaleRecognition")
+                        .HasForeignKey("DAMS.Domain.Entities.BookingSaleRecognition", "BookingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
@@ -7984,6 +8144,8 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Payments");
 
                     b.Navigation("Rebates");
+
+                    b.Navigation("SaleRecognition");
 
                     b.Navigation("ThirdPartyAttributions");
                 });

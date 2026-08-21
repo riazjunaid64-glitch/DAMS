@@ -1,18 +1,18 @@
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace DAMS.Infrastructure.Migrations
 {
     /// <inheritdoc />
-    public partial class AddAssetPurchaseConcurrency : Migration
+    public partial class AddEmployeeSalaryRowVersion : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<byte[]>(
                 name: "RowVersion",
-                table: "AssetPurchases",
+                table: "EmployeeSalaries",
                 type: "rowversion",
                 rowVersion: true,
                 nullable: false,
@@ -24,7 +24,7 @@ namespace DAMS.Infrastructure.Migrations
         {
             migrationBuilder.DropColumn(
                 name: "RowVersion",
-                table: "AssetPurchases");
+                table: "EmployeeSalaries");
         }
     }
 }

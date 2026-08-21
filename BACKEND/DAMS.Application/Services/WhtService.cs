@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text;
 using DAMS.Application.Common;
@@ -8,6 +9,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services
 {
@@ -446,6 +448,8 @@ namespace DAMS.Application.Services
                 + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var totalDepositedAllTime = await DepositQuery(null, null)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var openingPayable = await OpeningPayableAsync(cancellationToken);
+            var outstanding = await OutstandingPayableAsync(null, cancellationToken);
 
             // Distinct across both kinds, so a supplier who was paid for a desk and for cement is
             // one vendor on the statement, not two.
@@ -458,8 +462,11 @@ namespace DAMS.Application.Services
                 WithheldInPeriod = bySection.Sum(s => s.WhtAmount),
                 DepositedInPeriod = await DepositQuery(from, to).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m,
                 // A liability is a balance, so it is deliberately not date-filtered: what is still
-                // owed to FBR does not change because the user picked a narrower period.
-                OutstandingPayable = totalWithheldAllTime - totalDepositedAllTime,
+                // owed to FBR does not change because the user picked a narrower period. It goes
+                // through the same helper the deposit screen validates against, so the number this
+                // summary shows is the number a deposit is allowed to clear — to the paisa.
+                OutstandingPayable = outstanding,
+                OpeningPayable = openingPayable,
                 TotalWithheldAllTime = totalWithheldAllTime,
                 TotalDepositedAllTime = totalDepositedAllTime,
                 PaymentCount = bySection.Sum(s => s.PaymentCount),
@@ -663,54 +670,107 @@ namespace DAMS.Application.Services
             Project(DepositQuery(from, to).OrderByDescending(d => d.DepositDate).ThenByDescending(d => d.Id))
                 .ToListAsync(cancellationToken);
 
-        public async Task<WhtDepositDto> CreateDepositAsync(
-            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default)
-        {
-            await ValidateDepositAsync(dto, null, cancellationToken);
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
+        public Task<WhtDepositDto> CreateDepositAsync(
+            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default) =>
+            ExecuteResilientlyAsync(() => CreateDepositCoreAsync(dto, adminUserId, cancellationToken));
 
-            var deposit = new WhtDeposit
+        private async Task<WhtDepositDto> CreateDepositCoreAsync(
+            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken)
+        {
+            // Serializable, because the "never more than is owed" check reads the whole withheld and
+            // deposited history and then writes against what it read. Two admins clearing the same
+            // liability at the same moment would otherwise both see the same remaining balance and
+            // both be allowed through, leaving Tax Payable negative.
+            await using var guard = await BeginGuardAsync(cancellationToken);
+            var committed = false;
+            try
             {
-                FinanceAccountId = dto.FinanceAccountId,
-                Amount = dto.Amount,
-                DepositDate = dto.DepositDate?.Date ?? PakistanTime.Today,
-                ChallanNumber = Clean(dto.ChallanNumber),
-                PeriodFrom = dto.PeriodFrom?.Date,
-                PeriodTo = dto.PeriodTo?.Date,
-                Notes = Clean(dto.Notes),
-                CreatedByUserId = adminUserId,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.WhtDeposits.Add(deposit);
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetDepositAsync(deposit.Id, cancellationToken);
+                var depositDate = await FinanceDateRules.ResolveAsync(
+                    _context, dto.DepositDate, "Deposit date", cancellationToken);
+                await ValidateDepositAsync(dto, null, cancellationToken);
+                await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
+
+                var deposit = new WhtDeposit
+                {
+                    FinanceAccountId = dto.FinanceAccountId,
+                    Amount = dto.Amount,
+                    DepositDate = depositDate,
+                    ChallanNumber = Clean(dto.ChallanNumber),
+                    PeriodFrom = dto.PeriodFrom?.Date,
+                    PeriodTo = dto.PeriodTo?.Date,
+                    Notes = Clean(dto.Notes),
+                    CreatedByUserId = adminUserId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.WhtDeposits.Add(deposit);
+                await _context.SaveChangesAsync(cancellationToken);
+                var result = await GetDepositAsync(deposit.Id, cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+                committed = true;
+                return result;
+            }
+            catch
+            {
+                if (guard != null && !committed) await guard.RollbackAsync(cancellationToken);
+                throw;
+            }
         }
 
-        public async Task<WhtDepositDto> UpdateDepositAsync(
-            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default)
+        public Task<WhtDepositDto> UpdateDepositAsync(
+            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default) =>
+            ExecuteResilientlyAsync(() => UpdateDepositCoreAsync(id, dto, cancellationToken));
+
+        private async Task<WhtDepositDto> UpdateDepositCoreAsync(
+            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken)
+        {
+            await using var guard = await BeginGuardAsync(cancellationToken);
+            var committed = false;
+            try
+            {
+                var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
+                    ?? throw new InvalidOperationException("WHT deposit not found.");
+                // An omitted date keeps the one already recorded, so the amount on a deposit made
+                // before the opening-balance baseline can still be corrected in place.
+                var depositDate = dto.DepositDate.HasValue
+                    ? await FinanceDateRules.ResolveAsync(_context, dto.DepositDate, "Deposit date", cancellationToken)
+                    : deposit.DepositDate;
+                await ValidateDepositAsync(dto, id, cancellationToken);
+                ApplyConcurrencyToken(deposit, dto.ConcurrencyToken);
+                await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, deposit.FinanceAccountId, cancellationToken);
+
+                deposit.FinanceAccountId = dto.FinanceAccountId;
+                deposit.Amount = dto.Amount;
+                deposit.DepositDate = depositDate;
+                deposit.ChallanNumber = Clean(dto.ChallanNumber);
+                deposit.PeriodFrom = dto.PeriodFrom?.Date;
+                deposit.PeriodTo = dto.PeriodTo?.Date;
+                deposit.Notes = Clean(dto.Notes);
+
+                await _context.SaveChangesAsync(cancellationToken);
+                var result = await GetDepositAsync(id, cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+                committed = true;
+                return result;
+            }
+            catch
+            {
+                if (guard != null && !committed) await guard.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Deleting a deposit puts the tax straight back onto the payable, so it is a financial
+        /// movement in its own right and takes the same stale-write protection as editing one.
+        /// Without the token an admin could delete the version they were looking at moments after
+        /// someone else corrected its amount.
+        /// </summary>
+        public async Task DeleteDepositAsync(
+            int id, string? concurrencyToken = null, CancellationToken cancellationToken = default)
         {
             var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("WHT deposit not found.");
-            await ValidateDepositAsync(dto, id, cancellationToken);
-            ApplyConcurrencyToken(deposit, dto.ConcurrencyToken);
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, deposit.FinanceAccountId, cancellationToken);
-
-            deposit.FinanceAccountId = dto.FinanceAccountId;
-            deposit.Amount = dto.Amount;
-            if (dto.DepositDate.HasValue) deposit.DepositDate = dto.DepositDate.Value.Date;
-            deposit.ChallanNumber = Clean(dto.ChallanNumber);
-            deposit.PeriodFrom = dto.PeriodFrom?.Date;
-            deposit.PeriodTo = dto.PeriodTo?.Date;
-            deposit.Notes = Clean(dto.Notes);
-
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetDepositAsync(id, cancellationToken);
-        }
-
-        public async Task DeleteDepositAsync(int id, CancellationToken cancellationToken = default)
-        {
-            var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
-                ?? throw new InvalidOperationException("WHT deposit not found.");
+            ApplyConcurrencyToken(deposit, concurrencyToken);
             _context.WhtDeposits.Remove(deposit);
             await _context.SaveChangesAsync(cancellationToken);
         }
@@ -755,7 +815,99 @@ namespace DAMS.Application.Services
             if (challan != null && await _context.WhtDeposits.AnyAsync(
                     d => d.ChallanNumber == challan && (!excludingId.HasValue || d.Id != excludingId.Value), cancellationToken))
                 throw new InvalidOperationException("A deposit with this challan number has already been recorded.");
+
+            // Tax Payable is withheld minus deposited. Handing FBR more than was ever withheld drives
+            // that liability negative — a credit balance on a liability account, which is not a state
+            // this business has: DAMS deposits tax it has already deducted from a supplier, it does
+            // not make advance tax payments. Refusing the excess here is what stops the Balance Sheet,
+            // the Trial Balance and the payable summary from having to explain a negative liability.
+            var outstanding = await OutstandingPayableAsync(excludingId, cancellationToken);
+            if (dto.Amount > outstanding)
+                throw new InvalidOperationException(outstanding <= 0m
+                    ? "There is no withheld tax outstanding to deposit. Record the expenses the tax was deducted from first."
+                    : $"Deposit exceeds the withholding tax outstanding. At most {outstanding:N2} can be deposited.");
         }
+
+        /// <summary>
+        /// Refuses a correction to a source record that would leave less tax withheld than has
+        /// already been handed to FBR.
+        /// <para>
+        /// <see cref="ValidateDepositAsync"/> guards this invariant from the deposit side: never pay
+        /// over more than was withheld. It can be broken from the other side just as easily —
+        /// withhold 10,000, deposit 10,000, then delete or reduce the expense the tax came from, and
+        /// Tax Payable is left at minus 10,000. A negative liability is not a state this business
+        /// has: the money really did go to FBR, so the record it was deducted from cannot simply
+        /// vanish underneath it.
+        /// </para>
+        /// <para>
+        /// The change is signed, and only a reduction is checked: raising the tax or adding a record
+        /// can never uncover a deposit. The caller passes the delta rather than the new figure
+        /// because the stored total is read here, inside the caller's serialisable window, where the
+        /// deposit path cannot slip between the read and the write.
+        /// </para>
+        /// </summary>
+        public async Task EnsureDepositsStayCoveredAsync(
+            decimal withheldChange, CancellationToken cancellationToken = default)
+        {
+            if (withheldChange >= 0m) return;
+            var remaining = await OutstandingPayableAsync(null, cancellationToken);
+            var proposed = Math.Round(remaining + withheldChange, 2, MidpointRounding.AwayFromZero);
+            if (proposed < 0m)
+                throw new InvalidOperationException(
+                    $"This change would take Tax Payable to {proposed:N2}. Only {remaining:N2} is "
+                    + "still outstanding, so removing more than that would leave less withholding "
+                    + "tax recorded than the amount already deposited with FBR. Correct or remove "
+                    + "the FBR deposit first, then change this record.");
+        }
+
+        /// <summary>
+        /// The opening Tax Payable brought over from the client's previous system, as committed on
+        /// the opening-balance sheet. Zero until a baseline is committed, because that is the only
+        /// point <see cref="FinanceAccount.OpeningBalance"/> is written.
+        /// <para>
+        /// It is part of the liability for the same reason every other opening balance is part of
+        /// its account: the Balance Sheet and the Tax Payable account both read
+        /// <c>OpeningBalance + withheld - deposited</c>. Leaving it out here is what made the two
+        /// disagree — the account said the business owed FBR the brought-forward tax while the only
+        /// screen that can pay FBR said nothing was outstanding and refused the deposit.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> OpeningPayableAsync(CancellationToken cancellationToken) =>
+            await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                .SumAsync(a => (decimal?)a.OpeningBalance, cancellationToken) ?? 0m;
+
+        /// <summary>
+        /// Everything still owed to FBR: the opening liability brought over at cutover, plus tax
+        /// withheld on expenses AND on asset purchases, less what has been deposited. The one
+        /// authoritative formula — identical to the Tax Payable account balance and the Balance
+        /// Sheet line, so no screen can contradict another about what the business owes.
+        /// <para>
+        /// All-time on purpose: the liability is a running balance, not a period total, so an August
+        /// deposit can legitimately clear tax withheld in July.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> OutstandingPayableAsync(int? excludingDepositId, CancellationToken cancellationToken)
+        {
+            var opening = await OpeningPayableAsync(cancellationToken);
+            var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
+            var deposited = await _context.WhtDeposits.AsNoTracking()
+                .Where(d => !excludingDepositId.HasValue || d.Id != excludingDepositId.Value)
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            return Math.Round(opening + withheld - deposited, 2, MidpointRounding.AwayFromZero);
+        }
+
+        // The same shape LoanService uses: a serializable window around a read-then-write, skipped on
+        // a non-relational provider and when the caller already owns a transaction.
+        private async Task<IDbContextTransaction?> BeginGuardAsync(CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
+            return await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        }
+
+        private Task<T> ExecuteResilientlyAsync<T>(Func<Task<T>> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 

@@ -26,7 +26,7 @@ namespace DAMS.Domain.Entities
         public ICollection<AssetPurchase> AssetPurchasesPaid { get; set; } = new List<AssetPurchase>();
 
         /// <summary>Asset purchases capitalised INTO this account — an inflow, at the gross price.
-        /// Only ever populated on a fixed-asset account.</summary>
+        /// Only ever populated on a fixed-asset or work-in-progress account.</summary>
         public ICollection<AssetPurchase> AssetPurchasesReceived { get; set; } = new List<AssetPurchase>();
         public ICollection<CommissionPayout> CommissionPayouts { get; set; } = new List<CommissionPayout>();
         public ICollection<RebateDisbursement> RebateDisbursements { get; set; } = new List<RebateDisbursement>();

@@ -17,5 +17,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? Reference { get; set; }
 
         public DateTime? Date { get; set; }
+
+        /// <summary>The row version the caller loaded — see UpdateExpenseDto.ConcurrencyToken.</summary>
+        public string? ConcurrencyToken { get; set; }
     }
 }

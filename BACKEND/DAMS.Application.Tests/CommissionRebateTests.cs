@@ -11,6 +11,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -980,6 +981,52 @@ public sealed class CommissionRebateTests
         Assert.Equal(new string('r', 2000), audit.Reason);
         var revision = await harness.Context.CommissionRuleRevisions.OrderByDescending(r => r.RevisionNumber).FirstAsync();
         Assert.Contains(new string('b', 2000), revision.SnapshotJson);
+    }
+
+    /// <summary>
+    /// A reversal is a P&amp;L event: it takes a commission cost or a rebate cost back out of the
+    /// period. So the day it is filed on is a BUSINESS day, and DAMS' business day is Pakistan's.
+    /// <para>
+    /// Stamped from <c>DateTime.UtcNow</c>, a reversal entered at 01:00 PKT on the 1st was dated the
+    /// last day of the previous month — reopening a month that was reported as closed, silently, by a
+    /// correction that had nothing to do with it. That is the failure this asserts against; between
+    /// 19:00 and 23:59 UTC it fails outright if the stamp goes back to UTC.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ReversingAPayoutOrARebate_DatesTheReversalOnThePakistanBusinessDay()
+    {
+        await using var harness = await Harness.Create();
+        var today = PakistanTime.Today;
+
+        var commission = await harness.MakePayable();
+        var paid = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, new RecordCommissionPayoutDto
+        {
+            FinanceAccountId = harness.AccountId, Amount = 100m, PaymentDate = today,
+            PaymentMethod = PaymentMethod.Cash, IdempotencyKey = "payout-date",
+            CommissionConcurrencyToken = commission.ConcurrencyToken
+        }, Actor);
+        var payout = Assert.Single(Assert.Single(paid.Commissions).Payouts);
+
+        await harness.Service.ReversePayoutAsync(harness.BookingId, commission.Id, payout.Id,
+            new ReverseMoneyMovementDto { Amount = 40m, Reason = "Correction", IdempotencyKey = "reverse-date" }, Actor);
+
+        var reversal = Assert.Single(harness.Context.CommissionPayoutReversals.ToList());
+        Assert.Equal(today, reversal.ReversedAt.Date);
+
+        // …and the reversal lands in the same day's P&L as the payout it corrects, netting to 60.
+        var accounts = new FinanceAccountService(harness.Context);
+        var finance = new FinanceService(harness.Context, new NoopAttachmentStorage(), accounts,
+            new WhtService(harness.Context, accounts), NullLogger<FinanceService>.Instance);
+        var pnl = await finance.GetProfitAndLossAsync(null, today, today);
+        Assert.Equal(60m, Assert.Single(pnl.ExpenseLines, l => l.Name == "Commission Payouts").Amount);
+    }
+
+    private sealed class NoopAttachmentStorage : IFinanceAttachmentStorage
+    {
+        public Task<string> SaveAsync(Stream content, string extension, CancellationToken cancellationToken = default) => Task.FromResult("unused");
+        public Task<Stream?> OpenReadAsync(string storedFileName, CancellationToken cancellationToken = default) => Task.FromResult<Stream?>(null);
+        public Task DeleteAsync(string storedFileName, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private static CommissionStatusChangeDto Change(BookingCommissionDto commission, BookingCommissionStatus status,

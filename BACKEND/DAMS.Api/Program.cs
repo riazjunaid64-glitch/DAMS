@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using DAMS.Application.Services;
@@ -213,7 +214,11 @@ if (OperatingSystem.IsWindows() && builder.Configuration.GetValue("DataProtectio
 // an injected clock keeps those rules deterministic under test.
 builder.Services.AddSingleton(TimeProvider.System);
 
-builder.Services.AddControllers()
+builder.Services.AddControllers(options =>
+    {
+        // Names the admin behind every finance correction. See ActorAttributionFilter.
+        options.Filters.Add<ActorAttributionFilter>();
+    })
     .AddJsonOptions(o =>
     {
         o.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;

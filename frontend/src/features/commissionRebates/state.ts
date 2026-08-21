@@ -19,9 +19,9 @@ export const rebateActions = (status:RebateStatus) => ({
 export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 $2");
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
-export function idempotencyKey(prefix:string) {
-  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
-}
+// One implementation, in lib/idempotency, because every screen that records money needs it — not
+// just commissions and rebates. Re-exported so this module keeps its existing callers.
+export { newIdempotencyKey as idempotencyKey } from "../../lib/idempotency";
 
 // Re-exported so this module's existing callers keep working. It lives in lib/financePeriods
 // because every finance screen that defaults a date needs it, not just commissions and rebates.

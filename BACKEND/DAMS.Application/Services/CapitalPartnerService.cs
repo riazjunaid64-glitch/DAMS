@@ -131,6 +131,12 @@ namespace DAMS.Application.Services
             if (dto.Date == default) throw new InvalidOperationException("Transaction date is required.");
             if (dto.Reference?.Trim().Length > 200) throw new InvalidOperationException("Reference cannot exceed 200 characters.");
             if (dto.Note?.Trim().Length > 1000) throw new InvalidOperationException("Note cannot exceed 1000 characters.");
+            // A contribution or withdrawal moves cash the same day it is saved, and every capital
+            // type moves the partner's Capital balance on the Balance Sheet — so the date takes the
+            // same three bounds as an expense or a loan drawdown. See FinanceDateRules: without them
+            // next month's contribution inflates today's bank, and one dated before the committed
+            // opening balances is counted twice.
+            await FinanceDateRules.EnsureAsync(_context, dto.Date, "Transaction date", cancellationToken);
             var partner = await _context.CapitalPartners.AsNoTracking().Include(p => p.FinanceAccount)
                 .SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Capital partner not found.");

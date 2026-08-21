@@ -7,7 +7,9 @@ namespace DAMS.Application.Services
 {
     public partial class FinanceService
     {
-        private static readonly DateTime SqlStart = new(1753, 1, 1);
+        // The same floor the write side enforces, so a report window can never start earlier than
+        // the earliest date a row is allowed to carry.
+        private static readonly DateTime SqlStart = FinanceDateRules.SqlMin;
 
         public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
             int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
@@ -16,11 +18,17 @@ namespace DAMS.Application.Services
             var (start, end, label) = await ResolveReportPeriodAsync(from, to, cancellationToken);
             var priorStart = start.AddYears(-1);
             var priorEnd = end.AddYears(-1);
-            var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), cancellationToken);
-            var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
+            // WITH the fixed-asset charge, because this statement reports Net Profit and DAMS has
+            // exactly one Net Profit rule: buying an asset spends the money, so the period bears it.
+            // The Balance Sheet and Trial Balance below ask for the same period without it — see
+            // BuildPnlPeriodAsync for why those two cannot carry it and what they disclose instead.
+            var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), true, cancellationToken);
+            var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), true, cancellationToken);
             var projectName = projectId.HasValue
                 ? await _context.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.ProjectName).SingleAsync(cancellationToken)
                 : null;
+            var netProfit = Money(current.Income.Sum(l => l.Amount) - current.Expenses.Sum(l => l.Amount));
+            var priorNetProfit = Money(prior.Income.Sum(l => l.Amount) - prior.Expenses.Sum(l => l.Amount));
             return new ProfitAndLossDto
             {
                 PeriodStart = start, PeriodEnd = end, PeriodLabel = label, ProjectName = projectName,
@@ -28,12 +36,23 @@ namespace DAMS.Application.Services
                 ExpenseLines = MergeLines(current.Expenses, prior.Expenses),
                 TotalIncome = Money(current.Income.Sum(l => l.Amount)),
                 TotalExpenses = Money(current.Expenses.Sum(l => l.Amount)),
-                NetProfit = Money(current.Income.Sum(l => l.Amount) - current.Expenses.Sum(l => l.Amount)),
+                NetProfit = netProfit,
                 PriorTotalIncome = Money(prior.Income.Sum(l => l.Amount)),
                 PriorTotalExpenses = Money(prior.Expenses.Sum(l => l.Amount)),
-                PriorNetProfit = Money(prior.Income.Sum(l => l.Amount) - prior.Expenses.Sum(l => l.Amount))
+                PriorNetProfit = priorNetProfit
             };
         }
+
+        /// <summary>
+        /// Fixed assets bought in the window, at gross cost: spending Net Profit deducts and the
+        /// ledger cannot, because the asset stays at full cost and no balancing account has been
+        /// approved. Disclosed by the Balance Sheet for its own window, never as a claim that the
+        /// two statements reconcile — the ledger treatment is still an open accountant decision.
+        /// </summary>
+        private async Task<decimal> FixedAssetChargeAsync(
+            int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken) =>
+            Money(await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
 
         public async Task<BalanceSheetDto> GetBalanceSheetAsync(
             int? projectId, DateTime asAt, CancellationToken cancellationToken = default)
@@ -43,8 +62,14 @@ namespace DAMS.Application.Services
             var openingDate = await OpeningDateAsync(cancellationToken);
             var pnlStart = openingDate.HasValue && openingDate.Value <= date ? openingDate.Value : SqlStart;
             var snapshots = await AccountSnapshotsAsync(projectId, date, openingDate, cancellationToken);
-            var pnl = await BuildPnlPeriodAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
+            // WITHOUT the fixed-asset charge: this figure has to reconcile the sheet, and the only
+            // entry the books hold for a purchase is Dr Fixed Asset / Cr Bank. Deducting the cost
+            // here as well, while the asset is still carried at full cost above, would put the sheet
+            // out by exactly that amount. The gap between this and the P&L's Net Profit is reported
+            // as UnpostedFixedAssetCharge rather than left for the reader to discover.
+            var pnl = await BuildPnlPeriodAsync(projectId, pnlStart, date.AddDays(1), false, cancellationToken);
             var retainedProfit = Money(pnl.Income.Sum(l => l.Amount) - pnl.Expenses.Sum(l => l.Amount));
+            var unpostedFixedAssetCharge = await FixedAssetChargeAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
             if (!projectId.HasValue)
             {
                 var allocations = await _context.CapitalTransactions.AsNoTracking()
@@ -74,6 +99,11 @@ namespace DAMS.Application.Services
             var totalLiabilities = Money(liabilityGroups.Sum(g => g.Total));
             var totalCapital = Money(capitalLines.Sum(l => l.Amount) + retainedProfit);
             var rhs = Money(totalLiabilities + totalCapital);
+            // Retained profit carries only entries the books actually hold, so this balances on real
+            // double entry alone. Fixed-asset purchases are absent by design: their cost has no
+            // approved balancing account, so charging it here would put the sheet out by that amount
+            // while the asset sits above at full cost. An imbalance below therefore still means what
+            // it always meant — a genuine fault.
             var imbalance = Money(totalAssets - rhs);
             var result = new BalanceSheetDto
             {
@@ -81,6 +111,8 @@ namespace DAMS.Application.Services
                 LiabilityGroups = liabilityGroups,
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
+                UnpostedFixedAssetCharge = unpostedFixedAssetCharge,
+                RetainedProfitStart = pnlStart == SqlStart ? null : pnlStart,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
                 IsBalanced = imbalance == 0m
             };
@@ -120,7 +152,9 @@ namespace DAMS.Application.Services
                 }
 
                 var start = openingDate.HasValue && openingDate.Value <= columnDate ? openingDate.Value : SqlStart;
-                var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), cancellationToken);
+                // Ledger-only, for the same reason the Balance Sheet is: every line here is asserted
+                // to have a debit and a credit, and the fixed-asset charge has only one.
+                var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), false, cancellationToken);
                 // Income is credit-normal and expense is debit-normal, but a contra line (e.g.
                 // Customer Refunds) carries a negative amount — that negative amount must flip to
                 // the opposite column, not sit as a negative balance in its normal column. A
@@ -132,7 +166,6 @@ namespace DAMS.Application.Services
                 foreach (var line in pnl.Expenses)
                     values[$"E:{line.Key}"] = new TrialValue(VirtualId("E:" + line.Key), null, line.Name, FinanceAccountType.Other,
                         line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
-
                 if (!projectId.HasValue)
                 {
                     var allocations = await _context.CapitalTransactions.AsNoTracking()
@@ -221,9 +254,20 @@ namespace DAMS.Application.Services
                 rows.AddRange(group.Lines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
             }
             rows.AddRange(report.CapitalLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
-            rows.Add(new object?[] { "Retained Profit", report.RetainedProfit });
+            rows.Add(new object?[] { "Retained Profit (per the ledger)", report.RetainedProfit });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
+            // This workbook is what reaches the accountant who has to decide where the balancing
+            // entry belongs, so it states the one difference between this sheet and the P&L rather
+            // than leaving it to be discovered by subtraction.
+            if (report.UnpostedFixedAssetCharge != 0m)
+            {
+                rows.Add(new object?[] { "Fixed asset purchases charged to Net Profit but not to this sheet", report.UnpostedFixedAssetCharge });
+                rows.Add(new object?[] { "Bought " + (report.RetainedProfitStart.HasValue
+                    ? "between " + report.RetainedProfitStart.Value.ToString("dd MMM yyyy") + " and " + report.AsAt.ToString("dd MMM yyyy")
+                    : "up to " + report.AsAt.ToString("dd MMM yyyy")) + ", the window Retained Profit above covers", null });
+                rows.Add(new object?[] { "Retained Profit is stated before that charge: the assets are still carried at full cost and the balancing ledger treatment is an open accountant decision", null });
+            }
             return Workbook("balance-sheet", rows);
         }
 
@@ -254,7 +298,12 @@ namespace DAMS.Application.Services
             return (start, end, label);
         }
 
-        private async Task<PnlPeriod> BuildPnlPeriodAsync(int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken)
+        /// <param name="includeFixedAssetCharge">
+        /// True for the P&amp;L, false for the Balance Sheet and Trial Balance. See the fixed-asset
+        /// block near the end of this method for why the same period is built both ways.
+        /// </param>
+        private async Task<PnlPeriod> BuildPnlPeriodAsync(int? projectId, DateTime from, DateTime toExclusive,
+            bool includeFixedAssetCharge, CancellationToken cancellationToken)
         {
             var income = await ManualQuery(projectId, from, toExclusive).GroupBy(r => new
                 {
@@ -270,17 +319,23 @@ namespace DAMS.Application.Services
                     CategoryId = g.Key.RevenueCategoryId, Name = g.Key.Name, Order = g.Key.Order,
                     Amount = g.Sum(r => r.Amount), Count = g.Count()
                 }).ToListAsync(cancellationToken);
-            var receipts = await PaymentsQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (receipts is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "customer-receipts", Name = "Customer Receipts", Order = -1, Amount = receipts.Amount, Count = receipts.Count });
-            // Contra-revenue, recognised at cancellation — never a second entry when the refund
-            // is actually paid out later, and never folded into the receipts line above so the
-            // original "money was really received" figure stays intact and auditable.
-            var refunds = await CancellationSettlementQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(s => s.RefundAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (refunds is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "customer-refunds", Name = "Customer Refunds", Order = 0, Amount = -refunds.Amount, Count = refunds.Count });
+            // Unit sales, recognised at possession — NOT customer receipts. Money taken before
+            // possession is a deposit the company owes back, so counting it as income overstated
+            // revenue by every unfinished sale and understated the liability by the same amount.
+            // The full net sale value lands here once, on its recognition date; what the buyer
+            // still owes becomes a receivable rather than future revenue.
+            var recognisedSales = await SaleRecognitionQuery(projectId, from, toExclusive).GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(r => r.NetSaleValue), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
+            if (recognisedSales is { Amount: not 0m })
+                income.Add(new ReportLine { Key = "unit-sales", Name = "Unit Sales", Order = -1, Amount = recognisedSales.Amount, Count = recognisedSales.Count });
+            // What the company keeps when a booking is cancelled. Recognised once, on the
+            // cancellation date. The refund itself is NOT contra-revenue: the customer's money was
+            // never income, so refunding it cannot reduce income — it converts one liability
+            // (deposit) into another (refund payable).
+            var retained = await RetainedCancellationQuery(projectId, from, toExclusive).GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(s => s.RetainedAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
+            if (retained is { Amount: not 0m })
+                income.Add(new ReportLine { Key = "cancellation-retained", Name = "Cancellation Income (Retained)", Order = 0, Amount = retained.Amount, Count = retained.Count });
 
             var expenses = await ExpenseQuery(projectId, from, toExclusive).GroupBy(e => new
                 {
@@ -301,6 +356,46 @@ namespace DAMS.Application.Services
             var rebateCount = await CashRebateQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
                 + await CashRebateReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
             if (rebate != 0m) expenses.Add(new ReportLine { Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue, Amount = rebate, Count = rebateCount });
+            // The cost of credits granted against a RECOGNISED sale. Once the full net sale value
+            // is income, the slice of it the buyer will never pay has to be a cost — otherwise the
+            // receivable would still be claiming money that was written off. Credits on bookings
+            // that have not reached possession stay invisible here, exactly as before.
+            var nonCashCredit = (await NonCashCreditQuery(projectId, from, toExclusive).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
+                - (await NonCashCreditReversalQuery(projectId, from, toExclusive).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
+            var nonCashCreditCount = await NonCashCreditQuery(projectId, from, toExclusive).CountAsync(cancellationToken)
+                + await NonCashCreditReversalQuery(projectId, from, toExclusive).CountAsync(cancellationToken);
+            if (nonCashCredit != 0m)
+                expenses.Add(new ReportLine
+                {
+                    Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
+                    Amount = nonCashCredit, Count = nonCashCreditCount
+                });
+            // Fixed-asset purchases, at gross cost. DAMS reports one Net Profit, and the client's
+            // rule is that buying an asset spends the money — so wherever Net Profit is stated, this
+            // is inside it: the dashboard card, the P&L, its export and the Net Profit drill-down.
+            //
+            // The flag exists because two of this method's three consumers state something else.
+            // The Trial Balance and the Balance Sheet's retained profit are double-entry positions:
+            // every line in them is an assertion that the books hold a debit and a matching credit.
+            // A purchase holds only Dr Fixed Asset / Cr Bank. Charging its cost to profit as well
+            // needs a credit, the asset is still carried at full cost, and no account has been
+            // approved to take that credit — so putting the line there would not make those two
+            // statements righter, it would put them out of balance by exactly this amount on the
+            // strength of an entry nobody authorised. They omit it and DISCLOSE it instead
+            // (BalanceSheetDto.UnpostedFixedAssetCharge), which is the only honest description of
+            // where the question stands.
+            if (includeFixedAssetCharge)
+            {
+                var fixedAssets = await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
+                    .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() })
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (fixedAssets is { Amount: not 0m })
+                    expenses.Add(new ReportLine
+                    {
+                        Key = "fixed-asset-purchases", Name = "Fixed Asset Purchases", Order = int.MaxValue - 3,
+                        Amount = fixedAssets.Amount, Count = fixedAssets.Count
+                    });
+            }
             var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
                 .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
                 .SingleOrDefaultAsync(cancellationToken);
@@ -328,9 +423,10 @@ namespace DAMS.Application.Services
                 .GroupBy(r => r.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
             var expense = await SumByAccount(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
                 .GroupBy(e => e.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(e => e.Amount - e.WhtAmount))), cancellationToken);
-            // A purchase moves two accounts and touches no income statement line. Cash falls by the
-            // net paid; the asset account rises by the gross. The gap between them is the withheld
-            // tax, which lands on the payable below — which is exactly why the sheet still balances.
+            // A purchase moves two accounts: cash falls by the net paid, the asset account rises by
+            // the gross, and the gap between them is the withheld tax, which lands on the payable
+            // below. That is what balances the CASH side. The charge the same purchase makes against
+            // profit has no counter-entry anywhere — the asset account itself is never written down.
             var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
                 .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
             var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
@@ -384,7 +480,7 @@ namespace DAMS.Application.Services
                 + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
                     .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var deposited = deposits.Sum(d => d.Amount);
-            // Customer Refunds Payable: created (contra-revenue recognised) at cancellation,
+            // Customer Refunds Payable: created out of the customer deposit at cancellation,
             // cleared when the cash is actually paid out. Both sides are booking-scoped, so —
             // unlike WHT deposits — they can be filtered by project.
             var cancellationRefundsCash = await SumByAccount(_context.BookingCancellationRefunds.AsNoTracking()
@@ -393,6 +489,7 @@ namespace DAMS.Application.Services
             var refundPayableCreated = await CancellationSettlementQuery(projectId, null, end)
                 .SumAsync(s => (decimal?)s.RefundAmount, cancellationToken) ?? 0m;
             var refundPayablePaid = cancellationRefundsCash.Sum(x => x.Amount);
+            var (customerDeposits, customerReceivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
 
             foreach (var account in accounts)
             {
@@ -421,9 +518,96 @@ namespace DAMS.Application.Services
                     account.Balance += Money(wht - deposited);
                 if (account.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
                     account.Balance += Money(refundPayableCreated - refundPayablePaid);
+                if (account.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
+                    account.Balance += customerDeposits;
+                if (account.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
+                    account.Balance += customerReceivables;
                 account.Balance = Money(account.Balance);
             }
             return accounts;
+        }
+
+        /// <summary>
+        /// The customer deposit liability and the customer receivable asset, both as at
+        /// <paramref name="end"/> (exclusive) and both derived entirely from dated domain events —
+        /// never from a booking's current status, and never from a stored snapshot that a
+        /// back-dated payment could quietly invalidate.
+        /// <para>
+        /// Deposit: every payment taken while the sale was still unrecognised — an earlier business
+        /// date, or the possession date itself but entered before possession was recorded (the
+        /// same-day ordering comes from the UTC audit instants, CreatedAt vs RecognizedAt) — less the ones since
+        /// cleared by possession (into revenue) or by cancellation (into refund payable + retained
+        /// income). Both sides come from the same Payment rows, so they cannot drift apart.
+        /// </para>
+        /// <para>
+        /// Receivable: the recognised net sale value, less every payment on that booking (the
+        /// pre-possession ones having already cleared the deposit) and less valid non-cash credits.
+        /// A booking that has not reached possession contributes nothing — there is no receivable
+        /// until there is a sale.
+        /// </para>
+        /// </summary>
+        private async Task<(decimal Deposits, decimal Receivables)> CustomerBalancesAsync(
+            int? projectId, DateTime? end, CancellationToken cancellationToken)
+        {
+            // "Recognised by the cut-off" and "cancelled by the cut-off". Written as two separate
+            // queryables rather than one expression with a sentinel date, because a sentinel would
+            // have to be compared against a `date` column and SQL Server's conversion rules at the
+            // very end of the calendar are not somewhere financial code should be standing.
+            var recognisedByCutOff = SaleRecognitionQuery(projectId, null, end);
+            var collectedOnRecognisedSales = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition != null);
+            if (end.HasValue)
+            {
+                collectedOnRecognisedSales = collectedOnRecognisedSales
+                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
+            }
+
+            var deposits = await CustomerDepositBalanceAsync(projectId, end, cancellationToken);
+
+            var receivablesRaised = await recognisedByCutOff.SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
+            var receivablesCollected = await collectedOnRecognisedSales.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+            var creditsApplied = await NonCashCreditQuery(projectId, null, end)
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var creditsReversed = await NonCashCreditReversalQuery(projectId, null, end)
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+
+            return (deposits,
+                Money(receivablesRaised - receivablesCollected - creditsApplied + creditsReversed));
+        }
+
+        /// <summary>
+        /// The deposit half of <see cref="CustomerBalancesAsync"/> on its own: customer money held
+        /// but not yet earned, as at <paramref name="end"/> (exclusive).
+        /// <para>
+        /// Split out for the dashboard card, which wants only this. Asking for both halves cost
+        /// seven queries where three answer the question, and the dashboard is the one screen where
+        /// that difference is paid on every refresh. It is the same three queries either way — one
+        /// implementation, so the card and the Balance Sheet cannot report different deposits.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> CustomerDepositBalanceAsync(
+            int? projectId, DateTime? end, CancellationToken cancellationToken)
+        {
+            var clearedByRecognition = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition != null
+                    && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)));
+            var clearedByCancellation = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.CancellationSettlement != null);
+            if (end.HasValue)
+            {
+                clearedByRecognition = clearedByRecognition
+                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
+                clearedByCancellation = clearedByCancellation
+                    .Where(p => p.Booking.CancellationSettlement!.CancellationDate < end.Value);
+            }
+
+            var depositsReceived = await PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition == null
+                    || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+            var depositsCleared = (await clearedByRecognition.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
+                + (await clearedByCancellation.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
+            return Money(depositsReceived - depositsCleared);
         }
 
         private static async Task<List<AccountAmount>> SumByAccount(IQueryable<AccountAmount> query, CancellationToken cancellationToken) =>
@@ -431,9 +615,8 @@ namespace DAMS.Application.Services
 
         private static decimal Amount(IEnumerable<AccountAmount> rows, int id) => rows.FirstOrDefault(x => x.Id == id)?.Amount ?? 0m;
 
-        private async Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
-            await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
-                .OrderByDescending(s => s.AsAtDate).Select(s => (DateTime?)s.AsAtDate).FirstOrDefaultAsync(cancellationToken);
+        private Task<DateTime?> OpeningDateAsync(CancellationToken cancellationToken) =>
+            FinanceDateRules.BaselineAsync(_context, cancellationToken);
 
         private async Task<List<string>> DiagnoseImbalanceAsync(int? projectId, DateTime asAt, List<AccountSnapshot> snapshots, CancellationToken cancellationToken)
         {
@@ -460,6 +643,13 @@ namespace DAMS.Application.Services
                     .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
             if (refundObligation != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable))
                 issues.Add($"No Customer Refunds Payable system account found; outstanding refund obligation of {refundObligation:N2} has nowhere to sit.");
+            // Reported, never created: a report must not write to the database as a side effect of
+            // being read. Setting the account up is Finance ▸ Accounts ▸ chart setup's job.
+            var (deposits, receivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
+            if (deposits != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerDeposits))
+                issues.Add($"No Customer Deposits system account found; customer money held of {deposits:N2} has nowhere to sit.");
+            if (receivables != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerReceivables))
+                issues.Add($"No Customer Receivables system account found; {receivables:N2} owed on recognised sales has nowhere to sit.");
             if (issues.Count == 0)
             {
                 issues.Add("Opening balances or legacy entries are not double-sided");

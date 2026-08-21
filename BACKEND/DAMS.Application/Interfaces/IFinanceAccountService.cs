@@ -18,7 +18,7 @@ namespace DAMS.Application.Interfaces
         Task EnsureExpenseSourceAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default);
 
         /// <summary>Validates that an account can receive a capitalised purchase — active, and typed
-        /// FixedAsset.</summary>
+        /// FixedAsset or WorkInProgress.</summary>
         Task EnsureAssetAccountAsync(int accountId, int? currentAccountId = null, CancellationToken cancellationToken = default);
         Task<List<FinanceAccountResponseDto>> SetupClientChartAsync(CancellationToken cancellationToken = default);
 

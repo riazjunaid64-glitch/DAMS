@@ -35,6 +35,12 @@ namespace DAMS.Domain.Entities
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Optimistic-concurrency token — the counterpart of <c>Expense.RowVersion</c>. Editing a
+        /// revenue row moves income and a bank balance, so a lost update here misstates both.
+        /// </summary>
+        public byte[] RowVersion { get; set; } = [];
+
         // Navigation
         public Project? Project { get; set; }
 

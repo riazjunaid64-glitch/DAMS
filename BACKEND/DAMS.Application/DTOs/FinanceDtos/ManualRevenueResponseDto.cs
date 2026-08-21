@@ -29,5 +29,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public DateTime CreatedAt { get; set; }
 
         public FinanceAttachmentDto? Attachment { get; set; }
+
+        /// <summary>Base64 row version — send it back on the next update or delete.</summary>
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 }

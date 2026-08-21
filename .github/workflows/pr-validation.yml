@@ -15,10 +15,11 @@ jobs:
     # test failure that does not reproduce on Windows.)
     runs-on: windows-latest
     timeout-minutes: 25
-    # The real SQL Server invariant suite (SqlServerProductionInvariantTests) is deferred for now: it
-    # is not run in CI. Without DAMS_SQLSERVER_TEST_CONNECTION it skips itself, so the build and the
-    # full in-memory test suite still gate every PR. Re-add a `services: sqlserver` block and that env
-    # var when we bring the SQL-Server checks back online.
+    # This job runs the in-memory suite; SqlServerProductionInvariantTests skips itself here because
+    # DAMS_SQLSERVER_TEST_CONNECTION is unset. Those tests are gated by the `sqlserver` job below,
+    # which runs them against a real server — the in-memory provider does not enforce unique indexes
+    # or check constraints and client-evaluates LINQ it cannot translate, so it cannot stand in for
+    # migrations, filtered indexes, or the derived finance queries.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -34,6 +35,52 @@ jobs:
         if: always()
         with:
           name: backend-test-results
+          path: BACKEND/DAMS.Application.Tests/TestResults
+
+  # Migrations, filtered unique indexes, check constraints and the derived finance queries only
+  # prove themselves against a real provider. Linux, because service containers do not run on the
+  # Windows runners — and only this one test class, so the Windows-specific failures that keep the
+  # main suite off Linux stay out of the way.
+  sqlserver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Dams(Test)Pa55w0rd"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Dams(Test)Pa55w0rd' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 30s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Test (real SQL Server invariants)
+        env:
+          DAMS_SQLSERVER_TEST_CONNECTION: "Server=localhost,1433;User Id=sa;Password=Dams(Test)Pa55w0rd;TrustServerCertificate=true;Encrypt=false"
+        run: >-
+          dotnet test BACKEND/DAMS.Application.Tests/DAMS.Application.Tests.csproj
+          --configuration Release
+          --filter "FullyQualifiedName~SqlServerProductionInvariantTests"
+          --logger "trx;LogFileName=sqlserver-tests.trx"
+      # A connection failure would otherwise silently skip every test and report a green job.
+      - name: Assert the suite actually ran
+        shell: bash
+        run: |
+          trx=$(find BACKEND/DAMS.Application.Tests/TestResults -name 'sqlserver-tests.trx' | head -1)
+          grep -q 'outcome="Passed"' "$trx" || { echo "::error::No SQL Server test executed"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sqlserver-test-results
           path: BACKEND/DAMS.Application.Tests/TestResults
 
   frontend:

@@ -126,11 +126,17 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Application amount received cannot exceed the booking amount required.");
             // Money received with the form becomes a real payment below, so it has to say
             // which account it landed in — same rule the finance forms apply.
+            // Money received with the form becomes a real payment below, so its date is a posting
+            // date and takes the same bounds as every other one: not in the future, not before the
+            // committed opening balances. Resolved out here, before the transaction opens.
+            var applicationPaidAt = PakistanTime.Now;
             if (applicationAmountReceived > 0m)
             {
                 if (!dto.ApplicationFinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required when an amount is received with the application.");
                 await _accountService.EnsureSelectableAsync(dto.ApplicationFinanceAccountId.Value, null, cancellationToken);
+                applicationPaidAt = await FinanceDateRules.ResolveInstantAsync(
+                    _context, dto.ApplicationDate, "Application date", cancellationToken);
             }
 
             var booking = new Booking
@@ -197,7 +203,7 @@ namespace DAMS.Application.Services
                         PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
                         Notes = "Received with the application form.",
                         RecordedByUserId = adminUserId,
-                        PaidAt = dto.ApplicationDate ?? DateTime.UtcNow,
+                        PaidAt = applicationPaidAt,
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.Payments.Add(payment);
@@ -206,8 +212,8 @@ namespace DAMS.Application.Services
                     if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
                     {
                         booking.Status = BookingStatus.PaymentPlanActive;
-                        booking.BookingAmountConfirmedDate = DateTime.UtcNow;
-                        booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                        booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                        booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                         unit.Status = UnitStatus.OnPaymentPlan;
                         unit.UpdatedAt = DateTime.UtcNow;
                     }
@@ -351,8 +357,8 @@ namespace DAMS.Application.Services
             {
                 var unit = await _context.Units.FirstOrDefaultAsync(u => u.Id == booking.UnitId);
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate ??= PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                 if (unit != null)
                 {
                     unit.Status = UnitStatus.OnPaymentPlan;
@@ -372,6 +378,12 @@ namespace DAMS.Application.Services
             if (!dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Received In Account is required.");
             await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
+            // A receipt date is a posting date: it decides which month took the money, and both the
+            // booking's own progress and every finance balance move the instant it is saved. So it
+            // takes the same bounds as an expense — never in the future, never before the committed
+            // opening balances.
+            var paidAt = await FinanceDateRules.ResolveInstantAsync(
+                _context, dto.PaidAt, "Payment date", cancellationToken);
 
             var booking = await _context.Bookings
                 .Include(b => b.Unit)
@@ -415,7 +427,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                PaidAt = paidAt,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -429,8 +441,8 @@ namespace DAMS.Application.Services
             if (booking.BookingAmountReceived >= effectiveRequired)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate = DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
 
                 booking.Unit.Status = UnitStatus.OnPaymentPlan;
                 booking.Unit.UpdatedAt = DateTime.UtcNow;
@@ -452,6 +464,23 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id, cancellationToken);
         }
 
+        /// <summary>
+        /// Hands the unit over and recognises the sale — the single revenue event for a booking.
+        /// <para>
+        /// Everything the customer paid before this moment was a deposit (a liability). Here the
+        /// full net sale value becomes revenue at once: the deposit clears, and whatever is still
+        /// unpaid becomes a receivable. The <see cref="BookingSaleRecognition"/> row written in the
+        /// same SaveChanges is what dates that revenue, so a report for last month keeps reporting
+        /// last month after this runs.
+        /// </para>
+        /// <para>
+        /// Possession recognises REVENUE only. There is no cost-of-sales entry: construction and site
+        /// work are already an expense on the day they are paid, so there is nothing left to release.
+        /// The Work in Progress accounts on the chart hold balances inherited from the previous ERP,
+        /// and allocating those to units is still deferred pending an approved per-unit policy —
+        /// nothing here touches them.
+        /// </para>
+        /// </summary>
         public async Task<BookingResponseDto> GivePossessionAsync(int id, DateTime? possessionDate, int adminUserId)
         {
             var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
@@ -462,13 +491,56 @@ namespace DAMS.Application.Services
             if (booking.Status != BookingStatus.PaymentPlanActive)
                 throw new InvalidOperationException("Possession can only be given while the payment plan is active.");
 
+            // The business date the revenue belongs to, and the largest single posting DAMS makes:
+            // it books the sale as revenue and raises the whole receivable. So it takes exactly the
+            // bounds every other financial posting takes — never in the future (revenue into a period
+            // that has not happened yet, which no later correction undoes cleanly), and never before
+            // the committed opening balances, where the receivable is already inside the figure the
+            // accountant typed and would be counted a second time here.
+            var recognitionDate = (possessionDate?.Date ?? PakistanTime.Today);
+            await FinanceDateRules.EnsureAsync(_context, recognitionDate, "Possession date", CancellationToken.None);
+
+            // …and it cannot precede the booking either. The caller supplies this date, so without
+            // a lower bound a 2026 booking could recognise its revenue in 2024 — into a period that
+            // is very likely already reported and closed. The recognition row is immutable by
+            // design, which makes a bad date expensive rather than merely wrong.
+            var bookedOn = PakistanTime.ToBusinessDate(booking.BookingDate);
+            if (recognitionDate < bookedOn)
+                throw new InvalidOperationException(
+                    $"Possession date cannot be before the booking date ({bookedOn:dd MMM yyyy}).");
+
+            // Belt and braces with the unique index below: this catches the ordinary retry with a
+            // readable message, the index catches the genuine race.
+            if (await _context.BookingSaleRecognitions.AnyAsync(r => r.BookingId == booking.Id))
+                throw new InvalidOperationException("This sale has already been recognised.");
+
             booking.Status = BookingStatus.PossessionGiven;
-            booking.PossessionDate = possessionDate ?? DateTime.UtcNow;
+            booking.PossessionDate = possessionDate ?? PakistanTime.Now;
             booking.InternalNotes = AppendNote(booking.InternalNotes,
                 $"Possession given by user {adminUserId}.");
             booking.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync();
+            _context.BookingSaleRecognitions.Add(new BookingSaleRecognition
+            {
+                BookingId = booking.Id,
+                RecognitionDate = recognitionDate,
+                NetSaleValue = Money(booking.AgreedSalePrice - booking.DiscountAmount),
+                RecognizedAt = DateTime.UtcNow,
+                RecognizedByUserId = adminUserId
+            });
+
+            // One SaveChanges: the status change and the recognition row commit together or not
+            // at all. A booking that says PossessionGiven with no recognition would be a sale with
+            // no revenue.
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsDuplicateRecognition(ex))
+            {
+                throw new InvalidOperationException(
+                    "This sale has already been recognised. Reload the booking and try again.");
+            }
 
             await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
                 booking.Id, NotificationType.PossessionGiven, null, adminUserId));
@@ -487,8 +559,24 @@ namespace DAMS.Application.Services
             if (booking == null)
                 throw new InvalidOperationException("Booking not found.");
 
-            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
-                throw new InvalidOperationException("Only an active or possession-given booking can be completed.");
+            // Completion is a paperwork milestone, not an accounting one — the sale became revenue
+            // at possession. Allowing a PaymentPlanActive booking straight to SaleCompleted would
+            // let a sale finish without ever being recognised, which is why that legacy path is
+            // closed here. Historical rows that took it are handled by the recognition backfill.
+            if (booking.Status != BookingStatus.PossessionGiven)
+                throw new InvalidOperationException(
+                    booking.Status == BookingStatus.PaymentPlanActive
+                        ? "Give possession before completing the sale — the sale is recognised at possession."
+                        : "Only a possession-given booking can be completed.");
+
+            // Status alone is not proof of recognition. A legacy row that reached PossessionGiven
+            // before this table existed, and that the backfill could not date, would otherwise
+            // complete here and finish its life as a sale that never produced a rupee of revenue.
+            if (!await _context.BookingSaleRecognitions.AnyAsync(r => r.BookingId == booking.Id))
+                throw new InvalidOperationException(
+                    "This booking has no recognised sale, so it cannot be completed. Its possession "
+                    + "predates revenue recognition and needs a possession date recorded before it "
+                    + "can be finished.");
 
             var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
             var effectiveBookingAmountRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, rebateCredits);
@@ -511,7 +599,7 @@ namespace DAMS.Application.Services
                     "The sale cannot be completed while installments remain unpaid. Apply each remaining credit as an installment adjustment, or collect the installment, before completing.");
 
             booking.Status = BookingStatus.SaleCompleted;
-            booking.CompletionDate = DateTime.UtcNow;
+            booking.CompletionDate = PakistanTime.Now;
             booking.InternalNotes = AppendNote(booking.InternalNotes,
                 $"Sale completed by user {adminUserId}.");
             booking.UpdatedAt = DateTime.UtcNow;
@@ -917,6 +1005,17 @@ namespace DAMS.Application.Services
         {
             return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
                    && sql.Message.Contains("ReceiptNumber", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Only the unique BookingId on the recognition table. Any other write failure during
+        /// possession is a real fault and must surface as one, not be dressed up as a harmless
+        /// duplicate that tells the admin to reload and move on.
+        /// </summary>
+        private static bool IsDuplicateRecognition(DbUpdateException ex)
+        {
+            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("BookingSaleRecognitions", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

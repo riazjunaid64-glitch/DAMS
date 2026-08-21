@@ -263,7 +263,7 @@ namespace DAMS.Application.Services
                 CancelledAt = DateTime.UtcNow,
                 // The Pakistan business date, not the raw UTC instant: a cancellation at 00:30 PKT
                 // is still 19:30 UTC the previous calendar day, and every report must place this
-                // settlement's contra-revenue/liability on the PKT day the Admin actually acted.
+                // settlement's retained income and refund liability on the PKT day the Admin actually acted.
                 // Reused from the single snapshot taken above — never re-read — so it can never
                 // disagree with the PayNow refund date validation a few awaits earlier.
                 CancellationDate = businessDate

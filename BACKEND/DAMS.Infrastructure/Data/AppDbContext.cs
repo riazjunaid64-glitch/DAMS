@@ -25,6 +25,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -37,6 +38,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<Vendor> Vendors { get; set; }
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
+        public DbSet<IdempotentRequest> IdempotentRequests { get; set; }
+        public DbSet<FinanceRecordAudit> FinanceRecordAudits { get; set; }
         public DbSet<FinanceSetting> FinanceSettings { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
         public DbSet<RevenueCategory> RevenueCategories { get; set; }
@@ -479,6 +482,27 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<BookingSaleRecognition>(entity =>
+            {
+                entity.Property(r => r.NetSaleValue).HasColumnType("decimal(18,2)");
+                // A date, not a timestamp: this is the business day the sale lands on, and every
+                // report compares it against a date boundary.
+                entity.Property(r => r.RecognitionDate).HasColumnType("date");
+
+                // The whole point of the table: one recognition per booking. Possession retried,
+                // raced, or followed by completion must never produce a second sale.
+                entity.HasIndex(r => r.BookingId).IsUnique();
+                entity.HasIndex(r => r.RecognitionDate);
+
+                entity.HasOne(r => r.Booking)
+                      .WithOne(b => b.SaleRecognition)
+                      .HasForeignKey<BookingSaleRecognition>(r => r.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t => t.HasCheckConstraint(
+                    "CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0"));
+            });
+
             modelBuilder.Entity<BookingCancellationSettlement>(entity =>
             {
                 entity.Property(s => s.CustomerCashReceivedSnapshot).HasColumnType("decimal(18,2)");
@@ -616,6 +640,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(s => s.ProjectName).HasMaxLength(200);
                 entity.Property(s => s.Notes).HasMaxLength(500);
+                entity.Property(s => s.RowVersion).IsRowVersion();
                 entity.HasIndex(s => s.EmployeeId);
                 // Unique so a double-click cannot record the same month twice.
                 entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth }).IsUnique();
@@ -696,6 +721,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(e => e.VendorFilerStatusAtEntry).HasConversion<int>();
                 // Derived from Amount and WhtAmount; storing it would let the three drift apart.
                 entity.Ignore(e => e.NetPaid);
+                entity.Property(e => e.RowVersion).IsRowVersion();
 
                 entity.HasIndex(e => e.ProjectId);
                 entity.HasIndex(e => e.Date);
@@ -793,6 +819,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(r => r.RevenueTypeName).IsRequired().HasMaxLength(150);
                 entity.Property(r => r.Description).HasMaxLength(1000);
                 entity.Property(r => r.Reference).HasMaxLength(200);
+                entity.Property(r => r.RowVersion).IsRowVersion();
 
                 entity.HasIndex(r => r.ProjectId);
                 entity.HasIndex(r => r.Date);
@@ -847,9 +874,14 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t =>
                 {
-                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 2");
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 4");
                     t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
                     t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
+                    // A deposit is money owed back, so its account must be a Liability (5); a
+                    // receivable is money owed in, so its account must be a Receivable (8). Get
+                    // either the wrong way round and every balance built on it inverts.
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerDepositsRole", "[SystemRole] <> 3 OR [Type] = 5");
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerReceivablesRole", "[SystemRole] <> 4 OR [Type] = 8");
                 });
             });
 
@@ -1054,18 +1086,35 @@ namespace DAMS.Infrastructure.Data
 
         private static RevenueCategory[] SeedRevenueCategories()
         {
-            var names = new[]
+            // "External / Legacy Cancellation Income" is deliberately not called "Cancellation /
+            // Forfeiture" any more. Cancelling a DAMS booking already recognises the retained amount
+            // as income by itself, on the cancellation date, out of the customer's deposit — so a
+            // head that invited an Admin to ALSO type that figure in by hand was an invitation to
+            // count the same forfeiture twice, with nothing anywhere to detect it. The head survives
+            // because forfeitures from before go-live, or on something that was never a DAMS booking,
+            // have no other way in. Its `Code` is untouched so existing rows keep their category.
+            var heads = new (string Name, string Code)[]
             {
-                "Transfer Charges", "Development Charges", "Possession Charges", "Membership Charges",
-                "Documentation Charges", "NOC / NDC Charges", "Utility Connection Charges", "Parking Charges",
-                "Late Payment Surcharge", "Cancellation / Forfeiture", "Rental Income", "Commission Income",
-                "Bank Profit / Interest", "Other Income"
+                ("Transfer Charges", "transfer_charges"),
+                ("Development Charges", "development_charges"),
+                ("Possession Charges", "possession_charges"),
+                ("Membership Charges", "membership_charges"),
+                ("Documentation Charges", "documentation_charges"),
+                ("NOC / NDC Charges", "noc_ndc_charges"),
+                ("Utility Connection Charges", "utility_connection_charges"),
+                ("Parking Charges", "parking_charges"),
+                ("Late Payment Surcharge", "late_payment_surcharge"),
+                ("External / Legacy Cancellation Income", "cancellation_forfeiture"),
+                ("Rental Income", "rental_income"),
+                ("Commission Income", "commission_income"),
+                ("Bank Profit / Interest", "bank_profit_interest"),
+                ("Other Income", "other_income")
             };
-            return names.Select((name, index) => new RevenueCategory
+            return heads.Select((head, index) => new RevenueCategory
             {
                 Id = index + 1,
-                Name = name,
-                Code = new string(name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray()).Replace("___", "_").Replace("__", "_").Trim('_'),
+                Name = head.Name,
+                Code = head.Code,
                 DisplayOrder = (index + 1) * 10,
                 IsActive = true,
                 CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, DateTimeKind.Utc)
@@ -1407,10 +1456,92 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<BookingCancellationRefund>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking cancellation refunds are append-only.");
+            if (ChangeTracker.Entries<FinanceRecordAudit>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Finance record audit entries are append-only.");
         }
+
+        /// <summary>
+        /// The user whose request is being served, for the correction trail. Set per request by the
+        /// API; null in background work and in tests, where an entry is attributed to no one rather
+        /// than to whoever happened to be last.
+        /// </summary>
+        public int? ActorUserId { get; set; }
+
+        // Editable money records. A correction to any of these restates a period that has already
+        // been reported, so it leaves evidence. See FinanceRecordAudit.
+        private static readonly HashSet<Type> AuditedFinancialTypes =
+        [
+            typeof(Expense), typeof(ManualRevenue), typeof(AssetPurchase), typeof(WhtDeposit)
+        ];
+
+        /// <summary>
+        /// Records what changed on an editable money record, in the same SaveChanges as the change.
+        /// <para>
+        /// Done here rather than in each service on purpose: a service can forget, and a service added
+        /// later starts out forgetting. Anything that reaches the database through this context is
+        /// covered, including a correction made by a script or a background job.
+        /// </para>
+        /// </summary>
+        private void CaptureFinancialCorrections()
+        {
+            var entries = ChangeTracker.Entries()
+                .Where(e => e.State is EntityState.Modified or EntityState.Deleted
+                    && AuditedFinancialTypes.Contains(e.Metadata.ClrType))
+                .ToList();
+            foreach (var entry in entries)
+            {
+                var deleted = entry.State == EntityState.Deleted;
+                var fields = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var property in entry.Properties)
+                {
+                    if (property.Metadata.IsPrimaryKey()) continue;
+                    // RowVersion moves on every save and says nothing about what an operator did.
+                    if (property.Metadata.Name == nameof(Expense.RowVersion)) continue;
+                    if (deleted)
+                    {
+                        fields[property.Metadata.Name] = Describe(property.OriginalValue);
+                    }
+                    else if (property.IsModified
+                        && !Equals(property.OriginalValue, property.CurrentValue))
+                    {
+                        fields[property.Metadata.Name] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["from"] = Describe(property.OriginalValue),
+                            ["to"] = Describe(property.CurrentValue)
+                        };
+                    }
+                }
+                // An update that moved nothing (a re-save of identical values) is not a correction.
+                if (fields.Count == 0) continue;
+                var key = entry.Property("Id");
+                FinanceRecordAudits.Add(new FinanceRecordAudit
+                {
+                    RecordType = entry.Metadata.ClrType.Name,
+                    RecordId = (int)(key.OriginalValue ?? key.CurrentValue ?? 0),
+                    Action = deleted ? "Deleted" : "Updated",
+                    Changes = System.Text.Json.JsonSerializer.Serialize(fields),
+                    ActorUserId = ActorUserId,
+                    OccurredAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        // Culture-independent, so a figure read back out of the trail years later means what it meant
+        // when it was written.
+        private static object? Describe(object? value) => value switch
+        {
+            null => null,
+            decimal number => number.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture),
+            DateTime moment => moment.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            byte[] bytes => Convert.ToBase64String(bytes),
+            Enum flag => flag.ToString(),
+            _ => value.ToString()
+        };
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
@@ -1418,6 +1549,7 @@ namespace DAMS.Infrastructure.Data
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
@@ -1495,6 +1627,29 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.WhtDeposits)
                       .HasForeignKey(d => d.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Retry safety for money-creating requests. The unique key is the whole mechanism: it is
+            // what makes "reserve, then do the work" atomic under two simultaneous copies of the same
+            // request. See IdempotentRequest.
+            // The correction trail for editable money records. Indexed by the record it describes,
+            // because that is the only way it is ever read.
+            modelBuilder.Entity<FinanceRecordAudit>(entity =>
+            {
+                entity.Property(a => a.RecordType).IsRequired().HasMaxLength(40);
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(20);
+                entity.Property(a => a.Changes).IsRequired();
+                entity.HasIndex(a => new { a.RecordType, a.RecordId });
+                entity.HasIndex(a => a.OccurredAt);
+            });
+
+            modelBuilder.Entity<IdempotentRequest>(entity =>
+            {
+                entity.Property(r => r.Key).IsRequired().HasMaxLength(120);
+                entity.Property(r => r.Operation).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.Fingerprint).IsRequired().HasMaxLength(64);
+                entity.HasIndex(r => r.Key).IsUnique();
+                entity.HasIndex(r => r.CreatedAt);
             });
 
             modelBuilder.Entity<FinanceSetting>(entity =>

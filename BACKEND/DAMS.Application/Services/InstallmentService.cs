@@ -61,8 +61,14 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled)
                 throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
 
-            if (booking.Status != BookingStatus.PaymentPlanActive)
-                throw new InvalidOperationException("Installment payments can only be recorded while the payment plan is active.");
+            // Collection continues after possession. The sale is already recognised by then, so an
+            // unpaid installment is no longer a promise — it is an Accounts Receivable balance,
+            // and refusing the cash would leave a receivable that can never be cleared. The status
+            // itself is deliberately not touched here: a PossessionGiven booking stays
+            // PossessionGiven until it is legitimately completed.
+            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
+                throw new InvalidOperationException(
+                    "Installment payments can only be recorded while the payment plan is active or after possession.");
 
             var installment = await _context.Installments
                 .FirstOrDefaultAsync(i => i.Id == installmentId && i.BookingId == bookingId);
@@ -72,6 +78,13 @@ namespace DAMS.Application.Services
 
             if (installment.Status == InstallmentStatus.Paid)
                 throw new InvalidOperationException("This installment is already fully paid.");
+
+            // The receipt date decides which month collected this money, and the whole balance model
+            // assumes it is neither in the future nor before the committed opening balances. Nothing
+            // filters movements to "up to today", so a post-dated receipt would reduce the customer's
+            // outstanding balance — and potentially close the installment — the moment it was saved.
+            var paidAt = await FinanceDateRules.ResolveInstantAsync(
+                _context, dto.PaidAt, "Payment date", CancellationToken.None);
 
             var alreadyPaid = await _context.Payments
                 .Where(p => p.InstallmentId == installmentId && p.Type == PaymentType.Installment)
@@ -99,7 +112,7 @@ namespace DAMS.Application.Services
                 PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 RecordedByUserId = adminUserId,
-                PaidAt = dto.PaidAt ?? DateTime.UtcNow,
+                PaidAt = paidAt,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -245,8 +258,12 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled)
                 throw new InvalidOperationException("Cannot generate installments for a cancelled booking.");
 
-            if (booking.Status != BookingStatus.PaymentPlanActive)
-                throw new InvalidOperationException("Installment schedule can only be generated when the booking is on an active payment plan.");
+            // Possession is included deliberately. Once the sale is recognised the unpaid balance
+            // is an Accounts Receivable, and an installment is the only way DAMS collects one — so
+            // refusing to build a schedule after possession would strand that receivable with no
+            // route to payment at all. Regeneration stays gated by CanRegenerateAsync as before.
+            if (booking.Status is not (BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven))
+                throw new InvalidOperationException("Installment schedule can only be generated while the payment plan is active or after possession.");
 
             var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
             var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
@@ -272,6 +289,32 @@ namespace DAMS.Application.Services
             var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
             var netSalePrice = dto.AgreedSalePrice - discountAmount;
 
+            // A schedule may be built after possession — that is the only route DAMS has for
+            // collecting a recognised receivable — but it must not RESTATE the sale it is collecting.
+            // Once BookingSaleRecognition exists the commercial terms are history: the gross price,
+            // the discount and the reason for it are what the parties agreed on the day possession
+            // was handed over, and the formal statements are already built on them.
+            // <para>
+            // Holding the NET value alone is not enough, which is what this guard used to do. A
+            // different gross-and-discount split that lands on the same net leaves revenue and
+            // Accounts Receivable untouched but still moves AgreedSalePrice — and that is a
+            // commission basis in its own right (FinancialCalculationBasis.AgreedSalePrice), so a
+            // 100,000 sale rewritten as 125,000 less 20% pays commission on 125,000. It also leaves
+            // the booking no longer saying what was actually agreed.
+            // </para>
+            var recognisedNetSale = await _context.BookingSaleRecognitions.AsNoTracking()
+                .Where(r => r.BookingId == bookingId)
+                .Select(r => (decimal?)r.NetSaleValue)
+                .FirstOrDefaultAsync();
+            var isRecognised = recognisedNetSale.HasValue;
+            if (isRecognised
+                && (dto.AgreedSalePrice != booking.AgreedSalePrice || discountAmount != booking.DiscountAmount))
+                throw new InvalidOperationException(
+                    $"This sale was recognised at possession on agreed terms of {booking.AgreedSalePrice:0.00} "
+                    + $"less {booking.DiscountAmount:0.00} discount — a net {recognisedNetSale!.Value:0.00} — and "
+                    + "those terms cannot be rewritten afterwards. Generate the schedule with the same agreed "
+                    + "sale price and discount; the installment dates and amounts are still yours to change.");
+
             if (nonCashCredits > netSalePrice - booking.BookingAmountReceived)
                 throw new InvalidOperationException("Existing rebate credits exceed the revised booking balance. Reverse or adjust them before changing the plan terms.");
             var installmentPool = netSalePrice - booking.BookingAmountReceived - nonCashCredits - possessionAmount;
@@ -284,10 +327,17 @@ namespace DAMS.Application.Services
                 booking.Installments.Clear();
             }
 
-            booking.AgreedSalePrice = dto.AgreedSalePrice;
-            booking.DiscountPercent = dto.DiscountPercent;
-            booking.DiscountAmount = discountAmount;
-            booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            // Left alone once recognised — including the reason, which the schedule form does not
+            // send back, so writing it would erase the discount's justification on every
+            // regeneration. The two figures are equal by the guard above; not assigning them is what
+            // keeps the other two commercial fields from being silently overwritten with nothing.
+            if (!isRecognised)
+            {
+                booking.AgreedSalePrice = dto.AgreedSalePrice;
+                booking.DiscountPercent = dto.DiscountPercent;
+                booking.DiscountAmount = discountAmount;
+                booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            }
             booking.InstallmentFrequency = dto.Frequency;
             booking.NumberOfInstallments = dto.NumberOfInstallments;
             booking.InstallmentPlanStartDate = dto.InstallmentStartDate.Date;
@@ -420,7 +470,7 @@ namespace DAMS.Application.Services
         {
             var hasSchedule = booking.Installments.Count > 0;
             var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
-            var canGenerate = booking.Status == BookingStatus.PaymentPlanActive
+            var canGenerate = booking.Status is BookingStatus.PaymentPlanActive or BookingStatus.PossessionGiven
                               && booking.BookingAmountReceived >= effectiveRequired
                               && (!hasSchedule || canRegenerate);
 

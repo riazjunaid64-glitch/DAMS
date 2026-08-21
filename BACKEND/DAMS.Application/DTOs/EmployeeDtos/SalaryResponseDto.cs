@@ -16,5 +16,9 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public int? ExpenseId { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        /// <summary>Base64 row version — send it back on an update. Null only for a store with no
+        /// version column (an in-memory test, or a row read before the column existed).</summary>
+        public string? ConcurrencyToken { get; set; }
     }
 }

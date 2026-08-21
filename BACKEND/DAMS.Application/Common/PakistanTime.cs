@@ -13,5 +13,12 @@ namespace DAMS.Application.Common
         public static DateTime Now => DateTime.UtcNow + Offset;
 
         public static DateTime Today => Now.Date;
+
+        /// <summary>
+        /// The Pakistan business date a UTC instant falls on. Between 19:00 and 23:59 UTC the
+        /// two disagree, so anything that dates an accounting event from a stored timestamp must
+        /// come through here rather than taking <c>.Date</c> off the raw UTC value.
+        /// </summary>
+        public static DateTime ToBusinessDate(DateTime utc) => (utc + Offset).Date;
     }
 }

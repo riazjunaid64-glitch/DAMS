@@ -73,7 +73,11 @@ export function usePaginatedRows<T>(
   projectId: string,
   fromDate: string,
   toDate: string,
-  account: string = ""
+  account: string = "",
+  /** False while the filters are not usable — a half-open date range, say. The rows are then empty
+   *  and NOT loading, rather than a request the server is certain to refuse and an "unable to load"
+   *  message competing with the one that actually explains what is wrong. */
+  enabled: boolean = true,
 ): PaginatedRows<T> {
   const key = rowsKey(view, projectId, fromDate, toDate, account);
 
@@ -90,6 +94,11 @@ export function usePaginatedRows<T>(
       if (inFlightRef.current && !reset) return;
       const reqId = ++reqIdRef.current;
       const requestKey = rowsKey(view, projectId, fromDate, toDate, account);
+      if (!enabled) {
+        skipRef.current = 0;
+        setLoaded({ key: requestKey, rows: NO_ROWS, hasMore: false, loading: false, error: null });
+        return;
+      }
       inFlightRef.current = true;
       const skip = reset ? 0 : skipRef.current;
       if (reset) setLoaded((prev) => prev.key === requestKey ? { ...prev, loading: true } : prev);
@@ -127,7 +136,7 @@ export function usePaginatedRows<T>(
         inFlightRef.current = false;
       }
     },
-    [view, projectId, fromDate, toDate, account]
+    [view, projectId, fromDate, toDate, account, enabled]
   );
 
   // Reset + fetch first page whenever the view or filters change.
