@@ -115,6 +115,16 @@ namespace DAMS.Api.Controllers
                 "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take, cancellationToken)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
                 "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take, cancellationToken)),
+                // No Net Profit for a single account, so no Net Profit drill-down either. A
+                // recognised sale moves no cash and belongs to no bank, so this list would show the
+                // account's costs against a revenue side missing every possession — and total to a
+                // figure the cards deliberately no longer report. Refused rather than answered
+                // empty: an empty profit table reads as "this account made nothing".
+                "netprofit" when accountId.HasValue || unassigned => BadRequest(new
+                {
+                    message = "Net Profit is reported for the business over a period, not for a single "
+                        + "account. Clear the account filter to see it."
+                }),
                 "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(
                     projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
                 "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned, cancellationToken)),

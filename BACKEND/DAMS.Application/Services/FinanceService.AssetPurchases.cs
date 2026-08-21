@@ -46,7 +46,7 @@ namespace DAMS.Application.Services
             int? assetAccountId = null, int? accountId = null, bool unassigned = false,
             CancellationToken cancellationToken = default)
         {
-            var rows = await AssetPurchaseQuery(projectId, from?.Date, to?.Date.AddDays(1), assetAccountId, accountId, unassigned)
+            var rows = await AssetPurchaseQuery(projectId, from?.Date, ExclusiveEnd(to), assetAccountId, accountId, unassigned)
                 .OrderByDescending(p => p.Date)
                 .ThenByDescending(p => p.Id)
                 .Skip(skip).Take(take + 1)

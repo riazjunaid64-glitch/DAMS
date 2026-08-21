@@ -38,8 +38,28 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// Profit drill-down adds up to, and the SAME figure <see cref="ProfitAndLossDto.NetProfit"/>
         /// reports for the same period. One Net Profit rule, applied everywhere: buying an asset
         /// spends the money, so the period bears it.
+        /// <para>
+        /// NULL, not zero, whenever an account filter is applied — see
+        /// <see cref="AccountFilterApplied"/>. Profitability is a property of the business over a
+        /// period, not of a bank account: a recognised sale moves no cash and therefore belongs to
+        /// no account, so an account-filtered subtraction drops every possession-recognised sale
+        /// from the revenue side while keeping every cost paid out of that account. The figure that
+        /// came out was still labelled Net Profit, and could show a loss for the account that had
+        /// funded a profitable month. Under an account filter the screen reports
+        /// <see cref="AccountNetMovement"/> instead, which is what an account can actually answer.
+        /// </para>
         /// </summary>
-        public decimal NetProfit { get; set; }
+        public decimal? NetProfit { get; set; }
+
+        /// <summary>
+        /// Whether a single account (or "unassigned") was selected. When true,
+        /// <see cref="TotalRevenue"/> and <see cref="TotalExpenses"/> are what was RECORDED AGAINST
+        /// THAT ACCOUNT rather than the whole business — they still reconcile with their own
+        /// drill-downs, but they are not the period's revenue and cost — <see cref="NetProfit"/> is
+        /// not reported at all, and the deposit/outstanding/overdue balances are suppressed because
+        /// they belong to bookings rather than to accounts.
+        /// </summary>
+        public bool AccountFilterApplied { get; set; }
 
         public decimal OutstandingAmount { get; set; }
         public decimal OverdueAmount { get; set; }

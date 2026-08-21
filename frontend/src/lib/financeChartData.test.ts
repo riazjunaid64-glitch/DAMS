@@ -28,6 +28,16 @@ describe("financeRangeError", () => {
     expect(financeRangeError("2026-08-31", "2026-08-01")).toMatch(/cannot be after/i);
   });
 
+  it("refuses dates the database could never answer for", () => {
+    // Below SQL Server's datetime floor: the query used to reach the database and come back as a
+    // 500, which tells the operator nothing about the date they typed.
+    expect(financeRangeError("1752-12-31", "2026-08-31")).toMatch(/before 01 Jan 1753/i);
+    // And the top end, where the exclusive bound (To + 1 day) cannot be represented at all.
+    expect(financeRangeError("2026-08-01", "9999-12-31")).toMatch(/after 30 Dec 9999/i);
+    // The last day that CAN be answered for is still accepted.
+    expect(financeRangeError("1753-01-01", "9999-12-30")).toBeNull();
+  });
+
   it("compares dates as dates, not as lengths", () => {
     // Lexicographic order is the calendar order for yyyy-mm-dd, and that is why the format is
     // fixed: "2026-09-01" > "2026-08-31" holds as text only because the parts are zero-padded.

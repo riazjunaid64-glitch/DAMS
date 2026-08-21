@@ -15,5 +15,13 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public int? PayYear { get; set; }
 
         public string? Notes { get; set; }
+
+        /// <summary>
+        /// The <c>concurrencyToken</c> the salary was read with. Required once the record carries a
+        /// version: a correction rewrites the amount, the date, the period and the linked Expense,
+        /// so accepting a save without it would let the slower of two admins silently undo the
+        /// other's work — including moving the posted expense back.
+        /// </summary>
+        public string? ConcurrencyToken { get; set; }
     }
 }

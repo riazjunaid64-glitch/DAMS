@@ -150,13 +150,14 @@ function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard 
   {report.liabilityGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}
   <div className="mt-5"><h3 className="font-bold">Capital</h3>{report.capitalLines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<BsLineView line={{accountId:-1,ledgerCode:null,name:"Retained Profit (per the ledger)",amount:report.retainedProfit}}/></div>
   <BsTotal label="Total Liabilities & Capital" amount={report.totalLiabilitiesAndCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
-  {/* The one difference between this sheet and the P&L, named on the sheet rather than left to be
-      found by subtracting one statement from the other. Someone who reads a higher retained profit
-      here than the Net Profit they were shown elsewhere must be told which figure explains the gap
-      and what is being waited on — otherwise it reads as a bug, or worse, goes unnoticed. */}
+  {/* Spending Net Profit carries and this ledger position cannot, stated on the statement rather
+      than left to be found. Described strictly against THIS sheet's own window: subtracting it from
+      a P&L run for some other period is arithmetic on two different questions, so the panel names
+      the window and does not invite the comparison. */}
   {report.unpostedFixedAssetCharge > 0 && <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-200">
-    <p className="font-bold">Retained Profit above is {money(report.unpostedFixedAssetCharge)} higher than Net Profit on the Profit &amp; Loss — the fixed assets bought {report.retainedProfitStart ? `since the ${new Date(report.retainedProfitStart).toLocaleDateString("en-GB")} go-live baseline` : "up to this date"}.</p>
-    <p className="mt-1">Net Profit deducts that spending, because buying an asset spends the money. This sheet cannot deduct it as well: the books hold only <span className="font-semibold">Dr Fixed Asset / Cr Bank</span>, the asset is still carried above at full cost, and no account has been approved to take the balancing credit — so charging it here would put the statement out by exactly this amount rather than making it more correct. Nothing has been invented to absorb it; the amount is stated so the two figures reconcile.</p>
+    <p className="font-bold">{money(report.unpostedFixedAssetCharge)} of fixed assets was bought {report.retainedProfitStart ? `between ${new Date(report.retainedProfitStart).toLocaleDateString("en-GB")} and this date` : "up to this date"} — the window Retained Profit above covers. Net Profit is charged with it; Retained Profit above is stated before it.</p>
+    <p className="mt-1">Net Profit deducts that spending, because buying an asset spends the money. This sheet cannot deduct it as well: the books hold only <span className="font-semibold">Dr Fixed Asset / Cr Bank</span>, the asset is still carried above at full cost, and no account has been approved to take the balancing credit — so charging it here would put the statement out by exactly this amount rather than making it more correct. Nothing has been invented to absorb it.</p>
+    <p className="mt-1 font-semibold">Open accounting decision: how the ledger should carry the balancing side while the asset stays at cost. Until the accountant settles it, this is a disclosure — the Balance Sheet and the Profit &amp; Loss are not formally reconciled, and comparing this window with a Profit &amp; Loss run for a different period will not make them so.</p>
   </div>}
   </ReportCard> }
 function BsGroupView({group}:{group:BsGroup}){return <div className="mt-5"><h3 className="font-bold">{group.name}</h3>{group.lines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<div className="flex justify-between border-t border-[var(--border)] px-3 py-2 font-semibold"><span>Total {group.name}</span><span>{money(group.total)}</span></div></div>}

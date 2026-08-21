@@ -20,10 +20,16 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// "Fixed Asset Purchases" line in <see cref="ExpenseLines"/> — the client's rule is that
         /// buying an asset spends the money.
         /// <para>
-        /// It is therefore LOWER than <see cref="BalanceSheetDto.RetainedProfit"/> by exactly
-        /// <see cref="BalanceSheetDto.UnpostedFixedAssetCharge"/>, which that statement discloses.
-        /// The Balance Sheet has to reconcile against an asset still carried at full cost, so it
-        /// stays ledger-only until the accountant names the account taking the balancing credit.
+        /// This figure does NOT currently roll into equity on the Balance Sheet or the Trial
+        /// Balance. Those are double-entry positions and the only entry the books hold for a
+        /// purchase is Dr Fixed Asset / Cr Bank: the asset is still carried at full cost and no
+        /// account has been approved to take the balancing credit, so charging the cost there as
+        /// well would put them out by exactly that amount. Each of those statements therefore
+        /// carries its own ledger-only retained figure and DISCLOSES the purchases it could not
+        /// absorb (<see cref="BalanceSheetDto.UnpostedFixedAssetCharge"/>, for that statement's own
+        /// window). How the ledger should carry the balancing side while the asset stays at cost is
+        /// an OPEN accountant/client decision — DAMS does not claim the two statements are formally
+        /// reconciled, and nothing here invents an account to make them appear so.
         /// </para>
         /// </summary>
         public decimal NetProfit { get; set; }
@@ -77,18 +83,29 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// above is carried at full cost and no account has been approved to take the balancing
         /// credit, so deducting it here would put the sheet out by exactly that amount.
         /// <para>
-        /// It is consequently HIGHER than the P&amp;L's Net Profit for the same window by
-        /// <see cref="UnpostedFixedAssetCharge"/>. That difference is the open accounting decision,
-        /// not a second profit measure, and it closes the moment the accountant names the account.
+        /// It is NOT a second Net Profit and must not be compared with one. It accumulates over THIS
+        /// statement's own window — <see cref="RetainedProfitStart"/> to <see cref="AsAt"/> — which
+        /// is generally not the window any P&amp;L was run for, so subtracting one from the other is
+        /// only meaningful when the two windows happen to coincide. What this statement states about
+        /// the difference is confined to its own window: see
+        /// <see cref="UnpostedFixedAssetCharge"/>.
         /// </para>
         /// </summary>
         public decimal RetainedProfit { get; set; }
 
         /// <summary>
-        /// Fixed assets bought between <see cref="RetainedProfitStart"/> and <see cref="AsAt"/>, at
-        /// gross cost: the single, fully explained difference between <see cref="RetainedProfit"/>
-        /// here and Net Profit on the P&amp;L. Zero when there were no purchases, and never part of
-        /// any total on this statement.
+        /// Fixed assets bought inside THIS statement's own window (<see cref="RetainedProfitStart"/>
+        /// to <see cref="AsAt"/>), at gross cost: spending that has been charged to Net Profit but
+        /// that this ledger position could not absorb, because the asset above is still carried at
+        /// full cost and no balancing account has been approved. Zero when there were no purchases,
+        /// and never part of any total on this statement.
+        /// <para>
+        /// Scoped to this window on purpose, and deliberately NOT described as the gap against a
+        /// P&amp;L: a P&amp;L run for some other period has no arithmetic relationship to
+        /// <see cref="RetainedProfit"/> at all. How the ledger should carry the balancing side is an
+        /// open accountant/client decision; until it is made, this is a disclosure, not a
+        /// reconciliation.
+        /// </para>
         /// </summary>
         public decimal UnpostedFixedAssetCharge { get; set; }
 

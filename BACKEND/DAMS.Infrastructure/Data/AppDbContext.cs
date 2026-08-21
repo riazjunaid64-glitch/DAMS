@@ -640,6 +640,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(s => s.ProjectName).HasMaxLength(200);
                 entity.Property(s => s.Notes).HasMaxLength(500);
+                entity.Property(s => s.RowVersion).IsRowVersion();
                 entity.HasIndex(s => s.EmployeeId);
                 // Unique so a double-click cannot record the same month twice.
                 entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth }).IsUnique();

@@ -483,6 +483,34 @@ namespace DAMS.Application.Services
                 ? $"Salary — {employeeName} ({PeriodLabel(month, year)})"
                 : $"Salary — {employeeName} ({PeriodLabel(month, year)}, paid {payDate:dd MMM yyyy})";
 
+        /// <summary>
+        /// Pins the row version the caller loaded onto the tracked salary, so a stale copy loses
+        /// instead of winning. Mirrors <c>FinanceService.ApplyRowVersion</c> — payroll writes a real
+        /// Expense, so it takes the same protection every other mutable finance record has.
+        /// <para>
+        /// A missing token is tolerated only when the row genuinely has none: an in-memory store, or
+        /// a row read before the version column existed. Once a real version is present, omitting it
+        /// is an error rather than a licence to overwrite — otherwise the protection would be
+        /// opt-out by simply not sending a field.
+        /// </para>
+        /// </summary>
+        private void ApplySalaryRowVersion(EmployeeSalary salary, string? token)
+        {
+            var property = _context.Entry(salary).Property(s => s.RowVersion);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                if (property.CurrentValue is { Length: > 0 })
+                    throw new DbUpdateConcurrencyException(
+                        "The salary version is missing. Refresh and try again.");
+                return;
+            }
+            try { property.OriginalValue = Convert.FromBase64String(token); }
+            catch (FormatException)
+            {
+                throw new DbUpdateConcurrencyException("The salary version is invalid. Refresh and try again.");
+            }
+        }
+
         private static bool IsDuplicateSalaryMonth(DbUpdateException ex)
         {
             return ex.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 } sql
@@ -495,6 +523,12 @@ namespace DAMS.Application.Services
                 .Include(s => s.Employee)
                 .FirstOrDefaultAsync(s => s.Id == salaryId)
                 ?? throw new Exception("Salary record not found.");
+
+            // Pinned before anything is changed, so the UPDATE below carries the version the caller
+            // actually read in its WHERE clause. Without it, two admins correcting the same salary
+            // both succeeded and the second silently replaced the first — amount, pay date, payroll
+            // period and the linked expense all reverted to whatever the loser's screen had shown.
+            ApplySalaryRowVersion(salary, dto.ConcurrencyToken);
 
             if (dto.Amount.HasValue)
             {
@@ -755,7 +789,8 @@ namespace DAMS.Application.Services
             ProjectName = s.ProjectName,
             ExpenseId = s.ExpenseId,
             Notes = s.Notes,
-            CreatedAt = s.CreatedAt
+            CreatedAt = s.CreatedAt,
+            ConcurrencyToken = s.RowVersion is { Length: > 0 } ? Convert.ToBase64String(s.RowVersion) : null
         };
 
         // ─── Mapping helpers ─────────────────────────────────────────────────────

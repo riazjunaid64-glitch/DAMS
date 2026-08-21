@@ -44,8 +44,10 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// Fixed assets bought in the window, at gross cost. The one figure Net Profit deducts and
-        /// the ledger does not — the Balance Sheet discloses it for exactly that reason.
+        /// Fixed assets bought in the window, at gross cost: spending Net Profit deducts and the
+        /// ledger cannot, because the asset stays at full cost and no balancing account has been
+        /// approved. Disclosed by the Balance Sheet for its own window, never as a claim that the
+        /// two statements reconcile — the ledger treatment is still an open accountant decision.
         /// </summary>
         private async Task<decimal> FixedAssetChargeAsync(
             int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken) =>
@@ -261,7 +263,10 @@ namespace DAMS.Application.Services
             if (report.UnpostedFixedAssetCharge != 0m)
             {
                 rows.Add(new object?[] { "Fixed asset purchases charged to Net Profit but not to this sheet", report.UnpostedFixedAssetCharge });
-                rows.Add(new object?[] { "Retained Profit is higher than P&L Net Profit by that amount — the balancing account is still undecided", null });
+                rows.Add(new object?[] { "Bought " + (report.RetainedProfitStart.HasValue
+                    ? "between " + report.RetainedProfitStart.Value.ToString("dd MMM yyyy") + " and " + report.AsAt.ToString("dd MMM yyyy")
+                    : "up to " + report.AsAt.ToString("dd MMM yyyy")) + ", the window Retained Profit above covers", null });
+                rows.Add(new object?[] { "Retained Profit is stated before that charge: the assets are still carried at full cost and the balancing ledger treatment is an open accountant decision", null });
             }
             return Workbook("balance-sheet", rows);
         }
@@ -549,18 +554,48 @@ namespace DAMS.Application.Services
             // have to be compared against a `date` column and SQL Server's conversion rules at the
             // very end of the calendar are not somewhere financial code should be standing.
             var recognisedByCutOff = SaleRecognitionQuery(projectId, null, end);
+            var collectedOnRecognisedSales = PaymentsQuery(projectId, null, end)
+                .Where(p => p.Booking.SaleRecognition != null);
+            if (end.HasValue)
+            {
+                collectedOnRecognisedSales = collectedOnRecognisedSales
+                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
+            }
+
+            var deposits = await CustomerDepositBalanceAsync(projectId, end, cancellationToken);
+
+            var receivablesRaised = await recognisedByCutOff.SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
+            var receivablesCollected = await collectedOnRecognisedSales.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+            var creditsApplied = await NonCashCreditQuery(projectId, null, end)
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var creditsReversed = await NonCashCreditReversalQuery(projectId, null, end)
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+
+            return (deposits,
+                Money(receivablesRaised - receivablesCollected - creditsApplied + creditsReversed));
+        }
+
+        /// <summary>
+        /// The deposit half of <see cref="CustomerBalancesAsync"/> on its own: customer money held
+        /// but not yet earned, as at <paramref name="end"/> (exclusive).
+        /// <para>
+        /// Split out for the dashboard card, which wants only this. Asking for both halves cost
+        /// seven queries where three answer the question, and the dashboard is the one screen where
+        /// that difference is paid on every refresh. It is the same three queries either way — one
+        /// implementation, so the card and the Balance Sheet cannot report different deposits.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> CustomerDepositBalanceAsync(
+            int? projectId, DateTime? end, CancellationToken cancellationToken)
+        {
             var clearedByRecognition = PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.SaleRecognition != null
                     && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)));
-            var collectedOnRecognisedSales = PaymentsQuery(projectId, null, end)
-                .Where(p => p.Booking.SaleRecognition != null);
             var clearedByCancellation = PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.CancellationSettlement != null);
             if (end.HasValue)
             {
                 clearedByRecognition = clearedByRecognition
-                    .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
-                collectedOnRecognisedSales = collectedOnRecognisedSales
                     .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
                 clearedByCancellation = clearedByCancellation
                     .Where(p => p.Booking.CancellationSettlement!.CancellationDate < end.Value);
@@ -572,16 +607,7 @@ namespace DAMS.Application.Services
                 .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var depositsCleared = (await clearedByRecognition.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
                 + (await clearedByCancellation.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
-
-            var receivablesRaised = await recognisedByCutOff.SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
-            var receivablesCollected = await collectedOnRecognisedSales.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
-            var creditsApplied = await NonCashCreditQuery(projectId, null, end)
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
-            var creditsReversed = await NonCashCreditReversalQuery(projectId, null, end)
-                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
-
-            return (Money(depositsReceived - depositsCleared),
-                Money(receivablesRaised - receivablesCollected - creditsApplied + creditsReversed));
+            return Money(depositsReceived - depositsCleared);
         }
 
         private static async Task<List<AccountAmount>> SumByAccount(IQueryable<AccountAmount> query, CancellationToken cancellationToken) =>

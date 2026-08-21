@@ -89,11 +89,15 @@ interface FinancialSummary {
   manualRevenue: number;
   /** Every cost of the period, including the fixed assets bought in it. */
   totalExpenses: number;
-  /** The result: totalRevenue − totalExpenses, with the client's fixed-asset rule applied — buying an
-   *  asset spends the money. Presenting this posts nothing, which is why the rule can be honoured here.
-   *  The formal P&L cannot honour it until the accountant names the account carrying the balancing
-   *  entry, so that statement's Net Profit is higher by its pendingFixedAssetCharge until then. */
-  netProfit: number;
+  /** The result: totalRevenue − totalExpenses, with the client's fixed-asset rule applied — buying
+   *  an asset spends the money. The same figure the Profit & Loss statement reports for the period.
+   *  NULL while an account filter is applied: a recognised sale belongs to no bank account, so an
+   *  account-filtered subtraction would drop every possession from the revenue side and keep every
+   *  cost. Net Movement is shown in its place. */
+  netProfit: number | null;
+  /** True when a single account (or "unassigned") is selected. Revenue and Expenses then mean
+   *  "recorded against this account", not "the period's revenue and cost". */
+  accountFilterApplied: boolean;
   whtWithheld: number;
   /** Fixed assets bought in the period, at cost. A breakdown of totalExpenses, not an addition to
    *  it — the cost is already inside that total and inside netProfit. */
@@ -623,30 +627,72 @@ export default function FinanceDashboardPage({ user }: Props) {
     setToDate(r.to);
   }, [financialYearStartMonth]);
 
+  // An account filter changes what the money cards MEAN, so it changes what they are called. A
+  // recognised sale moves no cash and belongs to no bank, so "Total Revenue" under a bank filter is
+  // that bank's revenue entries, not the period's revenue — and Net Profit cannot be stated at all.
+  const accountSelected = !!accountFilter;
+
+  // The views whose cards disappear under an account filter must not stay open behind them: a Net
+  // Profit table for a bank is the same untruth as a Net Profit card for one, and deposits,
+  // outstanding and overdue belong to bookings rather than accounts and would show empty.
+  useEffect(() => {
+    if (!accountSelected) return;
+    setView((current) => (current === "netProfit" || current === "customerDeposits"
+      || current === "outstanding" || current === "overdue") ? "revenue" : current);
+  }, [accountSelected]);
+
   const summaryCards = useMemo(() => {
     const s = summary;
-    return [
-      { label: "Total Revenue", value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View },
+    const periodCards = [
+      {
+        label: accountSelected ? "Revenue on This Account" : "Total Revenue",
+        value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View,
+      },
       // Opens the BREAKDOWN, not the expense table. This card is ordinary expenses plus commissions,
       // rebates, customer credits, loan interest and fixed assets — a table holding only the first of
       // those could not account for the figure the operator just clicked.
-      { label: "Total Expenses", value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "totalExpenses" as View },
+      {
+        label: accountSelected ? "Costs on This Account" : "Total Expenses",
+        value: s?.totalExpenses ?? 0, valueColor: "text-[var(--app-text)]", underline: "#fb7185", view: "totalExpenses" as View,
+      },
       // Sits next to Total Expenses because it is part of it: the same spending, broken out so the
       // reader can see how much of the period's cost went on things the company still owns.
       { label: "Fixed Assets Bought", value: s?.totalAssetPurchases ?? 0, valueColor: "text-[var(--app-text)]", underline: "#38bdf8", view: "assetPurchase" as View },
-      // A balance, not a period total, and deliberately next to Revenue: this is the money
-      // customers have handed over that the company has NOT yet earned.
-      { label: "Customer Deposits", value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View },
-      // One profit figure, and the same one every other screen reports.
-      { label: "Net Profit", value: s?.netProfit ?? 0, valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400", underline: "#cba95c", view: "netProfit" as View },
-      // Named "Current" because they are, and because the four cards beside them are not: these two
-      // are balances as they stand today and ignore the date filter entirely. Under a January range
-      // the row otherwise read as "January revenue, January profit, January overdue", and only the
-      // last of those was false.
+    ];
+    // A balance as at the END of the selected period, not a period total, and deliberately next to
+    // Revenue: this is money customers have handed over that the company has NOT yet earned. It
+    // belongs to a booking rather than to an account, so an account filter suppresses it.
+    const depositCard = {
+      label: "Customer Deposits (at period end)",
+      value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View,
+    };
+    // One profit figure, and the same one every other screen reports — but only when the question
+    // is one an answer exists for. With an account selected the screen shows what that account can
+    // actually say about itself: how much cash moved through it.
+    const profitCard = accountSelected
+      ? {
+        label: "Account Net Movement",
+        value: s?.accountNetMovement ?? 0,
+        valueColor: (s?.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400",
+        underline: "#818cf8", view: null,
+      }
+      : {
+        label: "Net Profit", value: s?.netProfit ?? 0,
+        valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400",
+        underline: "#cba95c", view: "netProfit" as View,
+      };
+    // Named "Current" because they are, and because the cards beside them are not: these two are
+    // balances as they stand today and ignore the date filter entirely. Under a January range the
+    // row otherwise read as "January revenue, January profit, January overdue", and only the last
+    // of those was false.
+    const snapshotCards = [
       { label: "Current Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
       { label: "Current Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
-  }, [summary]);
+    return accountSelected
+      ? [...periodCards, profitCard]
+      : [...periodCards, depositCard, profitCard, ...snapshotCards];
+  }, [summary, accountSelected]);
 
   // Clicking any card just switches the view below in place (like the period
   // chips), keeping whatever project/period filters are already applied. No
@@ -1350,16 +1396,19 @@ export default function FinanceDashboardPage({ user }: Props) {
           {/* Summary cards */}
           <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
             {summaryCards.map((card) => {
-              const active = view === card.view;
+              const active = card.view != null && view === card.view;
+              // Account Net Movement has no drill-down of its own — it is cash movement, not a list
+              // of records — so that card is not a button pretending to open something.
               return (
                 <button
                   key={card.label}
                   type="button"
-                  onClick={() => focusView(card.view)}
+                  disabled={card.view == null}
+                  onClick={() => { if (card.view != null) focusView(card.view); }}
                   style={{ borderBottomColor: card.underline }}
-                  className={`group relative cursor-pointer overflow-hidden rounded-2xl border border-[var(--border)] border-b-[3px] bg-[var(--bg-card)] px-5 pb-5 pt-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--border-hover)] ${
-                    active ? "ring-2 ring-[var(--accent)]" : ""
-                  }`}
+                  className={`group relative overflow-hidden rounded-2xl border border-[var(--border)] border-b-[3px] bg-[var(--bg-card)] px-5 pb-5 pt-4 text-left transition-all ${
+                    card.view == null ? "cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:border-[var(--border-hover)]"
+                  } ${active ? "ring-2 ring-[var(--accent)]" : ""}`}
                 >
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {card.label}
@@ -1380,7 +1429,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             </div>
           )}
 
-          {summary && (
+          {summary && !accountSelected && (
             <p className="mt-3 text-xs text-[var(--text-muted)]">
               Revenue breakdown: {formatMoney(summary.automaticRevenue)} recognised sales &amp; retained cancellations
               {" + "}
@@ -1390,19 +1439,34 @@ export default function FinanceDashboardPage({ user }: Props) {
             </p>
           )}
 
-          {/* Said plainly rather than left to be inferred from the card names. Six of these figures
-              answer for the selected period; Current Outstanding and Current Overdue answer for
-              today, and a reader who assumes otherwise reads two of the seven wrongly. */}
-          {summary && (fromDate || toDate) && (
+          {/* The whole reason the cards above are renamed. Selecting a bank does not narrow the
+              business to that bank: a sale is recognised at possession and moves no cash, so it
+              belongs to no account and simply is not here. Saying so is the difference between a
+              filtered list and a wrong total. */}
+          {summary && accountSelected && (
+            <p className="mt-3 text-xs text-amber-300/90">
+              These are the entries recorded against the selected account — not the period's revenue,
+              cost or profit. Sales recognised at possession move no cash, so they belong to no
+              account and are not counted here, and Net Profit is therefore not reported while an
+              account is selected. Clear the account filter to see the period's profitability.
+            </p>
+          )}
+
+          {/* Said plainly rather than left to be inferred from the card names. Three different
+              questions sit in one row of cards, and a reader who assumes they all answer the same
+              one misreads four of the seven. */}
+          {summary && !accountSelected && (
             <p className="mt-2 text-xs text-[var(--text-muted)]">
-              Current Outstanding and Current Overdue are balances as they stand today — the
-              From/To filter does not apply to them. Every other card covers the selected period.
+              Revenue, Expenses, Fixed Assets and Net Profit are totals for the selected period.
+              Customer Deposits is a balance as it stood at the end of that period. Current
+              Outstanding and Current Overdue are balances as they stand today — the From/To filter
+              does not apply to them.
             </p>
           )}
 
           {/* Spelled out rather than left to be inferred: the same amount appears in two cards, and a
               reader who assumes those are separate totals will double-count the period's spending. */}
-          {summary && summary.totalAssetPurchases > 0 && (
+          {summary && !accountSelected && summary.totalAssetPurchases > 0 && (
             <p className="mt-2 text-xs text-sky-300/90">
               Total Expenses and Net Profit already include {formatMoney(summary.totalAssetPurchases)} of
               fixed assets bought in this period, at cost — buying an asset spends the money. The
@@ -1607,14 +1671,14 @@ export default function FinanceDashboardPage({ user }: Props) {
               <h3 className="text-lg font-semibold text-[var(--text-heading)]">
                 {assetForm.id ? "Edit Fixed Asset Purchase" : "Record Fixed Asset Purchase"}
               </h3>
-              {/* Both halves of the truth, on the form that creates it: the money is gone from profit
-                  and the company still owns the thing it bought — plus the one part still undecided,
-                  so nobody records a purchase expecting the formal statements to move. */}
+              {/* Both halves of the truth, on the form that creates it: the money is gone from
+                  profit and the company still owns the thing it bought. It used to say the formal
+                  P&L did not deduct the purchase; it does, and leaving that sentence up would have
+                  had an operator record a purchase expecting the statement not to move. */}
               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Net Profit on this dashboard falls by the full purchase price, and the asset still
-                appears on the Balance Sheet at cost. The formal Profit &amp; Loss statement does not
-                deduct it yet — that awaits the accountant's decision on the balancing entry. For
-                construction, site work or materials being consumed, use Expenses instead.
+                Net Profit falls by the full purchase price — on this dashboard and on the Profit
+                &amp; Loss statement alike — and the asset still appears on the Balance Sheet at
+                cost. For construction, site work or materials being consumed, use Expenses instead.
               </p>
             </div>
             <div className="space-y-4 p-6">

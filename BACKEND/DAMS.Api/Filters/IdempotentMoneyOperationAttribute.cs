@@ -83,7 +83,7 @@ namespace DAMS.Api.Filters
             }
 
             var operation = $"{request.Method} {request.Path.Value}";
-            var fingerprint = Fingerprint(context.ActionArguments);
+            var fingerprint = await FingerprintAsync(context.ActionArguments, context.HttpContext.RequestAborted);
             var userId = int.TryParse(
                 context.HttpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : (int?)null;
 
@@ -248,16 +248,46 @@ namespace DAMS.Api.Filters
         private static readonly JsonSerializerOptions FingerprintOptions = new() { WriteIndented = false };
 
         /// <summary>
-        /// A hash of what was asked for, so a retry that quietly changed the amount is caught rather
-        /// than answered with the earlier record. Uploads and cancellation tokens are skipped: one
-        /// cannot be hashed cheaply, the other is not part of the request.
+        /// A hash of what was asked for, so a retry that quietly changed the submission is caught
+        /// rather than answered with the earlier record.
+        /// <para>
+        /// The uploaded file is part of "what was asked for", and it used to be skipped. That made
+        /// the attachment invisible to the guard: an operator who saved an expense, saw the request
+        /// fail on the way back, noticed they had attached the wrong invoice, swapped the file and
+        /// pressed Save again got a 200 replayed from the FIRST attempt — same amount, same key, and
+        /// the original wrong attachment still on the record, with the screen reporting success. The
+        /// file's identity is now inside the fingerprint, so a changed attachment reads as a
+        /// different submission (409, "reload and enter it again") while a genuine retry of the
+        /// exact same bytes still replays as before.
+        /// </para>
+        /// <para>
+        /// Identity is the content hash, not the file name: two uploads of the same document under
+        /// different names ARE the same submission, and the same name over different content is not.
+        /// Hashing costs one pass over a payload the server has already received in full, and the
+        /// upload limits cap it.
+        /// </para>
         /// </summary>
-        private static string Fingerprint(IDictionary<string, object?> arguments)
+        private static async Task<string> FingerprintAsync(
+            IDictionary<string, object?> arguments, CancellationToken cancellationToken)
         {
             var parts = new SortedDictionary<string, string>(StringComparer.Ordinal);
             foreach (var (name, value) in arguments)
             {
-                if (value is IFormFile or IFormFileCollection or CancellationToken or Stream) continue;
+                if (value is CancellationToken or Stream) continue;
+                if (value is IFormFile file)
+                {
+                    parts[name] = await FileIdentityAsync(file, cancellationToken);
+                    continue;
+                }
+                if (value is IFormFileCollection files)
+                {
+                    var identities = new List<string>();
+                    foreach (var one in files) identities.Add(await FileIdentityAsync(one, cancellationToken));
+                    // Ordered as submitted: two files swapped between two fields is a different
+                    // submission, and sorting here would hide that.
+                    parts[name] = string.Join(",", identities);
+                    continue;
+                }
                 try
                 {
                     parts[name] = value == null ? "null" : JsonSerializer.Serialize(value, FingerprintOptions);
@@ -269,6 +299,21 @@ namespace DAMS.Api.Filters
             }
             var text = string.Join("|", parts.Select(p => p.Key + "=" + p.Value));
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+        }
+
+        /// <summary>
+        /// One uploaded file's identity: its length and a hash of its content.
+        /// <para>
+        /// Read through <see cref="IFormFile.OpenReadStream"/>, which hands out a fresh reader over
+        /// the buffered payload — the action's own read is unaffected, which is the whole reason this
+        /// can run before the action instead of guessing from metadata.
+        /// </para>
+        /// </summary>
+        private static async Task<string> FileIdentityAsync(IFormFile file, CancellationToken cancellationToken)
+        {
+            await using var stream = file.OpenReadStream();
+            var hash = await SHA256.HashDataAsync(stream, cancellationToken);
+            return $"{file.Length}:{Convert.ToHexString(hash)}";
         }
     }
 }

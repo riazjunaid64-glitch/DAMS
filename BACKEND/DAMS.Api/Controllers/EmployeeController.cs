@@ -241,6 +241,15 @@ namespace DAMS.Api.Controllers
                 var result = await _employeeService.UpdateSalaryAsync(salaryId, dto);
                 return Ok(result);
             }
+            // Somebody else changed this salary between the read and the save. A 409 (not a 400)
+            // because the request was well formed — it is the record that moved.
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new
+                {
+                    message = "This salary was changed by another user. Refresh and try again."
+                });
+            }
             catch (Exception ex)
             {
                 return BadRequest(new { message = ex.Message });

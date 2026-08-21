@@ -1,8 +1,12 @@
+using DAMS.Api.Controllers;
+using DAMS.Application.Common;
+using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -219,6 +223,220 @@ public sealed class FinanceDashboardIntegrityTests
         Assert.DoesNotContain(julySheet.AssetGroups.SelectMany(g => g.Lines), l => l.AccountId == bank.Id && l.Amount != 0m);
         var augustSheet = await service.GetBalanceSheetAsync(null, new DateTime(2026, 8, 1));
         Assert.Equal(10_000_000m, augustSheet.AssetGroups.SelectMany(g => g.Lines).Single(l => l.AccountId == bank.Id).Amount);
+    }
+
+    /// <summary>
+    /// A bank account is not a business unit, and the cards must stop pretending it is.
+    /// <para>
+    /// A sale is recognised at possession and moves no cash, so it belongs to no bank account. With
+    /// a bank selected, that revenue vanished from the cards while every cost paid out of the bank
+    /// stayed — and the difference was still printed under the heading "Net Profit". Here the sale
+    /// is 5,000,000 and the bank paid 1,750,000 of costs: the old screen reported a 1,750,000 LOSS
+    /// for the account that had funded a 3,200,000 profit.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ABankFilter_ReportsWhatThatAccountHolds_AndRefusesToCallItNetProfit()
+    {
+        await using var context = Context();
+        var world = await SeedEveryCostComponentAsync(context);
+        var service = Finance(context);
+
+        var business = await service.GetSummaryAsync(null, PeriodStart, PeriodEnd);
+        var onTheBank = await service.GetSummaryAsync(null, PeriodStart, PeriodEnd, world.BankId);
+
+        // Unfiltered, the period is profitable and Net Profit is reported.
+        Assert.False(business.AccountFilterApplied);
+        Assert.Equal(5_000_000m, business.TotalRevenue);
+        Assert.Equal(1_800_000m, business.TotalExpenses);
+        Assert.Equal(3_200_000m, business.NetProfit);
+
+        // Filtered to the bank: the recognised sale is correctly absent (it never touched the bank),
+        // the bank's own costs are all there — and NO profit figure is offered for the difference.
+        Assert.True(onTheBank.AccountFilterApplied);
+        Assert.Equal(0m, onTheBank.TotalRevenue);
+        Assert.Equal(0m, onTheBank.AutomaticRevenue);
+        Assert.Equal(1_750_000m, onTheBank.TotalExpenses);
+        Assert.Null(onTheBank.NetProfit);
+        // What the account CAN answer, in its place.
+        Assert.NotNull(onTheBank.AccountNetMovement);
+
+        // Balances that belong to bookings rather than accounts stay suppressed, as before.
+        Assert.Equal(0m, onTheBank.CustomerDepositsBalance);
+        Assert.Equal(0m, onTheBank.OutstandingAmount);
+
+        // And the drill-down is refused rather than answered with a table that cannot add up to a
+        // figure the cards no longer report.
+        var controller = new FinanceController(service);
+        var refused = Assert.IsType<BadRequestObjectResult>(await controller.GetRows(
+            "netProfit", null, PeriodStart, PeriodEnd, world.BankId.ToString(), 0, 100));
+        Assert.Contains("not for a single", refused.Value!.ToString(), StringComparison.OrdinalIgnoreCase);
+        // Unfiltered, the same drill-down still works and still totals the card.
+        var allowed = Assert.IsType<OkObjectResult>(await controller.GetRows(
+            "netProfit", null, PeriodStart, PeriodEnd, null, 0, 100));
+        var rows = Assert.IsType<PagedResult<NetProfitLineDto>>(allowed.Value);
+        Assert.Equal(business.NetProfit, rows.Items.Sum(i => i.Amount));
+    }
+
+    /// <summary>
+    /// A date the database cannot store, or a To date whose exclusive end cannot be formed at all,
+    /// is a bad request — not a 500. Both used to reach the query builder: the low end came back as
+    /// a SQL conversion failure, and 31 Dec 9999 threw an ArgumentOutOfRangeException out of
+    /// <c>AddDays(1)</c> before any SQL was even generated.
+    /// </summary>
+    [Fact]
+    public async Task ADateOutsideWhatCanBeStored_IsRefused_NotFaulted()
+    {
+        await using var context = Context();
+        await SeedEveryCostComponentAsync(context);
+        var service = Finance(context);
+        var controller = new FinanceController(service);
+
+        var tooEarly = new DateTime(1752, 12, 31);
+        var tooLate = DateTime.MaxValue.Date; // 31 Dec 9999 — To + 1 day does not exist.
+
+        Assert.Contains("1753", Assert.Throws<InvalidOperationException>(
+            () => FinanceService.EnsureFilterRange(tooEarly, PeriodEnd)).Message);
+        Assert.Contains("9999", Assert.Throws<InvalidOperationException>(
+            () => FinanceService.EnsureFilterRange(PeriodStart, tooLate)).Message);
+        // The last day that CAN be answered for is accepted.
+        FinanceService.EnsureFilterRange(FinanceService.MinFilterDate, FinanceService.MaxFilterDate);
+
+        // Through the controller, on all three endpoints the screen uses, as a 400 with a message.
+        foreach (var result in new IActionResult[]
+        {
+            await controller.GetSummary(null, PeriodStart, tooLate, null, default),
+            await controller.GetDashboard(null, PeriodStart, tooLate, null, default),
+            await controller.GetRows("revenue", null, tooEarly, PeriodEnd, null, 0, 100)
+        })
+        {
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        // And the service itself refuses rather than throwing arithmetic: a caller that skips the
+        // controller still gets a message an operator could act on.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.GetSummaryAsync(null, PeriodStart, tooLate));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.GetDashboardAsync(null, PeriodStart, tooLate));
+    }
+
+    /// <summary>
+    /// Customer Deposits is a BALANCE as at the end of the range, not the deposits taken during it.
+    /// The card sits in a row of period totals, so the distinction has to be provable: here August
+    /// takes no deposits at all and releases a million, yet the August card correctly reads 300,000
+    /// — money received in July and still held.
+    /// </summary>
+    [Fact]
+    public async Task CustomerDeposits_IsTheBalanceAtThePeriodEnd_NotThePeriodsMovement()
+    {
+        await using var context = Context();
+        var world = await SeedEveryCostComponentAsync(context);
+
+        // A second booking that never reaches possession, so its deposit is still held.
+        var project = await context.Projects.SingleAsync();
+        var unit = new Unit { ProjectId = project.Id, UnitNumber = "U-2", UnitType = "Apartment", Price = 2_000_000m, Status = UnitStatus.OnPaymentPlan };
+        var customer = new Customer { FullName = "Second Buyer", Phone = "03003334444", Status = CustomerStatus.Active };
+        context.AddRange(unit, customer);
+        await context.SaveChangesAsync();
+        var held = new Booking
+        {
+            BookingReference = "BK-DASH-2", CustomerId = customer.Id, UnitId = unit.Id,
+            Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+            AgreedSalePrice = 2_000_000m, DiscountAmount = 0m, BookingDate = new DateTime(2026, 7, 1)
+        };
+        context.Bookings.Add(held);
+        await context.SaveChangesAsync();
+
+        // Both deposits are taken in JULY. The first booking's possession is 2 August, which
+        // releases its million; the second is still held.
+        var recognised = await context.Bookings.SingleAsync(b => b.BookingReference == "BK-DASH-1");
+        context.Payments.AddRange(
+            new Payment
+            {
+                BookingId = recognised.Id, FinanceAccountId = world.BankId, Amount = 1_000_000m,
+                PaymentType = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 5),
+                CreatedAt = new DateTime(2026, 7, 5, 6, 0, 0, DateTimeKind.Utc)
+            },
+            new Payment
+            {
+                BookingId = held.Id, FinanceAccountId = world.BankId, Amount = 300_000m,
+                PaymentType = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 6),
+                CreatedAt = new DateTime(2026, 7, 6, 6, 0, 0, DateTimeKind.Utc)
+            });
+        await context.SaveChangesAsync();
+        var service = Finance(context);
+
+        var july = await service.GetSummaryAsync(null, new DateTime(2026, 7, 1), new DateTime(2026, 7, 31));
+        var august = await service.GetSummaryAsync(null, PeriodStart, PeriodEnd);
+        var june = await service.GetSummaryAsync(null, new DateTime(2026, 6, 1), new DateTime(2026, 6, 30));
+
+        // Both still held at the end of July.
+        Assert.Equal(1_300_000m, july.CustomerDepositsBalance);
+        // August: nothing was received and a million was released, so a period-movement reading
+        // would show 0 or −1,000,000. The balance still standing is 300,000 of July's money.
+        Assert.Equal(300_000m, august.CustomerDepositsBalance);
+        // Before either payment, nothing.
+        Assert.Equal(0m, june.CustomerDepositsBalance);
+
+        // The From date has nothing to do with it: the same To date gives the same balance whatever
+        // the range starts at, which is exactly why the card is labelled "at period end".
+        var longRange = await service.GetSummaryAsync(null, new DateTime(2026, 1, 1), PeriodEnd);
+        Assert.Equal(august.CustomerDepositsBalance, longRange.CustomerDepositsBalance);
+    }
+
+    /// <summary>
+    /// The Balance Sheet's disclosed fixed-asset charge belongs to the BALANCE SHEET's own window,
+    /// and nothing may present it as a reconciliation against an arbitrary P&amp;L.
+    /// <para>
+    /// Retained Profit accumulates from the opening baseline to the as-at date. A P&amp;L is run for
+    /// whatever period the operator picked. Subtracting one from the other is arithmetic across two
+    /// different questions and only happens to work when the two windows coincide — which is why
+    /// this test pins both cases: the identity holds for matching windows, and is expected NOT to
+    /// hold for mismatched ones.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task TheDisclosedFixedAssetCharge_BelongsToTheSheetsOwnWindow_NotToAnyPnl()
+    {
+        await using var context = Context();
+        await SeedEveryCostComponentAsync(context);
+        var service = Finance(context);
+
+        var asAt = new DateTime(2026, 9, 30);
+        var sheet = await service.GetBalanceSheetAsync(null, asAt);
+
+        // No committed baseline here, so the sheet's window runs from the beginning of the records.
+        Assert.Null(sheet.RetainedProfitStart);
+        // Scoped to THAT window: the 500,000 server rack bought in August is inside it.
+        Assert.Equal(500_000m, sheet.UnpostedFixedAssetCharge);
+
+        // Matching windows: the identity holds, and this is the only case in which it means anything.
+        var matching = await service.GetProfitAndLossAsync(null, new DateTime(2026, 1, 1), asAt);
+        Assert.Equal(matching.NetProfit, sheet.RetainedProfit - sheet.UnpostedFixedAssetCharge);
+
+        // Mismatched windows: September on its own recognised nothing and bought nothing, so its Net
+        // Profit is zero while the sheet still discloses August's purchase. Subtracting one from the
+        // other produces a number that describes nothing, which is why no screen, DTO or export
+        // presents the disclosure as a gap against "the P&L".
+        var september = await service.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), asAt);
+        Assert.Equal(0m, september.NetProfit);
+        Assert.NotEqual(september.NetProfit, sheet.RetainedProfit - sheet.UnpostedFixedAssetCharge);
+
+        // The export says which window the charge belongs to, and does not claim the statements
+        // reconcile — the earlier wording asserted "Retained Profit is higher than P&L Net Profit",
+        // which is a comparison against a period the reader never chose.
+        var export = SheetXml(await service.ExportBalanceSheetAsync(null, asAt));
+        Assert.Contains("open accountant decision", export, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("the window Retained Profit above covers", export, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("higher than", export, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SheetXml(DTOs.FinanceDtos.FinanceExportDto export)
+    {
+        using var archive = new System.IO.Compression.ZipArchive(new MemoryStream(export.Content));
+        using var reader = new StreamReader(archive.GetEntry("xl/worksheets/sheet1.xml")!.Open());
+        return reader.ReadToEnd();
     }
 
     /// <summary>Contiguous, gapless, non-overlapping, and clipped to the requested range — the

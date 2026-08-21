@@ -1453,6 +1453,88 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The attachment is part of the submission, so it is part of the key's fingerprint.
+    /// <para>
+    /// It used to be skipped entirely — uploads were excluded from the hash. That made the file
+    /// invisible to the guard: an operator whose save lost its response on the way back, who then
+    /// noticed the wrong invoice was attached, swapped the file and pressed Save again, was answered
+    /// 200 replayed from the FIRST attempt. The screen reported success, and the record still carried
+    /// the wrong document, with nothing anywhere recording that a different file had been submitted.
+    /// </para>
+    /// <para>
+    /// A changed file is now a changed submission (409, reload and enter it again), while a genuine
+    /// retry of the same bytes still replays — including under a different file NAME, because the
+    /// identity is the content, not what the browser called it.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task RepeatingAMoneyRequestKey_WithADifferentAttachment_IsRefused_NotReplayed()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var migrator = new AppDbContext(Options(database.ConnectionString)))
+            await migrator.Database.MigrateAsync();
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString));
+        await using var provider = services.BuildServiceProvider();
+        var filter = new IdempotentMoneyOperationFilter(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<IdempotentMoneyOperationFilter>.Instance);
+
+        const string key = "sql-attachment-key";
+        var runs = 0;
+        var body = new { amount = 250_000m };
+
+        async Task<IActionResult?> AttemptAsync(IFormFile file)
+        {
+            var attempt = FilterContexts(provider, key, body, file);
+            await filter.OnActionExecutionAsync(attempt.Executing, () =>
+            {
+                runs++;
+                return Task.FromResult(Executed(attempt.ActionContext,
+                    new OkObjectResult(new { id = 11, amount = 250_000m })));
+            });
+            return attempt.Executing.Result;
+        }
+
+        // First save, with invoice A attached.
+        Assert.Null(await AttemptAsync(Upload("invoice-a.pdf", "%PDF-1.4 INVOICE A")));
+        Assert.Equal(1, runs);
+
+        // The genuine retry: same key, same amount, same file. Replayed, as it always was.
+        var replayed = Assert.IsType<ContentResult>(
+            await AttemptAsync(Upload("invoice-a.pdf", "%PDF-1.4 INVOICE A")));
+        Assert.Equal(200, replayed.StatusCode);
+        Assert.Equal("{\"id\":11,\"amount\":250000}", replayed.Content);
+        Assert.Equal(1, runs);
+
+        // Same bytes under a different name is still the same submission — a browser that renames a
+        // re-picked file must not turn a retry into a conflict.
+        Assert.IsType<ContentResult>(await AttemptAsync(Upload("scan (1).pdf", "%PDF-1.4 INVOICE A")));
+        Assert.Equal(1, runs);
+
+        // THE regression: a DIFFERENT file behind the same key. Refused, so the operator is told to
+        // reload rather than shown a success for the document they had just replaced.
+        var conflict = Assert.IsType<ConflictObjectResult>(
+            await AttemptAsync(Upload("invoice-a.pdf", "%PDF-1.4 INVOICE B — CORRECTED")));
+        Assert.Equal(409, conflict.StatusCode);
+        Assert.Equal(1, runs);
+
+        // Removing the attachment altogether is a changed submission too.
+        var withoutFile = FilterContexts(provider, key, body);
+        await filter.OnActionExecutionAsync(withoutFile.Executing, () =>
+        {
+            runs++;
+            return Task.FromResult(Executed(withoutFile.ActionContext, new OkObjectResult(new { id = 12 })));
+        });
+        Assert.IsType<ConflictObjectResult>(withoutFile.Executing.Result);
+        Assert.Equal(1, runs);
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            $"SELECT COUNT(*) FROM [IdempotentRequests] WHERE [Key] = '{key}'"));
+    }
+
+    /// <summary>
     /// The cutover preflight, against a real database, because that is the only place its SQL exists.
     /// <para>
     /// It probes fifteen tables for a count and an earliest date, and it runs at exactly one moment in
@@ -1709,26 +1791,348 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     private static (ActionContext ActionContext, ActionExecutingContext Executing) FilterContexts(
-        IServiceProvider provider, string key, object arguments)
+        IServiceProvider provider, string key, object arguments, IFormFile? attachment = null)
     {
         var http = new DefaultHttpContext { RequestServices = provider };
         http.Request.Method = "POST";
         http.Request.Path = "/api/Finance/expenses";
         http.Request.Headers[IdempotentMoneyOperationFilter.HeaderName] = key;
         var actionContext = new ActionContext(http, new RouteData(), new ActionDescriptor());
+        var args = new Dictionary<string, object?> { ["dto"] = arguments };
+        if (attachment != null) args["attachment"] = attachment;
         return (actionContext, new ActionExecutingContext(actionContext, new List<IFilterMetadata>(),
-            new Dictionary<string, object?> { ["dto"] = arguments }, new object()));
+            args, new object()));
+    }
+
+    /// <summary>An uploaded file the filter can hash, over a seekable buffer so
+    /// <see cref="IFormFile.OpenReadStream"/> can be called more than once.</summary>
+    private static IFormFile Upload(string fileName, string content)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        return new FormFile(new MemoryStream(bytes), 0, bytes.Length, "attachment", fileName)
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "application/pdf"
+        };
     }
 
     private static ActionExecutedContext Executed(ActionContext actionContext, IActionResult result) =>
         new(actionContext, new List<IFilterMetadata>(), new object()) { Result = result };
 
+
+    /// <summary>
+    /// The dashboard's database cost is bounded, and stays bounded as the client grows.
+    /// <para>
+    /// The original shape called <c>/summary</c> once per chart bucket and once per project, each
+    /// summary being twenty-odd aggregates: twelve buckets and ten projects came to hundreds of
+    /// database operations for one refresh, growing with every development added. Collapsing that to
+    /// one HTTP request removed the round trips but not the reads — the cards still summed each
+    /// source, the trend grouped the same sources by date, and the pie grouped them again by project.
+    /// </para>
+    /// <para>
+    /// Now every source is read once, grouped by (date, project), and all three sections are folded
+    /// out of those rows. The invariants asserted here are the ones that matter: the command count
+    /// does not move when the number of projects doubles, and does not move when the range widens
+    /// from three months to three years. Both used to multiply it.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheDashboard_IssuesABoundedNumberOfCommands_WhateverTheVolume()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var counter = new CommandCounter();
+        var options = OptionsWith(database.ConnectionString, counter);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var accounts = new FinanceAccountService(db);
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+
+        // Representative volume: eight developments, each with a recognised sale and a year of
+        // monthly expenses and quarterly asset purchases. Around 8 * (1 + 12 + 4) = 136 financial
+        // rows spread over twelve months and eight projects — enough that a per-project or
+        // per-bucket read would show up immediately.
+        await SeedDashboardVolumeAsync(db, firstProject: 1, projects: 8);
+
+        var from = new DateTime(2026, 1, 1);
+        var to = new DateTime(2026, 12, 31);
+
+        // Warm up first: the very first query on a context pays for model and query-plan building,
+        // and one-off work is not what this test is measuring.
+        await finance.GetDashboardAsync(null, from, to);
+
+        var eightProjects = await MeasureAsync(counter, () => finance.GetDashboardAsync(null, from, to));
+        // Four named developments plus "Other Projects" — the pie is capped, the reads behind it are
+        // not what this test is about, but a pie of one slice would mean the seed did nothing.
+        Assert.Equal(5, eightProjects.Result.Distribution.Count);
+
+        // Twice the projects, same period.
+        await SeedDashboardVolumeAsync(db, firstProject: 9, projects: 8);
+        var sixteenProjects = await MeasureAsync(counter, () => finance.GetDashboardAsync(null, from, to));
+
+        // Three years instead of one: more buckets, wider windows, same reads.
+        var threeYears = await MeasureAsync(counter, () =>
+            finance.GetDashboardAsync(null, new DateTime(2024, 1, 1), new DateTime(2026, 12, 31)));
+
+        // THE invariants. Not "fewer than before" — flat.
+        Assert.Equal(eightProjects.Commands, sixteenProjects.Commands);
+        Assert.Equal(eightProjects.Commands, threeYears.Commands);
+
+        // And a hard ceiling, so a future edit that adds a read per source is caught even if it
+        // happens to be flat in projects and buckets. Thirteen source reads plus the deposit
+        // balance (3), outstanding, overdue and the project-name lookup.
+        Assert.True(eightProjects.Commands <= FinanceService.PeriodAggregateQueryCount + 8,
+            $"dashboard issued {eightProjects.Commands} commands; the bound is "
+            + $"{FinanceService.PeriodAggregateQueryCount + 8}");
+        // Lower bound too: a count that collapsed far below this would mean sources stopped being
+        // read at all, which the reconciliation assertions below would then have to catch.
+        Assert.True(eightProjects.Commands >= FinanceService.PeriodAggregateQueryCount,
+            $"dashboard issued only {eightProjects.Commands} commands");
+
+        // The numbers still reconcile at this volume: the bars total the cards and the pie totals
+        // the revenue card. A cheaper dashboard that stopped adding up would be no fix at all.
+        var dashboard = sixteenProjects.Result;
+        Assert.Equal(dashboard.Summary.TotalRevenue, dashboard.Trend.Sum(b => b.Revenue));
+        Assert.Equal(dashboard.Summary.TotalExpenses, dashboard.Trend.Sum(b => b.Expense));
+        Assert.Equal(dashboard.Summary.TotalRevenue, dashboard.Distribution.Sum(s => s.Revenue));
+        Assert.True(dashboard.Trend.Count <= 12, $"{dashboard.Trend.Count} buckets");
+        var breakdown = await finance.GetCostBreakdownPageAsync(null, from, to, 0, 1000);
+        Assert.Equal(dashboard.Summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
+
+        // The benchmark, as a ceiling rather than a number: at representative volume one refresh is
+        // a handful of grouped queries, so seconds-per-refresh would mean something is wrong.
+        Assert.True(sixteenProjects.Elapsed < TimeSpan.FromSeconds(15),
+            $"dashboard took {sixteenProjects.Elapsed.TotalSeconds:0.00}s at 16 projects");
+    }
+
+    private sealed record Measured<T>(T Result, int Commands, TimeSpan Elapsed);
+
+    private static async Task<Measured<T>> MeasureAsync<T>(CommandCounter counter, Func<Task<T>> work)
+    {
+        counter.Reset();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var result = await work();
+        started.Stop();
+        return new Measured<T>(result, counter.Count, started.Elapsed);
+    }
+
+    /// <summary>
+    /// Counts every command EF sends to SQL Server. Deliberately counts commands rather than timing
+    /// anything: a query count is a property of the code, so it can be asserted exactly, while a
+    /// duration is a property of the machine.
+    /// </summary>
+    private sealed class CommandCounter : DbCommandInterceptor
+    {
+        private int _count;
+        public int Count => Volatile.Read(ref _count);
+        public void Reset() => Interlocked.Exchange(ref _count, 0);
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            Interlocked.Increment(ref _count);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _count);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override InterceptionResult<object> ScalarExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<object> result)
+        {
+            Interlocked.Increment(ref _count);
+            return base.ScalarExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<object> result,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _count);
+            return base.ScalarExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result)
+        {
+            Interlocked.Increment(ref _count);
+            return base.NonQueryExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _count);
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>A year of activity on each of several developments, in one round of inserts.</summary>
+    private static async Task SeedDashboardVolumeAsync(AppDbContext db, int firstProject, int projects)
+    {
+        for (var p = firstProject; p < firstProject + projects; p++)
+        {
+            var project = new Project { ProjectName = $"Volume {p}", Location = "Karachi", CreatedById = 1 };
+            var equipment = new FinanceAccount
+            {
+                Name = $"Equipment {p}", AccountHolderName = "DAMS",
+                Type = FinanceAccountType.FixedAsset, IsActive = true
+            };
+            var bank = new FinanceAccount
+            {
+                Name = $"Bank {p}", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = $"V-{p}", UnitType = "Apartment",
+                Price = 4_000_000m, Status = UnitStatus.Sold
+            };
+            var customer = new Customer { FullName = $"Volume Buyer {p}", Phone = $"0300000{p:0000}", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"BK-VOL-{p}", Customer = customer, Unit = unit, Source = CustomerSource.Referral,
+                Status = BookingStatus.PossessionGiven, AgreedSalePrice = 4_000_000m, DiscountAmount = 0m,
+                BookingDate = new DateTime(2025, 12, 1)
+            };
+            db.AddRange(project, equipment, bank, unit, customer, booking);
+            await db.SaveChangesAsync();
+
+            db.BookingSaleRecognitions.Add(new BookingSaleRecognition
+            {
+                BookingId = booking.Id, RecognitionDate = new DateTime(2026, (p % 12) + 1, 10),
+                NetSaleValue = 4_000_000m,
+                RecognizedAt = new DateTime(2026, (p % 12) + 1, 10, 6, 0, 0, DateTimeKind.Utc)
+            });
+            for (var month = 1; month <= 12; month++)
+            {
+                db.Expenses.Add(new Expense
+                {
+                    ProjectId = project.Id, FinanceAccountId = bank.Id, Category = "Office Rent",
+                    Amount = 50_000m, Date = new DateTime(2026, month, 15)
+                });
+                if (month % 3 == 0)
+                    db.AssetPurchases.Add(new AssetPurchase
+                    {
+                        ProjectId = project.Id, AssetAccountId = equipment.Id, FinanceAccountId = bank.Id,
+                        Amount = 100_000m, ItemName = $"Rack {p}-{month}", Category = "Equipment",
+                        Date = new DateTime(2026, month, 20)
+                    });
+            }
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// Two admins correcting the same salary. Without a concurrency token the slower save won
+    /// silently: it rewrote the amount, the pay date, the payroll period AND the linked Expense
+    /// back to whatever its own screen had shown, so a corrected 120,000 quietly became 90,000
+    /// again — with the posted expense following it — and both admins were told they had succeeded.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentSalaryCorrections_CannotSilentlyOverwriteEachOther()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var bank = new FinanceAccount { Name = "Payroll Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var employee = new Employee
+        {
+            FullName = "Payroll Subject", JobTitle = "Engineer", Department = "Build",
+            Phone = "03001234567", Salary = 100_000m, JoinDate = new DateTime(2025, 1, 1),
+            Status = EmployeeStatus.Active
+        };
+        db.AddRange(bank, employee);
+        await db.SaveChangesAsync();
+
+        var created = await new EmployeeService(db, new FinanceAccountService(db)).GenerateSalaryAsync(
+            employee.Id,
+            new DAMS.Application.DTOs.EmployeeDtos.GenerateSalaryDto
+            {
+                Amount = 100_000m, PayDate = new DateTime(2026, 8, 1), FinanceAccountId = bank.Id
+            }, adminUserId: 1);
+
+        // On SQL Server the record really does carry a version, and it reaches the client.
+        Assert.False(string.IsNullOrWhiteSpace(created.ConcurrencyToken));
+        var token = created.ConcurrencyToken;
+
+        // Admin A corrects the amount and wins.
+        await using (var first = new AppDbContext(options))
+        {
+            await new EmployeeService(first, new FinanceAccountService(first)).UpdateSalaryAsync(
+                created.Id, new DAMS.Application.DTOs.EmployeeDtos.UpdateSalaryDto
+                {
+                    Amount = 120_000m, ConcurrencyToken = token
+                });
+        }
+
+        // Admin B, holding the SAME stale token, is refused rather than silently overwriting A.
+        await using (var second = new AppDbContext(options))
+        {
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
+                new EmployeeService(second, new FinanceAccountService(second)).UpdateSalaryAsync(
+                    created.Id, new DAMS.Application.DTOs.EmployeeDtos.UpdateSalaryDto
+                    {
+                        Amount = 90_000m, ConcurrencyToken = token
+                    }));
+        }
+
+        // Omitting the token entirely is refused too — otherwise the protection would be opt-out by
+        // simply not sending a field.
+        await using (var third = new AppDbContext(options))
+        {
+            await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
+                new EmployeeService(third, new FinanceAccountService(third)).UpdateSalaryAsync(
+                    created.Id, new DAMS.Application.DTOs.EmployeeDtos.UpdateSalaryDto { Amount = 90_000m }));
+        }
+
+        // A's correction stands, and the linked expense audit behaviour is intact: the posted
+        // expense moved with it and no second expense was created.
+        await using (var check = new AppDbContext(options))
+        {
+            var salary = await check.EmployeeSalaries.AsNoTracking().SingleAsync();
+            Assert.Equal(120_000m, salary.Amount);
+            var expense = Assert.Single(await check.Expenses.AsNoTracking().ToListAsync());
+            Assert.Equal(120_000m, expense.Amount);
+            Assert.Equal(salary.ExpenseId, expense.Id);
+
+            // And a fresh token lets the next legitimate correction through.
+            var fresh = Convert.ToBase64String(salary.RowVersion);
+            await new EmployeeService(check, new FinanceAccountService(check)).UpdateSalaryAsync(
+                created.Id, new DAMS.Application.DTOs.EmployeeDtos.UpdateSalaryDto
+                {
+                    Amount = 130_000m, ConcurrencyToken = fresh
+                });
+        }
+        await using (var check = new AppDbContext(options))
+            Assert.Equal(130_000m, (await check.EmployeeSalaries.AsNoTracking().SingleAsync()).Amount);
+    }
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {
         var builder = new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(connectionString,
             sql => sql.EnableRetryOnFailure());
         if (interceptor != null) builder.AddInterceptors(interceptor);
+        return builder.Options;
+    }
+
+    /// <summary>Same options, with command-level interceptors. Separately named rather than an
+    /// overload, because <see cref="SaveChangesInterceptor"/> is itself an
+    /// <see cref="IInterceptor"/> and the two would be ambiguous at every existing call site.</summary>
+    private static DbContextOptions<AppDbContext> OptionsWith(
+        string connectionString, params IInterceptor[] interceptors)
+    {
+        var builder = new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(connectionString,
+            sql => sql.EnableRetryOnFailure());
+        if (interceptors.Length > 0) builder.AddInterceptors(interceptors);
         return builder.Options;
     }
 
