@@ -18,8 +18,12 @@ namespace DAMS.Application.Services
             var (start, end, label) = await ResolveReportPeriodAsync(from, to, cancellationToken);
             var priorStart = start.AddYears(-1);
             var priorEnd = end.AddYears(-1);
-            var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), cancellationToken);
-            var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), cancellationToken);
+            // WITH the fixed-asset charge, because this statement reports Net Profit and DAMS has
+            // exactly one Net Profit rule: buying an asset spends the money, so the period bears it.
+            // The Balance Sheet and Trial Balance below ask for the same period without it — see
+            // BuildPnlPeriodAsync for why those two cannot carry it and what they disclose instead.
+            var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), true, cancellationToken);
+            var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), true, cancellationToken);
             var projectName = projectId.HasValue
                 ? await _context.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.ProjectName).SingleAsync(cancellationToken)
                 : null;
@@ -35,22 +39,15 @@ namespace DAMS.Application.Services
                 NetProfit = netProfit,
                 PriorTotalIncome = Money(prior.Income.Sum(l => l.Amount)),
                 PriorTotalExpenses = Money(prior.Expenses.Sum(l => l.Amount)),
-                PriorNetProfit = priorNetProfit,
-                PendingFixedAssetCharge = await PendingFixedAssetChargeAsync(projectId, start, end.AddDays(1), cancellationToken)
+                PriorNetProfit = priorNetProfit
             };
         }
 
         /// <summary>
-        /// Fixed assets bought in the window, for DISCLOSURE beside the statement — never inside it.
-        /// <para>
-        /// The client's rule says this amount reduces Net Profit. It is not in
-        /// <see cref="ProfitAndLossDto.ExpenseLines"/>, <see cref="ProfitAndLossDto.TotalExpenses"/> or
-        /// <see cref="ProfitAndLossDto.NetProfit"/>, because putting it there without a balancing credit
-        /// would be an invented entry. Reporting it as an unapplied figure says the true thing: this is
-        /// what the rule would take off, and it is waiting on one accounting decision.
-        /// </para>
+        /// Fixed assets bought in the window, at gross cost. The one figure Net Profit deducts and
+        /// the ledger does not — the Balance Sheet discloses it for exactly that reason.
         /// </summary>
-        private async Task<decimal> PendingFixedAssetChargeAsync(
+        private async Task<decimal> FixedAssetChargeAsync(
             int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken) =>
             Money(await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
                 .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
@@ -63,8 +60,14 @@ namespace DAMS.Application.Services
             var openingDate = await OpeningDateAsync(cancellationToken);
             var pnlStart = openingDate.HasValue && openingDate.Value <= date ? openingDate.Value : SqlStart;
             var snapshots = await AccountSnapshotsAsync(projectId, date, openingDate, cancellationToken);
-            var pnl = await BuildPnlPeriodAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
+            // WITHOUT the fixed-asset charge: this figure has to reconcile the sheet, and the only
+            // entry the books hold for a purchase is Dr Fixed Asset / Cr Bank. Deducting the cost
+            // here as well, while the asset is still carried at full cost above, would put the sheet
+            // out by exactly that amount. The gap between this and the P&L's Net Profit is reported
+            // as UnpostedFixedAssetCharge rather than left for the reader to discover.
+            var pnl = await BuildPnlPeriodAsync(projectId, pnlStart, date.AddDays(1), false, cancellationToken);
             var retainedProfit = Money(pnl.Income.Sum(l => l.Amount) - pnl.Expenses.Sum(l => l.Amount));
+            var unpostedFixedAssetCharge = await FixedAssetChargeAsync(projectId, pnlStart, date.AddDays(1), cancellationToken);
             if (!projectId.HasValue)
             {
                 var allocations = await _context.CapitalTransactions.AsNoTracking()
@@ -96,8 +99,9 @@ namespace DAMS.Application.Services
             var rhs = Money(totalLiabilities + totalCapital);
             // Retained profit carries only entries the books actually hold, so this balances on real
             // double entry alone. Fixed-asset purchases are absent by design: their cost has no
-            // approved balancing account, so it is disclosed on the P&L rather than charged here. An
-            // imbalance below therefore still means what it always meant — a genuine fault.
+            // approved balancing account, so charging it here would put the sheet out by that amount
+            // while the asset sits above at full cost. An imbalance below therefore still means what
+            // it always meant — a genuine fault.
             var imbalance = Money(totalAssets - rhs);
             var result = new BalanceSheetDto
             {
@@ -105,6 +109,8 @@ namespace DAMS.Application.Services
                 LiabilityGroups = liabilityGroups,
                 TotalLiabilities = totalLiabilities, CapitalLines = capitalLines,
                 RetainedProfit = retainedProfit, TotalCapital = totalCapital,
+                UnpostedFixedAssetCharge = unpostedFixedAssetCharge,
+                RetainedProfitStart = pnlStart == SqlStart ? null : pnlStart,
                 TotalLiabilitiesAndCapital = rhs, Imbalance = imbalance,
                 IsBalanced = imbalance == 0m
             };
@@ -144,7 +150,9 @@ namespace DAMS.Application.Services
                 }
 
                 var start = openingDate.HasValue && openingDate.Value <= columnDate ? openingDate.Value : SqlStart;
-                var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), cancellationToken);
+                // Ledger-only, for the same reason the Balance Sheet is: every line here is asserted
+                // to have a debit and a credit, and the fixed-asset charge has only one.
+                var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), false, cancellationToken);
                 // Income is credit-normal and expense is debit-normal, but a contra line (e.g.
                 // Customer Refunds) carries a negative amount — that negative amount must flip to
                 // the opposite column, not sit as a negative balance in its normal column. A
@@ -206,13 +214,6 @@ namespace DAMS.Application.Services
             rows.AddRange(report.ExpenseLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount, l.PriorAmount }));
             rows.Add(new object?[] { "Total Expenses", report.TotalExpenses, report.PriorTotalExpenses });
             rows.Add(new object?[] { "Net Profit", report.NetProfit, report.PriorNetProfit });
-            // Disclosed, not applied. This workbook is what reaches the accountant who has to decide
-            // where the balancing entry belongs, so it has to be plain about what it left out and why.
-            if (report.PendingFixedAssetCharge != 0m)
-            {
-                rows.Add(new object?[] { "NOT APPLIED ABOVE — awaiting accounting decision", null, null });
-                rows.Add(new object?[] { "Fixed asset purchases the client's rule would deduct", report.PendingFixedAssetCharge, null });
-            }
             return Workbook("profit-and-loss", rows);
         }
 
@@ -251,9 +252,17 @@ namespace DAMS.Application.Services
                 rows.AddRange(group.Lines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
             }
             rows.AddRange(report.CapitalLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
-            rows.Add(new object?[] { "Retained Profit", report.RetainedProfit });
+            rows.Add(new object?[] { "Retained Profit (per the ledger)", report.RetainedProfit });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
+            // This workbook is what reaches the accountant who has to decide where the balancing
+            // entry belongs, so it states the one difference between this sheet and the P&L rather
+            // than leaving it to be discovered by subtraction.
+            if (report.UnpostedFixedAssetCharge != 0m)
+            {
+                rows.Add(new object?[] { "Fixed asset purchases charged to Net Profit but not to this sheet", report.UnpostedFixedAssetCharge });
+                rows.Add(new object?[] { "Retained Profit is higher than P&L Net Profit by that amount — the balancing account is still undecided", null });
+            }
             return Workbook("balance-sheet", rows);
         }
 
@@ -284,7 +293,12 @@ namespace DAMS.Application.Services
             return (start, end, label);
         }
 
-        private async Task<PnlPeriod> BuildPnlPeriodAsync(int? projectId, DateTime from, DateTime toExclusive, CancellationToken cancellationToken)
+        /// <param name="includeFixedAssetCharge">
+        /// True for the P&amp;L, false for the Balance Sheet and Trial Balance. See the fixed-asset
+        /// block near the end of this method for why the same period is built both ways.
+        /// </param>
+        private async Task<PnlPeriod> BuildPnlPeriodAsync(int? projectId, DateTime from, DateTime toExclusive,
+            bool includeFixedAssetCharge, CancellationToken cancellationToken)
         {
             var income = await ManualQuery(projectId, from, toExclusive).GroupBy(r => new
                 {
@@ -351,15 +365,32 @@ namespace DAMS.Application.Services
                     Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
                     Amount = nonCashCredit, Count = nonCashCreditCount
                 });
-            // NO fixed-asset line here, and that omission is the point. Everything this method
-            // returns feeds the three FORMAL statements — P&L, Trial Balance, Balance Sheet retained
-            // profit — so a line added here is a line asserted to exist in the books. The only entry
-            // the books actually hold for a purchase is Dr Fixed Asset / Cr Bank; charging the cost to
-            // profit as well needs a credit somewhere, and which account carries it has not been
-            // decided by the client's accountant. Writing the debit anyway would put a half-entry into
-            // a double-entry statement — an invented figure wearing the clothes of a real one.
-            // <see cref="PendingFixedAssetChargeAsync"/> discloses the amount alongside the statement
-            // instead, and the dashboard applies the client's rule where no entry is implied.
+            // Fixed-asset purchases, at gross cost. DAMS reports one Net Profit, and the client's
+            // rule is that buying an asset spends the money — so wherever Net Profit is stated, this
+            // is inside it: the dashboard card, the P&L, its export and the Net Profit drill-down.
+            //
+            // The flag exists because two of this method's three consumers state something else.
+            // The Trial Balance and the Balance Sheet's retained profit are double-entry positions:
+            // every line in them is an assertion that the books hold a debit and a matching credit.
+            // A purchase holds only Dr Fixed Asset / Cr Bank. Charging its cost to profit as well
+            // needs a credit, the asset is still carried at full cost, and no account has been
+            // approved to take that credit — so putting the line there would not make those two
+            // statements righter, it would put them out of balance by exactly this amount on the
+            // strength of an entry nobody authorised. They omit it and DISCLOSE it instead
+            // (BalanceSheetDto.UnpostedFixedAssetCharge), which is the only honest description of
+            // where the question stands.
+            if (includeFixedAssetCharge)
+            {
+                var fixedAssets = await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
+                    .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() })
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (fixedAssets is { Amount: not 0m })
+                    expenses.Add(new ReportLine
+                    {
+                        Key = "fixed-asset-purchases", Name = "Fixed Asset Purchases", Order = int.MaxValue - 3,
+                        Amount = fixedAssets.Amount, Count = fixedAssets.Count
+                    });
+            }
             var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
                 .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
                 .SingleOrDefaultAsync(cancellationToken);

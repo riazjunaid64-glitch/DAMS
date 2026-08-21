@@ -19,14 +19,17 @@ namespace DAMS.Application.Services
     /// is never written down.
     /// </para>
     /// <para>
-    /// The client also wants the purchase to reduce Net Profit immediately, and that rule is applied in
-    /// <c>GetSummaryAsync</c> and the Net Profit drill-down, where a figure is being presented and no
-    /// journal entry is implied. It is deliberately NOT applied in the formal P&amp;L, Trial Balance or
-    /// Balance Sheet: a deduction there needs a matching credit, and which account carries it has not
-    /// been decided by the client's accountant. Writing the debit alone would put a half-entry into a
-    /// double-entry statement, so the P&amp;L discloses the amount as an outstanding deduction
-    /// (<c>ProfitAndLossDto.PendingFixedAssetCharge</c>) and no equity reserve, contra-asset or
-    /// depreciation account is invented to absorb it. That decision is the one open item here.
+    /// The client's rule is that the purchase reduces Net Profit immediately, and DAMS has exactly one
+    /// Net Profit: the rule is applied in <c>GetSummaryAsync</c>, in the Net Profit drill-down, and in
+    /// the formal P&amp;L and its export, which all report the same figure for the same period.
+    /// </para>
+    /// <para>
+    /// It is NOT applied to the Trial Balance or to the Balance Sheet's retained profit. Those two are
+    /// double-entry positions and the asset above is still carried at full cost, so charging it there
+    /// as well needs a credit no account has been approved to take — the deduction would not make them
+    /// righter, it would put them out by exactly this amount. They disclose it instead
+    /// (<c>BalanceSheetDto.UnpostedFixedAssetCharge</c>); no equity reserve, contra-asset or
+    /// depreciation account is invented to absorb it. That ledger decision is the one open item here.
     /// </para>
     /// <para>
     /// Construction / work-in-progress spending does NOT come through here any more. The client
@@ -40,7 +43,8 @@ namespace DAMS.Application.Services
     {
         public async Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(
             int? projectId, DateTime? from, DateTime? to, int skip, int take,
-            int? assetAccountId = null, int? accountId = null, bool unassigned = false)
+            int? assetAccountId = null, int? accountId = null, bool unassigned = false,
+            CancellationToken cancellationToken = default)
         {
             var rows = await AssetPurchaseQuery(projectId, from?.Date, to?.Date.AddDays(1), assetAccountId, accountId, unassigned)
                 .OrderByDescending(p => p.Date)
@@ -77,7 +81,7 @@ namespace DAMS.Application.Services
                         UploadedAt = p.Attachment.UploadedAt
                     }
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return Page(rows, take);
         }

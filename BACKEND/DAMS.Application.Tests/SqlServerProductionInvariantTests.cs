@@ -323,6 +323,111 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(3_000_000m, Assert.Single(asAtJanuary.Items).DepositBalance);
     }
 
+    /// <summary>
+    /// The dashboard aggregation, on the real provider.
+    /// <para>
+    /// It is here rather than only in memory because of one construct the in-memory provider cannot
+    /// vouch for: the non-cash customer credit is grouped by a CASE expression — the later of the
+    /// credit's own date and the recognition it reduces — and in-memory LINQ will happily evaluate a
+    /// key SQL Server may refuse to translate. A dashboard that throws the moment a client grants a
+    /// credit note is not something to discover in production.
+    /// </para>
+    /// <para>
+    /// It also pins the two things the screen promises: the bars total the cards, and the Total
+    /// Expenses drill-down totals the Total Expenses card.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheDashboardAggregation_TranslatesAndReconciles_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var bank = new FinanceAccount { Name = "SQL Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var equipment = new FinanceAccount { Name = "SQL Equipment", AccountHolderName = "DAMS", Type = FinanceAccountType.FixedAsset, IsActive = true };
+        var project = new Project { ProjectName = "SQL Dashboard", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = "D-1", UnitType = "Apartment", Price = 5_000_000m, Status = UnitStatus.OnPaymentPlan };
+        var customer = new Customer { FullName = "SQL Buyer", Phone = "03007778899", Status = CustomerStatus.Active };
+        var booking = new Booking
+        {
+            BookingReference = "BK-SQL-DASH", Customer = customer, Unit = unit, Source = CustomerSource.Referral,
+            Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 5_000_000m, DiscountAmount = 0m,
+            BookingDate = new DateTime(2026, 1, 1)
+        };
+        db.AddRange(bank, equipment, project, unit, customer, booking);
+        await db.SaveChangesAsync();
+
+        var accounts = new FinanceAccountService(db);
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        await new BookingService(db, new CustomerService(db), accounts)
+            .GivePossessionAsync(booking.Id, new DateTime(2026, 2, 15), 1);
+
+        db.Expenses.Add(new Expense
+        {
+            FinanceAccountId = bank.Id, Category = "Office Rent", Amount = 400_000m,
+            Date = new DateTime(2026, 3, 5)
+        });
+        db.AssetPurchases.Add(new AssetPurchase
+        {
+            AssetAccountId = equipment.Id, FinanceAccountId = bank.Id, Amount = 600_000m,
+            ItemName = "SQL server rack", Category = "Equipment", Date = new DateTime(2026, 3, 10)
+        });
+        var rebate = new CustomerRebate
+        {
+            BookingId = booking.Id, CustomerId = customer.Id, BasisAmount = 5_000_000m,
+            CalculatedAmount = 100_000m, FinalAmount = 100_000m, Reason = "Goodwill",
+            Method = CustomerRebateMethod.CreditNote, Status = CustomerRebateStatus.Approved
+        };
+        db.Add(rebate);
+        await db.SaveChangesAsync();
+        // Granted BEFORE possession, so its effective date is the recognition date — the CASE
+        // expression the trend has to group by, and the one this test exists for.
+        db.RebateDisbursements.Add(new RebateDisbursement
+        {
+            RebateId = rebate.Id, Method = CustomerRebateMethod.CreditNote, Amount = 100_000m,
+            AppliedAt = new DateTime(2026, 1, 20), IdempotencyKey = "sql-credit-1"
+        });
+        await db.SaveChangesAsync();
+
+        var from = new DateTime(2026, 1, 1);
+        var to = new DateTime(2026, 3, 31);
+        var dashboard = await finance.GetDashboardAsync(null, from, to);
+
+        Assert.Equal(5_000_000m, dashboard.Summary.TotalRevenue);
+        Assert.Equal(1_100_000m, dashboard.Summary.TotalExpenses); // 400k + 600k + 100k credit
+        Assert.Equal(3_900_000m, dashboard.Summary.NetProfit);
+
+        // The bars total the cards, and every day of the range is inside exactly one of them.
+        Assert.NotEmpty(dashboard.Trend);
+        Assert.Equal(from, dashboard.Trend[0].From);
+        Assert.Equal(to, dashboard.Trend[^1].To);
+        for (var i = 1; i < dashboard.Trend.Count; i++)
+            Assert.Equal(dashboard.Trend[i - 1].To.AddDays(1), dashboard.Trend[i].From);
+        Assert.Equal(dashboard.Summary.TotalRevenue, dashboard.Trend.Sum(b => b.Revenue));
+        Assert.Equal(dashboard.Summary.TotalExpenses, dashboard.Trend.Sum(b => b.Expense));
+        // The credit landed in February with the possession, not in January when it was granted.
+        Assert.Equal(100_000m, dashboard.Trend.Single(b => b.From <= new DateTime(2026, 2, 15)
+            && b.To >= new DateTime(2026, 2, 15)).Expense);
+
+        Assert.Equal(dashboard.Summary.TotalRevenue, dashboard.Distribution.Sum(s => s.Revenue));
+
+        // And the drill-down behind the Total Expenses card totals that card.
+        var breakdown = await finance.GetCostBreakdownPageAsync(null, from, to, 0, 100);
+        Assert.Equal(dashboard.Summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
+        Assert.Equal(3, breakdown.Items.Count);
+
+        // One Net Profit: the statement agrees with the card, and the sheet names the difference.
+        var pnl = await finance.GetProfitAndLossAsync(null, from, to);
+        Assert.Equal(dashboard.Summary.NetProfit, pnl.NetProfit);
+        var sheet = await finance.GetBalanceSheetAsync(null, to);
+        Assert.True(sheet.IsBalanced);
+        Assert.Equal(600_000m, sheet.UnpostedFixedAssetCharge);
+        Assert.Equal(pnl.NetProfit, sheet.RetainedProfit - sheet.UnpostedFixedAssetCharge);
+    }
+
     // The migration immediately before revenue recognition. Migrating to it first leaves the
     // database in the exact state a real deployment starts from.
     private const string BeforeRecognition = "20260816215219_AddPageExclusivityAndSyncLease";

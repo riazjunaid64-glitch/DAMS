@@ -1085,18 +1085,35 @@ namespace DAMS.Infrastructure.Data
 
         private static RevenueCategory[] SeedRevenueCategories()
         {
-            var names = new[]
+            // "External / Legacy Cancellation Income" is deliberately not called "Cancellation /
+            // Forfeiture" any more. Cancelling a DAMS booking already recognises the retained amount
+            // as income by itself, on the cancellation date, out of the customer's deposit — so a
+            // head that invited an Admin to ALSO type that figure in by hand was an invitation to
+            // count the same forfeiture twice, with nothing anywhere to detect it. The head survives
+            // because forfeitures from before go-live, or on something that was never a DAMS booking,
+            // have no other way in. Its `Code` is untouched so existing rows keep their category.
+            var heads = new (string Name, string Code)[]
             {
-                "Transfer Charges", "Development Charges", "Possession Charges", "Membership Charges",
-                "Documentation Charges", "NOC / NDC Charges", "Utility Connection Charges", "Parking Charges",
-                "Late Payment Surcharge", "Cancellation / Forfeiture", "Rental Income", "Commission Income",
-                "Bank Profit / Interest", "Other Income"
+                ("Transfer Charges", "transfer_charges"),
+                ("Development Charges", "development_charges"),
+                ("Possession Charges", "possession_charges"),
+                ("Membership Charges", "membership_charges"),
+                ("Documentation Charges", "documentation_charges"),
+                ("NOC / NDC Charges", "noc_ndc_charges"),
+                ("Utility Connection Charges", "utility_connection_charges"),
+                ("Parking Charges", "parking_charges"),
+                ("Late Payment Surcharge", "late_payment_surcharge"),
+                ("External / Legacy Cancellation Income", "cancellation_forfeiture"),
+                ("Rental Income", "rental_income"),
+                ("Commission Income", "commission_income"),
+                ("Bank Profit / Interest", "bank_profit_interest"),
+                ("Other Income", "other_income")
             };
-            return names.Select((name, index) => new RevenueCategory
+            return heads.Select((head, index) => new RevenueCategory
             {
                 Id = index + 1,
-                Name = name,
-                Code = new string(name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray()).Replace("___", "_").Replace("__", "_").Trim('_'),
+                Name = head.Name,
+                Code = head.Code,
                 DisplayOrder = (index + 1) * 10,
                 IsActive = true,
                 CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, DateTimeKind.Utc)

@@ -34,18 +34,10 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal TotalExpenses { get; set; }
 
         /// <summary>
-        /// The result: <see cref="TotalRevenue"/> − <see cref="TotalExpenses"/>, and the figure the
-        /// Net Profit drill-down adds up to. One profit figure, with the client's fixed-asset rule
-        /// applied: buying an asset spends the money, so the period bears it.
-        /// <para>
-        /// This is a management figure, and showing it commits no accounting entry — which is why the
-        /// rule can be honoured here. The FORMAL P&amp;L cannot honour it yet: deducting a cost there
-        /// requires a credit somewhere, and the account that carries it is undecided, so
-        /// <see cref="ProfitAndLossDto.NetProfit"/> is higher than this by
-        /// <see cref="ProfitAndLossDto.PendingFixedAssetCharge"/> whenever the period contains
-        /// purchases. That difference is the open accounting decision, not a second profit measure,
-        /// and it closes the moment the accountant names the account.
-        /// </para>
+        /// The result: <see cref="TotalRevenue"/> − <see cref="TotalExpenses"/>, the figure the Net
+        /// Profit drill-down adds up to, and the SAME figure <see cref="ProfitAndLossDto.NetProfit"/>
+        /// reports for the same period. One Net Profit rule, applied everywhere: buying an asset
+        /// spends the money, so the period bears it.
         /// </summary>
         public decimal NetProfit { get; set; }
 
@@ -60,10 +52,10 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <summary>Fixed assets bought in the period, at cost (gross of any tax withheld from the
         /// supplier). Purchases into a work-in-progress account — only ever rows inherited from the
         /// previous ERP — are outside this, exactly as they are outside the charge to profit.
-        /// A BREAKDOWN of <see cref="TotalExpenses"/>, not an addition to it: the cost is
-        /// already inside that total and inside <see cref="NetProfit"/>. The asset itself still sits
-        /// on the Balance Sheet at cost, and nothing is written off against it — the Balance Sheet and
-        /// formal P&amp;L simply leave this deduction out until its balancing account is decided.</summary>
+        /// A BREAKDOWN of <see cref="TotalExpenses"/>, not an addition to it: the cost is already
+        /// inside that total, inside <see cref="NetProfit"/> and inside the P&amp;L's Net Profit. The
+        /// asset itself still sits on the Balance Sheet at cost with nothing written off against it,
+        /// which is why that statement's retained profit is higher by this amount and says so.</summary>
         public decimal TotalAssetPurchases { get; set; }
 
         // Populated only when a single finance account is selected. Opening balance and the
@@ -225,6 +217,71 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         /// <summary>Signed amount: positive for revenue, negative for a cost.</summary>
         public decimal Amount { get; set; }
+    }
+
+    /// <summary>
+    /// One component of <see cref="FinancialSummaryDto.TotalExpenses"/> — a row in the Total Expenses
+    /// drill-down. The signed <see cref="Amount"/>s across every page total that card exactly.
+    /// </summary>
+    public class CostLineDto
+    {
+        public DateTime Date { get; set; }
+        public string ProjectName { get; set; } = "—";
+        public string Label { get; set; } = string.Empty;
+
+        /// <summary>
+        /// "cost" for money the period spent, "reduction" for something that gave a cost back — a
+        /// reversed commission or rebate, or a withdrawn customer credit. There is no third kind:
+        /// everything in the card is one or the other, so nothing has to be excluded by hand before
+        /// the rows agree with it.
+        /// </summary>
+        public string Kind { get; set; } = string.Empty;
+
+        /// <summary>Signed: positive for a cost, negative for a reduction.</summary>
+        public decimal Amount { get; set; }
+
+        /// <summary>Set only on ordinary expense rows — the ones that can be opened and corrected.
+        /// Null on every other component, which is recorded elsewhere in its own workflow.</summary>
+        public int? ExpenseId { get; set; }
+    }
+
+    /// <summary>
+    /// The whole Finance dashboard in one answer: the cards, the trend and the project split, all
+    /// computed from ONE set of date bounds so they cannot describe different periods.
+    /// </summary>
+    public class FinanceDashboardDataDto
+    {
+        public FinancialSummaryDto Summary { get; set; } = new();
+
+        /// <summary>Contiguous windows covering the selected range — every day in the range is in
+        /// exactly one of them, so the bars total the cards.</summary>
+        public List<FinanceTrendBucketDto> Trend { get; set; } = [];
+
+        public List<FinanceDistributionSliceDto> Distribution { get; set; } = [];
+    }
+
+    /// <summary>One bar of the revenue/expense trend, and the exact dates it covers.</summary>
+    public class FinanceTrendBucketDto
+    {
+        public string Label { get; set; } = string.Empty;
+        public DateTime From { get; set; }
+
+        /// <summary>Inclusive — the last day counted in this bar.</summary>
+        public DateTime To { get; set; }
+
+        public decimal Revenue { get; set; }
+
+        /// <summary>Every cost of the window, on the same terms as
+        /// <see cref="FinancialSummaryDto.TotalExpenses"/> — fixed assets included.</summary>
+        public decimal Expense { get; set; }
+    }
+
+    /// <summary>One slice of revenue by project, for the selected range.</summary>
+    public class FinanceDistributionSliceDto
+    {
+        public string Name { get; set; } = string.Empty;
+        public decimal Revenue { get; set; }
+        public decimal Percent { get; set; }
     }
 
     /// <summary>One page of rows for an infinite-scroll table.</summary>

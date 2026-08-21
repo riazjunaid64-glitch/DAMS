@@ -57,10 +57,29 @@ namespace DAMS.Api.Controllers
             [FromQuery] int? projectId,
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to,
-            [FromQuery] string? account)
+            [FromQuery] string? account,
+            CancellationToken cancellationToken)
         {
             if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
-            var result = await _financeService.GetSummaryAsync(projectId, from, to, accountId, unassigned);
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
+            var result = await _financeService.GetSummaryAsync(projectId, from, to, accountId, unassigned, cancellationToken);
+            return Ok(result);
+        }
+
+        // Cards + trend + revenue-by-project in one round trip, over one set of bounds. The screen
+        // used to build the charts by calling /summary once per bucket and once per project, which
+        // is why this exists — see FinanceService.Dashboard.cs.
+        [HttpGet("dashboard")]
+        public async Task<IActionResult> GetDashboard(
+            [FromQuery] int? projectId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to,
+            [FromQuery] string? account,
+            CancellationToken cancellationToken)
+        {
+            if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
+            var result = await _financeService.GetDashboardAsync(projectId, from, to, accountId, unassigned, cancellationToken);
             return Ok(result);
         }
 
@@ -73,29 +92,54 @@ namespace DAMS.Api.Controllers
             [FromQuery] DateTime? to,
             [FromQuery] string? account,
             [FromQuery] int skip = 0,
-            [FromQuery] int take = 100)
+            [FromQuery] int take = 100,
+            CancellationToken cancellationToken = default)
         {
             if (skip < 0) skip = 0;
             take = Math.Clamp(take, 1, 200);
             if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
+            // The same bounds rule as the cards. A drill-down that answered for a different period
+            // from the card it was opened from would be worse than no drill-down at all.
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
 
             return (view?.ToLowerInvariant()) switch
             {
-                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
-                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "totalexpenses" => Ok(await _financeService.GetCostBreakdownPageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
                 // A deposit belongs to a booking, not to a bank account — so an account filter has
                 // nothing to say about it, exactly as with outstanding balances.
                 "customerdeposits" when accountId.HasValue || unassigned => Ok(new PagedResult<CustomerDepositLineDto>()),
-                "customerdeposits" => Ok(await _financeService.GetCustomerDepositPageAsync(projectId, to, skip, take)),
+                "customerdeposits" => Ok(await _financeService.GetCustomerDepositPageAsync(projectId, to, skip, take, cancellationToken)),
                 "outstanding" when accountId.HasValue || unassigned => Ok(new PagedResult<OutstandingLineDto>()),
-                "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
+                "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take, cancellationToken)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
-                "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
+                "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take, cancellationToken)),
                 "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(
-                    projectId, from, to, skip, take, accountId, unassigned)),
-                "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
+                    projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned, cancellationToken)),
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, totalExpenses, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
             };
+        }
+
+        /// <summary>
+        /// A dashboard date filter is both ends or neither, and never backwards. Enforced here as
+        /// well as in the browser because the cards, the drill-downs and the charts all pass through
+        /// this controller, and a half-open range used to mean different things to each of them.
+        /// </summary>
+        private static bool TryValidateRange(DateTime? from, DateTime? to, out string? message)
+        {
+            try
+            {
+                FinanceService.EnsureFilterRange(from, to);
+                message = null;
+                return true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                message = ex.Message;
+                return false;
+            }
         }
 
         // ── Manual revenue ──

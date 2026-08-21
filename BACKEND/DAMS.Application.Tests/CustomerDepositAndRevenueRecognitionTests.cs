@@ -627,11 +627,11 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         // Nor by the other route: the client's rule deducts fixed-asset purchases, but an INHERITED
         // work-in-progress row is not a fixed-asset purchase. Deducting it would write the whole
         // carried-over construction balance off against profit on the day the rule shipped, which is
-        // a decision for the client and not a side effect of this feature. So it is not even disclosed
-        // as pending — it is outside the rule entirely.
+        // a decision for the client and not a side effect of this feature. It is outside the rule
+        // entirely — not deducted here, and not named on the Balance Sheet as something that was.
         Assert.DoesNotContain(pnl.ExpenseLines, l => l.Name == "Fixed Asset Purchases");
-        Assert.Equal(0m, pnl.PendingFixedAssetCharge);
         Assert.Equal(0m, pnl.TotalExpenses);
+        Assert.Equal(0m, (await Finance(context).GetBalanceSheetAsync(null, Mar)).UnpostedFixedAssetCharge);
     }
 
     // ── 23. A recognised status is not proof of recognised revenue ───────────────────────────

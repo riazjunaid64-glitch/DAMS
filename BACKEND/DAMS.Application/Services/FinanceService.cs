@@ -29,7 +29,8 @@ namespace DAMS.Application.Services
             _logger = logger;
         }
 
-        public async Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to, int? accountId = null, bool unassigned = false)
+        public async Task<FinancialSummaryDto> GetSummaryAsync(int? projectId, DateTime? from, DateTime? to,
+            int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -42,51 +43,48 @@ namespace DAMS.Application.Services
             // What the business actually earned is the sale, recognised once at possession, plus
             // whatever it keeps when a booking is cancelled.
             var recognisedSales = await SaleRecognitionQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(r => (decimal?)r.NetSaleValue) ?? 0m;
+                .SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
             var retainedOnCancellation = await RetainedCancellationQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(s => (decimal?)s.RetainedAmount) ?? 0m;
+                .SumAsync(s => (decimal?)s.RetainedAmount, cancellationToken) ?? 0m;
             var automaticRevenue = recognisedSales + retainedOnCancellation;
             var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             // GROSS. The full invoice is the business cost, whatever was withheld from the payment,
             // so the expense and profit figures are unaffected by withholding.
             var ordinaryExpenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(e => (decimal?)e.Amount) ?? 0m;
+                .SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m;
             // Both withholding sources, because both raise the same payable to FBR. Expenses alone
             // under-reported the card against the Tax Payable account and against the WHT screen,
             // which read purchases too.
             var whtWithheld = (await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                    .SumAsync(e => (decimal?)e.WhtAmount) ?? 0m)
+                    .SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
                 + (await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
-                    .SumAsync(p => (decimal?)p.WhtAmount) ?? 0m);
+                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var commissionPayouts = await CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var commissionReversals = await CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             var rebatePayments = await CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(d => (decimal?)d.Amount) ?? 0m;
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
             var rebateReversals = await CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             // Credits granted against an already-recognised sale: the slice of recognised revenue
             // the buyer will never pay. Matches the P&L line of the same name.
             var nonCashCredits = (await NonCashCreditQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                    .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+                    .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
                 - (await NonCashCreditReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                    .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
             var loanInterest = await LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(t => (decimal?)t.InterestAmount) ?? 0m;
+                .SumAsync(t => (decimal?)t.InterestAmount, cancellationToken) ?? 0m;
             // Fixed assets bought in the period, at their gross cost, INSIDE the expense total.
             // Buying an asset spends the money, and the client's confirmed rule is that the period
             // bears that spending — so the cost reaches Net Profit by the ordinary route rather than
-            // being held outside it as a second figure to reconcile. The asset itself is untouched:
-            // it stays on the Balance Sheet at cost and nothing is written off against it.
-            //
-            // This total is a management figure: presenting it commits no journal entry, so the rule
-            // can be applied here honestly. The formal statements cannot do the same — a deduction
-            // there needs a credit, and no account has been approved to take it — so the P&L reports
-            // the amount as an outstanding deduction instead. See ProfitAndLossDto.PendingFixedAssetCharge.
+            // being held outside it as a second figure to reconcile. The formal P&L applies the same
+            // rule to the same figure, so this card and that statement cannot disagree. The asset
+            // itself is untouched: it stays on the Balance Sheet at cost with nothing written off
+            // against it, which is why that sheet's retained profit is higher and discloses why.
             var assetPurchases = await FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var totalExpenses = ordinaryExpenses + commissionPayouts - commissionReversals
                 + rebatePayments - rebateReversals + nonCashCredits + loanInterest + assetPurchases;
 
@@ -102,43 +100,63 @@ namespace DAMS.Application.Services
             if (!accountFilterApplied)
             {
                 outstandingTotal = await OutstandingBalanceQuery(projectId)
-                    .SumAsync(x => (decimal?)x.OutstandingAmount) ?? 0m;
+                    .SumAsync(x => (decimal?)x.OutstandingAmount, cancellationToken) ?? 0m;
                 overdueTotal = await OverdueBalanceQuery(projectId)
-                    .SumAsync(x => (decimal?)x.OverdueAmount) ?? 0m;
-                (customerDeposits, _) = await CustomerBalancesAsync(projectId, toExclusive, CancellationToken.None);
+                    .SumAsync(x => (decimal?)x.OverdueAmount, cancellationToken) ?? 0m;
+                (customerDeposits, _) = await CustomerBalancesAsync(projectId, toExclusive, cancellationToken);
             }
 
             // When a single account is selected, surface its running balance up to the end of
             // the selected period. This is account-wide (project filter is ignored) because the
             // balance is a property of the account, matching the Accounts detail view.
+            //
+            // The balance comes from AccountSnapshotsAsync — the SAME computation the Balance Sheet
+            // and Trial Balance are built from — rather than from a second implementation here. The
+            // second implementation is what went wrong: it knew about payments, expenses, assets,
+            // loans in cash and staff floats, and knew nothing about partner capital, so a bank that
+            // held nothing but a Rs 5,000,000 partner contribution reported a Current Balance of
+            // zero while the account ledger and the Balance Sheet both reported five million. The
+            // same gap applied to every account whose balance is not plain cash movement — a loan
+            // liability, a capital account, Tax Payable, Customer Deposits. One computation cannot
+            // disagree with itself.
             decimal? accountOpeningBalance = null;
             decimal? accountCurrentBalance = null;
             decimal? accountNetMovement = null;
             if (accountId.HasValue)
             {
-                var opening = await _context.FinanceAccounts.AsNoTracking()
+                var account = await _context.FinanceAccounts.AsNoTracking()
                     .Where(a => a.Id == accountId.Value)
-                    .Select(a => (decimal?)a.OpeningBalance)
-                    .SingleOrDefaultAsync();
-                if (opening.HasValue)
+                    .Select(a => new { a.OpeningBalance })
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (account is not null)
                 {
-                    var cumulativeRevenue = await CashInflowBeforeAsync(toExclusive, accountId.Value);
-                    var cumulativeExpenses = await CashOutflowBeforeAsync(toExclusive, accountId.Value);
-                    accountOpeningBalance = opening.Value;
-                    accountCurrentBalance = opening.Value + cumulativeRevenue - cumulativeExpenses;
+                    var reportEnd = to?.Date ?? PakistanTime.Today;
+                    var openingDate = await OpeningDateAsync(cancellationToken);
+                    var snapshots = await AccountSnapshotsAsync(null, reportEnd, openingDate, cancellationToken);
+                    accountCurrentBalance = snapshots.SingleOrDefault(s => s.Id == accountId.Value)?.Balance ?? 0m;
+                    // Gated on the go-live date for the same reason the balance beside it is: an
+                    // opening balance dated 1 August is not part of what the account held on 31 July,
+                    // and showing it there while the balance correctly excludes it made the two
+                    // figures on the same card contradict each other.
+                    accountOpeningBalance = !openingDate.HasValue || openingDate.Value <= reportEnd
+                        ? account.OpeningBalance
+                        : 0m;
 
-                    // Cash movement over the selected period — not the same thing as profit.
-                    // Expenses count at what actually left the account and FBR deposits count too,
-                    // even though neither matches the P&L figure above.
+                    // Cash movement over the selected period — not the same thing as the balance
+                    // change above, and not the same thing as profit. Expenses count at what
+                    // actually left the account and FBR deposits count too, even though neither
+                    // matches the P&L figure above.
+                    var cumulativeInflow = await CashInflowBeforeAsync(toExclusive, accountId.Value, cancellationToken);
+                    var cumulativeOutflow = await CashOutflowBeforeAsync(toExclusive, accountId.Value, cancellationToken);
                     var inflowBeforePeriod = fromValue.HasValue
-                        ? await CashInflowBeforeAsync(fromValue, accountId.Value)
+                        ? await CashInflowBeforeAsync(fromValue, accountId.Value, cancellationToken)
                         : 0m;
                     var outflowBeforePeriod = fromValue.HasValue
-                        ? await CashOutflowBeforeAsync(fromValue, accountId.Value)
+                        ? await CashOutflowBeforeAsync(fromValue, accountId.Value, cancellationToken)
                         : 0m;
                     accountNetMovement =
-                        (cumulativeRevenue - inflowBeforePeriod)
-                        - (cumulativeExpenses - outflowBeforePeriod);
+                        (cumulativeInflow - inflowBeforePeriod)
+                        - (cumulativeOutflow - outflowBeforePeriod);
                 }
             }
 
@@ -165,7 +183,7 @@ namespace DAMS.Application.Services
         // Each method fetches `take + 1` rows in SQL (OFFSET/FETCH) so HasMore is known
         // without a separate COUNT query.
 
-        public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
+        public async Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -272,7 +290,7 @@ namespace DAMS.Application.Services
                 .ThenBy(x => x.Source)
                 .ThenByDescending(x => x.SortId)
                 .Skip(skip).Take(take + 1)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             var items = raw.Take(take).Select(r => new RevenueLineDto
             {
@@ -296,7 +314,7 @@ namespace DAMS.Application.Services
             return new PagedResult<RevenueLineDto> { Items = items, HasMore = raw.Count > take };
         }
 
-        public async Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
+        public async Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -336,7 +354,7 @@ namespace DAMS.Application.Services
                         UploadedAt = e.Attachment.UploadedAt
                     }
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             return Page(rows, take);
         }
@@ -352,7 +370,7 @@ namespace DAMS.Application.Services
         /// </para>
         /// </summary>
         public async Task<PagedResult<CustomerDepositLineDto>> GetCustomerDepositPageAsync(
-            int? projectId, DateTime? to, int skip, int take)
+            int? projectId, DateTime? to, int skip, int take, CancellationToken cancellationToken = default)
         {
             var end = to?.Date.AddDays(1);
 
@@ -394,18 +412,18 @@ namespace DAMS.Application.Services
                 };
 
             var page = await rows.OrderByDescending(r => r.DepositBalance).ThenBy(r => r.BookingId)
-                .Skip(skip).Take(take + 1).ToListAsync();
+                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
             // Status is an enum: formatted in memory because enum.ToString does not translate.
             var statuses = await _context.Bookings.AsNoTracking()
                 .Where(b => page.Select(r => r.BookingId).Contains(b.Id))
-                .Select(b => new { b.Id, b.Status }).ToListAsync();
+                .Select(b => new { b.Id, b.Status }).ToListAsync(cancellationToken);
             foreach (var row in page)
                 row.BookingStatus = statuses.FirstOrDefault(s => s.Id == row.BookingId)?.Status.ToString() ?? string.Empty;
 
             return Page(page, take);
         }
 
-        public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take)
+        public async Task<PagedResult<OutstandingLineDto>> GetOutstandingPageAsync(int? projectId, int skip, int take, CancellationToken cancellationToken = default)
         {
             var balances = OutstandingBalanceQuery(projectId)
                 .OrderByDescending(x => x.OutstandingAmount).ThenBy(x => x.SortId)
@@ -424,14 +442,14 @@ namespace DAMS.Application.Services
             return Page(await balances.Skip(skip).Take(take + 1).ToListAsync(), take);
         }
 
-        public async Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take)
+        public async Task<PagedResult<OverdueLineDto>> GetOverduePageAsync(int? projectId, int skip, int take, CancellationToken cancellationToken = default)
         {
             // Fetch the page with Type as an enum, then format it in memory (enum.ToString
             // is not reliably translatable to SQL).
             var balances = OverdueBalanceQuery(projectId)
                 .OrderBy(x => x.DueDate).ThenBy(x => x.SortId);
 
-            var raw = await balances.Skip(skip).Take(take + 1).ToListAsync();
+            var raw = await balances.Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
 
             var items = raw.Take(take).Select(r => new OverdueLineDto
             {
@@ -457,7 +475,7 @@ namespace DAMS.Application.Services
         /// same filters, so an operator can total the rows in front of them and arrive at the figure
         /// they clicked.
         /// </summary>
-        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false)
+        public async Task<PagedResult<NetProfitLineDto>> GetNetProfitPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
         {
             var fromValue = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
@@ -597,7 +615,7 @@ namespace DAMS.Application.Services
                 .ThenBy(x => x.Kind)
                 .ThenByDescending(x => x.SortId)
                 .Skip(skip).Take(take + 1)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             var items = raw.Take(take).Select(r => new NetProfitLineDto
             {
@@ -615,31 +633,159 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
+        /// Every line behind the Total Expenses card: costs (+) and the things that give a cost back
+        /// (−). Built from exactly the components <see cref="GetSummaryAsync"/> adds into
+        /// <see cref="FinancialSummaryDto.TotalExpenses"/>, in the same order, so the signed amounts
+        /// over every page total that card to the paisa.
+        /// <para>
+        /// This exists because the card is NOT the expense table. Total Expenses is ordinary expenses
+        /// plus commissions, rebates, non-cash customer credits, loan interest and fixed-asset
+        /// purchases, each net of its reversals — so an operator who clicked the card and was shown
+        /// only <see cref="GetExpensePageAsync"/> saw a table that could not account for its own
+        /// heading, with the difference silently absent rather than reported.
+        /// </para>
+        /// </summary>
+        public async Task<PagedResult<CostLineDto>> GetCostBreakdownPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default)
+        {
+            var fromValue = from?.Date;
+            var toExclusive = to?.Date.AddDays(1);
+
+            var expenses = ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(e => new CostRow
+                {
+                    SortId = e.Id, Date = e.Date, ProjectName = e.Project!.ProjectName,
+                    Kind = "cost", Amount = e.Amount, ExpenseId = e.Id, Label = e.Category
+                });
+            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(p => new CostRow
+                {
+                    SortId = p.Id, Date = p.PaymentDate, ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "cost", Amount = p.Amount, ExpenseId = null, Label = "Partner commission"
+                });
+            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new CostRow
+                {
+                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Commission payout reversal"
+                });
+            var rebatePayments = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(d => new CostRow
+                {
+                    SortId = d.Id, Date = d.AppliedAt, ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer rebate"
+                });
+            var rebateReversals = CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new CostRow
+                {
+                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer rebate reversal"
+                });
+            // Dated at the later of the credit and the recognition, exactly as the summary and the
+            // Net Profit list date them — a credit cannot be a cost before the sale it reduces is
+            // income, so a period that predates possession must not pick it up.
+            var nonCashCredits = NonCashCreditQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(d => new CostRow
+                {
+                    SortId = d.Id,
+                    Date = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? d.Rebate.Booking.SaleRecognition!.RecognitionDate : d.AppliedAt,
+                    ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer credit (non-cash)"
+                });
+            var nonCashCreditReversals = NonCashCreditReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new CostRow
+                {
+                    SortId = r.Id,
+                    Date = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : r.ReversedAt,
+                    ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
+                    Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer credit reversal"
+                });
+            var loanInterest = LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(t => new CostRow
+                {
+                    SortId = t.Id, Date = t.Date, ProjectName = "General",
+                    Kind = "cost", Amount = t.InterestAmount, ExpenseId = null, Label = "Loan Interest"
+                });
+            var assetPurchases = FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(p => new CostRow
+                {
+                    SortId = p.Id, Date = p.Date,
+                    ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Kind = "cost", Amount = p.Amount, ExpenseId = null,
+                    Label = "Fixed asset purchase — " + p.ItemName
+                });
+
+            var raw = await expenses.Concat(commissionPayouts).Concat(commissionReversals)
+                .Concat(rebatePayments).Concat(rebateReversals)
+                .Concat(nonCashCredits).Concat(nonCashCreditReversals)
+                .Concat(loanInterest).Concat(assetPurchases)
+                .OrderByDescending(x => x.Date)
+                .ThenBy(x => x.Kind)
+                .ThenByDescending(x => x.SortId)
+                .Skip(skip).Take(take + 1)
+                .ToListAsync(cancellationToken);
+
+            var items = raw.Take(take).Select(r => new CostLineDto
+            {
+                Date = r.Date,
+                ProjectName = r.ProjectName ?? "General",
+                Kind = r.Kind,
+                Label = r.Label ?? string.Empty,
+                ExpenseId = r.ExpenseId,
+                // "cost" is named as the positive case rather than "reduction" as the negative one,
+                // so a component added here later cannot default itself into giving money back.
+                Amount = r.Kind == "cost" ? r.Amount : -r.Amount
+            }).ToList();
+
+            return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take };
+        }
+
+        private sealed class CostRow
+        {
+            public int SortId { get; set; }
+            public DateTime Date { get; set; }
+            public string? ProjectName { get; set; }
+            public string Kind { get; set; } = string.Empty;
+            public decimal Amount { get; set; }
+            public int? ExpenseId { get; set; }
+            public string? Label { get; set; }
+        }
+
+        /// <summary>
         /// Everything that has arrived in one account before <paramref name="toExclusive"/> (all of
         /// time when null): customer payments and manually entered revenue alike. Customer payments
         /// are the largest inflow in the business, so a balance that omits them is not approximate
         /// — it is arbitrarily far out, and usually negative.
         /// </summary>
-        private async Task<decimal> CashInflowBeforeAsync(DateTime? toExclusive, int accountId)
+        private async Task<decimal> CashInflowBeforeAsync(DateTime? toExclusive, int accountId,
+            CancellationToken cancellationToken = default)
         {
             var payments = await PaymentsQuery(null, null, toExclusive, accountId, false)
-                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var manual = await ManualQuery(null, null, toExclusive, accountId, false)
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             // Value capitalised INTO this account, at the gross price. Only ever non-zero on a
             // fixed-asset account, where it is the only thing that moves the balance at all.
             var capitalised = await AssetPurchaseQuery(null, null, toExclusive, accountId, null, false)
-                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var loanDrawdowns = await _context.LoanTransactions.AsNoTracking()
                 .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Drawdown
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
-                .SumAsync(t => (decimal?)t.PrincipalAmount) ?? 0m;
+                .SumAsync(t => (decimal?)t.PrincipalAmount, cancellationToken) ?? 0m;
+            // A partner putting money into the business is cash arriving in this account like any
+            // other. Leaving it out did not make the movement approximate — it made it wrong by the
+            // whole of what the partners had put in.
+            var capitalIn = await _context.CapitalTransactions.AsNoTracking()
+                .Where(t => t.FinanceAccountId == accountId && t.Type == CapitalTransactionType.Contribution
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)t.Amount, cancellationToken) ?? 0m;
             var staffCashIn = await _context.StaffCashTransfers.AsNoTracking()
                 .Where(t => ((t.StaffFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsGiven)
                         || (t.CounterpartyFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsReturned))
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
-                .SumAsync(t => (decimal?)t.Amount) ?? 0m;
-            return payments + manual + capitalised + loanDrawdowns + staffCashIn;
+                .SumAsync(t => (decimal?)t.Amount, cancellationToken) ?? 0m;
+            return payments + manual + capitalised + loanDrawdowns + capitalIn + staffCashIn;
         }
 
         /// <summary>
@@ -652,36 +798,44 @@ namespace DAMS.Application.Services
         /// appear in the P&amp;L.
         /// </para>
         /// </summary>
-        private async Task<decimal> CashOutflowBeforeAsync(DateTime? toExclusive, int accountId)
+        private async Task<decimal> CashOutflowBeforeAsync(DateTime? toExclusive, int accountId,
+            CancellationToken cancellationToken = default)
         {
             var expenses = await ExpenseQuery(null, null, toExclusive, accountId, false)
-                .SumAsync(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m;
+                .SumAsync(e => (decimal?)(e.Amount - e.WhtAmount), cancellationToken) ?? 0m;
             var commissions = (await CommissionPayoutQuery(null, null, toExclusive, accountId, false)
-                    .SumAsync(p => (decimal?)p.Amount) ?? 0m)
+                    .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
                 - (await CommissionReversalQuery(null, null, toExclusive, accountId, false)
-                    .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
             var rebates = (await CashRebateQuery(null, null, toExclusive, accountId, false)
-                    .SumAsync(d => (decimal?)d.Amount) ?? 0m)
+                    .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
                 - (await CashRebateReversalQuery(null, null, toExclusive, accountId, false)
-                    .SumAsync(r => (decimal?)r.Amount) ?? 0m);
+                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
             var whtDeposits = await WhtDepositQuery(toExclusive, accountId)
-                .SumAsync(d => (decimal?)d.Amount) ?? 0m;
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
             // Net, for the same reason expenses are: the withheld portion is still sitting here.
             var assetPurchases = await AssetPurchaseQuery(null, null, toExclusive, null, accountId, false)
-                .SumAsync(p => (decimal?)(p.Amount - p.WhtAmount)) ?? 0m;
+                .SumAsync(p => (decimal?)(p.Amount - p.WhtAmount), cancellationToken) ?? 0m;
             var loanRepayments = await _context.LoanTransactions.AsNoTracking()
                 .Where(t => t.FinanceAccountId == accountId && t.Type == LoanTransactionType.Repayment
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
-                .SumAsync(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m;
+                .SumAsync(t => (decimal?)(t.PrincipalAmount + t.InterestAmount), cancellationToken) ?? 0m;
+            // The mirror of the contribution counted as an inflow: a partner drawing money out is
+            // cash leaving this account.
+            var capitalOut = await _context.CapitalTransactions.AsNoTracking()
+                .Where(t => t.FinanceAccountId == accountId && t.Type == CapitalTransactionType.Withdrawal
+                    && (!toExclusive.HasValue || t.Date < toExclusive.Value))
+                .SumAsync(t => (decimal?)t.Amount, cancellationToken) ?? 0m;
             var staffCashOut = await _context.StaffCashTransfers.AsNoTracking()
                 .Where(t => ((t.StaffFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsReturned)
                         || (t.CounterpartyFinanceAccountId == accountId && t.Type == StaffCashMovementType.FundsGiven))
                     && (!toExclusive.HasValue || t.Date < toExclusive.Value))
-                .SumAsync(t => (decimal?)t.Amount) ?? 0m;
+                .SumAsync(t => (decimal?)t.Amount, cancellationToken) ?? 0m;
             // A pending (PayLater) refund does not move cash — only an actual payout does.
             var cancellationRefunds = await CancellationRefundCashQuery(null, toExclusive, accountId)
-                .SumAsync(r => (decimal?)r.Amount) ?? 0m;
-            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments + staffCashOut + cancellationRefunds;
+                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+            return expenses + commissions + rebates + whtDeposits + assetPurchases + loanRepayments
+                + capitalOut + staffCashOut + cancellationRefunds;
         }
 
         private IQueryable<WhtDeposit> WhtDepositQuery(DateTime? toExclusive, int accountId)
