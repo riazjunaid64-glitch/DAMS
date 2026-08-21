@@ -34,6 +34,12 @@ namespace DAMS.Application.Services
         {
             var fromValue = from?.Date;
             var toValue = to?.Date;
+            // Bounds only — NOT the both-or-neither rule, which belongs at the API boundary: an
+            // open-ended call like GetSummaryAsync(null, null, someDate) is a legitimate
+            // balance-as-at-a-date question. ExclusiveEnd covers the upper bound; this covers the
+            // lower one, so a date SQL Server cannot store is refused with a message rather than
+            // reaching the database and coming back as a conversion fault.
+            EnsureFilterBound(fromValue, "From date");
             var toExclusive = ExclusiveEnd(toValue);
 
             // The cards come out of the SAME grouped read set the dashboard's chart and pie are
