@@ -313,12 +313,21 @@ public sealed class FinanceDashboardIntegrityTests
             Assert.IsType<BadRequestObjectResult>(result);
         }
 
-        // And the service itself refuses rather than throwing arithmetic: a caller that skips the
-        // controller still gets a message an operator could act on.
+        // And the service itself refuses rather than throwing arithmetic or handing SQL Server a
+        // date it cannot convert: a caller that skips the controller still gets a message an
+        // operator could act on. BOTH ends, because ExclusiveEnd only sees the upper one.
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.GetSummaryAsync(null, PeriodStart, tooLate));
         await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.GetSummaryAsync(null, tooEarly, PeriodEnd));
+        await Assert.ThrowsAsync<InvalidOperationException>(
             () => service.GetDashboardAsync(null, PeriodStart, tooLate));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.GetDashboardAsync(null, tooEarly, PeriodEnd));
+
+        // An open-ended balance-as-at-a-date call is still legitimate and still works: the bounds
+        // rule is not the both-or-neither rule, and conflating them would break it.
+        Assert.NotNull(await service.GetSummaryAsync(null, null, PeriodEnd));
     }
 
     /// <summary>

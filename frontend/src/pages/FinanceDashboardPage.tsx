@@ -1588,6 +1588,10 @@ export default function FinanceDashboardPage({ user }: Props) {
             {chartData.series.length} period{chartData.series.length === 1 ? "" : "s"}, covering
             {" "}{formatDate(chartData.series[0].from)} – {formatDate(chartData.series[chartData.series.length - 1].to)}
             {" "}with no gaps.
+            {/* The bars are the cards over narrower windows, so an account filter narrows them the
+                same way — including dropping the recognised sales that belong to no account. The
+                cards say so above; the chart has to say so too, or it reads as the whole business. */}
+            {accountSelected && " Scoped to the selected account, exactly as the figures above are."}
           </p>
         )}
         <FinanceCharts data={chartData} loading={summaryLoading} formatMoney={formatMoney} />
