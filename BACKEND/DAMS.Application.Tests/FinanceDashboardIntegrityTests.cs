@@ -355,13 +355,13 @@ public sealed class FinanceDashboardIntegrityTests
             new Payment
             {
                 BookingId = recognised.Id, FinanceAccountId = world.BankId, Amount = 1_000_000m,
-                PaymentType = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 5),
+                Type = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 5),
                 CreatedAt = new DateTime(2026, 7, 5, 6, 0, 0, DateTimeKind.Utc)
             },
             new Payment
             {
                 BookingId = held.Id, FinanceAccountId = world.BankId, Amount = 300_000m,
-                PaymentType = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 6),
+                Type = PaymentType.BookingAmount, PaidAt = new DateTime(2026, 7, 6),
                 CreatedAt = new DateTime(2026, 7, 6, 6, 0, 0, DateTimeKind.Utc)
             });
         await context.SaveChangesAsync();
