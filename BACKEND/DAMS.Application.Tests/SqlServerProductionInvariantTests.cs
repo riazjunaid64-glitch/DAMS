@@ -2281,6 +2281,231 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// "At most one usable invitation per login" has to be a property of the database, not of
+    /// the order two requests happen to arrive in. Two Admins pressing Resend at the same
+    /// instant each read the outstanding set, each revoke what they saw, and each insert a
+    /// replacement — leaving two live activation links for one account unless the read and the
+    /// write are one serialisable step.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentStaffIssuance_OnlyOneValidInvitationOutstandingPerUser()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int invitedUserId;
+        int adminUserId;
+        await using (var db = new AppDbContext(options))
+        {
+            var admin = new User
+            {
+                RoleId = 1, FullName = "SQL Admin", Email = "sql-admin@dams.test",
+                Password = "$2a$11$adminhash", AccountStatus = UserAccountStatus.Active
+            };
+            var invited = new User
+            {
+                RoleId = 4, FullName = "SQL Invited", Email = "sql-invited@dams.test",
+                Password = null, AccountStatus = UserAccountStatus.Invited
+            };
+            db.Users.AddRange(admin, invited);
+            await db.SaveChangesAsync();
+
+            db.Employees.Add(new Employee
+            {
+                FullName = "SQL Invited", UserId = invited.UserId, Email = invited.Email,
+                JobTitle = "Sales Executive", JoinDate = new DateTime(2026, 1, 1),
+                Status = EmployeeStatus.Active
+            });
+            await db.SaveChangesAsync();
+
+            invitedUserId = invited.UserId;
+            adminUserId = admin.UserId;
+        }
+
+        async Task<StaffInvitationResult> IssueAsync()
+        {
+            await using var context = new AppDbContext(options);
+            var service = new StaffInvitationService(
+                context, new NotificationSettingsStore(context),
+                new ThrowingEmailSender(), TimeProvider.System);
+            return await service.IssueAsync(invitedUserId, adminUserId);
+        }
+
+        // Two concurrent requests to issue/resend invitations for the same user.
+        // Only one should result in a valid outstanding token at commit time.
+        var outcomes = await Task.WhenAll(IssueAsync(), IssueAsync());
+
+        Assert.All(outcomes, o => Assert.True(o.Issued, "Both invitations should be committed"));
+
+        await using (var db = new AppDbContext(options))
+        {
+            // Count outstanding invitations for this user: should be exactly one.
+            var outstanding = await db.StaffInvitations
+                .Where(i => i.UserId == invitedUserId && i.AcceptedAt == null && i.RevokedAt == null)
+                .CountAsync();
+            Assert.Equal(1, outstanding);
+        }
+    }
+
+    /// <summary>
+    /// The other half of the race: a resend that read the login as Invited must not be able to
+    /// mint a link after an activation has made that login Active. Whichever order they land in,
+    /// an Active account must be left with no usable invitation behind it.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ResendRacingActivation_NeverLeavesAUsableLinkOnAnActivatedAccount()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        const string rawToken = "resend-versus-activation-token";
+        int invitedUserId;
+        int adminUserId;
+        await using (var db = new AppDbContext(options))
+        {
+            var admin = new User
+            {
+                RoleId = 1, FullName = "SQL Admin", Email = "sql-admin@dams.test",
+                Password = "$2a$11$adminhash", AccountStatus = UserAccountStatus.Active
+            };
+            var invited = new User
+            {
+                RoleId = 4, FullName = "SQL Invited", Email = "sql-invited@dams.test",
+                Password = null, AccountStatus = UserAccountStatus.Invited
+            };
+            db.Users.AddRange(admin, invited);
+            await db.SaveChangesAsync();
+
+            db.Employees.Add(new Employee
+            {
+                FullName = "SQL Invited", UserId = invited.UserId, Email = invited.Email,
+                JobTitle = "Sales Executive", JoinDate = new DateTime(2026, 1, 1),
+                Status = EmployeeStatus.Active
+            });
+            db.StaffInvitations.Add(new StaffInvitation
+            {
+                UserId = invited.UserId,
+                InvitedByUserId = admin.UserId,
+                TokenHash = Convert.ToBase64String(
+                    System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(rawToken))),
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddHours(24)
+            });
+            await db.SaveChangesAsync();
+
+            invitedUserId = invited.UserId;
+            adminUserId = admin.UserId;
+        }
+
+        async Task<StaffActivationResult> ActivateAsync()
+        {
+            await using var context = new AppDbContext(options);
+            return await NewService(context).ActivateAsync(rawToken, "chosen-by-the-employee");
+        }
+
+        async Task<StaffInvitationResult> ResendAsync()
+        {
+            await using var context = new AppDbContext(options);
+            return await NewService(context).ResendAsync(invitedUserId, adminUserId);
+        }
+
+        StaffInvitationService NewService(AppDbContext context) => new(
+            context, new NotificationSettingsStore(context),
+            new ThrowingEmailSender(), TimeProvider.System);
+
+        var activation = ActivateAsync();
+        var resend = ResendAsync();
+        await Task.WhenAll((Task)activation, resend);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var user = await db.Users.SingleAsync(u => u.UserId == invitedUserId);
+
+            // Whoever won, the invariant is the same: an Active account has nothing outstanding,
+            // and an account still Invited has exactly one link to finish with.
+            var usable = await db.StaffInvitations
+                .CountAsync(i => i.UserId == invitedUserId && i.AcceptedAt == null && i.RevokedAt == null);
+
+            if (user.AccountStatus == UserAccountStatus.Active)
+            {
+                Assert.NotNull(user.Password);
+                Assert.Equal(0, usable);
+                // The resend, if it ran second, must have been refused rather than minting a link
+                // for an account that already has a password.
+                Assert.False((await resend).Issued && usable > 0);
+            }
+            else
+            {
+                Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+                Assert.Null(user.Password);
+                Assert.Equal(1, usable);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Activation refuses an employee who is no longer active, so issuing to one would email a
+    /// credential that is dead on arrival. Both halves must agree.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AnInvitationIsRefusedForAnEmployeeWhoIsNoLongerActive()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int invitedUserId;
+        int adminUserId;
+        await using (var db = new AppDbContext(options))
+        {
+            var admin = new User
+            {
+                RoleId = 1, FullName = "SQL Admin", Email = "sql-admin@dams.test",
+                Password = "$2a$11$adminhash", AccountStatus = UserAccountStatus.Active
+            };
+            var invited = new User
+            {
+                RoleId = 4, FullName = "SQL Left", Email = "sql-left@dams.test",
+                Password = null, AccountStatus = UserAccountStatus.Invited
+            };
+            db.Users.AddRange(admin, invited);
+            await db.SaveChangesAsync();
+
+            db.Employees.Add(new Employee
+            {
+                FullName = "SQL Left", UserId = invited.UserId, Email = invited.Email,
+                JobTitle = "Sales Executive", JoinDate = new DateTime(2026, 1, 1),
+                Status = EmployeeStatus.Terminated
+            });
+            await db.SaveChangesAsync();
+
+            invitedUserId = invited.UserId;
+            adminUserId = admin.UserId;
+        }
+
+        await using (var context = new AppDbContext(options))
+        {
+            var service = new StaffInvitationService(
+                context, new NotificationSettingsStore(context),
+                new ThrowingEmailSender(), TimeProvider.System);
+
+            var issued = await service.IssueAsync(invitedUserId, adminUserId);
+
+            Assert.False(issued.Issued);
+            Assert.Equal(StaffInvitationFailure.EmployeeNotActive, issued.Failure);
+        }
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(0, await db.StaffInvitations.CountAsync(i => i.UserId == invitedUserId));
+    }
+
+    /// <summary>
     /// Single use has to be a property of the database, not of the order two requests happen to
     /// arrive in. Two clicks on the same activation link at the same instant — the second tab,
     /// the impatient double-click, the replay — must leave exactly one of them holding a

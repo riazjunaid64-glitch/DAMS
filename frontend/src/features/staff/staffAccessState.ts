@@ -239,19 +239,84 @@ export function newManageForm(account: StaffAccount): StaffAccountForm {
   };
 }
 
+// ── Which half of the form is real, for this particular request ───────────────
+
+/**
+ * Whether this request attaches a login to an employment record that already exists — either
+ * because the Admin came from that employee's row, or because they picked one from the list.
+ * When it does, DAMS owns the HR data already and the backend ignores anything sent for it.
+ */
+export function usesExistingEmployee(
+  form: StaffAccountForm,
+  locked: StaffAccount | null,
+): boolean {
+  return locked !== null || form.existingEmployeeId !== "";
+}
+
+/**
+ * The login's email is only fixed once it belongs to a login that already exists. An employee
+ * record does not fix it: `Employee.Email` is optional, so an employee with no HR address must
+ * still be given one to sign in with, and locking the field would make them unprovisionable.
+ */
+export function loginEmailIsReadOnly(form: StaffAccountForm, managing: boolean): boolean {
+  return managing || form.existingUserId !== "";
+}
+
+/**
+ * Selecting or clearing "Connect existing login", as one deterministic transition.
+ *
+ * Clearing has to restore, not leave behind: the previous login's name and address are not a
+ * sensible default for the new login being created, and with a fixed employee they could not
+ * be typed over either. Passing `user: null` means "no existing login", and the identity falls
+ * back to the employee it is being created for, or to empty when there is no employee yet.
+ */
+export function applyLoginSelection(
+  form: StaffAccountForm,
+  user: LinkableLogin | null,
+  locked: StaffAccount | null,
+): StaffAccountForm {
+  if (user !== null) {
+    return { ...form, existingUserId: String(user.userId), fullName: user.fullName, email: user.email };
+  }
+
+  return {
+    ...form,
+    existingUserId: "",
+    fullName: locked?.fullName ?? "",
+    email: locked?.email ?? "",
+  };
+}
+
+/** The shape `GET /api/staff/linkable-users` returns, as this module needs it. */
+export interface LinkableLogin {
+  userId: number;
+  fullName: string;
+  email: string;
+}
+
 /**
  * Only the fields `POST /api/staff/accounts` accepts, named one by one. Spreading the whole
  * form is how a temporary-password field used to reach the backend; listing each field is
  * what stops the next piece of UI-only state doing the same.
+ *
+ * The HR fields are sent only when this request creates the employment record. For an existing
+ * employee the service ignores them, so sending them would be asking the Admin to fill in
+ * values DAMS then throws away.
  */
-export function buildProvisionPayload(form: StaffAccountForm) {
-  return {
+export function buildProvisionPayload(form: StaffAccountForm, locked: StaffAccount | null = null) {
+  const base = {
     existingUserId: toId(form.existingUserId),
     existingEmployeeId: toId(form.existingEmployeeId),
     fullName: form.fullName.trim(),
     email: form.email.trim(),
     role: form.role,
     teamId: toId(form.teamId),
+  };
+
+  if (usesExistingEmployee(form, locked)) return base;
+
+  return {
+    ...base,
     jobTitle: form.jobTitle.trim(),
     department: form.department.trim(),
     phone: form.phone.trim(),

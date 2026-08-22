@@ -1,3 +1,4 @@
+using System.Data;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.Interfaces;
@@ -5,6 +6,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services
 {
@@ -60,6 +62,7 @@ namespace DAMS.Application.Services
                     TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
                     CanOwnLeads = e.User != null &&
+                        e.User.AccountStatus == UserAccountStatus.Active &&
                         (e.User.Role.Role_name == LeadRoles.Manager ||
                          e.User.Role.Role_name == LeadRoles.Employee ||
                          e.User.Role.Role_name == LeadRoles.Admin)
@@ -80,7 +83,7 @@ namespace DAMS.Application.Services
                     TeamId = e.TeamId,
                     TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
-                    CanOwnLeads = e.User != null,
+                    CanOwnLeads = e.User != null && e.User.AccountStatus == UserAccountStatus.Active,
                     JobTitle = e.JobTitle,
                     Department = e.Department,
                     Phone = e.Phone,
@@ -180,92 +183,123 @@ namespace DAMS.Application.Services
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
             await ValidateTeamAsync(dto.TeamId, cancellationToken);
 
-            User user;
-            bool needsInvitation;
-            if (dto.ExistingUserId.HasValue)
+            // Assigned inside the transaction below and read after it commits. Initialised here
+            // because the compiler cannot prove a lambda ran, and because a retry re-runs the
+            // block and must overwrite whatever a previous attempt left behind.
+            var provisionedUserId = 0;
+            var provisionedEmployeeId = 0;
+            var needsInvitation = false;
+
+            // "Is this employee free?" and "link this employee" have to be one decision. Two
+            // Admins reading the same unlinked employee, both finding it free, and both writing
+            // is how one person ends up with two logins and an orphan Invited account.
+            await ExecuteResilientlyAsync(async () =>
             {
-                user = await _context.Users
-                    .FirstOrDefaultAsync(u => u.UserId == dto.ExistingUserId.Value, cancellationToken)
-                    ?? throw new InvalidOperationException("The selected login account does not exist.");
+                _context.ChangeTracker.Clear();
+                provisionedUserId = 0;
+                provisionedEmployeeId = 0;
+                needsInvitation = false;
 
-                if (await _context.Employees.AnyAsync(e => e.UserId == user.UserId, cancellationToken))
-                    throw new InvalidOperationException("That login account is already linked to an employee.");
+                await using var transaction = await BeginProvisioningAsync(cancellationToken);
 
-                // Re-enabling a switched-off login is a decision of its own, not a side effect
-                // of granting staff access, so this refuses rather than quietly waking it up.
-                if (user.AccountStatus == UserAccountStatus.Disabled)
-                    throw new InvalidOperationException(
-                        "That login is disabled. Re-enable the account before giving it staff access.");
-
-                user.RoleId = role.RoleId;
-
-                // An active login already has a password only its owner knows — linking it to
-                // an employee is not a reason to send an activation link. One still waiting on
-                // its first password gets a fresh invitation.
-                needsInvitation = user.AccountStatus == UserAccountStatus.Invited;
-            }
-            else
-            {
-                var email = NormalizeEmail(dto.Email);
-                if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email, cancellationToken))
-                    throw new InvalidOperationException("A login with that email already exists. Choose it from existing accounts.");
-
-                // No password is chosen here — not by the Admin and not by DAMS. The account
-                // exists but cannot be signed into until the invited person sets their own.
-                user = new User
+                User user;
+                if (dto.ExistingUserId.HasValue)
                 {
-                    FullName = dto.FullName.Trim(),
-                    Email = email,
-                    Password = null,
-                    RoleId = role.RoleId,
-                    AccountStatus = UserAccountStatus.Invited
-                };
-                _context.Users.Add(user);
-                needsInvitation = true;
-            }
+                    user = await _context.Users
+                        .FirstOrDefaultAsync(u => u.UserId == dto.ExistingUserId.Value, cancellationToken)
+                        ?? throw new InvalidOperationException("The selected login account does not exist.");
 
-            Employee employee;
-            if (dto.ExistingEmployeeId.HasValue)
-            {
-                employee = await _context.Employees
-                    .FirstOrDefaultAsync(e => e.Id == dto.ExistingEmployeeId.Value, cancellationToken)
-                    ?? throw new InvalidOperationException("The selected employee does not exist.");
+                    if (await _context.Employees.AnyAsync(e => e.UserId == user.UserId, cancellationToken))
+                        throw new InvalidOperationException("That login account is already linked to an employee.");
 
-                if (employee.UserId.HasValue)
-                    throw new InvalidOperationException("That employee already has a login account.");
+                    // Re-enabling a switched-off login is a decision of its own, not a side effect
+                    // of granting staff access, so this refuses rather than quietly waking it up.
+                    if (user.AccountStatus == UserAccountStatus.Disabled)
+                        throw new InvalidOperationException(
+                            "That login is disabled. Re-enable the account before giving it staff access.");
 
-                employee.User = user;
-                employee.TeamId = dto.TeamId ?? employee.TeamId;
-                employee.UpdatedAt = DateTime.UtcNow;
-            }
-            else
-            {
-                employee = new Employee
+                    user.RoleId = role.RoleId;
+
+                    // An active login already has a password only its owner knows — linking it to
+                    // an employee is not a reason to send an activation link. One still waiting on
+                    // its first password gets a fresh invitation.
+                    needsInvitation = user.AccountStatus == UserAccountStatus.Invited;
+                }
+                else
                 {
-                    User = user,
-                    FullName = dto.FullName.Trim(),
-                    Email = NormalizeEmail(dto.Email),
-                    Phone = dto.Phone.Trim(),
-                    JobTitle = dto.JobTitle.Trim(),
-                    Department = dto.Department.Trim(),
-                    TeamId = dto.TeamId,
-                    JoinDate = (dto.JoinDate ?? DateTime.UtcNow).Date,
-                    Status = EmployeeStatus.Active
-                };
-                _context.Employees.Add(employee);
-            }
+                    var email = NormalizeEmail(dto.Email);
+                    if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email, cancellationToken))
+                        throw new InvalidOperationException("A login with that email already exists. Choose it from existing accounts.");
 
-            // The account and its employee link are committed first and on their own. Only
-            // then is an invitation minted, and only then is SMTP attempted — so no database
-            // transaction is ever held open across a mail server round trip, and a mail
-            // failure cannot undo the account that was already created.
-            await _context.SaveChangesAsync(cancellationToken);
+                    // No password is chosen here — not by the Admin and not by DAMS. The account
+                    // exists but cannot be signed into until the invited person sets their own.
+                    user = new User
+                    {
+                        FullName = dto.FullName.Trim(),
+                        Email = email,
+                        Password = null,
+                        RoleId = role.RoleId,
+                        AccountStatus = UserAccountStatus.Invited
+                    };
+                    _context.Users.Add(user);
+                    needsInvitation = true;
+                }
 
+                Employee employee;
+                if (dto.ExistingEmployeeId.HasValue)
+                {
+                    employee = await _context.Employees
+                        .FirstOrDefaultAsync(e => e.Id == dto.ExistingEmployeeId.Value, cancellationToken)
+                        ?? throw new InvalidOperationException("The selected employee does not exist.");
+
+                    if (employee.UserId.HasValue)
+                        throw new InvalidOperationException("That employee already has a login account.");
+
+                    // The same gate the invitation and the login itself apply. Provisioning a
+                    // login for somebody who has left would create an account that can never be
+                    // activated and could never sign in.
+                    if (employee.Status != EmployeeStatus.Active)
+                        throw new InvalidOperationException(
+                            "That employee is not currently active, so a DAMS login could not be used. "
+                            + "Set their employment back to Active first.");
+
+                    employee.User = user;
+                    employee.TeamId = dto.TeamId ?? employee.TeamId;
+                    employee.UpdatedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    employee = new Employee
+                    {
+                        User = user,
+                        FullName = dto.FullName.Trim(),
+                        Email = NormalizeEmail(dto.Email),
+                        Phone = dto.Phone.Trim(),
+                        JobTitle = dto.JobTitle.Trim(),
+                        Department = dto.Department.Trim(),
+                        TeamId = dto.TeamId,
+                        JoinDate = (dto.JoinDate ?? DateTime.UtcNow).Date,
+                        Status = EmployeeStatus.Active
+                    };
+                    _context.Employees.Add(employee);
+                }
+
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+
+                provisionedUserId = user.UserId;
+                provisionedEmployeeId = employee.Id;
+            });
+
+            // Committed. Only now is an invitation minted and SMTP attempted, so no transaction
+            // is ever held open across a mail server round trip and a mail failure cannot undo
+            // the account that was already created.
             var invitation = needsInvitation
-                ? await _invitations.IssueAsync(user.UserId, actor.UserId, cancellationToken)
+                ? await _invitations.IssueAsync(provisionedUserId, actor.UserId, cancellationToken)
                 : null;
 
-            var account = await LoadAccountAsync(employee.Id, cancellationToken);
+            var account = await LoadAccountAsync(provisionedEmployeeId, cancellationToken);
             return invitation == null
                 ? StaffAccountProvisionResult.NoInvitationNeeded(account)
                 : StaffAccountProvisionResult.From(account, invitation);
@@ -294,6 +328,10 @@ namespace DAMS.Application.Services
                     employee.User.AccountStatus == UserAccountStatus.Active
                         ? "That account is already active and does not need an activation link."
                         : "That account is disabled. Re-enable it before sending an activation link.");
+
+            if (employee.Status != EmployeeStatus.Active)
+                throw new InvalidOperationException(
+                    "That employee is not in Active employment status. Activate their employment before sending an invitation.");
 
             return await _invitations.ResendAsync(employee.User.UserId, actor.UserId, cancellationToken);
         }
@@ -346,6 +384,27 @@ namespace DAMS.Application.Services
             return await LoadAccountAsync(employee.Id, cancellationToken);
         }
 
+        /// <summary>
+        /// Serialisable, because "read this employee as unlinked, then link it" is only one
+        /// linkage if nothing can slip between the two. Skipped on a non-relational provider,
+        /// which has no concurrency to protect against, and skipped inside a caller's
+        /// transaction rather than nesting one.
+        /// </summary>
+        private async Task<IDbContextTransaction?> BeginProvisioningAsync(CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return null;
+
+            return await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        }
+
+        /// <summary>
+        /// Not optional: the API configures SQL Server with EnableRetryOnFailure, and EF refuses
+        /// to run anything inside a caller-opened transaction unless it goes through the strategy.
+        /// </summary>
+        private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
+
         private IQueryable<Employee> AccountQuery() => _context.Employees
             .AsNoTracking()
             .Include(e => e.User).ThenInclude(u => u!.Role)
@@ -364,7 +423,7 @@ namespace DAMS.Application.Services
                     TeamId = e.TeamId,
                     TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
-                    CanOwnLeads = e.User != null,
+                    CanOwnLeads = e.User != null && e.User.AccountStatus == UserAccountStatus.Active,
                     JobTitle = e.JobTitle,
                     Department = e.Department,
                     Phone = e.Phone,

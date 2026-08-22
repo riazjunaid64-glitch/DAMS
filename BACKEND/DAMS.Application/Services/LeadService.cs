@@ -1695,6 +1695,22 @@ namespace DAMS.Application.Services
             if (employee.Status != EmployeeStatus.Active)
                 throw new InvalidOperationException($"{employee.FullName} is not an active employee.");
 
+            // Deliberately narrow. Assignment has never required a login — an employee tracked in
+            // HR with no DAMS account is still a valid owner — so only the state this feature
+            // introduced is refused: a login that exists but has not been activated or has been
+            // switched off, whose owner cannot sign in to see the work.
+            if (employee.UserId.HasValue)
+            {
+                var loginUsable = await _context.Users.AnyAsync(
+                    u => u.UserId == employee.UserId.Value
+                        && u.AccountStatus == UserAccountStatus.Active,
+                    cancellationToken);
+
+                if (!loginUsable)
+                    throw new InvalidOperationException(
+                        $"{employee.FullName} has not activated their DAMS login yet, so they cannot be given leads.");
+            }
+
             // A manager may only hand work to their own people.
             if (ctx.IsManager && employee.Id != ctx.EmployeeId
                 && (employee.TeamId == null || !ctx.ManagedTeamIds.Contains(employee.TeamId.Value)))

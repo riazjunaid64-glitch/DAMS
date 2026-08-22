@@ -207,6 +207,20 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
+        /// Serialisable for issuance: "read the user as Invited, read invitations as outstanding,
+        /// then revoke and insert new" is only single-use if nothing can slip between the three
+        /// steps. Skipped on a non-relational provider, which has no concurrency to protect
+        /// against, and skipped inside a caller's transaction rather than nesting one.
+        /// </summary>
+        private async Task<IDbContextTransaction?> BeginIssuanceAsync(CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return null;
+
+            return await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        }
+
+        /// <summary>
         /// Serialisable, because "read it as unused, then write it as used" is only single-use
         /// if nothing can slip between the two. Skipped on a non-relational provider, which has
         /// no concurrency to protect against, and skipped inside a caller's transaction rather
@@ -255,70 +269,128 @@ namespace DAMS.Application.Services
         private static string HashToken(string rawToken) =>
             Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken)));
 
+        /// <summary>
+        /// What the transactional half of issuance produced, so the mailing half can run with no
+        /// database work left to do. The raw token lives here and nowhere else.
+        /// </summary>
+        private sealed record MintedInvitation(
+            int InvitationId, DateTime ExpiresAt, string RawToken, string Email, string FullName);
+
         private async Task<StaffInvitationResult> IssueInternalAsync(
             int userId, int invitedByUserId, CancellationToken cancellationToken)
         {
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == userId, cancellationToken);
-            if (user == null)
-                return StaffInvitationResult.Rejected(
-                    StaffInvitationFailure.UserNotFound, "That login no longer exists.");
+            // Split deliberately. Everything that decides and writes happens in the retriable
+            // serialisable block below; the mail is sent afterwards, outside both the transaction
+            // and the retry, so a deadlock retry can never send a second copy of a link.
+            StaffInvitationResult? rejected = null;
+            MintedInvitation? minted = null;
 
-            // Granting, disabling and activating an account are transitions owned by their own
-            // workflows. An invitation may only be minted for a login that is already waiting
-            // for one, so this service can never hand an activation link to a working account.
-            if (user.AccountStatus != UserAccountStatus.Invited)
-                return StaffInvitationResult.Rejected(
-                    StaffInvitationFailure.AccountNotInvitable,
-                    user.AccountStatus == UserAccountStatus.Active
-                        ? "That account is already active and does not need an activation link."
-                        : "That account is disabled. Re-enable it before sending an activation link.");
-
-            if (string.IsNullOrWhiteSpace(user.Email))
-                return StaffInvitationResult.Rejected(
-                    StaffInvitationFailure.MissingEmail, "That login has no email address to send an invitation to.");
-
-            var now = _clock.GetUtcNow().UtcDateTime;
-            var rawToken = GenerateToken();
-
-            // Revoking the old invitations and creating the replacement go out in one
-            // SaveChanges, which EF wraps in its own transaction — there is no instant at
-            // which two tokens are outstanding, and no transaction is held open across SMTP.
-            var outstanding = await _context.StaffInvitations
-                .Where(i => i.UserId == userId && i.AcceptedAt == null && i.RevokedAt == null)
-                .ToListAsync(cancellationToken);
-
-            foreach (var superseded in outstanding)
-                superseded.RevokedAt = now;
-
-            var invitation = new StaffInvitation
+            await ExecuteResilientlyAsync(async () =>
             {
-                UserId = user.UserId,
-                InvitedByUserId = invitedByUserId,
-                TokenHash = HashToken(rawToken),
-                CreatedAt = now,
-                ExpiresAt = now.Add(InvitationLifetime)
-            };
+                // A retry re-runs this whole block, so it has to start from what is stored.
+                _context.ChangeTracker.Clear();
+                rejected = null;
+                minted = null;
 
-            _context.StaffInvitations.Add(invitation);
-            await _context.SaveChangesAsync(cancellationToken);
+                await using var transaction = await BeginIssuanceAsync(cancellationToken);
 
-            // Everything below is best-effort delivery. The invitation stays committed either
-            // way: the account is not activated, no password exists, and an Admin can resend.
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == userId, cancellationToken);
+                if (user == null)
+                {
+                    rejected = StaffInvitationResult.Rejected(
+                        StaffInvitationFailure.UserNotFound, "That login no longer exists.");
+                    return;
+                }
+
+                // Granting, disabling and activating an account are transitions owned by their own
+                // workflows. An invitation may only be minted for a login that is already waiting
+                // for one, so this service can never hand an activation link to a working account.
+                // Read inside the transaction: a concurrent activation that commits first must be
+                // seen here, or this would mint a link for an account that is already Active.
+                if (user.AccountStatus != UserAccountStatus.Invited)
+                {
+                    rejected = StaffInvitationResult.Rejected(
+                        StaffInvitationFailure.AccountNotInvitable,
+                        user.AccountStatus == UserAccountStatus.Active
+                            ? "That account is already active and does not need an activation link."
+                            : "That account is disabled. Re-enable it before sending an activation link.");
+                    return;
+                }
+
+                // The same employment gate activation applies. Without it DAMS emails a credential
+                // that FindUsableAsync is guaranteed to refuse — a link that could never work.
+                var stillEmployed = await _context.Employees.AnyAsync(
+                    e => e.UserId == userId && e.Status == EmployeeStatus.Active,
+                    cancellationToken);
+
+                if (!stillEmployed)
+                {
+                    rejected = StaffInvitationResult.Rejected(
+                        StaffInvitationFailure.EmployeeNotActive,
+                        "That employee is not currently active, so an activation link would not work. "
+                        + "Set their employment back to Active first, then send the invitation.");
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(user.Email))
+                {
+                    rejected = StaffInvitationResult.Rejected(
+                        StaffInvitationFailure.MissingEmail, "That login has no email address to send an invitation to.");
+                    return;
+                }
+
+                var now = _clock.GetUtcNow().UtcDateTime;
+                var rawToken = GenerateToken();
+
+                // Read-then-write over the outstanding set, which is only "at most one usable
+                // invitation" if nothing can insert between the read and the write — hence the
+                // serialisable transaction rather than SaveChanges' own implicit one.
+                var outstanding = await _context.StaffInvitations
+                    .Where(i => i.UserId == userId && i.AcceptedAt == null && i.RevokedAt == null)
+                    .ToListAsync(cancellationToken);
+
+                foreach (var superseded in outstanding)
+                    superseded.RevokedAt = now;
+
+                var invitation = new StaffInvitation
+                {
+                    UserId = user.UserId,
+                    InvitedByUserId = invitedByUserId,
+                    TokenHash = HashToken(rawToken),
+                    CreatedAt = now,
+                    ExpiresAt = now.Add(InvitationLifetime)
+                };
+
+                _context.StaffInvitations.Add(invitation);
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+
+                minted = new MintedInvitation(
+                    invitation.Id, invitation.ExpiresAt, rawToken, user.Email, user.FullName);
+            });
+
+            if (rejected != null)
+                return rejected;
+
+            // Committed. Everything below is best-effort delivery: the invitation stays stored
+            // either way, the account is not activated, no password exists, and an Admin can resend.
+            var issued = minted!;
             var branding = await _settings.GetBrandingAsync(cancellationToken);
-            var activationUrl = BuildActivationUrl(branding.PublicBaseUrl, rawToken);
+            var activationUrl = BuildActivationUrl(branding.PublicBaseUrl, issued.RawToken);
             if (activationUrl == null)
                 return StaffInvitationResult.Undelivered(
-                    invitation.Id, invitation.ExpiresAt, StaffInvitationFailure.PublicBaseUrlNotConfigured,
+                    issued.InvitationId, issued.ExpiresAt, StaffInvitationFailure.PublicBaseUrlNotConfigured,
                     "The public site address is not configured, so no activation link could be sent. "
                     + "Set it in notification settings, then resend the invitation.");
 
             var send = await _email.SendAsync(
-                BuildEmail(user, branding, activationUrl), cancellationToken);
+                BuildEmail(issued.Email, issued.FullName, branding, activationUrl), cancellationToken);
 
             return send.Success
-                ? StaffInvitationResult.Delivered(invitation.Id, invitation.ExpiresAt)
+                ? StaffInvitationResult.Delivered(issued.InvitationId, issued.ExpiresAt)
                 : StaffInvitationResult.Undelivered(
-                    invitation.Id, invitation.ExpiresAt, StaffInvitationFailure.EmailDeliveryFailed,
+                    issued.InvitationId, issued.ExpiresAt, StaffInvitationFailure.EmailDeliveryFailed,
                     send.Error ?? "The activation email could not be delivered.");
         }
 
@@ -360,11 +432,12 @@ namespace DAMS.Application.Services
         /// A deliberately plain security email: an identity, a reason, one link, an expiry
         /// and a way to raise the alarm. No password, no credential and no internal ID.
         /// </summary>
-        private static EmailMessage BuildEmail(User user, NotificationBranding branding, string activationUrl)
+        private static EmailMessage BuildEmail(
+            string recipientEmail, string recipientName, NotificationBranding branding, string activationUrl)
         {
             var company = branding.CompanyName;
             var app = branding.AppName;
-            var name = string.IsNullOrWhiteSpace(user.FullName) ? "there" : user.FullName;
+            var name = string.IsNullOrWhiteSpace(recipientName) ? "there" : recipientName;
             var hours = (int)InvitationLifetime.TotalHours;
             var support = branding.SupportEmail;
 
@@ -426,8 +499,8 @@ namespace DAMS.Application.Services
 
             return new EmailMessage
             {
-                To = user.Email,
-                ToName = user.FullName,
+                To = recipientEmail,
+                ToName = recipientName,
                 Subject = $"Activate your {app} account",
                 HtmlBody = html.ToString(),
                 TextBody = text.ToString()

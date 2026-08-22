@@ -84,7 +84,12 @@ namespace DAMS.Application.DTOs.EmployeeDtos
             };
     }
 
-    public class CreateStaffAccountDto
+    /// <summary>
+    /// Grants DAMS access. The employment record and the login are separate things, and which
+    /// of the two this request is creating decides which fields mean anything — see
+    /// <see cref="Validate"/>.
+    /// </summary>
+    public class CreateStaffAccountDto : IValidatableObject
     {
         /// <summary>Connect an existing login instead of creating a new one.</summary>
         public int? ExistingUserId { get; set; }
@@ -108,16 +113,41 @@ namespace DAMS.Application.DTOs.EmployeeDtos
 
         public int? TeamId { get; set; }
 
-        [Required, StringLength(100)]
+        // The four HR fields below describe an employment record. They are only read when this
+        // request creates one; for an existing employee the service ignores them, and the
+        // Employees module stays the single owner of that data. So they are deliberately not
+        // [Required] here — requiring data the service discards would make an employee whose
+        // stored phone is blank impossible to give a login to, which is not a rule anyone meant.
+        [StringLength(100)]
         public string JobTitle { get; set; } = "Sales Executive";
 
-        [Required, StringLength(100)]
+        [StringLength(100)]
         public string Department { get; set; } = "Sales";
 
-        [Required, StringLength(50, MinimumLength = 7)]
+        [StringLength(50)]
         public string Phone { get; set; } = string.Empty;
 
         public DateTime? JoinDate { get; set; }
+
+        /// <summary>
+        /// The HR fields are required exactly when this request is the thing that creates the
+        /// employment record, and ignored otherwise.
+        /// </summary>
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (ExistingEmployeeId.HasValue)
+                yield break;
+
+            if (string.IsNullOrWhiteSpace(JobTitle))
+                yield return new ValidationResult("Job title is required.", new[] { nameof(JobTitle) });
+
+            if (string.IsNullOrWhiteSpace(Department))
+                yield return new ValidationResult("Department is required.", new[] { nameof(Department) });
+
+            if (string.IsNullOrWhiteSpace(Phone) || Phone.Trim().Length < 7)
+                yield return new ValidationResult(
+                    "A phone number of at least 7 characters is required.", new[] { nameof(Phone) });
+        }
     }
 
     public class UpdateStaffAccountDto

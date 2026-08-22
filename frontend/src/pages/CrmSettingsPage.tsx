@@ -25,6 +25,7 @@ import type {
 import {
   accessLabel,
   accessTone,
+  applyLoginSelection,
   buildProvisionPayload,
   buildUpdatePayload,
   canManageAccount,
@@ -34,9 +35,11 @@ import {
   describeResendOutcome,
   invitationState,
   invitationSummary,
+  loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
   provisionableEmployees,
+  usesExistingEmployee,
 } from "../features/staff/staffAccessState.ts";
 import type { Notice } from "../features/staff/staffAccessState.ts";
 
@@ -158,7 +161,9 @@ function StaffModal({ intent, staff, users, teams, onClose, onDone }: { intent: 
   const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
   const set = (key: keyof typeof form, value: string) => setForm((f) => ({ ...f, [key]: value }));
   const pickEmployee = (id: string) => { const employee = staff.find((e) => e.employeeId === Number(id)); setForm((f) => ({ ...f, existingEmployeeId: id, fullName: employee?.fullName ?? f.fullName, email: employee?.email ?? f.email, phone: employee?.phone ?? f.phone, jobTitle: employee?.jobTitle ?? f.jobTitle, department: employee?.department ?? f.department, teamId: employee?.teamId?.toString() ?? f.teamId })); };
-  const pickUser = (id: string) => { const account = users.find((u) => u.userId === Number(id)); setForm((f) => ({ ...f, existingUserId: id, fullName: account?.fullName ?? f.fullName, email: account?.email ?? f.email })); };
+  // Select and clear are one transition, in staffAccessState so it can be tested: clearing has
+  // to put the previous login's identity back rather than leave it stranded on the form.
+  const pickUser = (id: string) => setForm((f) => applyLoginSelection(f, users.find((u) => u.userId === Number(id)) ?? null, locked));
   const save = async () => {
     setSaving(true); setError(null);
     try {
@@ -166,7 +171,7 @@ function StaffModal({ intent, staff, users, teams, onClose, onDone }: { intent: 
         await apiJson(`/api/staff/accounts/${managing.employeeId}`, jsonRequest("PUT", buildUpdatePayload(form)));
         await onDone({ tone: "success", message: `Saved role, team and employment status for ${managing.fullName}.` });
       } else {
-        const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form)));
+        const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form, locked)));
         // The account exists now whatever the email did, so the form closes either way.
         // Leaving it open after a failed send is what invites a second account for one person.
         await onDone(describeProvisionOutcome(result));
@@ -176,7 +181,12 @@ function StaffModal({ intent, staff, users, teams, onClose, onDone }: { intent: 
       setError(caught instanceof Error ? caught.message : "Staff account could not be saved.");
     } finally { setSaving(false); }
   };
+  // The employee's own identity is fixed once the modal was opened for one. The *login's*
+  // email is a separate question: an employee record may have no address at all, so it stays
+  // editable until it belongs to a login that already exists.
   const fixedIdentity = Boolean(managing) || Boolean(locked);
+  const emailReadOnly = loginEmailIsReadOnly(form, Boolean(managing));
+  const employeeAlreadyExists = usesExistingEmployee(form, locked);
   return <CrmModal open title={managing ? "Manage staff account" : "Give DAMS access"} subtitle={managing ? "Role, team and employment status. A password belongs to the person who owns the account and cannot be set or reset from here." : "The employee is emailed an activation link and chooses their own password. Public sign-up remains customer-only."} onClose={onClose} footer={<ModalFooter saving={saving} onClose={onClose} onSave={() => void save()} />}>
     <div className="space-y-4">
       {error && <ErrorBanner message={error} />}
@@ -192,10 +202,13 @@ function StaffModal({ intent, staff, users, teams, onClose, onDone }: { intent: 
       </div>}
       <div className="grid gap-4 sm:grid-cols-2">
         <TextField label="Full name" required disabled={fixedIdentity} value={form.fullName} onChange={(v) => set("fullName", v)} />
-        <TextField label="Email" required disabled={fixedIdentity} type="email" value={form.email} onChange={(v) => set("email", v)} />
+        <TextField label={managing || form.existingUserId ? "Email" : "Login email"} required disabled={emailReadOnly} type="email" value={form.email} onChange={(v) => set("email", v)} />
         <SelectField label="CRM role" required value={form.role} onChange={(v) => set("role", v)} options={[["Admin", "Admin"], ["Manager", "Sales Manager"], ["Employee", "Sales Employee"]]} />
         <SelectField label="Team" value={form.teamId} onChange={(v) => set("teamId", v)} options={teams.filter((t) => t.isActive).map((t) => [String(t.id), t.name])} empty="No team" />
-        {!managing && <>
+        {/* Only when this request is the thing that creates the employment record. For an
+            existing employee the backend ignores these, and the Employees module owns them —
+            showing them here would invite an Admin to edit data DAMS then discards. */}
+        {!managing && !employeeAlreadyExists && <>
           <TextField label="Job title" required value={form.jobTitle} onChange={(v) => set("jobTitle", v)} />
           <TextField label="Department" required value={form.department} onChange={(v) => set("department", v)} />
           <TextField label="Phone" required value={form.phone} onChange={(v) => set("phone", v)} />

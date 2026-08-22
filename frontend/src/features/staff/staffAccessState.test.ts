@@ -6,6 +6,7 @@ import type {
 } from "../leads/types.ts";
 import {
   accessLabel,
+  applyLoginSelection,
   buildProvisionPayload,
   buildUpdatePayload,
   canManageAccount,
@@ -15,10 +16,12 @@ import {
   describeResendOutcome,
   invitationState,
   invitationSummary,
+  loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
   parseServerDateTime,
   provisionableEmployees,
+  usesExistingEmployee,
 } from "./staffAccessState.ts";
 
 const account = (overrides: Partial<StaffAccount> = {}): StaffAccount => ({
@@ -225,9 +228,18 @@ describe("request payloads", () => {
 
   it("sends exactly the fields the create endpoint accepts and nothing else", () => {
     // The old code spread the whole form, which is how temporaryPassword reached the API.
-    expect(Object.keys(buildProvisionPayload(form)).sort()).toEqual([
+    // Creating the employment record too: the HR fields are the request's own to send.
+    expect(Object.keys(buildProvisionPayload(newProvisionForm(null))).sort()).toEqual([
       "department", "email", "existingEmployeeId", "existingUserId", "fullName",
       "joinDate", "jobTitle", "phone", "role", "teamId",
+    ].sort());
+  });
+
+  it("narrows to the login fields when the employee already exists", () => {
+    // Same guard, other branch: still a named whitelist, and still nothing extra. The HR
+    // fields are gone because the service ignores them for an existing employee.
+    expect(Object.keys(buildProvisionPayload(form)).sort()).toEqual([
+      "email", "existingEmployeeId", "existingUserId", "fullName", "role", "teamId",
     ].sort());
   });
 
@@ -253,5 +265,106 @@ describe("request payloads", () => {
   it("keeps the established way of clearing a team", () => {
     const payload = buildUpdatePayload(newManageForm(account({ teamId: null })));
     expect(payload.teamId).toBe(-1);
+  });
+});
+
+describe("the login email an employee will sign in with", () => {
+  it("stays editable for an employee whose HR record has no email", () => {
+    // Employee.Email is optional. If picking the row locked this field, that employee could
+    // never be given a login at all, because the backend requires one.
+    const employee = account({ email: null, access: "None" });
+    const form = newProvisionForm(employee);
+
+    expect(form.email).toBe("");
+    expect(loginEmailIsReadOnly(form, false)).toBe(false);
+  });
+
+  it("is fixed once it belongs to a login that already exists", () => {
+    const form = { ...newProvisionForm(account({ access: "None" })), existingUserId: "12" };
+    expect(loginEmailIsReadOnly(form, false)).toBe(true);
+  });
+
+  it("is fixed in the manage flow, which does not change an address", () => {
+    expect(loginEmailIsReadOnly(newManageForm(account()), true)).toBe(true);
+  });
+});
+
+describe("selecting and clearing an existing login", () => {
+  const employee = account({ employeeId: 4, fullName: "Sana Sales", email: "sana@dams.test", access: "None" });
+  const login = { userId: 12, fullName: "Imran Khan", email: "imran@dams.test" };
+  const other = { userId: 13, fullName: "Ayesha Ali", email: "ayesha@dams.test" };
+
+  it("takes the identity of the login that was chosen", () => {
+    const next = applyLoginSelection(newProvisionForm(employee), login, employee);
+    expect(next).toMatchObject({ existingUserId: "12", fullName: "Imran Khan", email: "imran@dams.test" });
+  });
+
+  it("replaces it completely when a different login is chosen", () => {
+    const first = applyLoginSelection(newProvisionForm(employee), login, employee);
+    const second = applyLoginSelection(first, other, employee);
+    expect(second).toMatchObject({ existingUserId: "13", fullName: "Ayesha Ali", email: "ayesha@dams.test" });
+  });
+
+  it("puts the employee's own details back when the login is cleared", () => {
+    // The defect: clearing used to leave the previous login's name and address on the form,
+    // and with a fixed employee they could not be typed over.
+    const chosen = applyLoginSelection(newProvisionForm(employee), login, employee);
+    const cleared = applyLoginSelection(chosen, null, employee);
+
+    expect(cleared.existingUserId).toBe("");
+    expect(cleared.fullName).toBe("Sana Sales");
+    expect(cleared.email).toBe("sana@dams.test");
+    expect(cleared.email).not.toBe(login.email);
+  });
+
+  it("clears to nothing when there is no employee to fall back to", () => {
+    const chosen = applyLoginSelection(newProvisionForm(null), login, null);
+    const cleared = applyLoginSelection(chosen, null, null);
+
+    expect(cleared).toMatchObject({ existingUserId: "", fullName: "", email: "" });
+  });
+
+  it("does not strand an address on an employee who never had one", () => {
+    const noEmail = account({ email: null, access: "None" });
+    const cleared = applyLoginSelection(
+      applyLoginSelection(newProvisionForm(noEmail), login, noEmail), null, noEmail);
+
+    expect(cleared.email).toBe("");
+  });
+});
+
+describe("HR data belongs to the Employees module", () => {
+  it("is sent when this request is what creates the employment record", () => {
+    const form = { ...newProvisionForm(null), phone: "03001234567" };
+    const payload = buildProvisionPayload(form, null);
+
+    expect(payload).toMatchObject({
+      jobTitle: "Sales Executive",
+      department: "Sales",
+      phone: "03001234567",
+    });
+  });
+
+  it("is not sent for an employee who already exists, because the backend ignores it", () => {
+    const employee = account({ employeeId: 4, access: "None" });
+    const payload = buildProvisionPayload(newProvisionForm(employee), employee);
+
+    expect(payload).not.toHaveProperty("jobTitle");
+    expect(payload).not.toHaveProperty("department");
+    expect(payload).not.toHaveProperty("phone");
+    expect(payload).not.toHaveProperty("joinDate");
+    expect(payload.existingEmployeeId).toBe(4);
+  });
+
+  it("counts an employee picked from the list, not only one opened from a row", () => {
+    const form = { ...newProvisionForm(null), existingEmployeeId: "9" };
+    expect(usesExistingEmployee(form, null)).toBe(true);
+    expect(buildProvisionPayload(form, null)).not.toHaveProperty("phone");
+  });
+
+  it("still carries no password of any kind", () => {
+    const employee = account({ access: "None" });
+    const payload = buildProvisionPayload(newProvisionForm(employee), employee);
+    expect(JSON.stringify(payload).toLowerCase()).not.toContain("password");
   });
 });

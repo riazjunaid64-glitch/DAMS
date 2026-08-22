@@ -78,7 +78,12 @@ namespace DAMS.Application.Interfaces
 
         /// <summary>SMTP rejected or could not deliver the message. The invitation is still
         /// persisted.</summary>
-        EmailDeliveryFailed = 5
+        EmailDeliveryFailed = 5,
+
+        /// <summary>The employee behind the login is not in Active employment. Activation
+        /// applies the same gate, so a link sent now could never be spent — this refuses to
+        /// email a credential that is dead on arrival.</summary>
+        EmployeeNotActive = 6
     }
 
     /// <summary>
