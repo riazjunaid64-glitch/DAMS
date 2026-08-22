@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -11,98 +12,427 @@ namespace DAMS.Application.Tests;
 
 public sealed class StaffManagementTests
 {
+    /// <summary>
+    /// Records what staff provisioning asked of the invitation engine. The engine's own
+    /// cryptography, expiry and email are proved in <see cref="StaffInvitationServiceTests"/>;
+    /// what matters here is whether it was called at all, for whom, and by whom.
+    /// </summary>
+    private sealed class FakeInvitations : IStaffInvitationService
+    {
+        public List<(int UserId, int InvitedByUserId, bool Resend)> Calls { get; } = new();
+
+        /// <summary>Set to make delivery fail the way an unreachable mail server does.</summary>
+        public string? DeliveryError { get; set; }
+
+        public int NextInvitationId { get; set; } = 1;
+
+        public DateTime ExpiresAt { get; set; } = DateTime.UtcNow.AddHours(24);
+
+        public Task<StaffInvitationResult> IssueAsync(
+            int userId, int invitedByUserId, CancellationToken cancellationToken = default) =>
+            Record(userId, invitedByUserId, resend: false);
+
+        public Task<StaffInvitationResult> ResendAsync(
+            int userId, int invitedByUserId, CancellationToken cancellationToken = default) =>
+            Record(userId, invitedByUserId, resend: true);
+
+        /// <summary>
+        /// Staff provisioning has no business spending a token, so the fake fails loudly if it
+        /// ever tries rather than quietly returning something plausible.
+        /// </summary>
+        public Task<StaffActivationResult> ActivateAsync(
+            string rawToken, string chosenPassword, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Staff provisioning must never activate an account.");
+
+        private Task<StaffInvitationResult> Record(int userId, int invitedByUserId, bool resend)
+        {
+            Calls.Add((userId, invitedByUserId, resend));
+            var id = NextInvitationId++;
+            return Task.FromResult(DeliveryError == null
+                ? StaffInvitationResult.Delivered(id, ExpiresAt)
+                : StaffInvitationResult.Undelivered(
+                    id, ExpiresAt, StaffInvitationFailure.EmailDeliveryFailed, DeliveryError));
+        }
+    }
+
+    private static CreateStaffAccountDto NewStaff(
+        string name = "Nadia Sales",
+        string email = "NADIA@EXAMPLE.COM",
+        string role = LeadRoles.Employee,
+        int? teamId = null,
+        int? existingUserId = null,
+        int? existingEmployeeId = null) => new()
+    {
+        ExistingUserId = existingUserId,
+        ExistingEmployeeId = existingEmployeeId,
+        FullName = name,
+        Email = email,
+        Role = role,
+        TeamId = teamId,
+        JobTitle = "Sales Executive",
+        Department = "Sales",
+        Phone = "03009998888"
+    };
+
     [Fact]
-    public async Task Admin_can_create_secure_sales_login_linked_to_employee_and_team()
+    public async Task Admin_creates_a_password_less_invited_login_linked_to_employee_and_team()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var service = new StaffManagementService(h.Db);
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
 
-        var created = await service.CreateAsync(new CreateStaffAccountDto
-        {
-            FullName = "Nadia Sales",
-            Email = "NADIA@EXAMPLE.COM",
-            TemporaryPassword = "Temporary#123",
-            Role = LeadRoles.Employee,
-            TeamId = h.TeamId,
-            JobTitle = "Sales Executive",
-            Department = "Sales",
-            Phone = "03009998888"
-        });
+        var result = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var created = result.Account;
 
         Assert.Equal("nadia@example.com", created.Email);
         Assert.Equal(LeadRoles.Employee, created.Role);
         Assert.Equal(h.TeamId, created.TeamId);
-        Assert.True(created.CanOwnLeads);
+        Assert.Equal(StaffAccountAccess.Invited, created.Access);
 
+        // The account exists but nobody — Admin included — has chosen a password for it.
         var user = await h.Db.Users.SingleAsync(u => u.UserId == created.UserId);
-        Assert.NotEqual("Temporary#123", user.Password);
-        Assert.True(BCrypt.Net.BCrypt.Verify("Temporary#123", user.Password));
+        Assert.Null(user.Password);
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
         Assert.Equal(created.EmployeeId,
             await h.Db.Employees.Where(e => e.UserId == user.UserId).Select(e => e.Id).SingleAsync());
+
+        // Invited exactly once, for that login, by the authenticated Admin.
+        var call = Assert.Single(invitations.Calls);
+        Assert.Equal(user.UserId, call.UserId);
+        Assert.Equal(h.AdminUserId, call.InvitedByUserId);
+        Assert.False(call.Resend);
+        Assert.True(result.InvitationRequired);
+        Assert.True(result.InvitationSent);
     }
 
     [Fact]
-    public async Task Existing_customer_login_can_be_promoted_only_through_admin_staff_workflow()
+    public async Task An_unlinked_employee_gains_an_invited_login_without_being_duplicated()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var service = new StaffManagementService(h.Db);
-        var client = await h.Db.Users.SingleAsync(u => u.UserId == h.ClientUserId);
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
 
-        var created = await service.CreateAsync(new CreateStaffAccountDto
+        // An employee created through normal HR management, with no DAMS access yet.
+        var employee = new Employee
         {
-            ExistingUserId = client.UserId,
-            FullName = client.FullName,
-            Email = client.Email,
-            Role = LeadRoles.Manager,
-            TeamId = h.TeamId,
-            JobTitle = "Sales Manager",
+            FullName = "Hira Support",
+            JobTitle = "Coordinator",
             Department = "Sales",
-            Phone = "03001110000"
-        });
+            Phone = "03004445555",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active
+        };
+        h.Db.Employees.Add(employee);
+        await h.Db.SaveChangesAsync();
+        var employeeCount = await h.Db.Employees.CountAsync();
 
-        Assert.Equal(LeadRoles.Manager, created.Role);
-        Assert.Equal(client.UserId, created.UserId);
-        Assert.Equal(3, await h.Db.Users.Where(u => u.UserId == client.UserId).Select(u => u.RoleId).SingleAsync());
+        var result = await service.CreateAsync(h.Admin, NewStaff(
+            name: "Hira Support",
+            email: "hira@example.com",
+            teamId: h.TeamId,
+            existingEmployeeId: employee.Id));
+
+        Assert.Equal(employee.Id, result.Account.EmployeeId);
+        Assert.Equal(employeeCount, await h.Db.Employees.CountAsync());
+        Assert.Equal(h.TeamId, result.Account.TeamId);
+        Assert.Equal(StaffAccountAccess.Invited, result.Account.Access);
+
+        var user = await h.Db.Users.SingleAsync(u => u.Email == "hira@example.com");
+        Assert.Null(user.Password);
+        Assert.Equal(user.UserId, Assert.Single(invitations.Calls).UserId);
+    }
+
+    [Fact]
+    public async Task An_existing_active_login_keeps_its_password_and_is_never_sent_an_activation_link()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+        var client = await h.Db.Users.SingleAsync(u => u.UserId == h.ClientUserId);
+        var passwordBefore = client.Password;
+        h.Db.ChangeTracker.Clear();
+
+        var result = await service.CreateAsync(h.Admin, NewStaff(
+            name: client.FullName,
+            email: client.Email,
+            role: LeadRoles.Manager,
+            teamId: h.TeamId,
+            existingUserId: client.UserId));
+
+        Assert.Equal(LeadRoles.Manager, result.Account.Role);
+        Assert.Equal(client.UserId, result.Account.UserId);
+        Assert.Equal(StaffAccountAccess.Active, result.Account.Access);
+
+        h.Db.ChangeTracker.Clear();
+        var after = await h.Db.Users.SingleAsync(u => u.UserId == client.UserId);
+        Assert.Equal(passwordBefore, after.Password);
+        Assert.Equal(UserAccountStatus.Active, after.AccountStatus);
+        // Single role, replaced rather than accumulated: Client becomes Manager.
+        Assert.Equal(3, after.RoleId);
+
+        Assert.Empty(invitations.Calls);
+        Assert.False(result.InvitationRequired);
+        Assert.Null(result.InvitationExpiresAt);
+    }
+
+    [Fact]
+    public async Task An_existing_invited_login_is_linked_and_reissued_an_invitation()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var waiting = new User
+        {
+            FullName = "Waiting Staff",
+            Email = "waiting@dams.test",
+            Password = null,
+            RoleId = 4,
+            AccountStatus = UserAccountStatus.Invited
+        };
+        h.Db.Users.Add(waiting);
+        await h.Db.SaveChangesAsync();
+
+        var result = await service.CreateAsync(h.Admin, NewStaff(
+            name: waiting.FullName,
+            email: waiting.Email,
+            teamId: h.TeamId,
+            existingUserId: waiting.UserId));
+
+        Assert.Equal(waiting.UserId, result.Account.UserId);
+        Assert.Equal(StaffAccountAccess.Invited, result.Account.Access);
+        Assert.True(result.InvitationRequired);
+
+        var call = Assert.Single(invitations.Calls);
+        Assert.Equal(waiting.UserId, call.UserId);
+        Assert.Equal(h.AdminUserId, call.InvitedByUserId);
+
+        h.Db.ChangeTracker.Clear();
+        Assert.Null(await h.Db.Users.Where(u => u.UserId == waiting.UserId).Select(u => u.Password).SingleAsync());
+    }
+
+    [Fact]
+    public async Task A_disabled_login_is_rejected_rather_than_silently_reactivated()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var disabled = new User
+        {
+            FullName = "Former Staff",
+            Email = "former@dams.test",
+            Password = "old-hash",
+            RoleId = 4,
+            AccountStatus = UserAccountStatus.Disabled
+        };
+        h.Db.Users.Add(disabled);
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            h.Admin, NewStaff(
+                name: disabled.FullName,
+                email: disabled.Email,
+                existingUserId: disabled.UserId)));
+        Assert.Contains("disabled", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        h.Db.ChangeTracker.Clear();
+        var after = await h.Db.Users.SingleAsync(u => u.UserId == disabled.UserId);
+        Assert.Equal(UserAccountStatus.Disabled, after.AccountStatus);
+        Assert.Empty(invitations.Calls);
+    }
+
+    [Fact]
+    public async Task A_failed_invitation_email_still_leaves_a_usable_invited_account()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations { DeliveryError = "The mail server did not respond." };
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var result = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+
+        // The account is not rolled back and no fallback password is invented — the Admin is
+        // simply told delivery failed so they can resend.
+        Assert.True(result.InvitationRequired);
+        Assert.False(result.InvitationSent);
+        Assert.Equal("The mail server did not respond.", result.InvitationError);
+
+        h.Db.ChangeTracker.Clear();
+        var user = await h.Db.Users.SingleAsync(u => u.UserId == result.Account.UserId);
+        Assert.Null(user.Password);
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+        Assert.Equal(result.Account.EmployeeId,
+            await h.Db.Employees.Where(e => e.UserId == user.UserId).Select(e => e.Id).SingleAsync());
     }
 
     [Fact]
     public async Task Duplicate_login_or_employee_link_is_rejected()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var service = new StaffManagementService(h.Db);
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
 
         var emailError = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
-            new CreateStaffAccountDto
-            {
-                FullName = "Duplicate",
-                Email = "sales@dams.test",
-                TemporaryPassword = "Temporary#123",
-                Role = LeadRoles.Employee,
-                JobTitle = "Sales",
-                Department = "Sales",
-                Phone = "03002223333"
-            }));
+            h.Admin, NewStaff(name: "Duplicate", email: "sales@dams.test")));
         Assert.Contains("already exists", emailError.Message);
 
         var linkError = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
-            new CreateStaffAccountDto
-            {
-                ExistingUserId = h.SalesUserId,
-                FullName = "Duplicate",
-                Email = "sales@dams.test",
-                Role = LeadRoles.Employee,
-                JobTitle = "Sales",
-                Department = "Sales",
-                Phone = "03002223333"
-            }));
+            h.Admin, NewStaff(name: "Duplicate", email: "sales@dams.test", existingUserId: h.SalesUserId)));
         Assert.Contains("already linked", linkError.Message);
+
+        var employeeError = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
+            h.Admin, NewStaff(
+                name: "Duplicate", email: "another@dams.test", existingEmployeeId: h.SalesEmployeeId)));
+        Assert.Contains("already has a login", employeeError.Message);
+
+        // Nothing was invited on any rejected path.
+        Assert.Empty(invitations.Calls);
+    }
+
+    [Fact]
+    public async Task Only_an_admin_can_provision_or_resend_staff_access()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.CreateAsync(h.Manager, NewStaff()));
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.ResendInvitationAsync(h.Sales, h.SalesEmployeeId));
+
+        Assert.Empty(invitations.Calls);
+    }
+
+    [Fact]
+    public async Task Admin_can_resend_only_to_a_linked_login_that_is_still_waiting()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        // A staff member who has been invited but has not activated yet.
+        var created = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        invitations.Calls.Clear();
+
+        var resent = await service.ResendInvitationAsync(h.Admin, created.Account.EmployeeId);
+
+        Assert.True(resent.Issued);
+        Assert.True(resent.EmailSent);
+        var call = Assert.Single(invitations.Calls);
+        Assert.True(call.Resend);
+        Assert.Equal(created.Account.UserId, call.UserId);
+        Assert.Equal(h.AdminUserId, call.InvitedByUserId);
+
+        // The resend must not touch the account itself.
+        h.Db.ChangeTracker.Clear();
+        var user = await h.Db.Users.SingleAsync(u => u.UserId == created.Account.UserId);
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+        Assert.Null(user.Password);
+    }
+
+    [Fact]
+    public async Task Resend_rejects_an_active_account_a_disabled_one_and_an_employee_with_no_login()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var active = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ResendInvitationAsync(h.Admin, h.SalesEmployeeId));
+        Assert.Contains("already active", active.Message);
+
+        var disabledUser = await h.Db.Users.SingleAsync(u => u.UserId == h.OtherSalesUserId);
+        disabledUser.AccountStatus = UserAccountStatus.Disabled;
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var disabled = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ResendInvitationAsync(h.Admin, h.OtherSalesEmployeeId));
+        Assert.Contains("disabled", disabled.Message, StringComparison.OrdinalIgnoreCase);
+
+        var unlinked = new Employee
+        {
+            FullName = "No Login",
+            JobTitle = "Coordinator",
+            Department = "Sales",
+            Phone = "03007770000",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active
+        };
+        h.Db.Employees.Add(unlinked);
+        await h.Db.SaveChangesAsync();
+
+        var noAccount = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ResendInvitationAsync(h.Admin, unlinked.Id));
+        Assert.Contains("no login account", noAccount.Message);
+
+        var missing = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ResendInvitationAsync(h.Admin, 999_999));
+        Assert.Contains("not found", missing.Message);
+
+        Assert.Empty(invitations.Calls);
+    }
+
+    [Fact]
+    public async Task Admin_account_list_separates_no_account_from_invited_active_and_disabled()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var unlinked = new Employee
+        {
+            FullName = "Zara NoLogin",
+            JobTitle = "Coordinator",
+            Department = "Sales",
+            Phone = "03007771111",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active
+        };
+        h.Db.Employees.Add(unlinked);
+        var disabledUser = await h.Db.Users.SingleAsync(u => u.UserId == h.OtherSalesUserId);
+        disabledUser.AccountStatus = UserAccountStatus.Disabled;
+        await h.Db.SaveChangesAsync();
+
+        var invited = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var expiry = DateTime.UtcNow.AddHours(24);
+        h.Db.StaffInvitations.Add(new StaffInvitation
+        {
+            UserId = invited.Account.UserId!.Value,
+            InvitedByUserId = h.AdminUserId,
+            TokenHash = "a-sha256-hash",
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = expiry
+        });
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var accounts = await service.GetAccountsAsync();
+
+        Assert.Equal(StaffAccountAccess.None,
+            accounts.Single(a => a.EmployeeId == unlinked.Id).Access);
+        Assert.Equal(StaffAccountAccess.Active,
+            accounts.Single(a => a.EmployeeId == h.SalesEmployeeId).Access);
+        Assert.Equal(StaffAccountAccess.Disabled,
+            accounts.Single(a => a.EmployeeId == h.OtherSalesEmployeeId).Access);
+
+        var invitedRow = accounts.Single(a => a.EmployeeId == invited.Account.EmployeeId);
+        Assert.Equal(StaffAccountAccess.Invited, invitedRow.Access);
+        Assert.Equal(expiry, invitedRow.InvitationExpiresAt!.Value, TimeSpan.FromSeconds(1));
+
+        // The Admin surface never carries anything that could be used as a credential.
+        var serialized = System.Text.Json.JsonSerializer.Serialize(accounts);
+        Assert.DoesNotContain("token", serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("password", serialized, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task Directory_respects_manager_team_employee_team_and_customer_isolation()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var service = new StaffManagementService(h.Db);
+        var service = new StaffManagementService(h.Db, new FakeInvitations());
 
         var managerRows = await service.GetDirectoryAsync(h.Manager);
         Assert.Contains(managerRows, e => e.EmployeeId == h.SalesEmployeeId);
@@ -116,11 +446,12 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
-    public async Task Security_change_revokes_refresh_session()
+    public async Task Role_and_team_change_still_revokes_the_refresh_session_and_leaves_the_password_alone()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var service = new StaffManagementService(h.Db);
+        var service = new StaffManagementService(h.Db, new FakeInvitations());
         var user = await h.Db.Users.SingleAsync(u => u.UserId == h.SalesUserId);
+        var passwordBefore = user.Password;
         user.RefreshToken = "old-session";
         user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1);
         await h.Db.SaveChangesAsync();
@@ -128,16 +459,34 @@ public sealed class StaffManagementTests
         var updated = await service.UpdateAsync(h.SalesEmployeeId, new UpdateStaffAccountDto
         {
             Role = LeadRoles.Manager,
-            TeamId = h.TeamId,
-            NewTemporaryPassword = "Changed#123"
+            TeamId = h.TeamId
         });
 
         h.Db.ChangeTracker.Clear();
         user = await h.Db.Users.SingleAsync(u => u.UserId == h.SalesUserId);
         Assert.Equal(LeadRoles.Manager, updated.Role);
+        Assert.Equal(h.TeamId, updated.TeamId);
+
+        // Dropping the Admin password field must not have taken session revocation with it.
         Assert.Null(user.RefreshToken);
         Assert.Null(user.RefreshTokenExpiresAt);
-        Assert.True(BCrypt.Net.BCrypt.Verify("Changed#123", user.Password));
+
+        // An Admin changing someone's role has no way to change their password.
+        Assert.Equal(passwordBefore, user.Password);
+    }
+
+    [Fact]
+    public void No_staff_management_dto_offers_an_admin_a_way_to_set_someone_elses_password()
+    {
+        // Reflection rather than a call site: a reintroduced field under any name would be
+        // caught here even if nothing in the service read it yet.
+        var fields = typeof(CreateStaffAccountDto).GetProperties()
+            .Concat(typeof(UpdateStaffAccountDto).GetProperties())
+            .Select(p => p.Name)
+            .ToList();
+
+        Assert.DoesNotContain(fields, n => n.Contains("Password", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(fields, n => n.Contains("Token", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -221,7 +570,7 @@ public sealed class StaffManagementTests
     public async Task Team_manager_must_keep_an_active_manager_or_admin_login_role()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var staff = new StaffManagementService(h.Db);
+        var staff = new StaffManagementService(h.Db, new FakeInvitations());
 
         var roleError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             staff.UpdateAsync(h.ManagerEmployeeId, new UpdateStaffAccountDto

@@ -62,7 +62,39 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                return Ok(await _staff.CreateAsync(dto, cancellationToken));
+                // The inviter is the authenticated Admin, resolved from the token — never a
+                // user id the request body could have chosen.
+                var actor = await _resolver.ResolveAsync(User, cancellationToken);
+                return Ok(await _staff.CreateAsync(actor, dto, cancellationToken));
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Sends a waiting staff member a new activation link and invalidates the previous
+        /// one. Never activates the account and never produces a password.
+        /// </summary>
+        [HttpPost("accounts/{employeeId:int}/resend-invitation")]
+        [Authorize(Roles = LeadRoles.Admin)]
+        public async Task<IActionResult> ResendInvitation(
+            int employeeId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var actor = await _resolver.ResolveAsync(User, cancellationToken);
+                return Ok(await _staff.ResendInvitationAsync(actor, employeeId, cancellationToken));
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {

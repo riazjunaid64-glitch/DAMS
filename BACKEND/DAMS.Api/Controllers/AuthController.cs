@@ -13,10 +13,12 @@ namespace DAMS.Api.Controllers
     {
         private const int RefreshTokenDays = 15;
         private readonly IAuthService _authService;
+        private readonly IStaffInvitationService _invitations;
 
-        public AuthController(IAuthService authService)
+        public AuthController(IAuthService authService, IStaffInvitationService invitations)
         {
             _authService = authService;
+            _invitations = invitations;
         }
 
         [HttpPost("register")]
@@ -32,6 +34,28 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Where an invited employee trades their activation link for a password of their own.
+        /// Anonymous by necessity — they have no account to sign in with yet — and rate limited
+        /// on the same bucket as login, because a link is a credential and this is where one is
+        /// spent. Activating is not signing in: no cookie and no access token comes back.
+        /// </summary>
+        [HttpPost("activate-staff")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<IActionResult> ActivateStaff(
+            ActivateStaffAccountRequestDto request,
+            CancellationToken cancellationToken)
+        {
+            var result = await _invitations.ActivateAsync(request.Token, request.Password, cancellationToken);
+
+            // The service already decided what an anonymous caller may be told; the controller
+            // repeats it rather than adding detail of its own.
+            return result.Activated
+                ? Ok(new { message = "Your account is ready. Sign in with your email and the password you just chose." })
+                : BadRequest(new { message = result.Error });
         }
 
         [HttpPost("login")]

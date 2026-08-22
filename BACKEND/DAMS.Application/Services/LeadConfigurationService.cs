@@ -231,6 +231,7 @@ namespace DAMS.Application.Services
                 {
                     e.Status,
                     HasLogin = e.User != null,
+                    LoginActive = e.User != null && e.User.AccountStatus == UserAccountStatus.Active,
                     Role = e.User != null ? e.User.Role.Role_name : null
                 })
                 .FirstOrDefaultAsync(cancellationToken);
@@ -245,6 +246,13 @@ namespace DAMS.Application.Services
                 (manager.Role != LeadRoles.Manager && manager.Role != LeadRoles.Admin))
                 throw new InvalidOperationException(
                     "The chosen employee must have an Admin or Sales Manager login role.");
+
+            // This rule already meant "has a login that can do manager work". An invited login
+            // cannot be signed into at all, so making one a team manager leaves the team with
+            // nobody able to act on it.
+            if (!manager.LoginActive)
+                throw new InvalidOperationException(
+                    "The chosen employee has not activated their DAMS login yet, so they cannot manage a team.");
         }
 
         private async Task<TeamDto> LoadTeamAsync(int id, CancellationToken cancellationToken) =>

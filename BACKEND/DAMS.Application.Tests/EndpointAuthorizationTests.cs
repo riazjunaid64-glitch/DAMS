@@ -1,10 +1,14 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
+using DAMS.Api.Controllers;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -257,6 +261,10 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("POST", "/api/finance/wht/deposits"),
             R("PUT", "/api/finance/wht/deposits/1"),
             R("DELETE", "/api/finance/wht/deposits/1"),
+            // Provisioning DAMS access and mailing an activation link are the two routes that
+            // can hand someone a way into the system — Admin-only, rejected before binding.
+            R("POST", "/api/staff/accounts"),
+            R("POST", "/api/staff/accounts/1/resend-invitation"),
         ];
     }
 
@@ -272,6 +280,55 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         client.DefaultRequestHeaders.Authorization = Bearer("Client");
         Assert.Equal(HttpStatusCode.Forbidden,
             (await SendAsync(client, method, path, multipart)).StatusCode);
+    }
+
+    // Staff activation is the one route that must NOT be protected: an invited employee has no
+    // account to authenticate with yet, so the emailed token is the only thing standing in for
+    // one. What it must not do is behave like a login.
+    [Fact]
+    public async Task StaffActivation_IsReachableAnonymouslyAndAnswersABadLinkGenerically()
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.PostAsync("/api/Auth/activate-staff", new StringContent(
+            """{"token":"a-token-nobody-ever-issued","password":"chosen-password-1"}""",
+            Encoding.UTF8, "application/json"));
+
+        Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("invalid or has expired", body, StringComparison.OrdinalIgnoreCase);
+
+        // Nothing here names an account, and nothing here is a session.
+        Assert.DoesNotContain("userId", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("accessToken", body, StringComparison.OrdinalIgnoreCase);
+        Assert.False(response.Headers.Contains("Set-Cookie"));
+    }
+
+    [Fact]
+    public async Task StaffActivation_RejectsAPasswordBelowTheFloorAsOrdinaryValidation()
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.PostAsync("/api/Auth/activate-staff", new StringContent(
+            """{"token":"a-token-nobody-ever-issued","password":"short"}""",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False(response.Headers.Contains("Set-Cookie"));
+    }
+
+    /// <summary>
+    /// Spending an activation link is a credential operation, so it shares login's rate-limit
+    /// bucket rather than being an unthrottled way to grind at tokens. Asserted on the action
+    /// itself because proving it by request would mean deliberately exhausting that bucket.
+    /// </summary>
+    [Fact]
+    public void StaffActivation_IsExplicitlyAnonymousAndRateLimitedLikeLogin()
+    {
+        var action = typeof(AuthController).GetMethod(nameof(AuthController.ActivateStaff))!;
+
+        Assert.NotNull(action.GetCustomAttribute<AllowAnonymousAttribute>());
+        Assert.Equal("auth", action.GetCustomAttribute<EnableRateLimitingAttribute>()!.PolicyName);
     }
 
     private static Task<HttpResponseMessage> SendAsync(HttpClient client, string method, string path, bool multipart)
