@@ -13,6 +13,7 @@ namespace DAMS.Infrastructure.Data
 
         public DbSet<User> Users { get; set; }
         public DbSet<Role> Roles { get; set; }
+        public DbSet<StaffInvitation> StaffInvitations { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -110,6 +111,38 @@ namespace DAMS.Infrastructure.Data
                 new Role { RoleId = 3, Role_name = "Manager" },
                 new Role { RoleId = 4, Role_name = "Employee" }
             );
+
+            modelBuilder.Entity<User>(entity =>
+            {
+                entity.Property(u => u.AccountStatus).HasConversion<int>();
+            });
+
+            modelBuilder.Entity<StaffInvitation>(entity =>
+            {
+                // Only the hash is stored, so a database read cannot rebuild a working
+                // activation link. Uniqueness makes a token collision a write failure rather
+                // than an ambiguous lookup.
+                entity.Property(i => i.TokenHash).IsRequired().HasMaxLength(128);
+                entity.HasIndex(i => i.TokenHash).IsUnique();
+
+                // Finding the live invitation for a login, newest first.
+                entity.HasIndex(i => new { i.UserId, i.CreatedAt });
+                // Expiry sweeps scan by deadline.
+                entity.HasIndex(i => i.ExpiresAt);
+
+                // Both ends point at Users, so cascade would give SQL Server two delete paths
+                // into the same table. Restrict also keeps the grant record from disappearing
+                // silently — who granted access, and whether it was taken up, is audit data.
+                entity.HasOne(i => i.User)
+                      .WithMany()
+                      .HasForeignKey(i => i.UserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(i => i.InvitedByUser)
+                      .WithMany()
+                      .HasForeignKey(i => i.InvitedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
 
             modelBuilder.Entity<Project>(entity =>
             {

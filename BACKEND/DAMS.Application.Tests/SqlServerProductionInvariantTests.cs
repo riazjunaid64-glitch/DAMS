@@ -2116,6 +2116,120 @@ public sealed class SqlServerProductionInvariantTests
         await using (var check = new AppDbContext(options))
             Assert.Equal(130_000m, (await check.EmployeeSalaries.AsNoTracking().SingleAsync()).Amount);
     }
+    /// <summary>
+    /// Staff invitations make Users.Password nullable and add an account status. Every login
+    /// that already existed must still be Active afterwards — a numbering or default-value
+    /// mistake here locks every Admin, Client, Manager and Employee out of the system.
+    /// </summary>
+    [SqlServerFact]
+    public async Task StaffInvitationMigration_KeepsExistingLoginsActiveAndEnforcesInvitationInvariants()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        // The schema as it stood before staff invitations: Password is still NOT NULL and
+        // AccountStatus does not exist yet, so these rows have to be written as raw SQL.
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260821020414_AddEmployeeSalaryRowVersion");
+
+        await ExecuteAsync(database.ConnectionString, """
+            INSERT INTO [Users] ([RoleId], [FullName], [Email], [Password]) VALUES
+                (1, N'Legacy Admin',    N'admin@dams.test',   N'$2a$11$legacyadminhash'),
+                (2, N'Legacy Client',   N'client@dams.test',  N'$2a$11$legacyclienthash'),
+                (3, N'Legacy Manager',  N'manager@dams.test', N'$2a$11$legacymanagerhash'),
+                (4, N'Legacy Employee', N'sales@dams.test',   N'$2a$11$legacysaleshash');
+            """);
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // The explicit backfill, not a CLR or column default, is what has to hold here.
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [Users] WHERE [AccountStatus] <> 0"));
+        Assert.Equal(4, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [Users] WHERE [Password] IS NOT NULL"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString, """
+            SELECT CASE WHEN IS_NULLABLE = 'YES' THEN 1 ELSE 0 END FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'Users' AND COLUMN_NAME = 'Password'
+            """));
+
+        int invitedUserId;
+        int adminUserId;
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.All(await db.Users.ToListAsync(),
+                u => Assert.Equal(UserAccountStatus.Active, u.AccountStatus));
+            adminUserId = await db.Users
+                .Where(u => u.Email == "admin@dams.test").Select(u => u.UserId).SingleAsync();
+
+            // An invited login exists before it has any credential to verify against.
+            var invited = new User
+            {
+                RoleId = 4,
+                FullName = "Invited Sales",
+                Email = "invited@dams.test",
+                Password = null,
+                AccountStatus = UserAccountStatus.Invited
+            };
+            db.Users.Add(invited);
+            await db.SaveChangesAsync();
+            invitedUserId = invited.UserId;
+
+            db.StaffInvitations.Add(new StaffInvitation
+            {
+                UserId = invitedUserId,
+                InvitedByUserId = adminUserId,
+                TokenHash = "hash-one",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddDays(3)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Both relationships resolve, and to two different logins.
+        await using (var db = new AppDbContext(options))
+        {
+            var invitation = await db.StaffInvitations
+                .Include(i => i.User).Include(i => i.InvitedByUser).SingleAsync();
+            Assert.Equal("invited@dams.test", invitation.User.Email);
+            Assert.Null(invitation.User.Password);
+            Assert.Equal(UserAccountStatus.Invited, invitation.User.AccountStatus);
+            Assert.Equal("admin@dams.test", invitation.InvitedByUser.Email);
+            Assert.Null(invitation.AcceptedAt);
+            Assert.Null(invitation.RevokedAt);
+        }
+
+        // One token hash, one invitation — a replayed or colliding token cannot resolve twice.
+        await using (var db = new AppDbContext(options))
+        {
+            db.StaffInvitations.Add(new StaffInvitation
+            {
+                UserId = invitedUserId,
+                InvitedByUserId = adminUserId,
+                TokenHash = "hash-one",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddDays(3)
+            });
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+
+        // Restrict on both foreign keys: who was granted access, by whom, survives an attempt
+        // to delete the login it refers to, rather than vanishing with it.
+        await using (var db = new AppDbContext(options))
+        {
+            db.Users.Remove(await db.Users.SingleAsync(u => u.UserId == invitedUserId));
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+    }
+
+    private static async Task ExecuteAsync(string connectionString, string sql)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {
