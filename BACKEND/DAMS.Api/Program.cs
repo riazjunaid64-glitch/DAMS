@@ -246,6 +246,7 @@ builder.Services.AddScoped<IInstallmentService, InstallmentService>();
 builder.Services.AddScoped<IBookingRequestService, BookingRequestService>();
 builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
+builder.Services.AddScoped<IStaffInvitationService, StaffInvitationService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
 builder.Services.AddScoped<IStaffCashService, StaffCashService>();
