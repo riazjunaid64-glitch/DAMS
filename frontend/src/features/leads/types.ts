@@ -208,6 +208,51 @@ export interface StaffMember {
   isTeamManager?: boolean;
 }
 
+/**
+ * Whether an employee can sign in to DAMS. `None` means no login exists at all, which is a
+ * different thing from a login that is waiting, working or switched off.
+ *
+ * This is not employment status. `StaffMember.status` says whether somebody works here;
+ * this says whether they can sign in. An Active employee who has never activated their
+ * link is `Active` employment and `Invited` access at the same time.
+ */
+export type StaffAccountAccess = "None" | "Invited" | "Active" | "Disabled";
+
+/**
+ * An employee as the Admin staff-accounts screen sees them. The directory endpoint returns
+ * the smaller {@link StaffMember}; only `/api/staff/accounts` carries account access, which
+ * is why the access fields live here rather than being optional on every staff row.
+ */
+export interface StaffAccount extends StaffMember {
+  access: StaffAccountAccess;
+  /** When the outstanding activation link stops working. Null unless one is outstanding. */
+  invitationExpiresAt?: string | null;
+}
+
+/**
+ * What `POST /api/staff/accounts` answers. Creating the account and delivering the
+ * activation email are separate outcomes: the account survives a failed send, so an HTTP
+ * success does not mean the employee was told about it.
+ */
+export interface StaffAccountProvisionResult {
+  account: StaffAccount;
+  /** False when an existing login was linked and keeps the password it already had. */
+  invitationRequired: boolean;
+  invitationSent: boolean;
+  invitationExpiresAt?: string | null;
+  /** Safe to show an Admin. Set only when the invitation could not be sent. */
+  invitationError?: string | null;
+}
+
+/** What resending an invitation answers. Never carries a token, a link or a password. */
+export interface StaffInvitationResult {
+  /** The new invitation was stored. A failed email does not undo this. */
+  issued: boolean;
+  emailSent: boolean;
+  expiresAt?: string | null;
+  error?: string | null;
+}
+
 export interface ProjectLookup {
   id: number;
   name: string;
