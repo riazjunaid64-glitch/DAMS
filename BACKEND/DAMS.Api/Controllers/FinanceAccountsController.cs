@@ -22,8 +22,13 @@ namespace DAMS.Api.Controllers
             Ok(await _service.GetPageAsync(search, type, holder, isActive, Math.Max(0, skip), Math.Clamp(take, 1, 200), cancellationToken));
 
         [HttpGet("options")]
-        public async Task<IActionResult> GetOptions([FromQuery] bool includeInactive = false, CancellationToken cancellationToken = default) =>
-            Ok(await _service.GetOptionsAsync(includeInactive, cancellationToken));
+        public async Task<IActionResult> GetOptions([FromQuery] bool includeInactive = false, [FromQuery] bool cashLikeOnly = true,
+            [FromQuery] FinanceAccountType? type = null, CancellationToken cancellationToken = default) =>
+            Ok(await _service.GetOptionsAsync(includeInactive, cashLikeOnly, type, cancellationToken));
+
+        [HttpPost("setup-client-chart")]
+        public async Task<IActionResult> SetupClientChart(CancellationToken cancellationToken) =>
+            await Execute(() => _service.SetupClientChartAsync(cancellationToken));
 
         [HttpGet("overview")]
         public async Task<IActionResult> GetOverview(CancellationToken cancellationToken) => Ok(await _service.GetOverviewAsync(cancellationToken));

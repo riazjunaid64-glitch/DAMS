@@ -1,6 +1,12 @@
 import { api } from "./api";
 
-export type FinanceRecordKind = "revenue" | "expense";
+export type FinanceRecordKind = "revenue" | "expense" | "assetPurchase";
+
+const ATTACHMENT_RESOURCE: Record<FinanceRecordKind, string> = {
+  revenue: "revenue",
+  expense: "expenses",
+  assetPurchase: "asset-purchases",
+};
 
 export interface FinanceAttachmentInfo {
   fileName: string;
@@ -29,8 +35,7 @@ export async function openFinanceAttachment(
   const previewWindow = download ? null : window.open("", "_blank");
   if (previewWindow) previewWindow.opener = null;
   try {
-    const resource = kind === "revenue" ? "revenue" : "expenses";
-    const response = await api(`/api/Finance/${resource}/${recordId}/attachment?download=${download}`);
+    const response = await api(`/api/Finance/${ATTACHMENT_RESOURCE[kind]}/${recordId}/attachment?download=${download}`);
     if (!response.ok) {
       previewWindow?.close();
       throw new Error(await responseMessage(response, "The attachment could not be opened."));

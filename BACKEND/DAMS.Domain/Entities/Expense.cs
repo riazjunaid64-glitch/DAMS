@@ -2,7 +2,7 @@ using DAMS.Domain.Enums;
 
 namespace DAMS.Domain.Entities
 {
-    public class Expense
+    public class Expense : IWithholdingSubject
     {
         public int Id { get; set; }
 
@@ -69,6 +69,14 @@ namespace DAMS.Domain.Entities
         public int? CreatedByUserId { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        /// <summary>
+        /// Optimistic-concurrency token. Editing an expense moves the gross cost, the withheld tax
+        /// and the paying account's balance all at once, so two admins with the same row open must
+        /// not be able to silently overwrite one another — the loser is told to reload instead. The
+        /// same protection every other mutable financial record already carries.
+        /// </summary>
+        public byte[] RowVersion { get; set; } = [];
 
         // Navigation
         public Project? Project { get; set; }

@@ -132,5 +132,12 @@ namespace DAMS.Domain.Entities
         public ICollection<BookingCommission> Commissions { get; set; } = new List<BookingCommission>();
 
         public ICollection<CustomerRebate> Rebates { get; set; } = new List<CustomerRebate>();
+
+        // At most one — enforced by a unique index on BookingId.
+        public BookingCancellationSettlement? CancellationSettlement { get; set; }
+
+        // At most one — enforced by a unique index on BookingId. Written at possession; the sale
+        // is never recognised twice.
+        public BookingSaleRecognition? SaleRecognition { get; set; }
     }
 }

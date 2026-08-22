@@ -19,7 +19,7 @@ export interface ExpenseCategory {
   taxSection: string | null;
   displayOrder: number;
   isActive: boolean;
-  expenseCount: number;
+  usageCount: number;
   createdAt: string;
   updatedAt: string | null;
   concurrencyToken: string;
@@ -41,7 +41,7 @@ export interface Vendor extends VendorOption {
   filerStatusCheckedAt: string | null;
   yearToDateGross: number;
   yearToDateWht: number;
-  expenseCount: number;
+  paymentCount: number;
   createdAt: string;
   updatedAt: string | null;
   concurrencyToken: string;
@@ -75,16 +75,17 @@ export interface WhtSectionTotal {
   taxSection: string;
   grossAmount: number;
   whtAmount: number;
-  expenseCount: number;
+  paymentCount: number;
 }
 
 export interface WhtPayableSummary {
   withheldInPeriod: number;
   depositedInPeriod: number;
   outstandingPayable: number;
+  openingPayable: number;
   totalWithheldAllTime: number;
   totalDepositedAllTime: number;
-  expenseCount: number;
+  paymentCount: number;
   vendorCount: number;
   bySection: WhtSectionTotal[];
 }
@@ -99,7 +100,7 @@ export interface WhtVendorLine {
   grossAmount: number;
   whtAmount: number;
   netPaid: number;
-  expenseCount: number;
+  paymentCount: number;
 }
 
 export interface WhtDeposit {

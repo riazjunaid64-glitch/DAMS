@@ -25,19 +25,34 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
+        public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
+        public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
+        public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
         public DbSet<EmployeeAttendance> EmployeeAttendances { get; set; }
         public DbSet<EmployeeTask> EmployeeTasks { get; set; }
         public DbSet<EmployeeSalary> EmployeeSalaries { get; set; }
         public DbSet<BookingRequest> BookingRequests { get; set; }
         public DbSet<Expense> Expenses { get; set; }
+        public DbSet<AssetPurchase> AssetPurchases { get; set; }
         public DbSet<ExpenseCategory> ExpenseCategories { get; set; }
         public DbSet<Vendor> Vendors { get; set; }
         public DbSet<WhtDeposit> WhtDeposits { get; set; }
+        public DbSet<IdempotentRequest> IdempotentRequests { get; set; }
+        public DbSet<FinanceRecordAudit> FinanceRecordAudits { get; set; }
         public DbSet<FinanceSetting> FinanceSettings { get; set; }
         public DbSet<ManualRevenue> ManualRevenues { get; set; }
+        public DbSet<RevenueCategory> RevenueCategories { get; set; }
         public DbSet<FinanceAttachment> FinanceAttachments { get; set; }
         public DbSet<FinanceAccount> FinanceAccounts { get; set; }
+        public DbSet<OpeningBalanceSet> OpeningBalanceSets { get; set; }
+        public DbSet<OpeningBalanceEntry> OpeningBalanceEntries { get; set; }
+        public DbSet<OpeningBalanceAuditEntry> OpeningBalanceAuditEntries { get; set; }
+        public DbSet<CapitalPartner> CapitalPartners { get; set; }
+        public DbSet<CapitalTransaction> CapitalTransactions { get; set; }
+        public DbSet<Loan> Loans { get; set; }
+        public DbSet<LoanTransaction> LoanTransactions { get; set; }
+        public DbSet<StaffCashTransfer> StaffCashTransfers { get; set; }
         public DbSet<ThirdPartyPartner> ThirdPartyPartners { get; set; }
         public DbSet<ThirdPartyAttribution> ThirdPartyAttributions { get; set; }
         public DbSet<CommissionRule> CommissionRules { get; set; }
@@ -75,6 +90,13 @@ namespace DAMS.Infrastructure.Data
         public DbSet<NotificationJob> NotificationJobs { get; set; }
         public DbSet<EmailSuppression> EmailSuppressions { get; set; }
         public DbSet<NotificationAuditEntry> NotificationAuditEntries { get; set; }
+
+        // Provider-neutral integration layer. Meta is the first provider; the shape is
+        // deliberately free of anything Meta-specific so a second one adds no schema.
+        public DbSet<ExternalIntegrationConnection> ExternalIntegrationConnections { get; set; }
+        public DbSet<ExternalIntegrationResource> ExternalIntegrationResources { get; set; }
+        public DbSet<ExternalIntegrationEvent> ExternalIntegrationEvents { get; set; }
+        public DbSet<ExternalIntegrationOAuthState> ExternalIntegrationOAuthStates { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -460,6 +482,90 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<BookingSaleRecognition>(entity =>
+            {
+                entity.Property(r => r.NetSaleValue).HasColumnType("decimal(18,2)");
+                // A date, not a timestamp: this is the business day the sale lands on, and every
+                // report compares it against a date boundary.
+                entity.Property(r => r.RecognitionDate).HasColumnType("date");
+
+                // The whole point of the table: one recognition per booking. Possession retried,
+                // raced, or followed by completion must never produce a second sale.
+                entity.HasIndex(r => r.BookingId).IsUnique();
+                entity.HasIndex(r => r.RecognitionDate);
+
+                entity.HasOne(r => r.Booking)
+                      .WithOne(b => b.SaleRecognition)
+                      .HasForeignKey<BookingSaleRecognition>(r => r.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t => t.HasCheckConstraint(
+                    "CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0"));
+            });
+
+            modelBuilder.Entity<BookingCancellationSettlement>(entity =>
+            {
+                entity.Property(s => s.CustomerCashReceivedSnapshot).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RefundAmount).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RetainedAmount).HasColumnType("decimal(18,2)");
+                entity.Property(s => s.RefundDecision).HasConversion<int>();
+                entity.Property(s => s.Reason).IsRequired().HasMaxLength(500);
+                entity.Property(s => s.Notes).HasMaxLength(2000);
+                entity.Property(s => s.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(s => s.CancelledByName).IsRequired().HasMaxLength(200);
+                entity.Property(s => s.CancellationDate).HasColumnType("date");
+
+                entity.HasIndex(s => s.BookingId).IsUnique();
+                entity.HasIndex(s => s.IdempotencyKey).IsUnique();
+                entity.HasIndex(s => s.RefundPayableAccountId);
+                entity.HasIndex(s => s.CancellationDate);
+
+                entity.HasOne(s => s.Booking)
+                      .WithOne(b => b.CancellationSettlement)
+                      .HasForeignKey<BookingCancellationSettlement>(s => s.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(s => s.RefundPayableAccount)
+                      .WithMany(a => a.CancellationSettlementsPayable)
+                      .HasForeignKey(s => s.RefundPayableAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_BookingCancellationSettlements_Amounts",
+                        "[CustomerCashReceivedSnapshot] >= 0 AND [RefundAmount] >= 0 AND [RetainedAmount] >= 0 "
+                        + "AND [RefundAmount] + [RetainedAmount] = [CustomerCashReceivedSnapshot]");
+                    // RefundDecision: None = 0, PayNow = 1, PayLater = 2.
+                    t.HasCheckConstraint("CK_BookingCancellationSettlements_DecisionConsistency",
+                        "([RefundAmount] = 0 AND [RefundDecision] = 0 AND [RefundPayableAccountId] IS NULL) "
+                        + "OR ([RefundAmount] > 0 AND [RefundDecision] IN (1, 2) AND [RefundPayableAccountId] IS NOT NULL)");
+                });
+            });
+
+            modelBuilder.Entity<BookingCancellationRefund>(entity =>
+            {
+                entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(r => r.PaymentMethod).HasConversion<int>();
+                entity.Property(r => r.PaymentReference).HasMaxLength(200);
+                entity.Property(r => r.Notes).HasMaxLength(2000);
+                entity.Property(r => r.IdempotencyKey).IsRequired().HasMaxLength(80);
+                entity.Property(r => r.RecordedByName).IsRequired().HasMaxLength(200);
+
+                entity.HasIndex(r => r.SettlementId).IsUnique();
+                entity.HasIndex(r => r.IdempotencyKey).IsUnique();
+                entity.HasIndex(r => r.FinanceAccountId);
+
+                entity.HasOne(r => r.Settlement)
+                      .WithOne(s => s.Refund)
+                      .HasForeignKey<BookingCancellationRefund>(r => r.SettlementId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(r => r.FinanceAccount)
+                      .WithMany(a => a.CancellationRefundsPaid)
+                      .HasForeignKey(r => r.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.ToTable(t => t.HasCheckConstraint("CK_BookingCancellationRefunds_Amount", "[Amount] > 0"));
+            });
+
             modelBuilder.Entity<Employee>(entity =>
             {
                 entity.Property(e => e.FullName).IsRequired().HasMaxLength(200);
@@ -534,6 +640,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(s => s.ProjectName).HasMaxLength(200);
                 entity.Property(s => s.Notes).HasMaxLength(500);
+                entity.Property(s => s.RowVersion).IsRowVersion();
                 entity.HasIndex(s => s.EmployeeId);
                 // Unique so a double-click cannot record the same month twice.
                 entity.HasIndex(s => new { s.EmployeeId, s.PayYear, s.PayMonth }).IsUnique();
@@ -614,6 +721,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(e => e.VendorFilerStatusAtEntry).HasConversion<int>();
                 // Derived from Amount and WhtAmount; storing it would let the three drift apart.
                 entity.Ignore(e => e.NetPaid);
+                entity.Property(e => e.RowVersion).IsRowVersion();
 
                 entity.HasIndex(e => e.ProjectId);
                 entity.HasIndex(e => e.Date);
@@ -649,19 +757,75 @@ namespace DAMS.Infrastructure.Data
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<AssetPurchase>(entity =>
+            {
+                entity.Property(p => p.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.ItemName).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.Category).IsRequired().HasMaxLength(100);
+                entity.Property(p => p.Description).HasMaxLength(1000);
+                entity.Property(p => p.Vendor).HasMaxLength(200);
+
+                entity.Property(p => p.WhtRate).HasColumnType("decimal(9,4)");
+                entity.Property(p => p.WhtAmount).HasColumnType("decimal(18,2)");
+                entity.Property(p => p.WhtOverrideReason).HasMaxLength(500);
+                entity.Property(p => p.WhtTaxSection).HasMaxLength(30);
+                entity.Property(p => p.VendorFilerStatusAtEntry).HasConversion<int>();
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.Ignore(p => p.NetPaid);
+
+                entity.HasIndex(p => p.ProjectId);
+                entity.HasIndex(p => p.Date);
+                entity.HasIndex(p => p.FinanceAccountId);
+                // The asset ledger's own drill-down and running total read by this.
+                entity.HasIndex(p => new { p.AssetAccountId, p.Date });
+                entity.HasIndex(p => p.CategoryId);
+                entity.HasIndex(p => new { p.VendorId, p.Date });
+
+                entity.HasOne(p => p.Project)
+                      .WithMany()
+                      .HasForeignKey(p => p.ProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
+
+                // Two accounts, both Restrict. Deleting either side would leave a purchase that
+                // debits an asset without crediting cash, or vice versa — a silently unbalanced
+                // balance sheet. FinanceAccountService refuses the delete before it gets here.
+                entity.HasOne(p => p.AssetAccount)
+                      .WithMany(a => a.AssetPurchasesReceived)
+                      .HasForeignKey(p => p.AssetAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.FinanceAccount)
+                      .WithMany(a => a.AssetPurchasesPaid)
+                      .HasForeignKey(p => p.FinanceAccountId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.ExpenseCategory)
+                      .WithMany(c => c.AssetPurchases)
+                      .HasForeignKey(p => p.CategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(p => p.VendorAccount)
+                      .WithMany(v => v.AssetPurchases)
+                      .HasForeignKey(p => p.VendorId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
             ConfigureWithholdingTax(modelBuilder);
 
             modelBuilder.Entity<ManualRevenue>(entity =>
             {
                 entity.Property(r => r.Amount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.RevenueType).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.RevenueTypeName).IsRequired().HasMaxLength(150);
                 entity.Property(r => r.Description).HasMaxLength(1000);
                 entity.Property(r => r.Reference).HasMaxLength(200);
+                entity.Property(r => r.RowVersion).IsRowVersion();
 
                 entity.HasIndex(r => r.ProjectId);
                 entity.HasIndex(r => r.Date);
                 entity.HasIndex(r => r.RevenueType);
                 entity.HasIndex(r => r.FinanceAccountId);
+                entity.HasIndex(r => r.RevenueCategoryId);
 
                 entity.HasOne(r => r.Project)
                       .WithMany()
@@ -672,7 +836,18 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.ManualRevenues)
                       .HasForeignKey(r => r.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(r => r.RevenueCategory)
+                      .WithMany(c => c.ManualRevenues)
+                      .HasForeignKey(r => r.RevenueCategoryId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
+
+            ConfigureFinanceReporting(modelBuilder);
+
+            ConfigureLoans(modelBuilder);
+
+            ConfigureStaffCash(modelBuilder);
 
             modelBuilder.Entity<FinanceAccount>(entity =>
             {
@@ -681,11 +856,33 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(a => a.BankOrWalletName).HasMaxLength(150);
                 entity.Property(a => a.Description).HasMaxLength(1000);
                 entity.Property(a => a.OpeningBalance).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.LedgerCode).HasMaxLength(30);
+                entity.Property(a => a.SystemRole).HasConversion<int>();
                 entity.Property(a => a.RowVersion).IsRowVersion();
 
                 entity.HasIndex(a => a.Name).IsUnique();
                 entity.HasIndex(a => new { a.IsActive, a.Type });
                 entity.HasIndex(a => a.AccountHolderName);
+                entity.HasIndex(a => new { a.Type, a.AccountHolderName })
+                      .IsUnique()
+                      .HasFilter("[Type] = 10");
+                entity.HasIndex(a => new { a.Type, a.DisplayOrder });
+                entity.HasIndex(a => a.LedgerCode);
+                entity.HasIndex(a => a.SystemRole)
+                      .IsUnique()
+                      .HasFilter("[SystemRole] <> 0");
+
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 4");
+                    t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
+                    // A deposit is money owed back, so its account must be a Liability (5); a
+                    // receivable is money owed in, so its account must be a Receivable (8). Get
+                    // either the wrong way round and every balance built on it inverts.
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerDepositsRole", "[SystemRole] <> 3 OR [Type] = 5");
+                    t.HasCheckConstraint("CK_FinanceAccounts_CustomerReceivablesRole", "[SystemRole] <> 4 OR [Type] = 8");
+                });
             });
 
             modelBuilder.Entity<FinanceAttachment>(entity =>
@@ -700,10 +897,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.ExpenseId)
                       .IsUnique()
                       .HasFilter("[ExpenseId] IS NOT NULL");
+                entity.HasIndex(a => a.AssetPurchaseId)
+                      .IsUnique()
+                      .HasFilter("[AssetPurchaseId] IS NOT NULL");
 
+                // Counted rather than enumerated as pairs: with three owners the pairwise form
+                // needs six clauses and gains one more every time a record type is added.
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_FinanceAttachments_ExactlyOneOwner",
-                    "([ManualRevenueId] IS NOT NULL AND [ExpenseId] IS NULL) OR ([ManualRevenueId] IS NULL AND [ExpenseId] IS NOT NULL)"));
+                    "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1"));
 
                 entity.HasOne(a => a.ManualRevenue)
                       .WithOne(r => r.Attachment)
@@ -714,11 +918,207 @@ namespace DAMS.Infrastructure.Data
                       .WithOne(e => e.Attachment)
                       .HasForeignKey<FinanceAttachment>(a => a.ExpenseId)
                       .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.AssetPurchase)
+                      .WithOne(p => p.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.AssetPurchaseId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
 
             ConfigureCommissionAndRebates(modelBuilder);
             ConfigureLeadManagement(modelBuilder);
             ConfigureNotifications(modelBuilder);
+            ConfigureIntegrations(modelBuilder);
+        }
+
+        private static void ConfigureFinanceReporting(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<RevenueCategory>(entity =>
+            {
+                entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
+                entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
+                entity.Property(c => c.Description).HasMaxLength(1000);
+                entity.Property(c => c.RowVersion).IsRowVersion();
+                entity.HasIndex(c => c.Name).IsUnique();
+                entity.HasIndex(c => c.Code).IsUnique();
+                entity.HasIndex(c => new { c.IsActive, c.DisplayOrder });
+                entity.HasData(SeedRevenueCategories());
+            });
+
+            modelBuilder.Entity<OpeningBalanceSet>(entity =>
+            {
+                entity.Property(s => s.RowVersion).IsRowVersion();
+                entity.HasIndex(s => s.AsAtDate).IsUnique();
+                entity.ToTable(t => t.HasCheckConstraint("CK_OpeningBalanceSets_Singleton", "[Id] = 1"));
+            });
+
+            modelBuilder.Entity<OpeningBalanceEntry>(entity =>
+            {
+                entity.Property(e => e.DebitAmount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.CreditAmount).HasColumnType("decimal(18,2)");
+                entity.Property(e => e.Note).HasMaxLength(500);
+                entity.HasIndex(e => new { e.OpeningBalanceSetId, e.FinanceAccountId }).IsUnique();
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_OpeningBalanceEntry_NonNegative", "[DebitAmount] >= 0 AND [CreditAmount] >= 0");
+                    t.HasCheckConstraint("CK_OpeningBalanceEntry_OneSide", "[DebitAmount] = 0 OR [CreditAmount] = 0");
+                });
+                entity.HasOne(e => e.OpeningBalanceSet).WithMany(s => s.Entries)
+                    .HasForeignKey(e => e.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.FinanceAccount).WithMany(a => a.OpeningBalanceEntries)
+                    .HasForeignKey(e => e.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<OpeningBalanceAuditEntry>(entity =>
+            {
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(30);
+                entity.Property(a => a.Note).HasMaxLength(1000);
+                entity.HasIndex(a => new { a.OpeningBalanceSetId, a.OccurredAt });
+                entity.HasOne(a => a.OpeningBalanceSet).WithMany(s => s.AuditEntries)
+                    .HasForeignKey(a => a.OpeningBalanceSetId).OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CapitalPartner>(entity =>
+            {
+                entity.Property(p => p.Name).IsRequired().HasMaxLength(200);
+                entity.Property(p => p.Cnic).HasMaxLength(20);
+                entity.Property(p => p.Ntn).HasMaxLength(30);
+                entity.Property(p => p.ProfitSharePercent).HasColumnType("decimal(9,4)");
+                entity.Property(p => p.RowVersion).IsRowVersion();
+                entity.ToTable(t => t.HasCheckConstraint("CK_CapitalPartners_Share",
+                    "[ProfitSharePercent] >= 0 AND [ProfitSharePercent] <= 100"));
+                entity.HasIndex(p => p.Name).IsUnique();
+                entity.HasIndex(p => p.FinanceAccountId).IsUnique().HasFilter("[FinanceAccountId] IS NOT NULL");
+                entity.HasOne(p => p.FinanceAccount).WithMany(a => a.CapitalPartners)
+                    .HasForeignKey(p => p.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CapitalTransaction>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.ProfitSharePercentSnapshot).HasColumnType("decimal(9,4)");
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_CapitalTransactions_Amount", "[Amount] > 0");
+                    t.HasCheckConstraint("CK_CapitalTransactions_Type", "[Type] >= 1 AND [Type] <= 5");
+                    t.HasCheckConstraint("CK_CapitalTransactions_CashSide",
+                        "([Type] IN (2, 3) AND [FinanceAccountId] IS NOT NULL) OR ([Type] NOT IN (2, 3) AND [FinanceAccountId] IS NULL)");
+                    t.HasCheckConstraint("CK_CapitalTransactions_ProfitSnapshot",
+                        "([Type] = 4 AND [ProfitSharePercentSnapshot] IS NOT NULL AND [ProfitSharePercentSnapshot] >= 0 AND [ProfitSharePercentSnapshot] <= 100) OR ([Type] <> 4 AND [ProfitSharePercentSnapshot] IS NULL)");
+                });
+                entity.HasIndex(t => new { t.CapitalPartnerId, t.Date });
+                entity.HasIndex(t => t.FinanceAccountId);
+                entity.HasOne(t => t.CapitalPartner).WithMany(p => p.Transactions)
+                    .HasForeignKey(t => t.CapitalPartnerId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.FinanceAccount).WithMany(a => a.CapitalCashTransactions)
+                    .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureLoans(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Loan>(entity =>
+            {
+                entity.Property(l => l.Name).IsRequired().HasMaxLength(200);
+                entity.Property(l => l.LenderName).HasMaxLength(200);
+                entity.Property(l => l.RowVersion).IsRowVersion();
+                entity.HasIndex(l => l.Name).IsUnique();
+                entity.HasIndex(l => l.FinanceAccountId).IsUnique();
+                entity.HasIndex(l => new { l.IsActive, l.Name });
+                entity.HasOne(l => l.FinanceAccount).WithMany(a => a.Loans)
+                    .HasForeignKey(l => l.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LoanTransaction>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.PrincipalAmount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.InterestAmount).HasColumnType("decimal(18,2)");
+                entity.Ignore(t => t.TotalPaid);
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.Property(t => t.RowVersion).IsRowVersion();
+                entity.HasIndex(t => t.OperationId).IsUnique();
+                entity.HasIndex(t => new { t.LoanId, t.Date, t.CreatedAt });
+                entity.HasIndex(t => new { t.FinanceAccountId, t.Date });
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_LoanTransactions_Type", "[Type] IN (1, 2)");
+                    t.HasCheckConstraint("CK_LoanTransactions_Amounts", "[PrincipalAmount] >= 0 AND [InterestAmount] >= 0");
+                    t.HasCheckConstraint("CK_LoanTransactions_Shape",
+                        "([Type] = 1 AND [PrincipalAmount] > 0 AND [InterestAmount] = 0) OR " +
+                        "([Type] = 2 AND ([PrincipalAmount] > 0 OR [InterestAmount] > 0))");
+                });
+                entity.HasOne(t => t.Loan).WithMany(l => l.Transactions)
+                    .HasForeignKey(t => t.LoanId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.FinanceAccount).WithMany(a => a.LoanCashTransactions)
+                    .HasForeignKey(t => t.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static void ConfigureStaffCash(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<StaffCashTransfer>(entity =>
+            {
+                entity.Property(t => t.Type).HasConversion<int>();
+                entity.Property(t => t.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(t => t.Reference).HasMaxLength(200);
+                entity.Property(t => t.Note).HasMaxLength(1000);
+                entity.Property(t => t.RowVersion).IsRowVersion();
+                entity.HasIndex(t => new { t.StaffFinanceAccountId, t.Date, t.CreatedAt });
+                entity.HasIndex(t => new { t.CounterpartyFinanceAccountId, t.Date });
+                entity.ToTable(t =>
+                {
+                    t.HasCheckConstraint("CK_StaffCashTransfers_Type", "[Type] IN (1, 2)");
+                    t.HasCheckConstraint("CK_StaffCashTransfers_Amount", "[Amount] > 0");
+                    t.HasCheckConstraint("CK_StaffCashTransfers_DifferentAccounts",
+                        "[StaffFinanceAccountId] <> [CounterpartyFinanceAccountId]");
+                });
+                entity.HasOne(t => t.StaffFinanceAccount).WithMany(a => a.StaffCashTransfers)
+                    .HasForeignKey(t => t.StaffFinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(t => t.CounterpartyFinanceAccount).WithMany(a => a.StaffCashCounterpartyTransfers)
+                    .HasForeignKey(t => t.CounterpartyFinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
+        private static RevenueCategory[] SeedRevenueCategories()
+        {
+            // "External / Legacy Cancellation Income" is deliberately not called "Cancellation /
+            // Forfeiture" any more. Cancelling a DAMS booking already recognises the retained amount
+            // as income by itself, on the cancellation date, out of the customer's deposit — so a
+            // head that invited an Admin to ALSO type that figure in by hand was an invitation to
+            // count the same forfeiture twice, with nothing anywhere to detect it. The head survives
+            // because forfeitures from before go-live, or on something that was never a DAMS booking,
+            // have no other way in. Its `Code` is untouched so existing rows keep their category.
+            var heads = new (string Name, string Code)[]
+            {
+                ("Transfer Charges", "transfer_charges"),
+                ("Development Charges", "development_charges"),
+                ("Possession Charges", "possession_charges"),
+                ("Membership Charges", "membership_charges"),
+                ("Documentation Charges", "documentation_charges"),
+                ("NOC / NDC Charges", "noc_ndc_charges"),
+                ("Utility Connection Charges", "utility_connection_charges"),
+                ("Parking Charges", "parking_charges"),
+                ("Late Payment Surcharge", "late_payment_surcharge"),
+                ("External / Legacy Cancellation Income", "cancellation_forfeiture"),
+                ("Rental Income", "rental_income"),
+                ("Commission Income", "commission_income"),
+                ("Bank Profit / Interest", "bank_profit_interest"),
+                ("Other Income", "other_income")
+            };
+            return heads.Select((head, index) => new RevenueCategory
+            {
+                Id = index + 1,
+                Name = head.Name,
+                Code = head.Code,
+                DisplayOrder = (index + 1) * 10,
+                IsActive = true,
+                CreatedAt = new DateTime(2026, 8, 12, 0, 0, 0, DateTimeKind.Utc)
+            }).ToArray();
         }
 
         private static void ConfigureCommissionAndRebates(ModelBuilder modelBuilder)
@@ -1044,10 +1444,104 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<CustomerDocumentAuditEntry>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Customer document audit entries are append-only.");
+            if (ChangeTracker.Entries<OpeningBalanceAuditEntry>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Opening balance audit entries are append-only.");
+            if (ChangeTracker.Entries<CapitalTransaction>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Capital transactions are immutable.");
+            if (ChangeTracker.Entries<BookingCancellationSettlement>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking cancellation settlements are append-only.");
+            if (ChangeTracker.Entries<BookingCancellationRefund>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking cancellation refunds are append-only.");
+            if (ChangeTracker.Entries<FinanceRecordAudit>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Finance record audit entries are append-only.");
         }
+
+        /// <summary>
+        /// The user whose request is being served, for the correction trail. Set per request by the
+        /// API; null in background work and in tests, where an entry is attributed to no one rather
+        /// than to whoever happened to be last.
+        /// </summary>
+        public int? ActorUserId { get; set; }
+
+        // Editable money records. A correction to any of these restates a period that has already
+        // been reported, so it leaves evidence. See FinanceRecordAudit.
+        private static readonly HashSet<Type> AuditedFinancialTypes =
+        [
+            typeof(Expense), typeof(ManualRevenue), typeof(AssetPurchase), typeof(WhtDeposit)
+        ];
+
+        /// <summary>
+        /// Records what changed on an editable money record, in the same SaveChanges as the change.
+        /// <para>
+        /// Done here rather than in each service on purpose: a service can forget, and a service added
+        /// later starts out forgetting. Anything that reaches the database through this context is
+        /// covered, including a correction made by a script or a background job.
+        /// </para>
+        /// </summary>
+        private void CaptureFinancialCorrections()
+        {
+            var entries = ChangeTracker.Entries()
+                .Where(e => e.State is EntityState.Modified or EntityState.Deleted
+                    && AuditedFinancialTypes.Contains(e.Metadata.ClrType))
+                .ToList();
+            foreach (var entry in entries)
+            {
+                var deleted = entry.State == EntityState.Deleted;
+                var fields = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var property in entry.Properties)
+                {
+                    if (property.Metadata.IsPrimaryKey()) continue;
+                    // RowVersion moves on every save and says nothing about what an operator did.
+                    if (property.Metadata.Name == nameof(Expense.RowVersion)) continue;
+                    if (deleted)
+                    {
+                        fields[property.Metadata.Name] = Describe(property.OriginalValue);
+                    }
+                    else if (property.IsModified
+                        && !Equals(property.OriginalValue, property.CurrentValue))
+                    {
+                        fields[property.Metadata.Name] = new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["from"] = Describe(property.OriginalValue),
+                            ["to"] = Describe(property.CurrentValue)
+                        };
+                    }
+                }
+                // An update that moved nothing (a re-save of identical values) is not a correction.
+                if (fields.Count == 0) continue;
+                var key = entry.Property("Id");
+                FinanceRecordAudits.Add(new FinanceRecordAudit
+                {
+                    RecordType = entry.Metadata.ClrType.Name,
+                    RecordId = (int)(key.OriginalValue ?? key.CurrentValue ?? 0),
+                    Action = deleted ? "Deleted" : "Updated",
+                    Changes = System.Text.Json.JsonSerializer.Serialize(fields),
+                    ActorUserId = ActorUserId,
+                    OccurredAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        // Culture-independent, so a figure read back out of the trail years later means what it meant
+        // when it was written.
+        private static object? Describe(object? value) => value switch
+        {
+            null => null,
+            decimal number => number.ToString("0.00###", System.Globalization.CultureInfo.InvariantCulture),
+            DateTime moment => moment.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+            byte[] bytes => Convert.ToBase64String(bytes),
+            Enum flag => flag.ToString(),
+            _ => value.ToString()
+        };
 
         public override int SaveChanges(bool acceptAllChangesOnSuccess)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChanges(acceptAllChangesOnSuccess);
         }
@@ -1055,6 +1549,7 @@ namespace DAMS.Infrastructure.Data
         public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
+            CaptureFinancialCorrections();
             EnforceImmutableHistory();
             return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
         }
@@ -1132,6 +1627,29 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(a => a.WhtDeposits)
                       .HasForeignKey(d => d.FinanceAccountId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // Retry safety for money-creating requests. The unique key is the whole mechanism: it is
+            // what makes "reserve, then do the work" atomic under two simultaneous copies of the same
+            // request. See IdempotentRequest.
+            // The correction trail for editable money records. Indexed by the record it describes,
+            // because that is the only way it is ever read.
+            modelBuilder.Entity<FinanceRecordAudit>(entity =>
+            {
+                entity.Property(a => a.RecordType).IsRequired().HasMaxLength(40);
+                entity.Property(a => a.Action).IsRequired().HasMaxLength(20);
+                entity.Property(a => a.Changes).IsRequired();
+                entity.HasIndex(a => new { a.RecordType, a.RecordId });
+                entity.HasIndex(a => a.OccurredAt);
+            });
+
+            modelBuilder.Entity<IdempotentRequest>(entity =>
+            {
+                entity.Property(r => r.Key).IsRequired().HasMaxLength(120);
+                entity.Property(r => r.Operation).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.Fingerprint).IsRequired().HasMaxLength(64);
+                entity.HasIndex(r => r.Key).IsUnique();
+                entity.HasIndex(r => r.CreatedAt);
             });
 
             modelBuilder.Entity<FinanceSetting>(entity =>
@@ -1273,8 +1791,8 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(l => l.LeadReference).IsRequired().HasMaxLength(50);
                 entity.Property(l => l.FirstName).IsRequired().HasMaxLength(100);
                 entity.Property(l => l.LastName).HasMaxLength(100);
-                entity.Property(l => l.Phone).IsRequired().HasMaxLength(50);
-                entity.Property(l => l.NormalizedPhone).IsRequired().HasMaxLength(50);
+                entity.Property(l => l.Phone).HasMaxLength(50);
+                entity.Property(l => l.NormalizedPhone).HasMaxLength(50);
                 entity.Property(l => l.WhatsappNumber).HasMaxLength(50);
                 entity.Property(l => l.NormalizedWhatsapp).HasMaxLength(50);
                 entity.Property(l => l.Email).HasMaxLength(200);
@@ -1370,14 +1888,33 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(s => s.Provider).IsRequired().HasMaxLength(50);
                 entity.Property(s => s.ExternalLeadId).IsRequired().HasMaxLength(200);
                 entity.Property(s => s.ExternalFormReference).HasMaxLength(200);
+                entity.Property(s => s.Platform).HasMaxLength(50);
+                entity.Property(s => s.PageExternalId).HasMaxLength(200);
+                entity.Property(s => s.PageName).HasMaxLength(300);
+                entity.Property(s => s.AdAccountExternalId).HasMaxLength(200);
+                entity.Property(s => s.CampaignExternalId).HasMaxLength(200);
+                entity.Property(s => s.CampaignName).HasMaxLength(300);
+                entity.Property(s => s.AdSetExternalId).HasMaxLength(200);
+                entity.Property(s => s.AdSetName).HasMaxLength(300);
+                entity.Property(s => s.AdExternalId).HasMaxLength(200);
+                entity.Property(s => s.AdName).HasMaxLength(300);
+                entity.Property(s => s.ExternalFormName).HasMaxLength(300);
 
                 entity.HasIndex(s => new { s.Provider, s.ExternalLeadId }).IsUnique();
                 entity.HasIndex(s => new { s.LeadId, s.ReceivedAt });
+                entity.HasIndex(s => new { s.ExternalIntegrationConnectionId, s.ReceivedAt });
 
                 entity.HasOne(s => s.Lead)
                       .WithMany(l => l.ExternalSubmissions)
                       .HasForeignKey(s => s.LeadId)
                       .OnDelete(DeleteBehavior.Cascade);
+
+                // Restrict, not cascade: disconnecting a provider must never erase the record of
+                // where a lead actually came from.
+                entity.HasOne(s => s.Connection)
+                      .WithMany()
+                      .HasForeignKey(s => s.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<LeadActivity>(entity =>
@@ -1724,6 +2261,132 @@ namespace DAMS.Infrastructure.Data
             });
         }
 
+        /// <summary>
+        /// The provider-neutral integration layer: connections, the assets discovered inside
+        /// them, the durable webhook inbox, and single-use OAuth states.
+        ///
+        /// Two rules run through all of it. Nothing that a lead references is ever deleted —
+        /// disconnecting clears credentials and flips a status, so attribution survives. And
+        /// every uniqueness guarantee is enforced by an index rather than by application code,
+        /// because provider retries arrive concurrently.
+        /// </summary>
+        private static void ConfigureIntegrations(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ExternalIntegrationConnection>(entity =>
+            {
+                entity.Property(c => c.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(c => c.ExternalAccountId).HasMaxLength(200);
+                entity.Property(c => c.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(c => c.GrantedScopesJson).HasMaxLength(1000);
+                entity.Property(c => c.LastError).HasMaxLength(1000);
+                entity.Property(c => c.SyncLockedBy).HasMaxLength(100);
+                entity.Property(c => c.Status).HasConversion<int>();
+                entity.Property(c => c.RowVersion).IsRowVersion();
+
+                // Reconnecting the same provider account updates this row instead of creating a
+                // second one, so a page cannot end up owned by two live connections.
+                entity.HasIndex(c => new { c.Provider, c.ExternalAccountId })
+                      .IsUnique()
+                      .HasFilter("[ExternalAccountId] IS NOT NULL");
+                entity.HasIndex(c => new { c.Provider, c.Status });
+
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(c => c.ConnectedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationResource>(entity =>
+            {
+                entity.Property(r => r.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(r => r.ResourceType).IsRequired().HasMaxLength(50);
+                entity.Property(r => r.ExternalId).IsRequired().HasMaxLength(200);
+                entity.Property(r => r.ParentExternalId).HasMaxLength(200);
+                entity.Property(r => r.Name).HasMaxLength(300);
+                entity.Property(r => r.ExternalStatus).HasMaxLength(100);
+                entity.Property(r => r.RowVersion).IsRowVersion();
+
+                entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType, r.ExternalId })
+                      .IsUnique();
+                // How an incoming webhook finds the page it belongs to. Given an explicit name
+                // (matching EF's own convention for it) so it stays a genuinely separate index
+                // from the filtered one below — calling HasIndex twice with the same column list
+                // and no names would make EF treat the second call as reconfiguring this same
+                // index rather than declaring a new one, silently losing this general lookup
+                // index the moment the filtered one was added.
+                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId },
+                          "IX_ExternalIntegrationResources_Provider_ResourceType_ExternalId");
+                entity.HasIndex(r => new { r.ExternalIntegrationConnectionId, r.ResourceType });
+                entity.HasIndex(r => r.ParentExternalId);
+
+                // A physical Facebook Page's webhook subscription is app-to-Page, not
+                // connection-to-Page, so at most one DAMS connection may ever have it enabled at
+                // once — otherwise disconnecting one silently breaks lead delivery for the
+                // other, since Meta only knows a single relationship exists. The application
+                // check in MetaIntegrationService.SetResourceEnabledAsync exists for a clean
+                // error message, but two concurrent requests can both pass it before either
+                // commits; this filtered unique index is what actually makes that impossible.
+                entity.HasIndex(r => new { r.Provider, r.ResourceType, r.ExternalId },
+                          "UX_ExternalIntegrationResources_EnabledFacebookPage")
+                      .IsUnique()
+                      .HasFilter("[Provider] = 'meta' AND [ResourceType] = 'facebook_page' AND [IsEnabled] = 1");
+
+                entity.HasOne(r => r.Connection)
+                      .WithMany(c => c.Resources)
+                      .HasForeignKey(r => r.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationEvent>(entity =>
+            {
+                entity.Property(e => e.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.EventType).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.EventKey).IsRequired().HasMaxLength(300);
+                entity.Property(e => e.ResourceExternalId).HasMaxLength(200);
+                entity.Property(e => e.RawPayloadJson).IsRequired();
+                entity.Property(e => e.LockedBy).HasMaxLength(100);
+                entity.Property(e => e.LastError).HasMaxLength(1000);
+                entity.Property(e => e.Status).HasConversion<int>();
+                entity.Property(e => e.RowVersion).IsRowVersion();
+
+                // However many times a provider redelivers the same event, there is one row and
+                // therefore one unit of work.
+                entity.HasIndex(e => new { e.Provider, e.EventKey }).IsUnique();
+                // The claim query: due work, oldest first.
+                entity.HasIndex(e => new { e.Status, e.AvailableAt });
+                entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.ReceivedAt });
+
+                entity.HasOne(e => e.Connection)
+                      .WithMany()
+                      .HasForeignKey(e => e.ExternalIntegrationConnectionId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.Resource)
+                      .WithMany()
+                      .HasForeignKey(e => e.ExternalIntegrationResourceId)
+                      .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne<Lead>()
+                      .WithMany()
+                      .HasForeignKey(e => e.LeadId)
+                      .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationOAuthState>(entity =>
+            {
+                entity.Property(s => s.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(s => s.StateHash).IsRequired().HasMaxLength(128);
+                entity.Property(s => s.ReturnPath).HasMaxLength(300);
+                entity.Property(s => s.RowVersion).IsRowVersion();
+
+                entity.HasIndex(s => s.StateHash).IsUnique();
+                entity.HasIndex(s => s.ExpiresAt);
+
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(s => s.CreatedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
         // Fixed timestamp: HasData must be deterministic or every `migrations add` produces
         // a spurious update for these rows.
         private static readonly DateTime SeedDate = new(2026, 7, 26, 0, 0, 0, DateTimeKind.Utc);
@@ -1744,6 +2407,12 @@ namespace DAMS.Infrastructure.Data
                 NewSource(11, "campaign", "Marketing Campaign", 11, CustomerSource.Other),
                 NewSource(12, "exhibition", "Exhibition / Event", 12, CustomerSource.Other),
                 NewSource(13, "other", "Other", 13, CustomerSource.Other));
+            // The "meta" source (used only when a Meta lead cannot be attributed to Facebook or
+            // Instagram with confidence) is deliberately NOT seeded here with a fixed Id. A
+            // production database may already have an admin-created custom LeadSource occupying
+            // the next identity value, and HasData with an explicit Id would collide with it on
+            // upgrade. It is inserted idempotently by Code instead, in the
+            // AddExternalIntegrations migration's Up() — see the comment there.
 
             modelBuilder.Entity<LeadClosureReason>().HasData(
                 NewReason(1, "budget_issue", "Budget issue", 1, LeadClosureReasonKind.Both),

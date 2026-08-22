@@ -16,8 +16,13 @@ namespace DAMS.Domain.Entities
 
         public decimal Amount { get; set; }
 
-        // Free-text type with a suggested set on the UI (Transfer Charges, Documentation Charges, etc.).
+        // Legacy free-text column retained during the production backfill. New writes snapshot the
+        // managed category name into both fields so older clients continue to round-trip safely.
         public string RevenueType { get; set; } = string.Empty;
+
+        public int? RevenueCategoryId { get; set; }
+
+        public string RevenueTypeName { get; set; } = string.Empty;
 
         public string? Description { get; set; }
 
@@ -30,11 +35,19 @@ namespace DAMS.Domain.Entities
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Optimistic-concurrency token — the counterpart of <c>Expense.RowVersion</c>. Editing a
+        /// revenue row moves income and a bank balance, so a lost update here misstates both.
+        /// </summary>
+        public byte[] RowVersion { get; set; } = [];
+
         // Navigation
         public Project? Project { get; set; }
 
         public FinanceAttachment? Attachment { get; set; }
 
         public FinanceAccount? FinanceAccount { get; set; }
+
+        public RevenueCategory? RevenueCategory { get; set; }
     }
 }

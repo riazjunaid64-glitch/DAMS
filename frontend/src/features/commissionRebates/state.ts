@@ -19,15 +19,13 @@ export const rebateActions = (status:RebateStatus) => ({
 export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 $2");
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
-export function idempotencyKey(prefix:string) {
-  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
-}
+// One implementation, in lib/idempotency, because every screen that records money needs it — not
+// just commissions and rebates. Re-exported so this module keeps its existing callers.
+export { newIdempotencyKey as idempotencyKey } from "../../lib/idempotency";
 
-// The server judges "today" in Pakistan Standard Time (UTC+5, no DST) via PakistanTime.Today.
-// Deriving the picker's max/default from the browser's local date instead would let a user in a
-// timezone ahead of PKT pick a date the server then rejects as "in the future". Adding 5h to the
-// current instant and taking the UTC date yields the PKT calendar date on any client.
-export const pakistanToday = (): string => new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+// Re-exported so this module's existing callers keep working. It lives in lib/financePeriods
+// because every finance screen that defaults a date needs it, not just commissions and rebates.
+export { pakistanToday } from "../../lib/financePeriods";
 
 // Shared dialog keyboard handler: Escape closes; Tab is trapped so focus cycles within the modal.
 // Kept in one place so both the booking panel and the settings page stay in sync.

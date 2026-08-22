@@ -14,6 +14,10 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// <summary>Set when previewing an edit, so the expense's own amount is excluded from its
         /// year-to-date total and does not inflate the threshold check against itself.</summary>
         public int? ExcludeExpenseId { get; set; }
+
+        /// <summary>The same, for an asset purchase being edited. Both exist because the two record
+        /// types share one annual aggregate but number their rows independently.</summary>
+        public int? ExcludeAssetPurchaseId { get; set; }
     }
 
     public class WhtCalculationResultDto
@@ -64,9 +68,17 @@ namespace DAMS.Application.DTOs.WhtDtos
         /// Not period-filtered, because a liability is a balance, not a flow.</summary>
         public decimal OutstandingPayable { get; set; }
 
+        /// <summary>
+        /// The Tax Payable liability brought over from the client's previous system on the committed
+        /// opening-balance sheet. Part of <see cref="OutstandingPayable"/>, and shown separately so a
+        /// figure that is owed to FBR but was never withheld inside DAMS can be explained rather than
+        /// looking like an error.
+        /// </summary>
+        public decimal OpeningPayable { get; set; }
+
         public decimal TotalWithheldAllTime { get; set; }
         public decimal TotalDepositedAllTime { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
         public int VendorCount { get; set; }
         public List<WhtSectionTotalDto> BySection { get; set; } = new();
     }
@@ -76,7 +88,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         public string TaxSection { get; set; } = string.Empty;
         public decimal GrossAmount { get; set; }
         public decimal WhtAmount { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
     }
 
     /// <summary>One line of the s.165 withholding statement / vendor certificate.</summary>
@@ -91,7 +103,7 @@ namespace DAMS.Application.DTOs.WhtDtos
         public decimal GrossAmount { get; set; }
         public decimal WhtAmount { get; set; }
         public decimal NetPaid { get; set; }
-        public int ExpenseCount { get; set; }
+        public int PaymentCount { get; set; }
     }
 
     public class SaveWhtDepositDto

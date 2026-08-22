@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -20,16 +21,65 @@ namespace DAMS.Api.Controllers
             _financeService = financeService;
         }
 
+        [HttpGet("profit-and-loss")]
+        public Task<IActionResult> GetProfitAndLoss([FromQuery] int? projectId, [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
+            Report(() => _financeService.GetProfitAndLossAsync(projectId, from, to, cancellationToken));
+
+        [HttpGet("profit-and-loss/export")]
+        public Task<IActionResult> ExportProfitAndLoss([FromQuery] int? projectId, [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportProfitAndLossAsync(projectId, from, to, cancellationToken));
+
+        [HttpGet("trial-balance")]
+        public Task<IActionResult> GetTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] int monthsBack = 12, CancellationToken cancellationToken = default) =>
+            Report(() => _financeService.GetTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
+
+        [HttpGet("trial-balance/export")]
+        public Task<IActionResult> ExportTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] int monthsBack = 12, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
+
+        [HttpGet("balance-sheet")]
+        public Task<IActionResult> GetBalanceSheet([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            CancellationToken cancellationToken = default) =>
+            Report(() => _financeService.GetBalanceSheetAsync(projectId, asAt ?? default, cancellationToken));
+
+        [HttpGet("balance-sheet/export")]
+        public Task<IActionResult> ExportBalanceSheet([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
+            [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            Export(format, () => _financeService.ExportBalanceSheetAsync(projectId, asAt ?? default, cancellationToken));
+
         // Summary cards (totals only). Table rows are fetched separately and paged.
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(
             [FromQuery] int? projectId,
             [FromQuery] DateTime? from,
             [FromQuery] DateTime? to,
-            [FromQuery] string? account)
+            [FromQuery] string? account,
+            CancellationToken cancellationToken)
         {
             if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
-            var result = await _financeService.GetSummaryAsync(projectId, from, to, accountId, unassigned);
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
+            var result = await _financeService.GetSummaryAsync(projectId, from, to, accountId, unassigned, cancellationToken);
+            return Ok(result);
+        }
+
+        // Cards + trend + revenue-by-project in one round trip, over one set of bounds. The screen
+        // used to build the charts by calling /summary once per bucket and once per project, which
+        // is why this exists — see FinanceService.Dashboard.cs.
+        [HttpGet("dashboard")]
+        public async Task<IActionResult> GetDashboard(
+            [FromQuery] int? projectId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to,
+            [FromQuery] string? account,
+            CancellationToken cancellationToken)
+        {
+            if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
+            var result = await _financeService.GetDashboardAsync(projectId, from, to, accountId, unassigned, cancellationToken);
             return Ok(result);
         }
 
@@ -42,26 +92,68 @@ namespace DAMS.Api.Controllers
             [FromQuery] DateTime? to,
             [FromQuery] string? account,
             [FromQuery] int skip = 0,
-            [FromQuery] int take = 100)
+            [FromQuery] int take = 100,
+            CancellationToken cancellationToken = default)
         {
             if (skip < 0) skip = 0;
             take = Math.Clamp(take, 1, 200);
             if (!TryParseAccount(account, out var accountId, out var unassigned)) return BadRequest(new { message = "Invalid account filter." });
+            // The same bounds rule as the cards. A drill-down that answered for a different period
+            // from the card it was opened from would be worse than no drill-down at all.
+            if (!TryValidateRange(from, to, out var rangeError)) return BadRequest(new { message = rangeError });
 
             return (view?.ToLowerInvariant()) switch
             {
-                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
-                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned)),
+                "revenue" => Ok(await _financeService.GetRevenuePageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "expense" => Ok(await _financeService.GetExpensePageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "totalexpenses" => Ok(await _financeService.GetCostBreakdownPageAsync(projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                // A deposit belongs to a booking, not to a bank account — so an account filter has
+                // nothing to say about it, exactly as with outstanding balances.
+                "customerdeposits" when accountId.HasValue || unassigned => Ok(new PagedResult<CustomerDepositLineDto>()),
+                "customerdeposits" => Ok(await _financeService.GetCustomerDepositPageAsync(projectId, to, skip, take, cancellationToken)),
                 "outstanding" when accountId.HasValue || unassigned => Ok(new PagedResult<OutstandingLineDto>()),
-                "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take)),
+                "outstanding" => Ok(await _financeService.GetOutstandingPageAsync(projectId, skip, take, cancellationToken)),
                 "overdue" when accountId.HasValue || unassigned => Ok(new PagedResult<OverdueLineDto>()),
-                "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take)),
-                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(projectId, from, to, skip, take, accountId, unassigned)),
-                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, outstanding, overdue or netProfit." })
+                "overdue" => Ok(await _financeService.GetOverduePageAsync(projectId, skip, take, cancellationToken)),
+                // No Net Profit for a single account, so no Net Profit drill-down either. A
+                // recognised sale moves no cash and belongs to no bank, so this list would show the
+                // account's costs against a revenue side missing every possession — and total to a
+                // figure the cards deliberately no longer report. Refused rather than answered
+                // empty: an empty profit table reads as "this account made nothing".
+                "netprofit" when accountId.HasValue || unassigned => BadRequest(new
+                {
+                    message = "Net Profit is reported for the business over a period, not for a single "
+                        + "account. Clear the account filter to see it."
+                }),
+                "netprofit" => Ok(await _financeService.GetNetProfitPageAsync(
+                    projectId, from, to, skip, take, accountId, unassigned, cancellationToken)),
+                "assetpurchase" => Ok(await _financeService.GetAssetPurchasePageAsync(projectId, from, to, skip, take, null, accountId, unassigned, cancellationToken)),
+                _ => BadRequest(new { message = "Unknown view. Use revenue, expense, totalExpenses, assetPurchase, customerDeposits, outstanding, overdue or netProfit." })
             };
         }
 
+        /// <summary>
+        /// A dashboard date filter is both ends or neither, and never backwards. Enforced here as
+        /// well as in the browser because the cards, the drill-downs and the charts all pass through
+        /// this controller, and a half-open range used to mean different things to each of them.
+        /// </summary>
+        private static bool TryValidateRange(DateTime? from, DateTime? to, out string? message)
+        {
+            try
+            {
+                FinanceService.EnsureFilterRange(from, to);
+                message = null;
+                return true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                message = ex.Message;
+                return false;
+            }
+        }
+
         // ── Manual revenue ──
+        [IdempotentMoneyOperation]
         [HttpPost("revenue")]
         [Consumes("application/json")]
         public async Task<IActionResult> CreateRevenue([FromBody] CreateManualRevenueDto dto)
@@ -86,6 +178,7 @@ namespace DAMS.Api.Controllers
             return false;
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("revenue/form")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
@@ -125,6 +218,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpPut("revenue/{id:int}/form")]
@@ -148,6 +245,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
+            }
             catch (IOException)
             {
                 return StatusCode(StatusCodes.Status500InternalServerError,
@@ -156,20 +257,25 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpDelete("revenue/{id:int}")]
-        public async Task<IActionResult> DeleteRevenue(int id)
+        public async Task<IActionResult> DeleteRevenue(int id, [FromQuery] string? concurrencyToken)
         {
             try
             {
-                await _financeService.DeleteManualRevenueAsync(id);
+                await _financeService.DeleteManualRevenueAsync(id, concurrencyToken);
                 return Ok(new { message = "Manual revenue entry deleted." });
             }
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This revenue entry was changed by someone else. Refresh and try again." });
+            }
         }
 
         // ── Expenses ──
+        [IdempotentMoneyOperation]
         [HttpPost("expenses")]
         [Consumes("application/json")]
         public async Task<IActionResult> CreateExpense([FromBody] CreateExpenseDto dto)
@@ -185,6 +291,7 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        [IdempotentMoneyOperation]
         [HttpPost("expenses/form")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
@@ -224,6 +331,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
+            }
         }
 
         [HttpPut("expenses/{id:int}/form")]
@@ -247,6 +358,10 @@ namespace DAMS.Api.Controllers
             {
                 return BadRequest(new { message = ex.Message });
             }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
+            }
             catch (IOException)
             {
                 return StatusCode(StatusCodes.Status500InternalServerError,
@@ -255,16 +370,101 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpDelete("expenses/{id:int}")]
-        public async Task<IActionResult> DeleteExpense(int id)
+        public async Task<IActionResult> DeleteExpense(int id, [FromQuery] string? concurrencyToken)
         {
             try
             {
-                await _financeService.DeleteExpenseAsync(id);
+                await _financeService.DeleteExpenseAsync(id, concurrencyToken);
                 return Ok(new { message = "Expense deleted." });
             }
             catch (InvalidOperationException ex)
             {
                 return NotFound(new { message = ex.Message });
+            }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This expense was changed by someone else. Refresh and try again." });
+            }
+        }
+
+        // ── Fixed-asset purchases ──
+        [IdempotentMoneyOperation]
+        [HttpPost("asset-purchases")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> CreateAssetPurchase([FromBody] CreateAssetPurchaseDto dto, CancellationToken cancellationToken)
+        {
+            try { return Ok(await _financeService.CreateAssetPurchaseAsync(dto, GetUserId(), null, cancellationToken)); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        [IdempotentMoneyOperation]
+        [HttpPost("asset-purchases/form")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
+        public async Task<IActionResult> CreateAssetPurchaseWithAttachment(
+            [FromForm] CreateAssetPurchaseDto dto,
+            [FromForm] IFormFile? attachment,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var stream = attachment?.OpenReadStream();
+                return Ok(await _financeService.CreateAssetPurchaseAsync(
+                    dto, GetUserId(), ToUpload(attachment, stream), cancellationToken));
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        [HttpPut("asset-purchases/{id:int}")]
+        [Consumes("application/json")]
+        public async Task<IActionResult> UpdateAssetPurchase(int id, [FromBody] UpdateAssetPurchaseDto dto, CancellationToken cancellationToken)
+        {
+            try { return Ok(await _financeService.UpdateAssetPurchaseAsync(id, dto, null, false, cancellationToken)); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
+        }
+
+        [HttpPut("asset-purchases/{id:int}/form")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(FinanceAttachmentFileValidator.MaxRequestSize)]
+        public async Task<IActionResult> UpdateAssetPurchaseWithAttachment(
+            int id,
+            [FromForm] UpdateAssetPurchaseDto dto,
+            [FromForm] IFormFile? attachment,
+            [FromForm] bool removeAttachment,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await using var stream = attachment?.OpenReadStream();
+                return Ok(await _financeService.UpdateAssetPurchaseAsync(
+                    id, dto, ToUpload(attachment, stream), removeAttachment, cancellationToken));
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
+            }
+        }
+
+        [HttpDelete("asset-purchases/{id:int}")]
+        public async Task<IActionResult> DeleteAssetPurchase(
+            int id,
+            [FromQuery] string concurrencyToken,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _financeService.DeleteAssetPurchaseAsync(id, concurrencyToken, cancellationToken);
+                return Ok(new { message = "Asset purchase deleted." });
+            }
+            catch (InvalidOperationException ex) { return NotFound(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This asset purchase was changed by someone else. Refresh and try again." });
             }
         }
 
@@ -275,6 +475,14 @@ namespace DAMS.Api.Controllers
         [HttpGet("expenses/{id:int}/attachment")]
         public Task<IActionResult> GetExpenseAttachment(int id, [FromQuery] bool download, CancellationToken cancellationToken) =>
             GetAttachment(FinanceRecordKind.Expense, id, download, cancellationToken);
+
+        [HttpGet("asset-purchases/{id:int}/attachment")]
+        public Task<IActionResult> GetAssetPurchaseAttachment(int id, [FromQuery] bool download, CancellationToken cancellationToken) =>
+            GetAttachment(FinanceRecordKind.AssetPurchase, id, download, cancellationToken);
+
+        [HttpDelete("asset-purchases/{id:int}/attachment")]
+        public Task<IActionResult> RemoveAssetPurchaseAttachment(int id, CancellationToken cancellationToken) =>
+            RemoveAttachment(FinanceRecordKind.AssetPurchase, id, cancellationToken);
 
         [HttpDelete("revenue/{id:int}/attachment")]
         public Task<IActionResult> RemoveRevenueAttachment(int id, CancellationToken cancellationToken) =>
@@ -337,6 +545,24 @@ namespace DAMS.Api.Controllers
         {
             var claim = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return int.TryParse(claim, out var id) ? id : null;
+        }
+
+        private async Task<IActionResult> Report<T>(Func<Task<T>> action)
+        {
+            try { return Ok(await action()); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        private async Task<IActionResult> Export(string format, Func<Task<FinanceExportDto>> action)
+        {
+            if (!string.Equals(format, "xlsx", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "Only xlsx export is supported." });
+            try
+            {
+                var file = await action();
+                return File(file.Content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", file.FileName);
+            }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         }
     }
 }

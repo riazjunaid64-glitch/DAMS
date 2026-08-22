@@ -40,6 +40,14 @@ public sealed class LeadIntakeAndDuplicateTests
             .ToListAsync();
 
         Assert.Contains(alerts, n => n.RecipientUserId == h.AdminUserId);
+
+        // The notification is queued before the lead's final LD-###### reference is flushed to
+        // the database (both happen in the same save, so a crash between them can never lose
+        // the notification). Its Data must still carry the real reference, not the
+        // LD-PENDING-<guid> placeholder that exists in the database at that instant.
+        var alert = alerts.Single(n => n.RecipientUserId == h.AdminUserId);
+        Assert.Contains(lead.Lead!.LeadReference, alert.DataJson);
+        Assert.DoesNotContain("PENDING", alert.DataJson);
     }
 
     [Fact]
@@ -189,12 +197,30 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
-    public async Task UnusablePhone_IsRejected()
+    public async Task UnusablePhone_IsRejected_WhenItIsTheOnlyContactMethod()
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "12345"), h.Admin));
+            () => h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "12345", email: null), h.Admin));
+    }
+
+    [Fact]
+    public async Task UnusablePhone_IsDiscarded_WhenAnotherContactMethodExists()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        var result = await h.Leads.IngestAsync(
+            LeadTestHarness.Intake(phone: "12345", email: "reachable@example.com"), h.Admin);
+
+        // The lead is worth keeping — but an undialable number must not be stored as if it
+        // were real, because it would follow the record around and never match anything.
+        Assert.NotNull(result.Lead);
+        Assert.Null(result.Lead!.Phone);
+
+        var stored = await h.Db.Leads.SingleAsync(l => l.Id == result.Lead.Id);
+        Assert.Null(stored.NormalizedPhone);
+        Assert.Equal("reachable@example.com", stored.Email);
     }
 
     [Fact]
@@ -214,9 +240,11 @@ public sealed class LeadIntakeAndDuplicateTests
         await using var h = await LeadTestHarness.CreateAsync();
 
         var sources = await h.Configuration.GetSourcesAsync(includeInactive: true);
-        Assert.Equal(13, sources.Count);
+        Assert.Equal(14, sources.Count);
         Assert.Contains(sources, s => s.Code == "whatsapp");
         Assert.Contains(sources, s => s.Code == "broker");
+        // Used when a Meta lead cannot be pinned to Facebook or Instagram with confidence.
+        Assert.Contains(sources, s => s.Code == "meta");
         Assert.All(sources, s => Assert.True(s.IsSystem));
 
         var created = await h.Configuration.CreateSourceAsync(new CreateLeadSourceDto

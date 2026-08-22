@@ -18,6 +18,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
         public string RevenueType { get; set; } = string.Empty;
 
+        public int? RevenueCategoryId { get; set; }
+
         public string? Description { get; set; }
 
         public string? Reference { get; set; }
@@ -27,5 +29,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public DateTime CreatedAt { get; set; }
 
         public FinanceAttachmentDto? Attachment { get; set; }
+
+        /// <summary>Base64 row version — send it back on the next update or delete.</summary>
+        public string ConcurrencyToken { get; set; } = string.Empty;
     }
 }

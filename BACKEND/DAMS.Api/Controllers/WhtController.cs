@@ -1,3 +1,4 @@
+using DAMS.Api.Filters;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -70,6 +71,7 @@ namespace DAMS.Api.Controllers
             [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
             Ok(await _wht.GetDepositsAsync(from, to, cancellationToken));
 
+        [IdempotentMoneyOperation]
         [HttpPost("deposits")]
         public async Task<IActionResult> CreateDeposit([FromBody] SaveWhtDepositDto dto, CancellationToken cancellationToken)
         {
@@ -89,14 +91,25 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpDelete("deposits/{id:int}")]
-        public async Task<IActionResult> DeleteDeposit(int id, CancellationToken cancellationToken)
+        public async Task<IActionResult> DeleteDeposit(
+            int id, [FromQuery] string? concurrencyToken, CancellationToken cancellationToken)
         {
             try
             {
-                await _wht.DeleteDepositAsync(id, cancellationToken);
+                await _wht.DeleteDepositAsync(id, concurrencyToken, cancellationToken);
                 return Ok(new { message = "WHT deposit deleted." });
             }
+            // A missing or malformed token is a stale client, not a missing record — the version
+            // guard reports it the same way editing does rather than as a 404.
+            catch (InvalidOperationException ex) when (ex.Message.Contains("record version"))
+            {
+                return Conflict(new { message = ex.Message });
+            }
             catch (InvalidOperationException ex) { return NotFound(new { message = ex.Message }); }
+            catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+            {
+                return Conflict(new { message = "This deposit was changed by someone else. Refresh and try again." });
+            }
         }
 
         private int? GetUserId()

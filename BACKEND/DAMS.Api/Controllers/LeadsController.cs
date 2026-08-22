@@ -95,6 +95,10 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> Update(int id, [FromBody] UpdateLeadDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.UpdateAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
+        [HttpGet("{id:int}/external-submissions")]
+        public Task<IActionResult> GetExternalSubmissions(int id, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.GetExternalSubmissionsAsync(id, ctx, cancellationToken), cancellationToken);
+
         [HttpGet("{id:int}/timeline")]
         public Task<IActionResult> GetTimeline(int id, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.GetTimelineAsync(id, ctx, cancellationToken), cancellationToken);

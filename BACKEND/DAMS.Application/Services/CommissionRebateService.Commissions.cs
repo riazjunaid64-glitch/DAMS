@@ -249,7 +249,7 @@ namespace DAMS.Application.Services
             RecordCommissionPayoutDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
             SerializableAsync(async () =>
             {
-                ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.PaymentDate);
+                await ValidateMovementAsync(dto.Amount, dto.IdempotencyKey, dto.PaymentDate, cancellationToken);
                 if (!Enum.IsDefined(dto.PaymentMethod)) throw new InvalidOperationException("Select a valid payout payment method.");
                 var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
                 var paymentDate = dto.PaymentDate.Date;
@@ -277,7 +277,9 @@ namespace DAMS.Application.Services
                         && p.Amount > p.Reversals.Sum(r => r.Amount), cancellationToken)
                     || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
                         && d.Reference == paymentReference
-                        && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))
+                        && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)
+                    || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == dto.FinanceAccountId
+                        && r.PaymentReference == paymentReference, cancellationToken)))
                     throw new InvalidOperationException("This payment reference is already recorded against the selected finance account.");
                 var commission = await _context.BookingCommissions.Include(c => c.Booking)
                     .Include(c => c.Partner)
@@ -354,7 +356,7 @@ namespace DAMS.Application.Services
                 {
                     PayoutId = payout.Id, Amount = amount, Reason = reason,
                     IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
-                    ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
+                    ReversedByName = actor.DisplayName, ReversedAt = PakistanTime.Now
                 };
                 _context.CommissionPayoutReversals.Add(reversal);
                 // NetPaid already reflects this reversal: EF relationship fixup adds it to
@@ -555,12 +557,15 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.Cancelled) throw new InvalidOperationException("Cancelled bookings cannot create or pay commissions.");
         }
         private static void RequireReason(string? reason, string message) { if (string.IsNullOrWhiteSpace(reason)) throw new InvalidOperationException(message); }
-        private static void ValidateMovement(decimal amount, string? idempotencyKey, DateTime date)
+        // The date bounds are shared with every other financial posting date (FinanceDateRules), so a
+        // payout or rebate cannot be dated into a period the opening balances already cover.
+        private async Task ValidateMovementAsync(
+            decimal amount, string? idempotencyKey, DateTime date, CancellationToken cancellationToken)
         {
             if (Money(amount) <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
             Required(idempotencyKey, "Idempotency key", 80);
             if (date == default) throw new InvalidOperationException("Transaction date is required.");
-            if (date.Date > PakistanTime.Today) throw new InvalidOperationException("Transaction date cannot be in the future.");
+            await FinanceDateRules.EnsureAsync(_context, date, "Transaction date", cancellationToken);
         }
         private static void ValidateReversal(ReverseMoneyMovementDto dto)
         {

@@ -213,7 +213,7 @@ namespace DAMS.Application.Services
             RecordRebateDisbursementDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
             SerializableAsync(async () =>
             {
-                ValidateMovement(dto.Amount, dto.IdempotencyKey, dto.AppliedAt);
+                await ValidateMovementAsync(dto.Amount, dto.IdempotencyKey, dto.AppliedAt, cancellationToken);
                 ValidateRebateMethod(dto);
                 var idempotencyKey = Required(dto.IdempotencyKey, "Idempotency key", 80);
                 var appliedAt = dto.AppliedAt.Date;
@@ -243,6 +243,8 @@ namespace DAMS.Application.Services
                             || await _context.RebateDisbursements.AnyAsync(d => d.FinanceAccountId == dto.FinanceAccountId
                                 && d.Reference == reference
                                 && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)
+                            || await _context.BookingCancellationRefunds.AnyAsync(r => r.FinanceAccountId == dto.FinanceAccountId
+                                && r.PaymentReference == reference, cancellationToken)
                         : await _context.RebateDisbursements.AnyAsync(d => d.RebateId == rebateId
                             && d.Reference == reference
                             && d.Amount > d.Reversals.Sum(r => r.Amount), cancellationToken)))
@@ -329,8 +331,8 @@ namespace DAMS.Application.Services
             if (booking.Status == BookingStatus.AwaitingBookingAmount && satisfied)
             {
                 booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate ??= DateTime.UtcNow;
-                booking.InstallmentPlanStartDate ??= DateTime.UtcNow;
+                booking.BookingAmountConfirmedDate ??= PakistanTime.Now;
+                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
                 booking.UpdatedAt = DateTime.UtcNow;
                 if (booking.Unit != null)
                 {
@@ -400,10 +402,10 @@ namespace DAMS.Application.Services
             {
                 DisbursementId = disbursement.Id, Amount = amount, Reason = reason,
                 IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
-                ReversedByName = actor.DisplayName, ReversedAt = DateTime.UtcNow
+                ReversedByName = actor.DisplayName, ReversedAt = PakistanTime.Now
             });
             if (disbursement.InstallmentId.HasValue)
-                await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, DateTime.UtcNow, cancellationToken);
+                await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, PakistanTime.Now, cancellationToken);
             // NetDisbursed already reflects this reversal (EF fixup tracked it into
             // disbursement.Reversals above); subtracting `amount` again would double-count and
             // leave a fully reversed rebate stuck in PartiallyApplied / ReversalRequired.

@@ -6,6 +6,11 @@ import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
+import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
+import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
+import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
+import { pakistanToday } from "../lib/financePeriods.ts";
+import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
 
 type Props = { user: User | null };
 
@@ -25,6 +30,8 @@ interface BookingDetail {
   bookingAmountRemaining: number;
   totalInstallmentAmount: number;
   installmentPlanStartDate?: string | null;
+  concurrencyToken: string;
+  cancellationSettlement?: CancellationSettlement | null;
 }
 
 interface ScheduleItem {
@@ -137,6 +144,7 @@ export default function BookingDetailPage({ user }: Props) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const bookingId = Number(id);
+  const idempotency = useIdempotencyKeys();
 
   const [booking, setBooking] = useState<BookingDetail | null>(null);
   const [schedule, setSchedule] = useState<InstallmentSchedule | null>(null);
@@ -155,7 +163,7 @@ export default function BookingDetailPage({ user }: Props) {
     financeAccountId: "",
     paymentReference: "",
     notes: "",
-    paidAt: new Date().toISOString().slice(0, 10),
+    paidAt: pakistanToday(),
   });
 
   // Which account the money lands in. Every payment must name one, so the account
@@ -184,12 +192,9 @@ export default function BookingDetailPage({ user }: Props) {
     financeAccountId: "",
     paymentReference: "",
     notes: "",
-    paidAt: new Date().toISOString().slice(0, 10),
+    paidAt: pakistanToday(),
   });
 
-  const [cancelling, setCancelling] = useState(false);
-  const [showCancel, setShowCancel] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
   const [transitioning, setTransitioning] = useState(false);
 
   const [form, setForm] = useState({
@@ -245,7 +250,7 @@ export default function BookingDetailPage({ user }: Props) {
             ...prev,
             agreedSalePrice: String(b.agreedSalePrice),
             discountPercent: String(b.discountPercent ?? 0),
-            installmentStartDate: toDateInput(b.installmentPlanStartDate) || new Date().toISOString().slice(0, 10),
+            installmentStartDate: toDateInput(b.installmentPlanStartDate) || pakistanToday(),
           }));
         } else {
           setForm((prev) => ({
@@ -339,7 +344,7 @@ export default function BookingDetailPage({ user }: Props) {
       financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
-      paidAt: new Date().toISOString().slice(0, 10),
+      paidAt: pakistanToday(),
     });
     setPayTarget(item);
   };
@@ -362,12 +367,16 @@ export default function BookingDetailPage({ user }: Props) {
         notes: payForm.notes.trim() || null,
         paidAt: payForm.paidAt || null,
       };
-      const res = await api(`/api/Booking/${bookingId}/installments/${payTarget.id}/payment`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      // Same intent keeps the same key, so pressing Save again after a dropped connection is
+      // recognised as the retry it is rather than collecting the installment twice.
+      const signature = `installment:${payTarget.id}:${body.amount}:${body.paidAt}:${body.financeAccountId}`;
+      const res = await api(`/api/Booking/${bookingId}/installments/${payTarget.id}/payment`, moneyRequest(
+        idempotency.key(signature, "installment-payment"),
+        { method: "POST", body: JSON.stringify(body) },
+      ));
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      idempotency.release(signature);
       setSchedule(data);
       setPayTarget(null);
       await load();
@@ -419,7 +428,7 @@ export default function BookingDetailPage({ user }: Props) {
       financeAccountId: financeAccounts.length === 1 ? String(financeAccounts[0].id) : "",
       paymentReference: "",
       notes: "",
-      paidAt: new Date().toISOString().slice(0, 10),
+      paidAt: pakistanToday(),
     });
     setShowBookingPay(true);
   };
@@ -441,12 +450,14 @@ export default function BookingDetailPage({ user }: Props) {
         notes: bookingPayForm.notes.trim() || null,
         paidAt: bookingPayForm.paidAt || null,
       };
-      const res = await api(`/api/Booking/${bookingId}/booking-amount-payment`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const signature = `booking-amount:${bookingId}:${body.amount}:${body.paidAt}:${body.financeAccountId}`;
+      const res = await api(`/api/Booking/${bookingId}/booking-amount-payment`, moneyRequest(
+        idempotency.key(signature, "booking-amount-payment"),
+        { method: "POST", body: JSON.stringify(body) },
+      ));
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Failed to record payment");
+      idempotency.release(signature);
       setShowBookingPay(false);
       await load();
     } catch (err) {
@@ -475,25 +486,6 @@ export default function BookingDetailPage({ user }: Props) {
     }
   };
 
-  const handleCancelBooking = async () => {
-    setCancelling(true);
-    try {
-      const res = await api(`/api/Booking/${bookingId}/cancel`, {
-        method: "POST",
-        body: JSON.stringify({ reason: cancelReason.trim() || null }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || "Failed to cancel booking");
-      setShowCancel(false);
-      setCancelReason("");
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to cancel booking.");
-    } finally {
-      setCancelling(false);
-    }
-  };
-
   if (!isAdmin) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;
   }
@@ -511,8 +503,15 @@ export default function BookingDetailPage({ user }: Props) {
     );
   }
 
-  const canShowPlanForm = booking.status === "PaymentPlanActive" && schedule && (schedule.canGenerate || schedule.canRegenerate);
+  // The backend decides this, not the status. canGenerate already allows PossessionGiven — a
+  // recognised sale still has a receivable, and an installment is the only way DAMS collects one,
+  // so hiding the form here stranded it with no route to payment. It also folds in the booking
+  // amount and the regenerate rules, which a status check silently skipped.
+  const canShowPlanForm = Boolean(schedule?.canGenerate);
   const planLocked = schedule?.hasSchedule && !schedule.canRegenerate;
+  // Possession means the sale is recognised as revenue, and the backend refuses to restate the
+  // terms it was recognised on. Showing them as editable would only produce a rejection.
+  const termsFrozen = booking.status === "PossessionGiven";
 
   return (
     <Container className="py-10">
@@ -538,21 +537,33 @@ export default function BookingDetailPage({ user }: Props) {
               Give Possession
             </Button>
           )}
-          {(booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven") && (
+          {/* Possession only. Completion is the paperwork that follows a recognised sale, and the
+              backend refuses it before possession — offering it earlier only produced a rejection. */}
+          {booking.status === "PossessionGiven" && (
             <Button variant="outline" size="sm" disabled={transitioning}
               onClick={() => handleTransition("complete", "Complete this sale? All payments must be fully received. The unit will be marked as Sold.")}>
               Complete Sale
             </Button>
           )}
-          {booking.status !== "Cancelled" && booking.status !== "PossessionGiven" && booking.status !== "SaleCompleted" && (
-            <Button variant="danger" size="sm" onClick={() => { setCancelReason(""); setShowCancel(true); }}>
-              Cancel Booking
-            </Button>
-          )}
+          <CancellationDialog
+            bookingId={bookingId}
+            status={booking.status}
+            unitNumber={booking.unitNumber}
+            financeAccounts={financeAccounts}
+            onCancelled={load}
+          />
         </div>
       </div>
 
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
+
+      <BookingCancellationPanel
+        bookingId={bookingId}
+        status={booking.status}
+        settlement={booking.cancellationSettlement}
+        financeAccounts={financeAccounts}
+        onChanged={load}
+      />
 
       {/* Financial summary */}
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -669,6 +680,14 @@ export default function BookingDetailPage({ user }: Props) {
             </div>
           )}
 
+          {termsFrozen && (
+            <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-muted)]">
+              The sale was recognised at possession, so the agreed price and discount are fixed. You
+              can still change how the remaining balance is collected — dates, frequency and the
+              number of installments.
+            </div>
+          )}
+
           <form onSubmit={(e) => {
             if (schedule?.hasSchedule && schedule.canRegenerate) {
               e.preventDefault();
@@ -678,10 +697,10 @@ export default function BookingDetailPage({ user }: Props) {
             }
           }} className="grid gap-4 sm:grid-cols-2">
             <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
-              value={form.agreedSalePrice} disabled={planLocked}
+              value={form.agreedSalePrice} disabled={planLocked || termsFrozen}
               onChange={(e) => setForm({ ...form, agreedSalePrice: e.target.value })} />
             <Field label="Discount %" type="number" min="0" max="100" step="0.01"
-              value={form.discountPercent} disabled={planLocked}
+              value={form.discountPercent} disabled={planLocked || termsFrozen}
               onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} />
             <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
               <span>Frequency</span>
@@ -756,7 +775,11 @@ export default function BookingDetailPage({ user }: Props) {
             </thead>
             <tbody>
               {schedule.items.map((item) => {
-                const isPayable = booking.status === "PaymentPlanActive" && item.status !== "Paid" && item.remainingBalance > 0;
+                // Collection continues after possession: the unpaid balance is then an Accounts
+                // Receivable, and the backend accepts a receipt against it for exactly that reason.
+                // Only the two collectable states — a cancelled or completed booking takes neither.
+                const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
+                  && item.status !== "Paid" && item.remainingBalance > 0;
                 return (
                 <tr key={item.id} className="border-b border-[var(--border)] last:border-0">
                   <td className="px-4 py-3">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
@@ -926,28 +949,6 @@ export default function BookingDetailPage({ user }: Props) {
         </div>
       )}
 
-      {/* Cancel booking modal */}
-      {showCancel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => !cancelling && setShowCancel(false)}>
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-[var(--text-heading)]">Cancel Booking</h3>
-            <p className="mt-1 text-sm text-[var(--text-muted)]">
-              This releases unit {booking.unitNumber} back to the market. This cannot be undone.
-            </p>
-
-            <div className="mt-4 grid gap-4">
-              <Field label="Reason" required value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)} />
-              <div className="flex gap-2">
-                <Button type="button" variant="danger" onClick={handleCancelBooking} disabled={cancelling || !cancelReason.trim()}>
-                  {cancelling ? "Cancelling..." : "Confirm Cancel"}
-                </Button>
-                <Button type="button" variant="ghost" onClick={() => setShowCancel(false)} disabled={cancelling}>Keep Booking</Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </Container>
   );
 }

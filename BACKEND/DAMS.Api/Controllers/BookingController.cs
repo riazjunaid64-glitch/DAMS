@@ -1,3 +1,5 @@
+using DAMS.Api.Filters;
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
 using DAMS.Application.Interfaces;
@@ -79,12 +81,26 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("{id:int}/cancel")]
-        public async Task<IActionResult> Cancel(int id, [FromBody] CancelBookingDto? dto)
+        public async Task<IActionResult> Cancel(int id, [FromBody] CancelBookingDto dto)
         {
             try
             {
-                var adminUserId = GetUserId();
-                var result = await _bookingService.CancelBookingAsync(id, dto?.Reason, adminUserId);
+                var result = await _bookingService.CancelBookingAsync(id, dto, GetActor());
+                return Ok(result);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Pays a cancellation refund that was recorded as "pay later" at cancellation time.
+        [HttpPost("{id:int}/cancellation-settlement/refund")]
+        public async Task<IActionResult> PayCancellationRefund(int id, [FromBody] PayCancellationRefundDto dto)
+        {
+            try
+            {
+                var result = await _bookingService.PayCancellationRefundAsync(id, dto, GetActor());
                 return Ok(result);
             }
             catch (InvalidOperationException ex)
@@ -142,6 +158,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Record a (possibly partial) booking-amount payment.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/booking-amount-payment")]
         public async Task<IActionResult> RecordBookingAmountPayment(int id, [FromBody] RecordBookingAmountPaymentDto dto)
         {
@@ -201,6 +218,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Record a (possibly partial) payment against a single installment.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/installments/{installmentId:int}/payment")]
         public async Task<IActionResult> RecordInstallmentPayment(int id, int installmentId, [FromBody] RecordInstallmentPaymentDto dto)
         {
@@ -235,6 +253,16 @@ namespace DAMS.Api.Controllers
         {
             var claim = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return int.TryParse(claim, out var id) ? id : 0;
+        }
+
+        // A readable actor name for financial audit trails, not just a numeric id — matching the
+        // snapshot-the-display-name convention already used by the commission/rebate subsystem.
+        private FinancialWorkflowActor GetActor()
+        {
+            var name = User.FindFirstValue(ClaimTypes.Name)
+                ?? User.FindFirstValue(ClaimTypes.Email)
+                ?? "Admin";
+            return new FinancialWorkflowActor(GetUserId(), name);
         }
     }
 }

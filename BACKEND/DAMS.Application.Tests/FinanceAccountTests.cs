@@ -67,11 +67,11 @@ public sealed class FinanceAccountTests
     }
 
     /// <summary>
-    /// Filtering the dashboard by account used to report zero revenue, because payments had no
-    /// account to match on and were excluded outright rather than filtered.
+    /// A customer payment reaches the bank balance but never the revenue figure: until possession
+    /// it is a deposit the company owes back. Revenue on this dashboard means a recognised sale.
     /// </summary>
     [Fact]
-    public async Task AccountFilteredRevenue_IncludesPaymentsMadeIntoThatAccount()
+    public async Task AccountFilteredSummary_CountsPaymentsAsCashAndDeposits_NotAsRevenue()
     {
         await using var context = Context();
         context.FinanceAccounts.Add(Account());
@@ -80,33 +80,44 @@ public sealed class FinanceAccountTests
         var finance = Finance(context);
 
         var summary = await finance.GetSummaryAsync(null, null, null, accountId: 1);
-        Assert.Equal(8000, summary.AutomaticRevenue);
-        Assert.Equal(8000, summary.TotalRevenue);
-        Assert.Equal(9000, summary.AccountCurrentBalance);
+        Assert.Equal(0, summary.AutomaticRevenue);
+        Assert.Equal(0, summary.TotalRevenue);
+        Assert.Equal(9000, summary.AccountCurrentBalance); // opening 1000 + 8000 received
 
+        // The unfiltered summary reports the same cash as a deposit liability, not income.
+        var all = await finance.GetSummaryAsync(null, null, null);
+        Assert.Equal(8000, all.CustomerDepositsBalance);
+        Assert.Equal(0, all.TotalRevenue);
+
+        // …and the deposits view is where that money is now accounted for.
+        var deposits = await finance.GetCustomerDepositPageAsync(null, null, 0, 20);
+        Assert.Equal(8000, Assert.Single(deposits.Items).DepositBalance);
+
+        // The revenue table no longer lists raw payments at all.
         var rows = await finance.GetRevenuePageAsync(null, null, null, 0, 20, accountId: 1);
-        Assert.Single(rows.Items, x => x.Source == "Payment" && x.FinanceAccountId == 1);
+        Assert.DoesNotContain(rows.Items, x => x.Source == "Payment");
     }
 
     /// <summary>
-    /// "Unassigned" must mean payments with no account. It previously matched none of them, so the
-    /// filter returned every payment ever taken.
+    /// "Unassigned" must mean rows with no account, and must not sweep in every payment ever taken.
     /// </summary>
     [Fact]
-    public async Task UnassignedFilter_ShowsOnlyPaymentsWithNoAccount()
+    public async Task UnassignedFilter_ShowsOnlyRowsWithNoAccount()
     {
         await using var context = Context();
         context.FinanceAccounts.Add(Account());
         Seed(context, payment: 8000);
         context.Payments.Add(new Payment { Id = 99, BookingId = 1, Amount = 250, FinanceAccountId = null });
+        context.ManualRevenues.Add(new ManualRevenue { Id = 98, Amount = 250, RevenueType = "Legacy", FinanceAccountId = null });
         await context.SaveChangesAsync();
         var finance = Finance(context);
 
         var summary = await finance.GetSummaryAsync(null, null, null, unassigned: true);
-        Assert.Equal(250, summary.AutomaticRevenue);
+        Assert.Equal(0, summary.AutomaticRevenue); // no recognised sales anywhere
+        Assert.Equal(250, summary.ManualRevenue);
 
         var rows = await finance.GetRevenuePageAsync(null, null, null, 0, 20, unassigned: true);
-        Assert.Single(rows.Items, x => x.Source == "Payment");
+        Assert.Single(rows.Items, x => x.Source == "Manual Revenue" && x.FinanceAccountId == null);
     }
 
     [Fact]

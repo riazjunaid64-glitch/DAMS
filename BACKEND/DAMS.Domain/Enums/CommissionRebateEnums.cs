@@ -99,7 +99,9 @@ namespace DAMS.Domain.Enums
         EvidenceUploaded = 32,
         EvidenceDownloaded = 33,
         RebateReversalRequired = 34,
-        RebateAdjusted = 35
+        RebateAdjusted = 35,
+        BookingCancellationSettlementRecorded = 36,
+        BookingCancellationRefundPaid = 37
     }
 
     public enum FinancialEvidenceOwnerType

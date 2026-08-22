@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router-dom";
+import ErrorBoundary from "./lib/ErrorBoundary.tsx";
 import { api, refreshAccessToken, setAccessToken } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
@@ -22,6 +23,10 @@ const ApplicationFormPage = lazy(() => import("./pages/ApplicationFormPage.tsx")
 const FinanceDashboardPage = lazy(() => import("./pages/FinanceDashboardPage.tsx"));
 const FinanceAccountsPage = lazy(() => import("./pages/FinanceAccountsPage.tsx"));
 const FinanceSettingsPage = lazy(() => import("./pages/FinanceSettingsPage.tsx"));
+const FinanceReportsPage = lazy(() => import("./pages/FinanceReportsPage.tsx"));
+const FinancePartnersPage = lazy(() => import("./pages/FinancePartnersPage.tsx"));
+const FinanceLoansPage = lazy(() => import("./pages/FinanceLoansPage.tsx"));
+const StaffCashPage = lazy(() => import("./pages/StaffCashPage.tsx"));
 const CommissionRebatesPage = lazy(() => import("./pages/CommissionRebatesPage.tsx"));
 const BookingDetailPage = lazy(() => import("./pages/BookingDetailPage.tsx"));
 const ReceiptPage = lazy(() => import("./pages/ReceiptPage.tsx"));
@@ -60,6 +65,7 @@ function publishAuthSession(type: "login" | "logout") {
 }
 
 function App() {
+  const location = useLocation();
   const [modal, setModal] = useState<null | "login" | "signup">(null);
   const [user, setUser] = useState<User | null>(null);
 
@@ -160,6 +166,8 @@ function App() {
 
   return (
     <ProjectsProvider>
+      {/* Keyed on the path so navigating to another screen clears a caught error. */}
+      <ErrorBoundary resetKey={location.pathname}>
       <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-[var(--app-text-muted)]">Loading…</div>}>
         <Routes>
           <Route
@@ -197,6 +205,10 @@ function App() {
             <Route path="/finance" element={<FinanceDashboardPage user={user} />} />
             <Route path="/finance/accounts" element={<FinanceAccountsPage user={user} />} />
             <Route path="/finance/settings" element={<FinanceSettingsPage user={user} />} />
+            <Route path="/finance/reports" element={<FinanceReportsPage user={user} />} />
+            <Route path="/finance/partners" element={<FinancePartnersPage user={user} />} />
+            <Route path="/finance/loans" element={<FinanceLoansPage user={user} />} />
+            <Route path="/finance/staff-cash" element={<StaffCashPage user={user} />} />
             <Route path="/finance/commissions-rebates" element={<CommissionRebatesPage user={user} />} />
             <Route path="/crm" element={<LeadsPage user={user} />} />
             <Route path="/crm/leads/:id" element={<LeadDetailPage user={user} />} />
@@ -206,6 +218,7 @@ function App() {
           </Route>
         </Routes>
       </Suspense>
+      </ErrorBoundary>
 
       {/* ─── Auth Modal ─── */}
       {modal && (

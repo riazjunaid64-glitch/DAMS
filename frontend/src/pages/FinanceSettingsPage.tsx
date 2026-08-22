@@ -5,6 +5,11 @@ import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
 import * as whtApi from "../features/finance/whtApi.ts";
+import { pakistanToday } from "../lib/financePeriods.ts";
+import { newIdempotencyKey } from "../lib/idempotency.ts";
+import OpeningBalancesPanel from "../features/finance/OpeningBalancesPanel.tsx";
+import RevenueCategoriesPanel from "../features/finance/RevenueCategoriesPanel.tsx";
+import { listRevenueCategories, type RevenueCategory } from "../features/finance/revenueCategoryApi.ts";
 import {
   FILER_STATUSES,
   MONTHS,
@@ -22,7 +27,7 @@ import {
 
 type Props = { user: User | null };
 type FinanceAccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
-type Tab = "rates" | "vendors" | "payable" | "year";
+type Tab = "rates" | "revenue" | "vendors" | "payable" | "opening" | "year";
 
 export default function FinanceSettingsPage({ user }: Props) {
   const navigate = useNavigate();
@@ -37,18 +42,21 @@ function SettingsWorkspace() {
   const [tab, setTab] = useState<Tab>("rates");
   const [settings, setSettings] = useState<FinanceSettings | null>(null);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadShared = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [settingRow, categoryRows] = await Promise.all([
+      const [settingRow, categoryRows, revenueRows] = await Promise.all([
         whtApi.getSettings(),
         whtApi.listCategories(true),
+        listRevenueCategories(true),
       ]);
       setSettings(settingRow);
       setCategories(categoryRows);
+      setRevenueCategories(revenueRows);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Finance settings could not be loaded.");
     } finally {
@@ -71,8 +79,8 @@ function SettingsWorkspace() {
             </div>
             <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">Finance settings</h1>
             <p className="mt-1 max-w-3xl text-sm text-[var(--text-muted)]">
-              Expense heads and the withholding tax deducted from supplier payments, the vendors those
-              rates depend on, and what is owed to FBR.
+              The heads income and spending are recorded under, the withholding tax deducted from
+              supplier payments, the vendors those rates depend on, and what is owed to FBR.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -102,8 +110,10 @@ function SettingsWorkspace() {
           onChange={(id) => setTab(id as Tab)}
           items={[
             { id: "rates", label: "Expense categories & WHT rates", count: categories.length },
+            { id: "revenue", label: "Revenue categories", count: revenueCategories.length },
             { id: "vendors", label: "Vendors" },
             { id: "payable", label: "WHT payable" },
+            { id: "opening", label: "Opening balances" },
             { id: "year", label: "Financial year" },
           ]}
         />
@@ -114,8 +124,10 @@ function SettingsWorkspace() {
           ) : (
             <>
               {tab === "rates" && <RatesTab categories={categories} onChanged={loadShared} />}
+              {tab === "revenue" && <RevenueCategoriesPanel categories={revenueCategories} onChanged={loadShared} />}
               {tab === "vendors" && <VendorsTab />}
               {tab === "payable" && <PayableTab />}
+              {tab === "opening" && <OpeningBalancesPanel />}
               {tab === "year" && settings && <YearTab settings={settings} onSaved={loadShared} />}
             </>
           )}
@@ -138,9 +150,9 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
     [categories, showInactive]);
 
   const retire = async (category: ExpenseCategory) => {
-    const used = category.expenseCount > 0;
+    const used = category.usageCount > 0;
     const message = used
-      ? `"${category.name}" is used by ${category.expenseCount} expense(s), so it will be retired rather than deleted — the rate those expenses were entered at is kept. Continue?`
+      ? `"${category.name}" is used by ${category.usageCount} payment record(s), so it will be retired rather than deleted — the rate those records were entered at is kept. Continue?`
       : `Delete "${category.name}"? It has never been used.`;
     if (!window.confirm(message)) return;
     setBusy(true); setError(null);
@@ -214,7 +226,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       ? category.annualThreshold.toLocaleString("en-PK")
                       : <span className="text-[var(--text-muted)]">From Rs 1</span>}
                 </td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{category.usageCount}</td>
                 <td className="px-3 py-3">
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => setEditing(category)}>Edit</Button>
@@ -224,7 +236,7 @@ function RatesTab({ categories, onChanged }: { categories: ExpenseCategory[]; on
                       onClick={() => void retire(category)}
                       className="text-xs font-semibold text-[var(--text-muted)] hover:text-rose-400 disabled:opacity-50"
                     >
-                      {category.expenseCount > 0 ? "Retire" : "Delete"}
+                      {category.usageCount > 0 ? "Retire" : "Delete"}
                     </button>
                   </div>
                 </td>
@@ -298,8 +310,8 @@ function CategoryModal({ item, onClose, onSaved }: {
     <CrmModal
       open
       title={item ? `Edit ${item.name}` : "Add expense category"}
-      subtitle={item && item.expenseCount > 0
-        ? `${item.expenseCount} expense(s) already use this head. They keep the rate they were entered at.`
+      subtitle={item && item.usageCount > 0
+        ? `${item.usageCount} payment record(s) already use this head. They keep the rate they were entered at.`
         : "Rates are percentages: enter 7.5 for 7.5%."}
       onClose={onClose}
       footer={
@@ -452,7 +464,7 @@ function VendorsTab() {
               <th className="px-3 py-3">NTN / CNIC</th>
               <th className="px-3 py-3 text-right">Paid this year</th>
               <th className="px-3 py-3 text-right">Tax withheld</th>
-              <th className="px-3 py-3 text-right">Expenses</th>
+              <th className="px-3 py-3 text-right">Payments</th>
               <th className="px-3 py-3" />
             </tr>
           </thead>
@@ -470,7 +482,7 @@ function VendorsTab() {
                 </td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateGross)}</td>
                 <td className="px-3 py-3 text-right text-[var(--text-secondary)]">{formatRs(vendor.yearToDateWht)}</td>
-                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.expenseCount}</td>
+                <td className="px-3 py-3 text-right text-[var(--text-muted)]">{vendor.paymentCount}</td>
                 <td className="px-3 py-3 text-right">
                   <Button size="sm" variant="outline" onClick={() => setEditing(vendor)}>Edit</Button>
                 </td>
@@ -645,14 +657,14 @@ function PayableTab() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    void api("/api/finance/accounts/options?includeInactive=true")
+    void api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true")
       .then(async (res) => { if (res.ok) setAccounts(await res.json()); })
       .catch(() => { /* the deposit form shows its own validation if accounts are unavailable */ });
   }, []);
 
   const removeDeposit = async (deposit: WhtDeposit) => {
     if (!window.confirm(`Delete the ${formatRs(deposit.amount)} deposit${deposit.challanNumber ? ` (${deposit.challanNumber})` : ""}? The amount goes back to being owed to FBR.`)) return;
-    try { await whtApi.deleteDeposit(deposit.id); await load(); }
+    try { await whtApi.deleteDeposit(deposit.id, deposit.concurrencyToken); await load(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "The deposit could not be deleted."); }
   };
 
@@ -691,9 +703,11 @@ function PayableTab() {
         <>
           <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Stat label="Still owed to FBR" value={formatRs(summary.outstandingPayable)} accent
-              hint="All time, withheld less deposited" />
+              hint={summary.openingPayable !== 0
+                ? `All time: ${formatRs(summary.openingPayable)} brought forward at go-live, plus withheld, less deposited`
+                : "All time, withheld less deposited"} />
             <Stat label="Withheld in period" value={formatRs(summary.withheldInPeriod)}
-              hint={`${summary.expenseCount} expense(s), ${summary.vendorCount} vendor(s)`} />
+              hint={`${summary.paymentCount} payment(s), ${summary.vendorCount} vendor(s)`} />
             <Stat label="Deposited in period" value={formatRs(summary.depositedInPeriod)} />
             <Stat label="Withheld all time" value={formatRs(summary.totalWithheldAllTime)}
               hint={`${formatRs(summary.totalDepositedAllTime)} deposited`} />
@@ -822,7 +836,7 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
   const [form, setForm] = useState({
     financeAccountId: item ? String(item.financeAccountId) : "",
     amount: item ? String(item.amount) : suggested > 0 ? String(suggested) : "",
-    depositDate: (item?.depositDate ?? new Date().toISOString()).slice(0, 10),
+    depositDate: item?.depositDate?.slice(0, 10) ?? pakistanToday(),
     challanNumber: item?.challanNumber ?? "",
     periodFrom: item?.periodFrom?.slice(0, 10) ?? "",
     periodTo: item?.periodTo?.slice(0, 10) ?? "",
@@ -830,6 +844,9 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One key per open dialog: retrying the same deposit reuses it, so a save that committed before
+  // the connection dropped is recognised instead of paying the same challan twice.
+  const [requestKey] = useState(() => newIdempotencyKey("wht-deposit"));
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
 
@@ -846,7 +863,7 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
         periodTo: form.periodTo || null,
         notes: form.notes || null,
         concurrencyToken: item?.concurrencyToken ?? null,
-      });
+      }, requestKey);
       await onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The deposit could not be saved.");

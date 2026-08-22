@@ -17,9 +17,13 @@ namespace DAMS.Application.DTOs.LeadDtos
         [StringLength(100)]
         public string? LastName { get; set; }
 
-        [Required]
-        [StringLength(50, MinimumLength = 7)]
-        public string Phone { get; set; } = string.Empty;
+        /// <summary>
+        /// Optional, because an ad-platform lead may genuinely arrive without one. The rule
+        /// that a manually entered lead needs at least one contact method is enforced in
+        /// LeadService, where the originating channel is known.
+        /// </summary>
+        [StringLength(50)]
+        public string? Phone { get; set; }
 
         [StringLength(50)]
         public string? WhatsappNumber { get; set; }

@@ -8,6 +8,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public FinanceAccountType Type { get; set; }
         public string AccountHolderName { get; set; } = string.Empty;
         public decimal OpeningBalance { get; set; }
+        public string? LedgerCode { get; set; }
+        public int DisplayOrder { get; set; }
         public string? BankOrWalletName { get; set; }
         public string? Description { get; set; }
     }
@@ -24,11 +26,16 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public FinanceAccountType Type { get; set; }
         public string AccountHolderName { get; set; } = string.Empty;
         public bool IsActive { get; set; }
+        public bool IsCashLike => AccountBalanceDirection.IsCashLike(Type);
     }
 
     public sealed class FinanceAccountResponseDto : FinanceAccountOptionDto
     {
         public decimal OpeningBalance { get; set; }
+        public string? LedgerCode { get; set; }
+        public int DisplayOrder { get; set; }
+        public FinanceSystemAccountRole SystemRole { get; set; }
+        public bool IsSystemAccount => SystemRole != FinanceSystemAccountRole.None;
         public string? BankOrWalletName { get; set; }
         public string? Description { get; set; }
         public decimal RevenueReceived { get; set; }

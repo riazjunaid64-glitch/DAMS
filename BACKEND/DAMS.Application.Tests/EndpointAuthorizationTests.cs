@@ -109,6 +109,11 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         new object[] { "/api/finance/expense-categories" },
         new object[] { "/api/finance/vendors" },
         new object[] { "/api/finance/wht/deposits" },
+        // Booking cancellation now carries a full financial settlement decision, and paying a
+        // pending refund moves cash — both must stay behind the same Admin gate as everything
+        // else that can move money.
+        new object[] { "/api/Booking/1/cancel" },
+        new object[] { "/api/Booking/1/cancellation-settlement/refund" },
     };
 
     [Theory]

@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text;
 using DAMS.Application.Common;
@@ -8,6 +9,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services
 {
@@ -64,7 +66,8 @@ namespace DAMS.Application.Services
             var filerStatus = vendor?.FilerStatus ?? FilerStatus.Unknown;
 
             var yearToDate = await YearToDateAsync(
-                vendor, category, date, startMonth, request.ExcludeExpenseId, cancellationToken);
+                vendor, category, date, startMonth,
+                request.ExcludeExpenseId, request.ExcludeAssetPurchaseId, cancellationToken);
 
             var result = WhtCalculator.Compute(
                 Rates(category, vendor != null), filerStatus, request.GrossAmount, yearToDate);
@@ -86,21 +89,40 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task ApplyToExpenseAsync(
+        public Task ApplyToExpenseAsync(
             Expense expense, decimal? requestedRate, decimal? requestedAmount, string? overrideReason,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            ApplyAsync(expense, "expense", requestedRate, requestedAmount, overrideReason, cancellationToken);
+
+        public Task ApplyToAssetPurchaseAsync(
+            AssetPurchase purchase, decimal? requestedRate, decimal? requestedAmount, string? overrideReason,
+            CancellationToken cancellationToken = default) =>
+            ApplyAsync(purchase, "purchase", requestedRate, requestedAmount, overrideReason, cancellationToken);
+
+        /// <summary>
+        /// Resolves the tax for one payment to a supplier, whichever kind of record it is.
+        /// <para>
+        /// An expense and an asset purchase are opposite in the accounts and identical to FBR: both
+        /// are money paid to a supplier under a tax section, so both take the same rate, the same
+        /// filer treatment, and — critically — the same shared annual allowance. Running them
+        /// through one method is what keeps that true.
+        /// </para>
+        /// </summary>
+        private async Task ApplyAsync(
+            IWithholdingSubject subject, string noun, decimal? requestedRate, decimal? requestedAmount,
+            string? overrideReason, CancellationToken cancellationToken)
         {
-            if (KeepsExistingTax(expense, requestedRate, requestedAmount))
+            if (KeepsExistingTax(subject, requestedRate, requestedAmount))
                 return;
 
-            var category = expense.CategoryId.HasValue
+            var category = subject.CategoryId.HasValue
                 ? await _context.ExpenseCategories.AsNoTracking()
-                    .SingleOrDefaultAsync(c => c.Id == expense.CategoryId.Value, cancellationToken)
+                    .SingleOrDefaultAsync(c => c.Id == subject.CategoryId.Value, cancellationToken)
                 : null;
 
-            var vendor = expense.VendorId.HasValue
+            var vendor = subject.VendorId.HasValue
                 ? await _context.Vendors.AsNoTracking()
-                    .SingleOrDefaultAsync(v => v.Id == expense.VendorId.Value, cancellationToken)
+                    .SingleOrDefaultAsync(v => v.Id == subject.VendorId.Value, cancellationToken)
                 : null;
             var filerStatus = vendor?.FilerStatus ?? FilerStatus.Unknown;
 
@@ -111,19 +133,21 @@ namespace DAMS.Application.Services
                 // between the invoice and the bank.
                 if (requestedAmount is > 0m || requestedRate is > 0m)
                     throw new InvalidOperationException(category == null
-                        ? "Withholding tax needs a managed expense category. Pick one, or clear the tax fields."
+                        ? $"Withholding tax needs a managed category. Pick one, or clear the tax fields on this {noun}."
                         : $"\"{category.Name}\" is not subject to withholding tax. Clear the tax fields to save.");
-                ClearWht(expense, filerStatus, category?.TaxSection);
+                ClearWht(subject, filerStatus, category?.TaxSection);
                 return;
             }
 
             var startMonth = await FinanceSettingsQuery.FinancialYearStartMonthAsync(_context, cancellationToken);
+            var isExpense = subject is Expense;
+            var ownId = subject.Id == 0 ? (int?)null : subject.Id;
             var yearToDate = await YearToDateAsync(
-                vendor, category, expense.Date, startMonth,
-                expense.Id == 0 ? null : expense.Id, cancellationToken);
+                vendor, category, subject.Date, startMonth,
+                isExpense ? ownId : null, isExpense ? null : ownId, cancellationToken);
 
             var suggested = WhtCalculator.Compute(
-                Rates(category, vendor != null), filerStatus, expense.Amount, yearToDate);
+                Rates(category, vendor != null), filerStatus, subject.Amount, yearToDate);
 
             decimal rate;
             decimal amount;
@@ -132,12 +156,12 @@ namespace DAMS.Application.Services
                 // The amount wins over the rate: an operator typing a figure is copying it off the
                 // vendor invoice, and that figure is what will be deposited.
                 amount = requestedAmount.Value;
-                rate = WhtCalculator.EffectiveRate(expense.Amount, amount);
+                rate = WhtCalculator.EffectiveRate(subject.Amount, amount);
             }
             else if (requestedRate.HasValue && requestedRate.Value != suggested.Rate)
             {
                 rate = requestedRate.Value;
-                amount = WhtCalculator.TaxOn(expense.Amount, rate);
+                amount = WhtCalculator.TaxOn(subject.Amount, rate);
             }
             else
             {
@@ -147,22 +171,22 @@ namespace DAMS.Application.Services
                 amount = suggested.WhtAmount;
             }
 
-            ValidateTax(expense.Amount, rate, amount);
+            ValidateTax(subject.Amount, rate, amount, noun);
 
             var overridden = amount != suggested.WhtAmount;
             if (overridden && string.IsNullOrWhiteSpace(overrideReason))
                 throw new InvalidOperationException(
                     $"Withholding tax was changed from the calculated {suggested.WhtAmount:N2}. Give a reason for the override.");
 
-            expense.WhtRate = rate;
-            expense.WhtAmount = amount;
-            expense.WhtApplied = amount > 0m;
-            expense.WhtRateOverridden = overridden;
-            expense.WhtOverrideReason = overridden ? overrideReason!.Trim() : null;
+            subject.WhtRate = rate;
+            subject.WhtAmount = amount;
+            subject.WhtApplied = amount > 0m;
+            subject.WhtRateOverridden = overridden;
+            subject.WhtOverrideReason = overridden ? overrideReason!.Trim() : null;
             // Snapshotted whether or not tax was withheld: a below-threshold payment still counts
             // towards the section's annual aggregate, so the section has to be recorded.
-            expense.WhtTaxSection = category.TaxSection;
-            expense.VendorFilerStatusAtEntry = filerStatus;
+            subject.WhtTaxSection = category.TaxSection;
+            subject.VendorFilerStatusAtEntry = filerStatus;
         }
 
         /// <summary>
@@ -182,45 +206,47 @@ namespace DAMS.Application.Services
         /// for a period that may already be filed.
         /// </para>
         /// </summary>
-        private bool KeepsExistingTax(Expense expense, decimal? requestedRate, decimal? requestedAmount)
+        private bool KeepsExistingTax(IWithholdingSubject subject, decimal? requestedRate, decimal? requestedAmount)
         {
-            if (expense.Id == 0) return false;
+            if (subject.Id == 0) return false;
 
-            var entry = _context.Entry(expense);
+            var entry = _context.Entry(subject);
             if (entry.State is EntityState.Detached or EntityState.Added) return false;
 
-            if (HasChanged(entry, nameof(Expense.Amount))
-                || HasChanged(entry, nameof(Expense.CategoryId))
-                || HasChanged(entry, nameof(Expense.VendorId))
-                || HasChanged(entry, nameof(Expense.Date)))
+            // Both record types name these four identically, which is what lets one guard cover
+            // them; the interface is the contract that keeps it that way.
+            if (HasChanged(entry, nameof(IWithholdingSubject.Amount))
+                || HasChanged(entry, nameof(IWithholdingSubject.CategoryId))
+                || HasChanged(entry, nameof(IWithholdingSubject.VendorId))
+                || HasChanged(entry, nameof(IWithholdingSubject.Date)))
                 return false;
 
             // Correcting the deduction by hand is still allowed — that is a deliberate change to
             // the tax and goes through the override path below. The amount wins over the rate here
             // for the same reason it does there: it is the figure that will be deposited.
-            if (requestedAmount.HasValue) return requestedAmount.Value == expense.WhtAmount;
-            if (requestedRate.HasValue) return requestedRate.Value == expense.WhtRate;
+            if (requestedAmount.HasValue) return requestedAmount.Value == subject.WhtAmount;
+            if (requestedRate.HasValue) return requestedRate.Value == subject.WhtRate;
             return true;
         }
 
-        private static bool HasChanged(EntityEntry<Expense> entry, string propertyName)
+        private static bool HasChanged(EntityEntry entry, string propertyName)
         {
             var property = entry.Property(propertyName);
             return !Equals(property.OriginalValue, property.CurrentValue);
         }
 
-        private static void ClearWht(Expense expense, FilerStatus filerStatus, string? section)
+        private static void ClearWht(IWithholdingSubject subject, FilerStatus filerStatus, string? section)
         {
-            expense.WhtApplied = false;
-            expense.WhtRate = 0m;
-            expense.WhtAmount = 0m;
-            expense.WhtRateOverridden = false;
-            expense.WhtOverrideReason = null;
-            expense.WhtTaxSection = section;
-            expense.VendorFilerStatusAtEntry = filerStatus;
+            subject.WhtApplied = false;
+            subject.WhtRate = 0m;
+            subject.WhtAmount = 0m;
+            subject.WhtRateOverridden = false;
+            subject.WhtOverrideReason = null;
+            subject.WhtTaxSection = section;
+            subject.VendorFilerStatusAtEntry = filerStatus;
         }
 
-        private static void ValidateTax(decimal grossAmount, decimal rate, decimal amount)
+        private static void ValidateTax(decimal grossAmount, decimal rate, decimal amount, string noun)
         {
             if (rate < 0m) throw new InvalidOperationException("Withholding rate cannot be negative.");
             if (rate > 100m) throw new InvalidOperationException("Withholding rate cannot exceed 100%.");
@@ -228,7 +254,7 @@ namespace DAMS.Application.Services
             // Equal is allowed (a 100% deduction nets to zero); more than the payment would make
             // the vendor owe money for having been paid.
             if (amount > grossAmount)
-                throw new InvalidOperationException("Withholding tax cannot exceed the gross amount of the expense.");
+                throw new InvalidOperationException($"Withholding tax cannot exceed the gross amount of the {noun}.");
         }
 
         /// <summary>
@@ -251,10 +277,16 @@ namespace DAMS.Application.Services
         /// Sections, not categories: the statutory threshold is one aggregate for all goods from a
         /// supplier, not a separate allowance for cement and another for bricks. Categories with
         /// no section fall back to matching on the category itself.
+        /// <para>
+        /// Counts expenses AND fixed-asset purchases. The allowance belongs to the supplier, not to
+        /// the ledger the payment happens to land in: a vendor who sells the company 60,000 of
+        /// cement and 60,000 of office furniture has been paid 120,000 of goods and is well past
+        /// the 75,000 threshold, even though neither figure crosses it alone.
+        /// </para>
         /// </summary>
         private async Task<decimal> YearToDateAsync(
             Vendor? vendor, ExpenseCategory category, DateTime date, int startMonth,
-            int? excludeExpenseId, CancellationToken cancellationToken)
+            int? excludeExpenseId, int? excludeAssetPurchaseId, CancellationToken cancellationToken)
         {
             if (vendor == null || category.AnnualThreshold <= 0m)
                 return 0m;
@@ -262,22 +294,27 @@ namespace DAMS.Application.Services
             var (start, end) = FinancialYear.Window(date, startMonth);
             var vendorId = vendor.Id;
             var vendorName = vendor.Name;
-            var query = _context.Expenses.AsNoTracking()
+            var section = category.TaxSection;
+            var bySection = !string.IsNullOrWhiteSpace(section);
+
+            var expenses = _context.Expenses.AsNoTracking()
                 .Where(e => e.Date >= start && e.Date < end
                     // Payments made before this vendor had a record carry the same name as free
                     // text. They are the same supplier's money, so they count towards the annual
                     // aggregate — without this, the first year after a vendor is created starts
                     // its allowance again from zero and under-withholds.
-                    && (e.VendorId == vendorId || (e.VendorId == null && e.Vendor == vendorName)));
+                    && (e.VendorId == vendorId || (e.VendorId == null && e.Vendor == vendorName))
+                    && (bySection ? e.WhtTaxSection == section : e.CategoryId == category.Id)
+                    && (excludeExpenseId == null || e.Id != excludeExpenseId.Value));
 
-            query = string.IsNullOrWhiteSpace(category.TaxSection)
-                ? query.Where(e => e.CategoryId == category.Id)
-                : query.Where(e => e.WhtTaxSection == category.TaxSection);
+            var purchases = _context.AssetPurchases.AsNoTracking()
+                .Where(p => p.Date >= start && p.Date < end
+                    && (p.VendorId == vendorId || (p.VendorId == null && p.Vendor == vendorName))
+                    && (bySection ? p.WhtTaxSection == section : p.CategoryId == category.Id)
+                    && (excludeAssetPurchaseId == null || p.Id != excludeAssetPurchaseId.Value));
 
-            if (excludeExpenseId.HasValue)
-                query = query.Where(e => e.Id != excludeExpenseId.Value);
-
-            return await query.SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m;
+            return (await expenses.SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m)
+                + (await purchases.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
         }
 
         private static string? BuildNotice(
@@ -381,47 +418,93 @@ namespace DAMS.Application.Services
         public async Task<WhtPayableSummaryDto> GetPayableSummaryAsync(
             DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
         {
-            var withheld = WithheldQuery(from, to);
-
-            var bySection = await withheld
+            // Grouped with the concrete entity in the lambda on both sides. Routing these through a
+            // shared generic over IWithholdingSubject reads better and does not translate: EF maps
+            // member access against the mapped type, not an interface the type happens to implement.
+            var expenseSections = await WithheldExpenses(from, to)
                 .GroupBy(e => e.WhtTaxSection)
                 .Select(g => new WhtSectionTotalDto
                 {
                     TaxSection = g.Key ?? string.Empty,
                     GrossAmount = g.Sum(e => (decimal?)e.Amount) ?? 0m,
                     WhtAmount = g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                    ExpenseCount = g.Count()
+                    PaymentCount = g.Count()
                 })
                 .ToListAsync(cancellationToken);
+            var purchaseSections = await WithheldPurchases(from, to)
+                .GroupBy(p => p.WhtTaxSection)
+                .Select(g => new WhtSectionTotalDto
+                {
+                    TaxSection = g.Key ?? string.Empty,
+                    GrossAmount = g.Sum(p => (decimal?)p.Amount) ?? 0m,
+                    WhtAmount = g.Sum(p => (decimal?)p.WhtAmount) ?? 0m,
+                    PaymentCount = g.Count()
+                })
+                .ToListAsync(cancellationToken);
+            var bySection = Merge(expenseSections, purchaseSections);
 
-            var totalWithheldAllTime = await WithheldQuery(null, null)
-                .SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m;
+            var totalWithheldAllTime =
+                (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
             var totalDepositedAllTime = await DepositQuery(null, null)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            var openingPayable = await OpeningPayableAsync(cancellationToken);
+            var outstanding = await OutstandingPayableAsync(null, cancellationToken);
+
+            // Distinct across both kinds, so a supplier who was paid for a desk and for cement is
+            // one vendor on the statement, not two.
+            var vendorIds = (await WithheldExpenses(from, to).Select(e => e.VendorId).Distinct().ToListAsync(cancellationToken))
+                .Union(await WithheldPurchases(from, to).Select(p => p.VendorId).Distinct().ToListAsync(cancellationToken))
+                .Count();
 
             return new WhtPayableSummaryDto
             {
                 WithheldInPeriod = bySection.Sum(s => s.WhtAmount),
                 DepositedInPeriod = await DepositQuery(from, to).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m,
                 // A liability is a balance, so it is deliberately not date-filtered: what is still
-                // owed to FBR does not change because the user picked a narrower period.
-                OutstandingPayable = totalWithheldAllTime - totalDepositedAllTime,
+                // owed to FBR does not change because the user picked a narrower period. It goes
+                // through the same helper the deposit screen validates against, so the number this
+                // summary shows is the number a deposit is allowed to clear — to the paisa.
+                OutstandingPayable = outstanding,
+                OpeningPayable = openingPayable,
                 TotalWithheldAllTime = totalWithheldAllTime,
                 TotalDepositedAllTime = totalDepositedAllTime,
-                ExpenseCount = bySection.Sum(s => s.ExpenseCount),
-                VendorCount = await withheld.Select(e => e.VendorId).Distinct().CountAsync(cancellationToken),
+                PaymentCount = bySection.Sum(s => s.PaymentCount),
+                VendorCount = vendorIds,
                 BySection = bySection
                     .Select(s => new WhtSectionTotalDto
                     {
                         TaxSection = string.IsNullOrWhiteSpace(s.TaxSection) ? "Unspecified" : s.TaxSection,
                         GrossAmount = s.GrossAmount,
                         WhtAmount = s.WhtAmount,
-                        ExpenseCount = s.ExpenseCount
+                        PaymentCount = s.PaymentCount
                     })
                     .OrderByDescending(s => s.WhtAmount)
                     .ToList()
             };
         }
+
+        /// <summary>
+        /// Folds the asset-purchase totals into the expense totals section by section.
+        /// <para>
+        /// The two sides are grouped separately in SQL and joined here rather than unioned into one
+        /// query, because a set operation followed by GROUP BY is exactly the shape EF has to give
+        /// up translating. Each side still aggregates in the database — only the handful of section
+        /// rows crosses the wire.
+        /// </para>
+        /// </summary>
+        private static List<WhtSectionTotalDto> Merge(
+            List<WhtSectionTotalDto> first, List<WhtSectionTotalDto> second) =>
+            first.Concat(second)
+                .GroupBy(s => s.TaxSection ?? string.Empty, StringComparer.Ordinal)
+                .Select(g => new WhtSectionTotalDto
+                {
+                    TaxSection = g.Key,
+                    GrossAmount = g.Sum(s => s.GrossAmount),
+                    WhtAmount = g.Sum(s => s.WhtAmount),
+                    PaymentCount = g.Sum(s => s.PaymentCount)
+                })
+                .ToList();
 
         public async Task<List<WhtVendorLineDto>> GetByVendorAsync(
             DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
@@ -431,21 +514,45 @@ namespace DAMS.Application.Services
             // one, and a supplier whose ATL status changed mid-period was genuinely withheld at two
             // different rates — collapsing that into one line at today's status would report a
             // filer rate against a non-filer heading.
-            var rows = await WithheldQuery(from, to)
+            // Both kinds of payment, folded together: one supplier line covers what they were paid
+            // for goods whether those goods were consumed or capitalised. Grouped separately in SQL
+            // for the same translation reason as the section totals above.
+            var expenseRows = await WithheldExpenses(from, to)
                 .GroupBy(e => new { e.VendorId, e.WhtTaxSection, e.VendorFilerStatusAtEntry })
-                .Select(g => new
-                {
+                .Select(g => new VendorGroup(
                     g.Key.VendorId,
                     g.Key.WhtTaxSection,
                     g.Key.VendorFilerStatusAtEntry,
                     // Free-text vendors have no record to read a name from; take the snapshot on
                     // any row in the group, which is the name that was on the payment.
-                    FallbackName = g.Min(e => e.Vendor),
-                    GrossAmount = g.Sum(e => (decimal?)e.Amount) ?? 0m,
-                    WhtAmount = g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
-                    ExpenseCount = g.Count()
-                })
+                    g.Min(e => e.Vendor),
+                    g.Sum(e => (decimal?)e.Amount) ?? 0m,
+                    g.Sum(e => (decimal?)e.WhtAmount) ?? 0m,
+                    g.Count()))
                 .ToListAsync(cancellationToken);
+            var purchaseRows = await WithheldPurchases(from, to)
+                .GroupBy(p => new { p.VendorId, p.WhtTaxSection, p.VendorFilerStatusAtEntry })
+                .Select(g => new VendorGroup(
+                    g.Key.VendorId,
+                    g.Key.WhtTaxSection,
+                    g.Key.VendorFilerStatusAtEntry,
+                    g.Min(p => p.Vendor),
+                    g.Sum(p => (decimal?)p.Amount) ?? 0m,
+                    g.Sum(p => (decimal?)p.WhtAmount) ?? 0m,
+                    g.Count()))
+                .ToListAsync(cancellationToken);
+
+            var rows = expenseRows.Concat(purchaseRows)
+                .GroupBy(r => new { r.VendorId, r.WhtTaxSection, r.VendorFilerStatusAtEntry })
+                .Select(g => new VendorGroup(
+                    g.Key.VendorId,
+                    g.Key.WhtTaxSection,
+                    g.Key.VendorFilerStatusAtEntry,
+                    g.Select(r => r.FallbackName).FirstOrDefault(n => n != null),
+                    g.Sum(r => r.GrossAmount),
+                    g.Sum(r => r.WhtAmount),
+                    g.Sum(r => r.PaymentCount)))
+                .ToList();
 
             var vendorIds = rows.Where(r => r.VendorId.HasValue).Select(r => r.VendorId!.Value).Distinct().ToList();
             var vendors = await _context.Vendors.AsNoTracking()
@@ -471,7 +578,7 @@ namespace DAMS.Application.Services
                         GrossAmount = r.GrossAmount,
                         WhtAmount = r.WhtAmount,
                         NetPaid = r.GrossAmount - r.WhtAmount,
-                        ExpenseCount = r.ExpenseCount
+                        PaymentCount = r.PaymentCount
                     };
                 })
                 .OrderByDescending(r => r.WhtAmount)
@@ -493,14 +600,14 @@ namespace DAMS.Application.Services
                    .Append(Csv(line.Cnic)).Append(',')
                    .Append(Csv(line.FilerStatus.ToString())).Append(',')
                    .Append(Csv(line.TaxSection)).Append(',')
-                   .Append(line.ExpenseCount.ToString(CultureInfo.InvariantCulture)).Append(',')
+                   .Append(line.PaymentCount.ToString(CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.GrossAmount.ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.WhtAmount.ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                    .Append(line.NetPaid.ToString("0.00", CultureInfo.InvariantCulture))
                    .AppendLine();
             }
             csv.Append("Total,,,,,")
-               .Append(lines.Sum(l => l.ExpenseCount).ToString(CultureInfo.InvariantCulture)).Append(',')
+               .Append(lines.Sum(l => l.PaymentCount).ToString(CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.GrossAmount).ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.WhtAmount).ToString("0.00", CultureInfo.InvariantCulture)).Append(',')
                .Append(lines.Sum(l => l.NetPaid).ToString("0.00", CultureInfo.InvariantCulture))
@@ -525,11 +632,26 @@ namespace DAMS.Application.Services
                 : text;
         }
 
-        private IQueryable<Expense> WithheldQuery(DateTime? from, DateTime? to)
+        private sealed record VendorGroup(
+            int? VendorId, string? WhtTaxSection, FilerStatus VendorFilerStatusAtEntry,
+            string? FallbackName, decimal GrossAmount, decimal WhtAmount, int PaymentCount);
+
+        private IQueryable<Expense> WithheldExpenses(DateTime? from, DateTime? to)
         {
             var query = _context.Expenses.AsNoTracking().Where(e => e.WhtAmount > 0m);
             if (from.HasValue) query = query.Where(e => e.Date >= from.Value.Date);
             if (to.HasValue) query = query.Where(e => e.Date < to.Value.Date.AddDays(1));
+            return query;
+        }
+
+        /// <summary>Tax withheld from fixed-asset purchases. It is owed to FBR on exactly the same
+        /// terms as tax withheld from an expense, so every payable figure has to count it — leaving
+        /// it out would understate the liability by whatever was deducted from capital suppliers.</summary>
+        private IQueryable<AssetPurchase> WithheldPurchases(DateTime? from, DateTime? to)
+        {
+            var query = _context.AssetPurchases.AsNoTracking().Where(p => p.WhtAmount > 0m);
+            if (from.HasValue) query = query.Where(p => p.Date >= from.Value.Date);
+            if (to.HasValue) query = query.Where(p => p.Date < to.Value.Date.AddDays(1));
             return query;
         }
 
@@ -548,54 +670,107 @@ namespace DAMS.Application.Services
             Project(DepositQuery(from, to).OrderByDescending(d => d.DepositDate).ThenByDescending(d => d.Id))
                 .ToListAsync(cancellationToken);
 
-        public async Task<WhtDepositDto> CreateDepositAsync(
-            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default)
-        {
-            await ValidateDepositAsync(dto, null, cancellationToken);
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
+        public Task<WhtDepositDto> CreateDepositAsync(
+            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken = default) =>
+            ExecuteResilientlyAsync(() => CreateDepositCoreAsync(dto, adminUserId, cancellationToken));
 
-            var deposit = new WhtDeposit
+        private async Task<WhtDepositDto> CreateDepositCoreAsync(
+            SaveWhtDepositDto dto, int? adminUserId, CancellationToken cancellationToken)
+        {
+            // Serializable, because the "never more than is owed" check reads the whole withheld and
+            // deposited history and then writes against what it read. Two admins clearing the same
+            // liability at the same moment would otherwise both see the same remaining balance and
+            // both be allowed through, leaving Tax Payable negative.
+            await using var guard = await BeginGuardAsync(cancellationToken);
+            var committed = false;
+            try
             {
-                FinanceAccountId = dto.FinanceAccountId,
-                Amount = dto.Amount,
-                DepositDate = dto.DepositDate?.Date ?? PakistanTime.Today,
-                ChallanNumber = Clean(dto.ChallanNumber),
-                PeriodFrom = dto.PeriodFrom?.Date,
-                PeriodTo = dto.PeriodTo?.Date,
-                Notes = Clean(dto.Notes),
-                CreatedByUserId = adminUserId,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.WhtDeposits.Add(deposit);
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetDepositAsync(deposit.Id, cancellationToken);
+                var depositDate = await FinanceDateRules.ResolveAsync(
+                    _context, dto.DepositDate, "Deposit date", cancellationToken);
+                await ValidateDepositAsync(dto, null, cancellationToken);
+                await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
+
+                var deposit = new WhtDeposit
+                {
+                    FinanceAccountId = dto.FinanceAccountId,
+                    Amount = dto.Amount,
+                    DepositDate = depositDate,
+                    ChallanNumber = Clean(dto.ChallanNumber),
+                    PeriodFrom = dto.PeriodFrom?.Date,
+                    PeriodTo = dto.PeriodTo?.Date,
+                    Notes = Clean(dto.Notes),
+                    CreatedByUserId = adminUserId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.WhtDeposits.Add(deposit);
+                await _context.SaveChangesAsync(cancellationToken);
+                var result = await GetDepositAsync(deposit.Id, cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+                committed = true;
+                return result;
+            }
+            catch
+            {
+                if (guard != null && !committed) await guard.RollbackAsync(cancellationToken);
+                throw;
+            }
         }
 
-        public async Task<WhtDepositDto> UpdateDepositAsync(
-            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default)
+        public Task<WhtDepositDto> UpdateDepositAsync(
+            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken = default) =>
+            ExecuteResilientlyAsync(() => UpdateDepositCoreAsync(id, dto, cancellationToken));
+
+        private async Task<WhtDepositDto> UpdateDepositCoreAsync(
+            int id, SaveWhtDepositDto dto, CancellationToken cancellationToken)
+        {
+            await using var guard = await BeginGuardAsync(cancellationToken);
+            var committed = false;
+            try
+            {
+                var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
+                    ?? throw new InvalidOperationException("WHT deposit not found.");
+                // An omitted date keeps the one already recorded, so the amount on a deposit made
+                // before the opening-balance baseline can still be corrected in place.
+                var depositDate = dto.DepositDate.HasValue
+                    ? await FinanceDateRules.ResolveAsync(_context, dto.DepositDate, "Deposit date", cancellationToken)
+                    : deposit.DepositDate;
+                await ValidateDepositAsync(dto, id, cancellationToken);
+                ApplyConcurrencyToken(deposit, dto.ConcurrencyToken);
+                await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, deposit.FinanceAccountId, cancellationToken);
+
+                deposit.FinanceAccountId = dto.FinanceAccountId;
+                deposit.Amount = dto.Amount;
+                deposit.DepositDate = depositDate;
+                deposit.ChallanNumber = Clean(dto.ChallanNumber);
+                deposit.PeriodFrom = dto.PeriodFrom?.Date;
+                deposit.PeriodTo = dto.PeriodTo?.Date;
+                deposit.Notes = Clean(dto.Notes);
+
+                await _context.SaveChangesAsync(cancellationToken);
+                var result = await GetDepositAsync(id, cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+                committed = true;
+                return result;
+            }
+            catch
+            {
+                if (guard != null && !committed) await guard.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Deleting a deposit puts the tax straight back onto the payable, so it is a financial
+        /// movement in its own right and takes the same stale-write protection as editing one.
+        /// Without the token an admin could delete the version they were looking at moments after
+        /// someone else corrected its amount.
+        /// </summary>
+        public async Task DeleteDepositAsync(
+            int id, string? concurrencyToken = null, CancellationToken cancellationToken = default)
         {
             var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("WHT deposit not found.");
-            await ValidateDepositAsync(dto, id, cancellationToken);
-            ApplyConcurrencyToken(deposit, dto.ConcurrencyToken);
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, deposit.FinanceAccountId, cancellationToken);
-
-            deposit.FinanceAccountId = dto.FinanceAccountId;
-            deposit.Amount = dto.Amount;
-            if (dto.DepositDate.HasValue) deposit.DepositDate = dto.DepositDate.Value.Date;
-            deposit.ChallanNumber = Clean(dto.ChallanNumber);
-            deposit.PeriodFrom = dto.PeriodFrom?.Date;
-            deposit.PeriodTo = dto.PeriodTo?.Date;
-            deposit.Notes = Clean(dto.Notes);
-
-            await _context.SaveChangesAsync(cancellationToken);
-            return await GetDepositAsync(id, cancellationToken);
-        }
-
-        public async Task DeleteDepositAsync(int id, CancellationToken cancellationToken = default)
-        {
-            var deposit = await _context.WhtDeposits.SingleOrDefaultAsync(d => d.Id == id, cancellationToken)
-                ?? throw new InvalidOperationException("WHT deposit not found.");
+            ApplyConcurrencyToken(deposit, concurrencyToken);
             _context.WhtDeposits.Remove(deposit);
             await _context.SaveChangesAsync(cancellationToken);
         }
@@ -640,7 +815,99 @@ namespace DAMS.Application.Services
             if (challan != null && await _context.WhtDeposits.AnyAsync(
                     d => d.ChallanNumber == challan && (!excludingId.HasValue || d.Id != excludingId.Value), cancellationToken))
                 throw new InvalidOperationException("A deposit with this challan number has already been recorded.");
+
+            // Tax Payable is withheld minus deposited. Handing FBR more than was ever withheld drives
+            // that liability negative — a credit balance on a liability account, which is not a state
+            // this business has: DAMS deposits tax it has already deducted from a supplier, it does
+            // not make advance tax payments. Refusing the excess here is what stops the Balance Sheet,
+            // the Trial Balance and the payable summary from having to explain a negative liability.
+            var outstanding = await OutstandingPayableAsync(excludingId, cancellationToken);
+            if (dto.Amount > outstanding)
+                throw new InvalidOperationException(outstanding <= 0m
+                    ? "There is no withheld tax outstanding to deposit. Record the expenses the tax was deducted from first."
+                    : $"Deposit exceeds the withholding tax outstanding. At most {outstanding:N2} can be deposited.");
         }
+
+        /// <summary>
+        /// Refuses a correction to a source record that would leave less tax withheld than has
+        /// already been handed to FBR.
+        /// <para>
+        /// <see cref="ValidateDepositAsync"/> guards this invariant from the deposit side: never pay
+        /// over more than was withheld. It can be broken from the other side just as easily —
+        /// withhold 10,000, deposit 10,000, then delete or reduce the expense the tax came from, and
+        /// Tax Payable is left at minus 10,000. A negative liability is not a state this business
+        /// has: the money really did go to FBR, so the record it was deducted from cannot simply
+        /// vanish underneath it.
+        /// </para>
+        /// <para>
+        /// The change is signed, and only a reduction is checked: raising the tax or adding a record
+        /// can never uncover a deposit. The caller passes the delta rather than the new figure
+        /// because the stored total is read here, inside the caller's serialisable window, where the
+        /// deposit path cannot slip between the read and the write.
+        /// </para>
+        /// </summary>
+        public async Task EnsureDepositsStayCoveredAsync(
+            decimal withheldChange, CancellationToken cancellationToken = default)
+        {
+            if (withheldChange >= 0m) return;
+            var remaining = await OutstandingPayableAsync(null, cancellationToken);
+            var proposed = Math.Round(remaining + withheldChange, 2, MidpointRounding.AwayFromZero);
+            if (proposed < 0m)
+                throw new InvalidOperationException(
+                    $"This change would take Tax Payable to {proposed:N2}. Only {remaining:N2} is "
+                    + "still outstanding, so removing more than that would leave less withholding "
+                    + "tax recorded than the amount already deposited with FBR. Correct or remove "
+                    + "the FBR deposit first, then change this record.");
+        }
+
+        /// <summary>
+        /// The opening Tax Payable brought over from the client's previous system, as committed on
+        /// the opening-balance sheet. Zero until a baseline is committed, because that is the only
+        /// point <see cref="FinanceAccount.OpeningBalance"/> is written.
+        /// <para>
+        /// It is part of the liability for the same reason every other opening balance is part of
+        /// its account: the Balance Sheet and the Tax Payable account both read
+        /// <c>OpeningBalance + withheld - deposited</c>. Leaving it out here is what made the two
+        /// disagree — the account said the business owed FBR the brought-forward tax while the only
+        /// screen that can pay FBR said nothing was outstanding and refused the deposit.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> OpeningPayableAsync(CancellationToken cancellationToken) =>
+            await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                .SumAsync(a => (decimal?)a.OpeningBalance, cancellationToken) ?? 0m;
+
+        /// <summary>
+        /// Everything still owed to FBR: the opening liability brought over at cutover, plus tax
+        /// withheld on expenses AND on asset purchases, less what has been deposited. The one
+        /// authoritative formula — identical to the Tax Payable account balance and the Balance
+        /// Sheet line, so no screen can contradict another about what the business owes.
+        /// <para>
+        /// All-time on purpose: the liability is a running balance, not a period total, so an August
+        /// deposit can legitimately clear tax withheld in July.
+        /// </para>
+        /// </summary>
+        private async Task<decimal> OutstandingPayableAsync(int? excludingDepositId, CancellationToken cancellationToken)
+        {
+            var opening = await OpeningPayableAsync(cancellationToken);
+            var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
+                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
+            var deposited = await _context.WhtDeposits.AsNoTracking()
+                .Where(d => !excludingDepositId.HasValue || d.Id != excludingDepositId.Value)
+                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
+            return Math.Round(opening + withheld - deposited, 2, MidpointRounding.AwayFromZero);
+        }
+
+        // The same shape LoanService uses: a serializable window around a read-then-write, skipped on
+        // a non-relational provider and when the caller already owns a transaction.
+        private async Task<IDbContextTransaction?> BeginGuardAsync(CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
+            return await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        }
+
+        private Task<T> ExecuteResilientlyAsync<T>(Func<Task<T>> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
