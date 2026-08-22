@@ -36,6 +36,14 @@ public sealed class StaffManagementTests
             int userId, int invitedByUserId, CancellationToken cancellationToken = default) =>
             Record(userId, invitedByUserId, resend: true);
 
+        /// <summary>
+        /// Staff provisioning has no business spending a token, so the fake fails loudly if it
+        /// ever tries rather than quietly returning something plausible.
+        /// </summary>
+        public Task<StaffActivationResult> ActivateAsync(
+            string rawToken, string chosenPassword, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Staff provisioning must never activate an account.");
+
         private Task<StaffInvitationResult> Record(int userId, int invitedByUserId, bool resend)
         {
             Calls.Add((userId, invitedByUserId, resend));

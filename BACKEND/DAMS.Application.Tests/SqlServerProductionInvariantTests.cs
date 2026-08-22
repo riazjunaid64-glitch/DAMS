@@ -8,6 +8,7 @@ using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Notifications;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -2220,6 +2221,98 @@ public sealed class SqlServerProductionInvariantTests
             db.Users.Remove(await db.Users.SingleAsync(u => u.UserId == invitedUserId));
             await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
         }
+    }
+
+    /// <summary>
+    /// Single use has to be a property of the database, not of the order two requests happen to
+    /// arrive in. Two clicks on the same activation link at the same instant — the second tab,
+    /// the impatient double-click, the replay — must leave exactly one of them holding a
+    /// password, and the loser must not be able to overwrite the winner's.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentStaffActivations_LetExactlyOneRequestConsumeTheInvitation()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        const string rawToken = "concurrent-activation-token";
+        await using (var db = new AppDbContext(options))
+        {
+            var admin = new User
+            {
+                RoleId = 1, FullName = "SQL Admin", Email = "sql-admin@dams.test",
+                Password = "$2a$11$adminhash", AccountStatus = UserAccountStatus.Active
+            };
+            var invited = new User
+            {
+                RoleId = 4, FullName = "SQL Invited", Email = "sql-invited@dams.test",
+                Password = null, AccountStatus = UserAccountStatus.Invited
+            };
+            db.Users.AddRange(admin, invited);
+            await db.SaveChangesAsync();
+
+            db.Employees.Add(new Employee
+            {
+                FullName = "SQL Invited", UserId = invited.UserId, Email = invited.Email,
+                JobTitle = "Sales Executive", JoinDate = new DateTime(2026, 1, 1),
+                Status = EmployeeStatus.Active
+            });
+            db.StaffInvitations.Add(new StaffInvitation
+            {
+                UserId = invited.UserId,
+                InvitedByUserId = admin.UserId,
+                // The hash the service will compute for the token below, written independently
+                // of the service so this test does not depend on its internals being public.
+                TokenHash = Convert.ToBase64String(
+                    System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(rawToken))),
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddHours(24)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        async Task<StaffActivationResult> ActivateAsync(string password)
+        {
+            await using var context = new AppDbContext(options);
+            var service = new StaffInvitationService(
+                context, new NotificationSettingsStore(context),
+                new ThrowingEmailSender(), TimeProvider.System);
+            return await service.ActivateAsync(rawToken, password);
+        }
+
+        var outcomes = await Task.WhenAll(
+            ActivateAsync("first-request-pass-1"), ActivateAsync("second-request-pass-2"));
+
+        var winner = Assert.Single(outcomes, o => o.Activated);
+        var loser = Assert.Single(outcomes, o => !o.Activated);
+        Assert.Equal(StaffActivationFailure.InvalidInvitation, loser.Failure);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var user = await db.Users.SingleAsync(u => u.Email == "sql-invited@dams.test");
+            Assert.Equal(UserAccountStatus.Active, user.AccountStatus);
+
+            // Exactly one of the two passwords took, and the invitation is spent once.
+            var accepted = new[] { "first-request-pass-1", "second-request-pass-2" }
+                .Count(p => BCrypt.Net.BCrypt.Verify(p, user.Password));
+            Assert.Equal(1, accepted);
+            Assert.NotNull(winner);
+
+            var invitation = await db.StaffInvitations.SingleAsync();
+            Assert.NotNull(invitation.AcceptedAt);
+        }
+    }
+
+    /// <summary>Activation must never send mail, so the sender it is given cannot.</summary>
+    private sealed class ThrowingEmailSender : IEmailSender
+    {
+        public string ProviderName => "none";
+
+        public Task<EmailSendResult> SendAsync(EmailMessage message, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Activation must not send email.");
     }
 
     private static async Task ExecuteAsync(string connectionString, string sql)

@@ -1,3 +1,4 @@
+using System.Data;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,6 +8,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services
 {
@@ -19,6 +21,10 @@ namespace DAMS.Application.Services
     /// Staff activation is a security message, not a customer notification: it goes straight
     /// to <see cref="IEmailSender"/> rather than through recipient resolution, preferences or
     /// the email.enabled toggle, all of which govern optional customer mail.
+    ///
+    /// It is also the only place a token is spent. Hashing, lookup, expiry, revocation and the
+    /// Invited → Active transition all live here, so no caller can assemble its own half of the
+    /// check and get it subtly wrong.
     /// </summary>
     public sealed class StaffInvitationService : IStaffInvitationService
     {
@@ -28,8 +34,23 @@ namespace DAMS.Application.Services
         /// <summary>The frontend route that trades the token for a chosen password.</summary>
         public const string ActivationPath = "/activate-account";
 
+        /// <summary>The floor the staff workflow has always had. Wider password policy is an
+        /// application-level concern and is deliberately not redefined here.</summary>
+        public const int MinPasswordLength = 8;
+
+        /// <summary>
+        /// bcrypt hashes only the first 72 bytes of its input. Two longer passwords sharing a
+        /// 72-byte prefix would open the same account, so DAMS refuses the password rather than
+        /// quietly shortening one the employee believes is longer.
+        /// </summary>
+        public const int MaxPasswordBytes = 72;
+
         /// <summary>256 bits of randomness — the token is guessed, never derived from an ID.</summary>
         private const int TokenBytes = 32;
+
+        /// <summary>An issued token is 43 characters. Anything far longer is not a near miss,
+        /// so it is dropped before it costs a hash or a query.</summary>
+        private const int MaxTokenLength = 200;
 
         private readonly AppDbContext _context;
         private readonly NotificationSettingsStore _settings;
@@ -58,10 +79,167 @@ namespace DAMS.Application.Services
             IssueInternalAsync(userId, invitedByUserId, cancellationToken);
 
         /// <summary>
-        /// The lookup form of a token. The activation phase hashes what it was given and
-        /// matches on that, so the raw value never has to be stored to be verified.
+        /// Spends a token. See <see cref="IStaffInvitationService.ActivateAsync"/> for the
+        /// contract; the shape of the work is: reject cheaply, hash outside the transaction,
+        /// then re-check and commit everything as one write.
         /// </summary>
-        public static string HashToken(string rawToken) =>
+        public async Task<StaffActivationResult> ActivateAsync(
+            string rawToken, string chosenPassword, CancellationToken cancellationToken = default)
+        {
+            // Nothing here touches the database or the CPU-expensive hash, so junk input
+            // costs a public endpoint almost nothing.
+            if (string.IsNullOrWhiteSpace(rawToken) || rawToken.Length > MaxTokenLength)
+                return StaffActivationResult.InvalidInvitation();
+
+            var passwordProblem = ValidatePassword(chosenPassword);
+            if (passwordProblem != null)
+                return passwordProblem;
+
+            var tokenHash = HashToken(rawToken);
+            var now = _clock.GetUtcNow().UtcDateTime;
+
+            // A first look outside the transaction: a guessed or stale token is turned away by
+            // one indexed read, without paying for a bcrypt hash or a serialisable lock. It
+            // decides nothing — the check that counts is the one inside the transaction.
+            if (await FindUsableAsync(tokenHash, now, cancellationToken) == null)
+                return StaffActivationResult.InvalidInvitation();
+
+            // bcrypt is slow on purpose and depends on nothing the transaction reads, so it is
+            // done before the transaction opens rather than while holding locks.
+            var passwordHash = BCrypt.Net.BCrypt.HashPassword(chosenPassword);
+
+            var result = StaffActivationResult.InvalidInvitation();
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // The strategy can re-run this whole block after a deadlock, so it has to start
+                // from what is stored rather than from anything a previous attempt tracked.
+                _context.ChangeTracker.Clear();
+                await using var transaction = await BeginActivationAsync(cancellationToken);
+
+                // Read the clock again rather than reusing the one from the first look: a retry
+                // must not judge expiry against a time that has since passed.
+                var attemptedAt = _clock.GetUtcNow().UtcDateTime;
+
+                // Re-read under the transaction. This is where single use is actually enforced:
+                // the loser of a race either waits for the winner's commit and then sees an
+                // accepted invitation, or is picked as the deadlock victim and retries into
+                // exactly the same outcome.
+                var invitation = await FindUsableAsync(tokenHash, attemptedAt, cancellationToken);
+                if (invitation == null)
+                {
+                    result = StaffActivationResult.InvalidInvitation();
+                    return;
+                }
+
+                var user = invitation.User;
+                user.Password = passwordHash;
+                user.AccountStatus = UserAccountStatus.Active;
+
+                // An Invited login should have no session at all. Clearing anyway means a
+                // historic or imported row cannot carry an old session into a fresh account.
+                user.RefreshToken = null;
+                user.RefreshTokenExpiresAt = null;
+
+                invitation.AcceptedAt = attemptedAt;
+
+                // Any link still outstanding dies with this one, so an older email in the same
+                // inbox cannot be replayed later to change the password again.
+                var superseded = await _context.StaffInvitations
+                    .Where(i => i.UserId == user.UserId && i.Id != invitation.Id
+                        && i.AcceptedAt == null && i.RevokedAt == null)
+                    .ToListAsync(cancellationToken);
+                foreach (var stale in superseded)
+                    stale.RevokedAt = attemptedAt;
+
+                // One SaveChanges for the password, the status and the consumed invitation:
+                // there is no instant where the account is usable and the link still is too.
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+
+                result = StaffActivationResult.Success();
+            });
+
+            return result;
+        }
+
+        /// <summary>
+        /// The invitation a token opens, or null for every reason it might not: unknown,
+        /// expired, revoked, already spent, a login that has since been activated, disabled or
+        /// removed, or an employee who no longer works here. One return value for all of them,
+        /// because the caller must not be able to tell them apart.
+        /// </summary>
+        private async Task<StaffInvitation?> FindUsableAsync(
+            string tokenHash, DateTime now, CancellationToken cancellationToken)
+        {
+            var invitation = await _context.StaffInvitations
+                .Include(i => i.User)
+                .FirstOrDefaultAsync(i => i.TokenHash == tokenHash, cancellationToken);
+
+            if (invitation == null
+                || invitation.AcceptedAt != null
+                || invitation.RevokedAt != null
+                || invitation.ExpiresAt <= now)
+                return null;
+
+            // Only a login still waiting for its first password can be activated. An Active or
+            // Disabled account is never reached through a link.
+            if (invitation.User == null || invitation.User.AccountStatus != UserAccountStatus.Invited)
+                return null;
+
+            // An invitation is not a standing offer. Somebody whose employment ended after the
+            // link was sent must not be able to open a DAMS login with yesterday's email.
+            var stillEmployed = await _context.Employees.AnyAsync(
+                e => e.UserId == invitation.UserId && e.Status == EmployeeStatus.Active,
+                cancellationToken);
+
+            return stillEmployed ? invitation : null;
+        }
+
+        /// <summary>
+        /// Serialisable, because "read it as unused, then write it as used" is only single-use
+        /// if nothing can slip between the two. Skipped on a non-relational provider, which has
+        /// no concurrency to protect against, and skipped inside a caller's transaction rather
+        /// than nesting one.
+        /// </summary>
+        private async Task<IDbContextTransaction?> BeginActivationAsync(CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return null;
+
+            return await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        }
+
+        /// <summary>
+        /// Runs the activation as one retriable unit. Not optional: the API configures SQL
+        /// Server with EnableRetryOnFailure, and EF refuses to run anything inside a
+        /// caller-opened transaction unless it goes through the execution strategy.
+        /// </summary>
+        private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
+
+        /// <summary>The password rules, as the two things the employee can actually fix.</summary>
+        private static StaffActivationResult? ValidatePassword(string? chosenPassword)
+        {
+            if (string.IsNullOrEmpty(chosenPassword) || chosenPassword.Length < MinPasswordLength)
+                return StaffActivationResult.Rejected(
+                    StaffActivationFailure.PasswordTooShort,
+                    $"Choose a password of at least {MinPasswordLength} characters.");
+
+            if (Encoding.UTF8.GetByteCount(chosenPassword) > MaxPasswordBytes)
+                return StaffActivationResult.Rejected(
+                    StaffActivationFailure.PasswordTooLong,
+                    $"That password is too long. Use at most {MaxPasswordBytes} characters.");
+
+            return null;
+        }
+
+        /// <summary>
+        /// The lookup form of a token: the raw value never has to be stored to be verified.
+        /// Private on purpose — a second implementation of "is this token good?" somewhere
+        /// else in DAMS is exactly the bug this service exists to prevent.
+        /// </summary>
+        private static string HashToken(string rawToken) =>
             Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(rawToken)));
 
         private async Task<StaffInvitationResult> IssueInternalAsync(

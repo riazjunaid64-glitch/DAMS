@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
@@ -83,7 +85,7 @@ public sealed class StaffInvitationServiceTests
         var invitation = await h.OnlyInvitationAsync();
 
         // What the database holds verifies the emailed token without being able to produce it.
-        Assert.Equal(StaffInvitationService.HashToken(token), invitation.TokenHash);
+        Assert.Equal(Sha256(token), invitation.TokenHash);
         Assert.NotEqual(token, invitation.TokenHash);
         Assert.DoesNotContain(token, invitation.TokenHash, StringComparison.Ordinal);
     }
@@ -163,7 +165,7 @@ public sealed class StaffInvitationServiceTests
 
         await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
         var firstToken = h.LastEmailedToken();
-        var firstHash = StaffInvitationService.HashToken(firstToken);
+        var firstHash = Sha256(firstToken);
 
         h.Clock.Set(h.Clock.UtcNow.AddHours(2));
         var resend = await h.Service.ResendAsync(h.InvitedUserId, h.AdminUserId);
@@ -183,7 +185,7 @@ public sealed class StaffInvitationServiceTests
 
         // Exactly one outstanding invitation, and it is the new one.
         var outstanding = Assert.Single(invitations, i => i.RevokedAt == null && i.AcceptedAt == null);
-        Assert.Equal(StaffInvitationService.HashToken(secondToken), outstanding.TokenHash);
+        Assert.Equal(Sha256(secondToken), outstanding.TokenHash);
         Assert.Equal(h.Clock.UtcNow.AddHours(24), outstanding.ExpiresAt);
     }
 
@@ -301,7 +303,7 @@ public sealed class StaffInvitationServiceTests
         Assert.Equal(2, invitations.Count);
         var outstanding = Assert.Single(invitations, i => i.RevokedAt == null);
         Assert.Equal(retry.InvitationId, outstanding.Id);
-        Assert.Equal(StaffInvitationService.HashToken(h.LastEmailedToken()), outstanding.TokenHash);
+        Assert.Equal(Sha256(h.LastEmailedToken()), outstanding.TokenHash);
     }
 
     // ── Email safety ────────────────────────────────────────────────────────────
@@ -353,6 +355,299 @@ public sealed class StaffInvitationServiceTests
         Assert.Contains("&quot;O&#39;Brien&quot;", sent.HtmlBody, StringComparison.Ordinal);
     }
 
+    // ── Activation: spending the token ──────────────────────────────────────────
+
+    private const string ChosenPassword = "sana-chose-this-1";
+
+    [Fact]
+    public async Task A_valid_link_sets_the_employees_own_password_and_activates_the_login()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        // A session that should not exist on an invited login, to prove activation clears it.
+        await h.GiveInvitedAStaleSessionAsync();
+
+        h.Clock.Set(h.Clock.UtcNow.AddHours(3));
+        var result = await h.Service.ActivateAsync(token, ChosenPassword);
+
+        Assert.True(result.Activated);
+        Assert.Equal(StaffActivationFailure.None, result.Failure);
+        Assert.Null(result.Error);
+
+        var user = await h.ReloadAsync(h.InvitedUserId);
+        Assert.Equal(UserAccountStatus.Active, user.AccountStatus);
+
+        // The employee's own password, verifiable but not readable, and not the raw string.
+        Assert.NotNull(user.Password);
+        Assert.True(BCrypt.Net.BCrypt.Verify(ChosenPassword, user.Password));
+        Assert.NotEqual(ChosenPassword, user.Password);
+        Assert.DoesNotContain(ChosenPassword, user.Password, StringComparison.Ordinal);
+
+        // Activating is not signing in: no session is created, and any stale one is gone.
+        Assert.Null(user.RefreshToken);
+        Assert.Null(user.RefreshTokenExpiresAt);
+
+        var invitation = await h.OnlyInvitationAsync();
+        Assert.Equal(h.Clock.UtcNow, invitation.AcceptedAt);
+        Assert.Null(invitation.RevokedAt);
+
+        // Nothing about the consumed row can reconstruct either secret.
+        Assert.DoesNotContain(token, invitation.TokenHash, StringComparison.Ordinal);
+        Assert.DoesNotContain(ChosenPassword, invitation.TokenHash, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Activation_sends_nothing_and_needs_no_public_site_address()
+    {
+        // No PublicBaseUrl configured at all: consuming a token is a local state change and
+        // must not reach for a setting or an SMTP server.
+        await using var h = await Harness.CreateAsync(publicBaseUrl: null);
+        await h.SeedInvitationAsync(h.InvitedUserId, "seeded-token-value");
+
+        var result = await h.Service.ActivateAsync("seeded-token-value", ChosenPassword);
+
+        Assert.True(result.Activated);
+        Assert.Empty(h.Email.Sent);
+    }
+
+    [Fact]
+    public async Task Accepting_one_link_kills_every_other_one_still_outstanding()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        // A second live invitation, as an imported or historic row could leave behind.
+        await h.SeedInvitationAsync(h.InvitedUserId, "sibling-token-value");
+
+        Assert.True((await h.Service.ActivateAsync(token, ChosenPassword)).Activated);
+
+        var invitations = await h.InvitationsAsync();
+        Assert.Equal(2, invitations.Count);
+        Assert.All(invitations, i => Assert.True(i.AcceptedAt != null || i.RevokedAt != null));
+
+        // And the sibling really is spent, not merely marked.
+        AssertSafelyRejected(await h.Service.ActivateAsync("sibling-token-value", "another-password-9"));
+    }
+
+    // ── Activation: every link that must not work ───────────────────────────────
+
+    [Fact]
+    public async Task A_token_nobody_ever_issued_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+
+        AssertSafelyRejected(await h.Service.ActivateAsync("kIuGf2sVnQ0-guessed-token", ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task An_empty_token_is_rejected_without_touching_anything(string token)
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Fact]
+    public async Task An_expired_link_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        h.Clock.Set(h.Clock.UtcNow.AddHours(24).AddSeconds(1));
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Fact]
+    public async Task A_link_a_resend_superseded_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var firstToken = h.LastEmailedToken();
+
+        h.Clock.Set(h.Clock.UtcNow.AddMinutes(5));
+        await h.Service.ResendAsync(h.InvitedUserId, h.AdminUserId);
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(firstToken, ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Fact]
+    public async Task An_already_accepted_link_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.SeedInvitationAsync(h.InvitedUserId, "spent-token-value",
+            acceptedAt: h.Clock.UtcNow.AddMinutes(-1));
+
+        AssertSafelyRejected(await h.Service.ActivateAsync("spent-token-value", ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Fact]
+    public async Task The_same_link_cannot_be_spent_twice()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        Assert.True((await h.Service.ActivateAsync(token, ChosenPassword)).Activated);
+        var afterFirst = (await h.ReloadAsync(h.InvitedUserId)).Password;
+
+        // A replay must not be able to set a second password on an account it no longer owns.
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, "attacker-chosen-2"));
+
+        var user = await h.ReloadAsync(h.InvitedUserId);
+        Assert.Equal(afterFirst, user.Password);
+        Assert.True(BCrypt.Net.BCrypt.Verify(ChosenPassword, user.Password));
+        Assert.False(BCrypt.Net.BCrypt.Verify("attacker-chosen-2", user.Password));
+    }
+
+    [Fact]
+    public async Task A_link_to_a_login_that_is_already_active_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.SeedInvitationAsync(h.ActiveUserId, "active-token-value");
+        var before = (await h.ReloadAsync(h.ActiveUserId)).Password;
+
+        AssertSafelyRejected(await h.Service.ActivateAsync("active-token-value", ChosenPassword));
+
+        // An activation link is not a password reset for a working account.
+        var user = await h.ReloadAsync(h.ActiveUserId);
+        Assert.Equal(before, user.Password);
+        Assert.Equal(UserAccountStatus.Active, user.AccountStatus);
+    }
+
+    [Fact]
+    public async Task A_link_to_a_disabled_login_is_rejected_and_does_not_reactivate_it()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.SeedInvitationAsync(h.DisabledUserId, "disabled-token-value");
+
+        AssertSafelyRejected(await h.Service.ActivateAsync("disabled-token-value", ChosenPassword));
+
+        var user = await h.ReloadAsync(h.DisabledUserId);
+        Assert.Equal(UserAccountStatus.Disabled, user.AccountStatus);
+        Assert.Equal("hash", user.Password);
+    }
+
+    [Fact]
+    public async Task A_link_to_a_login_that_no_longer_exists_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        await h.DeleteInvitedLoginAsync();
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, ChosenPassword));
+    }
+
+    [Fact]
+    public async Task A_link_belonging_to_no_employee_record_is_rejected()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        // The employment record went away between the invitation and the click.
+        await h.DeleteInvitedEmployeeAsync();
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    [Theory]
+    [InlineData(EmployeeStatus.Inactive)]
+    [InlineData(EmployeeStatus.Terminated)]
+    public async Task A_link_for_somebody_who_no_longer_works_here_is_rejected(EmployeeStatus status)
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        // Yesterday's invitation must not outlive the employment it was granted for.
+        await h.SetInvitedEmployeeStatusAsync(status);
+
+        AssertSafelyRejected(await h.Service.ActivateAsync(token, ChosenPassword));
+        await AssertStillWaitingAsync(h);
+    }
+
+    // ── Activation: the password the employee chooses ───────────────────────────
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("short7!")]
+    public async Task A_password_under_the_floor_is_refused_and_leaves_the_link_usable(string password)
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        var result = await h.Service.ActivateAsync(token, password);
+
+        Assert.False(result.Activated);
+        Assert.Equal(StaffActivationFailure.PasswordTooShort, result.Failure);
+        await AssertStillWaitingAsync(h);
+
+        // A typo must not burn the invitation.
+        Assert.True((await h.Service.ActivateAsync(token, ChosenPassword)).Activated);
+    }
+
+    [Theory]
+    // 73 ASCII characters, and 40 accented ones — 80 bytes — which is the same problem in
+    // a form a character count would miss.
+    [InlineData(73, 'a')]
+    [InlineData(40, 'é')]
+    public async Task A_password_bcrypt_could_not_hash_whole_is_refused_rather_than_truncated(
+        int length, char filler)
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+        var token = h.LastEmailedToken();
+
+        var result = await h.Service.ActivateAsync(token, new string(filler, length));
+
+        // Accepting it would mean a different, longer password opened the same account.
+        Assert.False(result.Activated);
+        Assert.Equal(StaffActivationFailure.PasswordTooLong, result.Failure);
+        await AssertStillWaitingAsync(h);
+    }
+
+    /// <summary>
+    /// Every bad link answers identically. An anonymous caller who tries a guessed token, an
+    /// expired one and one belonging to a disabled account cannot tell from the reply which
+    /// accounts exist or what state they are in.
+    /// </summary>
+    private static void AssertSafelyRejected(StaffActivationResult result)
+    {
+        Assert.False(result.Activated);
+        Assert.Equal(StaffActivationFailure.InvalidInvitation, result.Failure);
+        Assert.Equal(StaffActivationResult.InvalidInvitationMessage, result.Error);
+    }
+
+    /// <summary>The invited login is exactly as it was: no password, still waiting.</summary>
+    private static async Task AssertStillWaitingAsync(Harness h)
+    {
+        var user = await h.ReloadInvitedAsync();
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+        Assert.Null(user.Password);
+    }
+
+    /// <summary>The same hash the service stores, computed independently of it.</summary>
+    private static string Sha256(string value) =>
+        Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var count = 0;
@@ -363,8 +658,9 @@ public sealed class StaffInvitationServiceTests
     }
 
     /// <summary>
-    /// One Admin and three logins — Active, Invited and Disabled — wired to the real service
-    /// over an in-memory DAMS, a recording email fake and a clock the test drives.
+    /// One Admin and three logins — Active, Invited and Disabled — each with an active
+    /// employment record behind it, wired to the real service over an in-memory DAMS, a
+    /// recording email fake and a clock the test drives.
     /// </summary>
     private sealed class Harness : IAsyncDisposable
     {
@@ -406,6 +702,12 @@ public sealed class StaffInvitationServiceTests
             h.ActiveUserId = active.UserId;
             h.DisabledUserId = disabled.UserId;
 
+            // Activation requires a live employment record, so each login has one and the
+            // tests that care take it away rather than arranging its absence.
+            db.Employees.AddRange(
+                NewEmployee(invited), NewEmployee(active), NewEmployee(disabled));
+            await db.SaveChangesAsync();
+
             await h.Settings.SetAsync(NotificationSettingKeys.CompanyName, "DAMS Estates", h.AdminUserId);
             await h.Settings.SetAsync(NotificationSettingKeys.AppName, "DAMS", h.AdminUserId);
             if (publicBaseUrl != null)
@@ -437,10 +739,67 @@ public sealed class StaffInvitationServiceTests
 
         public async Task<StaffInvitation> OnlyInvitationAsync() => (await InvitationsAsync()).Single();
 
-        public async Task<User> ReloadInvitedAsync()
+        public Task<User> ReloadInvitedAsync() => ReloadAsync(InvitedUserId);
+
+        public async Task<User> ReloadAsync(int userId)
         {
             Db.ChangeTracker.Clear();
-            return await Db.Users.AsNoTracking().FirstAsync(u => u.UserId == InvitedUserId);
+            return await Db.Users.AsNoTracking().FirstAsync(u => u.UserId == userId);
+        }
+
+        /// <summary>
+        /// Writes an invitation directly, for the states the service will not produce itself:
+        /// a link for an account that is no longer invitable, one that is already spent, or a
+        /// second live one alongside the issued token.
+        /// </summary>
+        public async Task SeedInvitationAsync(
+            int userId, string rawToken, DateTime? acceptedAt = null, DateTime? revokedAt = null)
+        {
+            Db.StaffInvitations.Add(new StaffInvitation
+            {
+                UserId = userId,
+                InvitedByUserId = AdminUserId,
+                TokenHash = Sha256(rawToken),
+                CreatedAt = Clock.UtcNow,
+                ExpiresAt = Clock.UtcNow.AddHours(24),
+                AcceptedAt = acceptedAt,
+                RevokedAt = revokedAt
+            });
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        /// <summary>A session an invited login should never have, to prove activation clears it.</summary>
+        public async Task GiveInvitedAStaleSessionAsync()
+        {
+            var user = await Db.Users.FirstAsync(u => u.UserId == InvitedUserId);
+            user.RefreshToken = "stale-session-hash";
+            user.RefreshTokenExpiresAt = Clock.UtcNow.AddDays(15);
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        public async Task SetInvitedEmployeeStatusAsync(EmployeeStatus status)
+        {
+            var employee = await Db.Employees.FirstAsync(e => e.UserId == InvitedUserId);
+            employee.Status = status;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        public async Task DeleteInvitedEmployeeAsync()
+        {
+            Db.Employees.Remove(await Db.Employees.FirstAsync(e => e.UserId == InvitedUserId));
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
+        public async Task DeleteInvitedLoginAsync()
+        {
+            await DeleteInvitedEmployeeAsync();
+            Db.Users.Remove(await Db.Users.FirstAsync(u => u.UserId == InvitedUserId));
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
         }
 
         /// <summary>The activation URL exactly as the employee would receive it.</summary>
@@ -466,6 +825,16 @@ public sealed class StaffInvitationServiceTests
             Email = email,
             Password = password,
             AccountStatus = status
+        };
+
+        private static Employee NewEmployee(User user) => new()
+        {
+            FullName = user.FullName,
+            UserId = user.UserId,
+            Email = user.Email,
+            JobTitle = "Sales Executive",
+            JoinDate = new DateTime(2026, 1, 1),
+            Status = EmployeeStatus.Active
         };
 
         public ValueTask DisposeAsync() => Db.DisposeAsync();

@@ -1,4 +1,5 @@
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using DAMS.Application.DTOs.Auth;
 using DAMS.Application.Interfaces;
@@ -54,7 +55,11 @@ namespace DAMS.Application.Services
                 FullName = request.FullName,
                 Email = normalizedEmail,
                 Password = hashedPassword,
-                RoleId = clientRole.RoleId
+                RoleId = clientRole.RoleId,
+                // Stated rather than left to the default. A client who has just chosen their own
+                // password is signed in immediately, and that must not become dependent on which
+                // UserAccountStatus happens to be zero.
+                AccountStatus = UserAccountStatus.Active
             };
 
             _context.Users.Add(user);
@@ -68,6 +73,14 @@ namespace DAMS.Application.Services
                 .Include(u => u.Role)
                 .FirstOrDefaultAsync(u => u.Email == normalizedEmail);
             if (user == null)
+                return null;
+
+            // Before the password is even looked at. An invited login has no stored password to
+            // verify against — passing null to BCrypt.Verify would throw rather than reject —
+            // and a disabled one has a password that must stop working. Both fall through to
+            // the same "invalid credentials" the caller gets for a wrong password, so the
+            // public response never says which of the three it was.
+            if (user.AccountStatus != UserAccountStatus.Active || user.Password == null)
                 return null;
 
             var isValid = BCrypt.Net.BCrypt.Verify(request.Password, user.Password);
@@ -104,6 +117,17 @@ namespace DAMS.Application.Services
 
             if (!user.RefreshTokenExpiresAt.HasValue || user.RefreshTokenExpiresAt <= DateTime.UtcNow)
                 return null;
+
+            // A refresh token is a standing permission to keep minting access tokens, so a login
+            // that has stopped being Active has to lose it. Disabling an account would otherwise
+            // leave whoever holds its session working for another fifteen days.
+            if (user.AccountStatus != UserAccountStatus.Active)
+            {
+                user.RefreshToken = null;
+                user.RefreshTokenExpiresAt = null;
+                await _context.SaveChangesAsync();
+                return null;
+            }
 
             var role = user.Role;
             if (!await StaffLoginIsAllowedAsync(user.UserId, role.Role_name))
