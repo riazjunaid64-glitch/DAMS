@@ -39,6 +39,7 @@ const LeadsPage = lazy(() => import("./pages/LeadsPage.tsx"));
 const LeadDetailPage = lazy(() => import("./pages/LeadDetailPage.tsx"));
 const CrmSettingsPage = lazy(() => import("./pages/CrmSettingsPage.tsx"));
 const NotificationsPage = lazy(() => import("./pages/NotificationsPage.tsx"));
+const ActivateAccountPage = lazy(() => import("./pages/ActivateAccountPage.tsx"));
 const NotificationAdminPage = lazy(() => import("./pages/NotificationAdminPage.tsx"));
 
 export interface User {
@@ -188,6 +189,9 @@ function App() {
             <Route path="/projects/:id" element={<ProjectDetailPage user={user} />} />
             <Route path="/units/:id" element={<UnitDetailPage user={user} />} />
             <Route path="/about" element={<AboutPage />} />
+            {/* Public: an invited employee has no session yet, and the emailed link is what
+                identifies them. It never signs anybody in — the modal below still does that. */}
+            <Route path="/activate-account" element={<ActivateAccountPage onSignIn={() => setModal("login")} />} />
             <Route path="/contact" element={<ContactPage />} />
             <Route path="/my-projects" element={<MyProjectsPage user={user} />} />
             <Route path="/my-projects/:id" element={<MyProjectDetailPage user={user} />} />
