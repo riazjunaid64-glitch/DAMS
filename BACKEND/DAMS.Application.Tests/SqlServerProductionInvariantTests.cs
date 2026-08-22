@@ -2224,6 +2224,63 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// Rolling back must never invent a credential. Restoring Users.Password to NOT NULL makes
+    /// EF emit "UPDATE [Users] SET [Password] = N'' WHERE [Password] IS NULL" first, which does
+    /// not fail — it stamps an empty string onto every login that was invited but has not
+    /// activated, and the next statement drops the AccountStatus column that was the only thing
+    /// recording that they were waiting. Down() refuses instead, and only while such a login
+    /// exists: with none outstanding the rollback still runs, and real password hashes survive.
+    /// </summary>
+    [SqlServerFact]
+    public async Task StaffInvitationMigration_RefusesRollbackRatherThanStampAPasswordOnAnUnactivatedLogin()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        const string previous = "20260821020414_AddEmployeeSalaryRowVersion";
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await ExecuteAsync(database.ConnectionString, """
+            INSERT INTO [Users] ([RoleId], [FullName], [Email], [Password], [AccountStatus]) VALUES
+                (1, N'Legacy Admin',  N'admin@dams.test',   N'$2a$11$legacyadminhash', 0),
+                (4, N'Invited Sales', N'invited@dams.test', NULL,                      1);
+            """);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var refused = await Assert.ThrowsAnyAsync<SqlException>(
+                () => db.GetService<IMigrator>().MigrateAsync(previous));
+            Assert.Contains("never activated", refused.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The refusal rolled back cleanly: the schema and the waiting login are untouched, and
+        // in particular no empty string was written over the missing password.
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'StaffInvitations'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [Users] WHERE [Email] = N'invited@dams.test' AND [Password] IS NULL AND [AccountStatus] = 1"));
+
+        // Resolve the waiting invitation the way an operator would have to, and the rollback
+        // proceeds — the guard blocks an unsafe rollback, not every rollback.
+        await ExecuteAsync(database.ConnectionString,
+            "DELETE FROM [Users] WHERE [Email] = N'invited@dams.test';");
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync(previous);
+
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'StaffInvitations'"));
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString, """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'Users' AND COLUMN_NAME = 'AccountStatus'
+            """));
+        // The account that always had a password still has exactly the one it had.
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [Users] WHERE [Email] = N'admin@dams.test' AND [Password] = N'$2a$11$legacyadminhash'"));
+    }
+
+    /// <summary>
     /// Single use has to be a property of the database, not of the order two requests happen to
     /// arrive in. Two clicks on the same activation link at the same instant — the second tab,
     /// the impatient double-click, the replay — must leave exactly one of them holding a

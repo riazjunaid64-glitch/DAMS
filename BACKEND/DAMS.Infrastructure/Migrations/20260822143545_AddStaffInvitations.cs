@@ -89,6 +89,22 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Restoring NOT NULL below makes EF emit "UPDATE [Users] SET [Password] = N''
+            // WHERE [Password] IS NULL" first. That does not fail — which is the problem. It
+            // silently stamps an empty string into the password column of every login that was
+            // granted access but has not activated yet, and the very next statement drops the
+            // AccountStatus column that was the only record of them being un-activated. Nothing
+            // verifies against N'', so it is not a usable password; it is worse than that, an
+            // account left in a state the old code cannot even evaluate.
+            //
+            // So the rollback refuses instead, and says what has to be decided first. With no
+            // outstanding invitations — the ordinary case, rolling back soon after deploying —
+            // nothing here triggers and the rollback proceeds exactly as before.
+            migrationBuilder.Sql(@"
+IF EXISTS (SELECT 1 FROM [Users] WHERE [Password] IS NULL)
+    THROW 51000, N'Cannot roll back AddStaffInvitations: some logins were invited but never activated, so their Users.Password is still NULL. Resolve those accounts first (let them activate, remove them, or give them a password through the application), then re-run this rollback.', 1;
+");
+
             migrationBuilder.DropTable(
                 name: "StaffInvitations");
 

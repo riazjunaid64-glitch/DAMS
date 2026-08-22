@@ -29,7 +29,11 @@ type Props = {
  * everyone else.
  */
 export default function ActivateAccountPage({ onSignIn }: Props) {
-  const [token, setToken] = useState<string | null>(() => readActivationToken(window.location.search));
+  // Invitation emails put the token in the fragment, which never reaches a server; the query
+  // string is still accepted so links already sitting in an inbox keep working.
+  const [token, setToken] = useState<string | null>(
+    () => readActivationToken(window.location.search, window.location.hash)
+  );
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [invalid, setInvalid] = useState<ActivationValidation>({});
@@ -40,7 +44,9 @@ export default function ActivateAccountPage({ onSignIn }: Props) {
   useEffect(() => {
     // The token is already in component state by now, so the copy in the address bar is pure
     // exposure: browser history, a shared screenshot, a URL pasted to a colleague. Replacing the
-    // entry rather than navigating keeps the page mounted and the token in hand.
+    // entry rather than navigating keeps the page mounted and the token in hand. This is the
+    // second line of defence, not the first — a fragment was never sent to the server, so there
+    // is nothing here that has to win a race against page load.
     const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const scrubbed = stripTokenFromUrl(current);
     if (scrubbed !== current) {

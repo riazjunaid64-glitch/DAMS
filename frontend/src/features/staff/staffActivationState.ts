@@ -6,8 +6,21 @@
  * keep the secret out of places it should never reach.
  */
 
-/** The query parameter the invitation email uses. Backend: `StaffInvitationService.ActivationPath`. */
+/**
+ * The name the invitation email gives the secret, in the fragment it now uses and in the query
+ * string older links still carry. Backend: `StaffInvitationService.TokenParameter`.
+ */
 const TOKEN_PARAM = "token";
+
+/** `URLSearchParams` strips a leading "?" for you but not a leading "#". */
+function parameters(raw: string): URLSearchParams {
+  return new URLSearchParams(raw.startsWith("#") ? raw.slice(1) : raw);
+}
+
+function tokenIn(raw: string): string | null {
+  const value = parameters(raw).get(TOKEN_PARAM);
+  return value === null || value === "" ? null : value;
+}
 
 /** Matches the backend floor. Frontend checks it early; the backend still checks it properly. */
 export const MIN_PASSWORD_LENGTH = 8;
@@ -29,17 +42,23 @@ export function utf8ByteLength(value: string): number {
  * credential: no trimming, no case change, no format check — `URLSearchParams` has already done
  * the only decoding that is ours to do. A frontend that validated the shape would break the day
  * the backend issued a different one.
+ *
+ * The fragment is read first because that is where invitation emails now put the token: a
+ * fragment is not part of the HTTP request, so the web server, the CDN and their access logs
+ * never see it, and browsers strip it from the Referer of anything the page goes on to load.
+ * The query string is still read afterwards so a link already sitting in somebody's inbox keeps
+ * working — it is a browser-boundary compatibility, nothing about the credential differs.
  */
-export function readActivationToken(search: string): string | null {
-  const value = new URLSearchParams(search).get(TOKEN_PARAM);
-  return value === null || value === "" ? null : value;
+export function readActivationToken(search: string, hash: string): string | null {
+  return tokenIn(hash) ?? tokenIn(search);
 }
 
 /**
  * The same location with the token dropped, for `history.replaceState`. Once the page holds the
  * secret in memory there is no reason for it to stay in the address bar, where it survives in
- * history, screenshots and anything the employee copies to a colleague. Everything else about
- * the URL is left alone.
+ * history, screenshots and anything the employee copies to a colleague. Both carriers are
+ * cleared; everything else about the URL is left alone, and a fragment that is not carrying a
+ * token is not rewritten at all.
  */
 export function stripTokenFromUrl(relativeUrl: string): string {
   let parsed: URL;
@@ -49,11 +68,26 @@ export function stripTokenFromUrl(relativeUrl: string): string {
     return relativeUrl;
   }
 
-  if (!parsed.searchParams.has(TOKEN_PARAM)) return relativeUrl;
-  parsed.searchParams.delete(TOKEN_PARAM);
+  let changed = false;
+
+  if (parsed.searchParams.has(TOKEN_PARAM)) {
+    parsed.searchParams.delete(TOKEN_PARAM);
+    changed = true;
+  }
+
+  let hash = parsed.hash;
+  const fragment = parameters(hash);
+  if (fragment.has(TOKEN_PARAM)) {
+    fragment.delete(TOKEN_PARAM);
+    const remaining = fragment.toString();
+    hash = remaining === "" ? "" : `#${remaining}`;
+    changed = true;
+  }
+
+  if (!changed) return relativeUrl;
 
   const query = parsed.searchParams.toString();
-  return `${parsed.pathname}${query === "" ? "" : `?${query}`}${parsed.hash}`;
+  return `${parsed.pathname}${query === "" ? "" : `?${query}`}${hash}`;
 }
 
 /** Field-level messages for the two things the employee can correct without a round trip. */

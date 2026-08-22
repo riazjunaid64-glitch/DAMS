@@ -34,6 +34,16 @@ namespace DAMS.Application.Services
         /// <summary>The frontend route that trades the token for a chosen password.</summary>
         public const string ActivationPath = "/activate-account";
 
+        /// <summary>
+        /// The token travels in the URL fragment, never the query string. A fragment is not part
+        /// of the HTTP request: the web server, any reverse proxy and any CDN in front of DAMS
+        /// receive only <c>GET /activate-account</c>, so the credential cannot be written to an
+        /// access log before a single line of JavaScript has run — which is the whole window the
+        /// page's own scrubbing cannot reach. Browsers also strip the fragment from the Referer
+        /// of anything the page subsequently loads.
+        /// </summary>
+        public const string TokenParameter = "token";
+
         /// <summary>The floor the staff workflow has always had. Wider password policy is an
         /// application-level concern and is deliberately not redefined here.</summary>
         public const int MinPasswordLength = 8;
@@ -226,10 +236,13 @@ namespace DAMS.Application.Services
                     StaffActivationFailure.PasswordTooShort,
                     $"Choose a password of at least {MinPasswordLength} characters.");
 
+            // Deliberately no number in this message. The limit is 72 *bytes*, and "72
+            // characters" would be a lie to anybody typing accented letters or emoji — a
+            // 40-character password can be well over the boundary.
             if (Encoding.UTF8.GetByteCount(chosenPassword) > MaxPasswordBytes)
                 return StaffActivationResult.Rejected(
                     StaffActivationFailure.PasswordTooLong,
-                    $"That password is too long. Use at most {MaxPasswordBytes} characters.");
+                    "That password is too long. Shorten it and try again.");
 
             return null;
         }
@@ -336,8 +349,11 @@ namespace DAMS.Application.Services
                 return null;
 
             // Authority never carries a trailing slash, so a configured "https://host/" and
-            // "https://host" produce the same single-slash link.
-            return $"{origin.GetLeftPart(UriPartial.Authority)}{ActivationPath}?token={Uri.EscapeDataString(rawToken)}";
+            // "https://host" produce the same single-slash link. The token goes after the '#'
+            // for the reason given on TokenParameter: nothing before the fragment is secret,
+            // and nothing after it is ever sent to a server.
+            return $"{origin.GetLeftPart(UriPartial.Authority)}{ActivationPath}"
+                + $"#{TokenParameter}={Uri.EscapeDataString(rawToken)}";
         }
 
         /// <summary>

@@ -19,10 +19,16 @@ namespace DAMS.Application.DTOs.Auth
         /// <summary>
         /// The password the employee chooses for themselves. There is no confirmation field:
         /// re-typing is something the sign-up form checks, not something the server can.
+        /// <para>
+        /// Only the floor is stated here, because only the floor means the same thing in both
+        /// places. The ceiling is bcrypt's 72 <em>bytes</em>, which no character count can
+        /// express — a StringLength cap would make DataAnnotations answer "a maximum length of
+        /// 72" to somebody whose accented or emoji password was nowhere near 72 characters. The
+        /// service measures the encoded length and owns that boundary alone.
+        /// </para>
         /// </summary>
         [Required]
-        [StringLength(StaffInvitationService.MaxPasswordBytes,
-            MinimumLength = StaffInvitationService.MinPasswordLength)]
+        [MinLength(StaffInvitationService.MinPasswordLength)]
         public string Password { get; set; } = null!;
     }
 }

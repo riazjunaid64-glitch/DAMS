@@ -12,37 +12,53 @@ import {
 } from "./staffActivationState.ts";
 
 describe("reading the token from the link", () => {
-  it("returns the token the invitation email carried", () => {
-    expect(readActivationToken("?token=abc123")).toBe("abc123");
+  it("reads the token out of the fragment invitation emails now use", () => {
+    expect(readActivationToken("", "#token=abc123")).toBe("abc123");
+  });
+
+  it("still reads a token from the query string of an older link", () => {
+    // Links issued before the fragment change are already sitting in inboxes. Refusing them
+    // would strand employees whose only route back is asking for a whole new invitation.
+    expect(readActivationToken("?token=abc123", "")).toBe("abc123");
+  });
+
+  it("prefers the fragment when a link somehow carries both", () => {
+    expect(readActivationToken("?token=fromQuery", "#token=fromFragment")).toBe("fromFragment");
   });
 
   it("treats a link with no token as a missing link", () => {
-    expect(readActivationToken("")).toBeNull();
-    expect(readActivationToken("?ref=email")).toBeNull();
+    expect(readActivationToken("", "")).toBeNull();
+    expect(readActivationToken("?ref=email", "#setup")).toBeNull();
   });
 
   it("treats an empty token as missing rather than sending nothing to the backend", () => {
-    expect(readActivationToken("?token=")).toBeNull();
+    expect(readActivationToken("?token=", "")).toBeNull();
+    expect(readActivationToken("", "#token=")).toBeNull();
   });
 
   it("does not transform the token", () => {
     // Case, padding and punctuation are the backend's business. A token that gets lowercased or
     // trimmed on the way in is a token that will never match the stored hash.
-    expect(readActivationToken("?token=AbC-_xYz09")).toBe("AbC-_xYz09");
-    expect(readActivationToken("?token=%20abc%20")).toBe(" abc ");
-    expect(readActivationToken("?token=a%2Bb%2Fc%3D")).toBe("a+b/c=");
+    expect(readActivationToken("", "#token=AbC-_xYz09")).toBe("AbC-_xYz09");
+    expect(readActivationToken("", "#token=%20abc%20")).toBe(" abc ");
+    expect(readActivationToken("", "#token=a%2Bb%2Fc%3D")).toBe("a+b/c=");
+    expect(readActivationToken("?token=AbC-_xYz09", "")).toBe("AbC-_xYz09");
   });
 
   it("does not care how long the token is", () => {
     // Tokens are 43 characters today. Asserting that here would tie the page to an implementation
     // detail the backend is free to change.
-    expect(readActivationToken("?token=x")).toBe("x");
-    expect(readActivationToken(`?token=${"y".repeat(90)}`)).toBe("y".repeat(90));
+    expect(readActivationToken("", "#token=x")).toBe("x");
+    expect(readActivationToken("", `#token=${"y".repeat(90)}`)).toBe("y".repeat(90));
   });
 });
 
 describe("scrubbing the token from the address bar", () => {
-  it("removes the token", () => {
+  it("removes a fragment token", () => {
+    expect(stripTokenFromUrl("/activate-account#token=secret")).toBe("/activate-account");
+  });
+
+  it("removes a query token", () => {
     expect(stripTokenFromUrl("/activate-account?token=secret")).toBe("/activate-account");
   });
 
@@ -53,15 +69,27 @@ describe("scrubbing the token from the address bar", () => {
     expect(stripTokenFromUrl("/activate-account?ref=email&token=secret")).toBe(
       "/activate-account?ref=email"
     );
+    expect(stripTokenFromUrl("/activate-account?ref=email#token=secret")).toBe(
+      "/activate-account?ref=email"
+    );
+  });
+
+  it("keeps the rest of a fragment that carried more than the token", () => {
+    expect(stripTokenFromUrl("/activate-account#ref=email&token=secret")).toBe(
+      "/activate-account#ref=email"
+    );
   });
 
   it("leaves a URL without a token untouched", () => {
     expect(stripTokenFromUrl("/activate-account")).toBe("/activate-account");
+    // A plain fragment is not a parameter list, so it must come back byte for byte rather than
+    // being rewritten as "#setup=".
     expect(stripTokenFromUrl("/activate-account#setup")).toBe("/activate-account#setup");
   });
 
   it("never leaves the secret anywhere in the result", () => {
     expect(stripTokenFromUrl("/activate-account?token=secret&ref=email#setup")).not.toContain("secret");
+    expect(stripTokenFromUrl("/activate-account?ref=email#token=secret")).not.toContain("secret");
   });
 });
 

@@ -126,7 +126,35 @@ public sealed class StaffInvitationServiceTests
 
         var url = h.LastActivationUrl();
         var token = h.LastEmailedToken();
-        Assert.Equal($"{BaseUrl}/activate-account?token={token}", url);
+        Assert.Equal($"{BaseUrl}/activate-account#token={token}", url);
+    }
+
+    /// <summary>
+    /// The token rides in the fragment, and a fragment is never part of the HTTP request. If it
+    /// were a query parameter, the web server, any proxy and any CDN would each receive the
+    /// credential in the request line — and would have logged it before the page's own scrubbing
+    /// could run, because that scrubbing happens only after the JavaScript loads. Nothing the
+    /// browser sends may contain the token, so the link must carry no query string at all.
+    /// </summary>
+    [Fact]
+    public async Task The_emailed_link_never_puts_the_token_where_a_server_would_receive_it()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+
+        var url = h.LastActivationUrl();
+        var token = h.LastEmailedToken();
+        var requested = new Uri(url);
+
+        // What the server would see: everything up to the '#'.
+        Assert.Equal(string.Empty, requested.Query);
+        Assert.Equal("/activate-account", requested.AbsolutePath);
+        Assert.DoesNotContain(token, $"{requested.Scheme}://{requested.Authority}{requested.PathAndQuery}",
+            StringComparison.Ordinal);
+
+        // And the token really is present, in the one part that stays in the browser.
+        Assert.Equal($"#token={token}", requested.Fragment);
     }
 
     [Theory]
@@ -139,7 +167,7 @@ public sealed class StaffInvitationServiceTests
 
         await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
 
-        Assert.StartsWith("https://dams.test/activate-account?token=", h.LastActivationUrl());
+        Assert.StartsWith("https://dams.test/activate-account#token=", h.LastActivationUrl());
     }
 
     [Fact]
@@ -625,6 +653,25 @@ public sealed class StaffInvitationServiceTests
     }
 
     /// <summary>
+    /// The limit is 72 bytes, so the refusal must not quote a character count. Forty accented
+    /// letters are eighty bytes; telling that employee the maximum is "72 characters" sends them
+    /// away to shorten a password that was already well under it.
+    /// </summary>
+    [Fact]
+    public async Task The_too_long_message_does_not_describe_the_byte_limit_as_characters()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Service.IssueAsync(h.InvitedUserId, h.AdminUserId);
+
+        var result = await h.Service.ActivateAsync(h.LastEmailedToken(), new string('é', 40));
+
+        Assert.Equal(StaffActivationFailure.PasswordTooLong, result.Failure);
+        Assert.NotNull(result.Error);
+        Assert.DoesNotContain("72", result.Error);
+        Assert.DoesNotContain("character", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Every bad link answers identically. An anonymous caller who tries a guessed token, an
     /// expired one and one belonging to a disabled account cannot tell from the reply which
     /// accounts exist or what state they are in.
@@ -806,7 +853,7 @@ public sealed class StaffInvitationServiceTests
         public string LastActivationUrl()
         {
             var text = Email.Sent[^1].TextBody;
-            var match = Regex.Match(text, @"https?://\S*/activate-account\?token=\S+");
+            var match = Regex.Match(text, @"https?://\S*/activate-account#token=\S+");
             Assert.True(match.Success, "No activation link was present in the email.");
             return match.Value;
         }
@@ -816,7 +863,7 @@ public sealed class StaffInvitationServiceTests
         /// reads it out of the database, because the database does not have it.
         /// </summary>
         public string LastEmailedToken() =>
-            Uri.UnescapeDataString(LastActivationUrl().Split("?token=", StringSplitOptions.None)[1]);
+            Uri.UnescapeDataString(LastActivationUrl().Split("#token=", StringSplitOptions.None)[1]);
 
         private static User NewUser(string name, string email, UserAccountStatus status, string? password) => new()
         {
