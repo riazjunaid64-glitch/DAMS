@@ -46,7 +46,6 @@ namespace DAMS.Application.Services
                     && r.Status != CustomerRebateStatus.Cancelled
                     && r.Status != CustomerRebateStatus.Reversed, cancellationToken))
                 throw new InvalidOperationException("An active customer rebate already exists for this booking. Adjust its approval or disbursements, or reject/cancel it before creating a replacement.");
-            var reason = Required(dto.Reason, "Rebate reason", 2000);
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
             var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
             decimal calculated;
@@ -62,6 +61,11 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException("Fixed rebate requires a positive fixed amount and no percentage rate.");
                 calculated = Calculate(dto.CalculationType, basis, null, dto.FixedAmount);
             }
+            // The typed reason is optional: the entry itself ("5% of sale price") is the record when
+            // the user does not add one. The column stays non-nullable so every rebate reads back with
+            // something meaningful in the log and on the approval screen.
+            var reason = Limited(dto.Reason, "Rebate reason", 2000)
+                ?? DescribeCalculation(dto.CalculationType, dto.PercentageRate, dto.FixedAmount, dto.CalculationBasis);
             var adjustment = Money(dto.AdjustmentAmount); var adjustmentReason = Limited(dto.AdjustmentReason, "Adjustment reason", 2000);
             if (adjustment != 0m && adjustmentReason == null) throw new InvalidOperationException("An adjustment reason is required.");
             var final = Money(calculated + adjustment);
@@ -105,7 +109,8 @@ namespace DAMS.Application.Services
             if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis))
                 throw new InvalidOperationException("Select a valid rebate calculation type and basis.");
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
-            var reason = Required(dto.Reason, "Rebate reason", 2000);
+            var reason = Limited(dto.Reason, "Rebate reason", 2000)
+                ?? DescribeCalculation(dto.CalculationType, dto.PercentageRate, dto.FixedAmount, dto.CalculationBasis);
             var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
             decimal calculated;
             if (dto.CalculationType == FinancialCalculationType.Percentage)
@@ -257,7 +262,13 @@ namespace DAMS.Application.Services
                 ApplyToken(rebate, dto.RebateConcurrencyToken, "rebate"); EnsureActiveBooking(rebate.Booking);
                 if (rebate.Status is not (CustomerRebateStatus.Approved or CustomerRebateStatus.PartiallyApplied))
                     throw new InvalidOperationException("Only approved or partially-applied rebates can be disbursed.");
-                if (dto.Method != rebate.Method) throw new InvalidOperationException("Disbursement method must match the approved rebate method.");
+                // How a rebate is delivered is decided when it is first applied, not when it is entered,
+                // so the entry screen stays a plain amount. The first disbursement locks the method:
+                // every disbursement of one rebate still shares a single method, which is what the
+                // non-cash credit totals and the Applied-vs-Paid end state both depend on.
+                if (rebate.Disbursements.Count == 0) rebate.Method = dto.Method;
+                else if (dto.Method != rebate.Method)
+                    throw new InvalidOperationException($"This rebate is already being applied as {MethodLabel(rebate.Method)}. Every payment or credit for one rebate must use the same method.");
                 if (dto.FinanceAccountId.HasValue)
                     await _financeAccounts.EnsureSelectableAsync(dto.FinanceAccountId.Value, cancellationToken: cancellationToken);
                 var amount = Money(dto.Amount); var outstanding = Money((rebate.ApprovedAmount ?? rebate.FinalAmount) - NetDisbursed(rebate));

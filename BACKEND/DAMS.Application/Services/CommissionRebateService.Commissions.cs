@@ -48,18 +48,14 @@ namespace DAMS.Application.Services
             var partner = await _context.ThirdPartyPartners.AsNoTracking().SingleOrDefaultAsync(p => p.Id == dto.PartnerId, cancellationToken)
                 ?? throw new InvalidOperationException("Partner not found.");
             if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");
-            var attribution = dto.AttributionId.HasValue
-                ? await _context.ThirdPartyAttributions.SingleOrDefaultAsync(a => a.Id == dto.AttributionId && a.BookingId == bookingId, cancellationToken)
-                : await _context.ThirdPartyAttributions.SingleOrDefaultAsync(a => a.BookingId == bookingId && a.PartnerId == dto.PartnerId, cancellationToken);
-            if (attribution == null || attribution.PartnerId != dto.PartnerId)
-                throw new InvalidOperationException("Create a booking-level attribution for this partner before calculating commission.");
+            var attribution = await ResolveAttributionAsync(bookingId, dto.PartnerId, dto.AttributionId, cancellationToken);
 
             var commission = new BookingCommission
             {
-                BookingId = bookingId, PartnerId = partner.Id, AttributionId = attribution.Id,
+                BookingId = bookingId, PartnerId = partner.Id, AttributionId = attribution?.Id,
                 PartnerNameSnapshot = partner.Name, PartnerTypeSnapshot = partner.PartnerType,
                 PartnerInternalCodeSnapshot = partner.InternalCode,
-                AllocationPercentSnapshot = attribution.AllocationPercent,
+                AllocationPercentSnapshot = attribution?.AllocationPercent ?? 100m,
                 IsManual = dto.IsManual, CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName,
                 CreatedAt = DateTime.UtcNow, Status = BookingCommissionStatus.Draft
             };
@@ -82,11 +78,11 @@ namespace DAMS.Application.Services
             var audit = Audit(FinancialWorkflowAction.CommissionCreated, actor, partner.Id, booking.CustomerId, bookingId,
                 newCommission: commission.RequiresApprovalSnapshot ? commission.Status : BookingCommissionStatus.Draft,
                 newAmount: commission.FinalAmount,
-                reason: commission.IsManual ? commission.ManualReason : commission.RuleNameSnapshot);
+                reason: commission.IsManual ? CommissionNarrative(commission) : commission.RuleNameSnapshot);
             audit.Commission = commission;
             var calculationAudit = Audit(FinancialWorkflowAction.CommissionCalculated, actor, partner.Id,
                 booking.CustomerId, bookingId, newAmount: commission.CalculatedAmount,
-                reason: commission.RuleNameSnapshot ?? commission.ManualReason, commissionRuleId: commission.RuleId,
+                reason: commission.RuleNameSnapshot ?? CommissionNarrative(commission), commissionRuleId: commission.RuleId,
                 commissionRuleRevisionId: commission.RuleRevisionId);
             calculationAudit.Commission = commission;
             if (commission.AdjustmentAmount != 0m)
@@ -134,22 +130,16 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(p => p.Id == dto.PartnerId, cancellationToken)
                 ?? throw new InvalidOperationException("Partner not found.");
             if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");
-            var attribution = dto.AttributionId.HasValue
-                ? await _context.ThirdPartyAttributions.AsNoTracking()
-                    .SingleOrDefaultAsync(a => a.Id == dto.AttributionId && a.BookingId == bookingId, cancellationToken)
-                : await _context.ThirdPartyAttributions.AsNoTracking()
-                    .SingleOrDefaultAsync(a => a.BookingId == bookingId && a.PartnerId == dto.PartnerId, cancellationToken);
-            if (attribution == null || attribution.PartnerId != dto.PartnerId)
-                throw new InvalidOperationException("Create a booking-level attribution for this partner before calculating commission.");
+            var attribution = await ResolveAttributionAsync(bookingId, dto.PartnerId, dto.AttributionId, cancellationToken);
 
             var previousAmount = commission.FinalAmount;
             ResetCommissionCalculation(commission);
             commission.PartnerId = partner.Id;
-            commission.AttributionId = attribution.Id;
+            commission.AttributionId = attribution?.Id;
             commission.PartnerNameSnapshot = partner.Name;
             commission.PartnerTypeSnapshot = partner.PartnerType;
             commission.PartnerInternalCodeSnapshot = partner.InternalCode;
-            commission.AllocationPercentSnapshot = attribution.AllocationPercent;
+            commission.AllocationPercentSnapshot = attribution?.AllocationPercent ?? 100m;
             commission.IsManual = dto.IsManual;
             if (dto.IsManual) ApplyManualCalculation(commission, booking, dto);
             else await ApplyRuleCalculationAsync(commission, booking, partner, dto.RuleId, cancellationToken);
@@ -386,6 +376,26 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(b => b.Id == bookingId, cancellationToken)
             ?? throw new KeyNotFoundException("Booking not found.");
 
+        // Attribution is optional. The booking screen records what a partner is owed on this booking
+        // directly, so a commission stands on its own and is calculated in full. An attribution is a
+        // separate lead-source record; when a caller names one the commission is still linked to it
+        // and its allocation still splits the amount, which is what the shared-introduction flow needs.
+        private async Task<ThirdPartyAttribution?> ResolveAttributionAsync(int bookingId, int partnerId,
+            int? attributionId, CancellationToken cancellationToken)
+        {
+            if (!attributionId.HasValue) return null;
+            var attribution = await _context.ThirdPartyAttributions.AsNoTracking()
+                .SingleOrDefaultAsync(a => a.Id == attributionId.Value && a.BookingId == bookingId, cancellationToken)
+                ?? throw new InvalidOperationException("The selected attribution does not belong to this booking.");
+            if (attribution.PartnerId != partnerId)
+                throw new InvalidOperationException("The selected attribution belongs to a different partner.");
+            return attribution;
+        }
+
+        private static string CommissionNarrative(BookingCommission commission) => commission.ManualReason
+            ?? DescribeCalculation(commission.CalculationType, commission.PercentageRate,
+                commission.FixedAmount, commission.CalculationBasis);
+
         private async Task ApplyRuleCalculationAsync(BookingCommission commission, Booking booking, ThirdPartyPartner partner,
             int? explicitRuleId, CancellationToken cancellationToken)
         {
@@ -441,7 +451,10 @@ namespace DAMS.Application.Services
 
         private static void ApplyManualCalculation(BookingCommission commission, Booking booking, CreateBookingCommissionDto dto)
         {
-            commission.ManualReason = Required(dto.ManualReason, "Manual commission reason", 2000);
+            // Optional: a commission agreed directly with a partner is self-explanatory from its own
+            // rate and basis. A note is still stored when one is given, and is still what justifies an
+            // amount above the net sale price (see ApplyCommissionAdjustment).
+            commission.ManualReason = Limited(dto.ManualReason, "Commission note", 2000);
             commission.CalculationType = dto.ManualCalculationType
                 ?? throw new InvalidOperationException("Manual calculation type is required.");
             commission.CalculationBasis = dto.ManualCalculationBasis
@@ -484,7 +497,7 @@ namespace DAMS.Application.Services
             if (commission.FinalAmount < 0m) throw new InvalidOperationException("The final commission cannot be negative.");
             var netPrice = Money(booking.AgreedSalePrice - booking.DiscountAmount);
             if (commission.FinalAmount > netPrice && commission.AdjustmentReason == null && string.IsNullOrWhiteSpace(manualReason))
-                throw new InvalidOperationException("Commission above the net sale price requires an explicit justification.");
+                throw new InvalidOperationException($"This commission of {commission.FinalAmount:0.00} is above the booking's net sale price of {netPrice:0.00}. Add a note explaining why before saving.");
         }
 
         private static void ResetCommissionCalculation(BookingCommission commission)

@@ -86,6 +86,33 @@ namespace DAMS.Application.Services
             };
         }
 
+        // A commission or rebate entered straight on the booking screen carries no rule name and needs
+        // no typed justification, but the audit log still has to say what was agreed. These render the
+        // entry itself ("2% of net sale price") so an untitled record is never anonymous in the log.
+        private static string BasisLabel(FinancialCalculationBasis basis) => basis switch
+        {
+            FinancialCalculationBasis.AgreedSalePrice => "sale price",
+            FinancialCalculationBasis.NetSalePriceAfterDiscount => "net sale price",
+            FinancialCalculationBasis.BookingAmountReceived => "booking amount received",
+            FinancialCalculationBasis.AmountActuallyCollected => "amount collected",
+            _ => "manually approved amount"
+        };
+
+        private static string DescribeCalculation(FinancialCalculationType type, decimal? rate,
+            decimal? fixedAmount, FinancialCalculationBasis basis) =>
+            type == FinancialCalculationType.Percentage
+                ? $"{rate ?? 0m:0.######}% of {BasisLabel(basis)}"
+                : $"Fixed amount of {fixedAmount ?? 0m:0.00}";
+
+        private static string MethodLabel(CustomerRebateMethod method) => method switch
+        {
+            CustomerRebateMethod.OutstandingBalanceReduction => "a reduction of the outstanding balance",
+            CustomerRebateMethod.InstallmentAdjustment => "an installment adjustment",
+            CustomerRebateMethod.CashOrBankPayment => "a cash or bank payment",
+            CustomerRebateMethod.CreditNote => "a credit note",
+            _ => "another method"
+        };
+
         private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
         private static decimal Rate(decimal value) => Math.Round(value, 6, MidpointRounding.AwayFromZero);
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

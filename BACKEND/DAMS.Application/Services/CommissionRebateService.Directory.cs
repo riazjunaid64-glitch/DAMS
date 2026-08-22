@@ -45,6 +45,11 @@ namespace DAMS.Application.Services
         public async Task<ThirdPartyPartnerDto> CreatePartnerAsync(SaveThirdPartyPartnerDto dto,
             FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
         {
+            // The booking screen adds a partner from a name and type alone, so the directory code is
+            // generated when the caller does not supply one. Update still requires it: an existing
+            // partner already has a code, and regenerating it would orphan what refers to it.
+            if (string.IsNullOrWhiteSpace(dto.InternalCode))
+                dto.InternalCode = await NextPartnerCodeAsync(cancellationToken);
             ValidatePartner(dto);
             await EnsurePartnerUniqueAsync(dto, null, cancellationToken);
             var partner = new ThirdPartyPartner { CreatedByUserId = actor.UserId, CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow };
@@ -270,6 +275,22 @@ namespace DAMS.Application.Services
                 IsActive = p.IsActive, AttributionCount = p.Attributions.Count, CommissionCount = p.Commissions.Count,
                 CreatedAt = p.CreatedAt, UpdatedAt = p.UpdatedAt, ConcurrencyToken = Convert.ToBase64String(p.RowVersion)
             });
+
+        private const string PartnerCodePrefix = "PTR-";
+
+        // Sequential rather than random so the code stays a readable directory reference. A concurrent
+        // create that lands on the same number is caught by the unique check in EnsurePartnerUniqueAsync
+        // and surfaces as a retryable message rather than a duplicate row.
+        private async Task<string> NextPartnerCodeAsync(CancellationToken cancellationToken)
+        {
+            var codes = await _context.ThirdPartyPartners.AsNoTracking()
+                .Where(p => p.InternalCode.StartsWith(PartnerCodePrefix))
+                .Select(p => p.InternalCode).ToListAsync(cancellationToken);
+            var highest = codes
+                .Select(code => int.TryParse(code[PartnerCodePrefix.Length..], out var number) ? number : 0)
+                .DefaultIfEmpty(0).Max();
+            return $"{PartnerCodePrefix}{highest + 1:0000}";
+        }
 
         private static void ValidatePartner(SaveThirdPartyPartnerDto dto)
         {

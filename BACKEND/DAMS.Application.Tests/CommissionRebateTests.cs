@@ -1022,6 +1022,142 @@ public sealed class CommissionRebateTests
         Assert.Equal(60m, Assert.Single(pnl.ExpenseLines, l => l.Name == "Commission Payouts").Amount);
     }
 
+    /// <summary>
+    /// The booking screen's whole commission flow: pick a partner, pick percentage or fixed, save.
+    /// No attribution, no rule, no allocation, no typed reason — and two partners can each hold a
+    /// full commission on one booking without competing for a shared 100% allocation budget.
+    /// </summary>
+    [Fact]
+    public async Task DirectCommission_NeedsNoAttributionRuleOrReason_AndTwoPartnersEachGetTheirFullAmount()
+    {
+        await using var harness = await Harness.Create();
+        var second = new ThirdPartyPartner { Name = "Second Dealer", PartnerType = "Dealer", InternalCode = "SEC-1", IsActive = true };
+        harness.Context.ThirdPartyPartners.Add(second);
+        await harness.Context.SaveChangesAsync();
+
+        var workspace = await harness.Service.CreateCommissionAsync(harness.BookingId, Direct(harness.PartnerId, rate: 2m), Actor);
+        workspace = await harness.Service.CreateCommissionAsync(harness.BookingId, Direct(second.Id, fixedAmount: 25_000m), Actor);
+
+        Assert.Equal(2, workspace.Commissions.Count);
+        var percentage = workspace.Commissions.Single(c => c.PartnerId == harness.PartnerId);
+        var fixedOne = workspace.Commissions.Single(c => c.PartnerId == second.Id);
+        // 2% of the net sale price in full — an allocation percentage never scales it down.
+        Assert.Equal(Math.Round(harness.NetPrice * 0.02m, 2, MidpointRounding.AwayFromZero), percentage.FinalAmount);
+        Assert.Equal(100m, percentage.AllocationPercent);
+        Assert.Equal(25_000m, fixedOne.FinalAmount);
+        Assert.All(workspace.Commissions, c => Assert.Null(c.AttributionId));
+        Assert.All(workspace.Commissions, c => Assert.Null(c.RuleId));
+        Assert.All(workspace.Commissions, c => Assert.Null(c.ManualReason));
+        // The log still says what was agreed even though nobody typed a reason.
+        Assert.Contains(harness.Context.FinancialWorkflowAuditEntries,
+            e => e.Action == FinancialWorkflowAction.CommissionCreated && e.Reason == "2% of net sale price");
+    }
+
+    /// <summary>
+    /// An explicitly named attribution still splits the commission by its allocation, which is what a
+    /// shared introduction needs. Naming one that belongs elsewhere is refused rather than ignored.
+    /// </summary>
+    [Fact]
+    public async Task NamedAttribution_StillAppliesItsAllocation_AndIsCheckedAgainstTheBookingAndPartner()
+    {
+        await using var harness = await Harness.Create();
+        var attribution = await harness.Context.ThirdPartyAttributions.FindAsync(harness.AttributionId);
+        Assert.NotNull(attribution);
+        attribution.AllocationPercent = 50m;
+        var stranger = new ThirdPartyPartner { Name = "Unrelated", PartnerType = "Agency", InternalCode = "UNR-1", IsActive = true };
+        harness.Context.ThirdPartyPartners.Add(stranger);
+        await harness.Context.SaveChangesAsync();
+
+        var direct = Direct(harness.PartnerId, rate: 2m);
+        direct.AttributionId = harness.AttributionId;
+        var workspace = await harness.Service.CreateCommissionAsync(harness.BookingId, direct, Actor);
+        var commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(50m, commission.AllocationPercent);
+        Assert.Equal(Math.Round(harness.NetPrice * 0.02m * 0.5m, 2, MidpointRounding.AwayFromZero), commission.FinalAmount);
+
+        var mismatched = Direct(stranger.Id, rate: 1m);
+        mismatched.AttributionId = harness.AttributionId;
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.CreateCommissionAsync(harness.BookingId, mismatched, Actor));
+        Assert.Contains("different partner", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The rebate entry screen collects a type, an amount, and nothing else. The delivery method is
+    /// chosen when the rebate is applied, and the first application locks it for the rest.
+    /// </summary>
+    [Fact]
+    public async Task DirectRebate_NeedsNoTypedReason_AndTheMethodIsChosenAndLockedAtApplicationTime()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.Percentage,
+            CalculationBasis = FinancialCalculationBasis.AgreedSalePrice,
+            PercentageRate = 5m
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+        Assert.Equal(Math.Round(1_000_000.55m * 0.05m, 2, MidpointRounding.AwayFromZero), rebate.FinalAmount);
+        Assert.Equal("5% of sale price", rebate.Reason);
+
+        await harness.UploadPdf(FinancialEvidenceOwnerType.Rebate, rebate.Id);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.Approved, rebate.FinalAmount), Actor);
+        rebate = Assert.Single(workspace.Rebates);
+
+        // Entered as the default balance reduction, applied as a credit note: the first disbursement
+        // decides, and the booking's non-cash credit total follows the method actually used.
+        workspace = await harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
+            new RecordRebateDisbursementDto
+            {
+                Method = CustomerRebateMethod.CreditNote, Amount = 1_000m, AppliedAt = DateTime.UtcNow,
+                Reference = "CN-LOCK", IdempotencyKey = "rebate-method-lock",
+                RebateConcurrencyToken = rebate.ConcurrencyToken
+            }, Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        Assert.Equal(CustomerRebateMethod.CreditNote, rebate.Method);
+        Assert.Equal(1_000m, workspace.RebateCredits);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
+                new RecordRebateDisbursementDto
+                {
+                    Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = 500m, AppliedAt = DateTime.UtcNow,
+                    IdempotencyKey = "rebate-method-switch", RebateConcurrencyToken = rebate.ConcurrencyToken
+                }, Actor));
+        Assert.Contains("same method", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>A partner added from the booking screen supplies only a name and type.</summary>
+    [Fact]
+    public async Task AddingAPartnerWithoutACode_GeneratesASequentialDirectoryCode()
+    {
+        await using var harness = await Harness.Create();
+        var first = await harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Ahmed Khan", PartnerType = "Dealer", Phone = "0300-1234567" }, Actor);
+        var second = await harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Bilal Traders", PartnerType = "Agency" }, Actor);
+
+        Assert.Equal("PTR-0001", first.InternalCode);
+        Assert.Equal("PTR-0002", second.InternalCode);
+        // A caller that supplies its own code still keeps it.
+        var explicitCode = await harness.Service.CreatePartnerAsync(
+            new SaveThirdPartyPartnerDto { Name = "Legacy Broker", PartnerType = "Broker", InternalCode = "legacy-9" }, Actor);
+        Assert.Equal("LEGACY-9", explicitCode.InternalCode);
+    }
+
+    private static CreateBookingCommissionDto Direct(int partnerId, decimal? rate = null, decimal? fixedAmount = null) => new()
+    {
+        PartnerId = partnerId, IsManual = true,
+        ManualCalculationType = rate.HasValue ? FinancialCalculationType.Percentage : FinancialCalculationType.FixedAmount,
+        ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+        ManualPercentageRate = rate, ManualFixedAmount = fixedAmount,
+        ManualEarningCondition = CommissionEarningCondition.ManualMilestone
+    };
+
     private sealed class NoopAttachmentStorage : IFinanceAttachmentStorage
     {
         public Task<string> SaveAsync(Stream content, string extension, CancellationToken cancellationToken = default) => Task.FromResult("unused");
