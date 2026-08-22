@@ -257,6 +257,10 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("POST", "/api/finance/wht/deposits"),
             R("PUT", "/api/finance/wht/deposits/1"),
             R("DELETE", "/api/finance/wht/deposits/1"),
+            // Provisioning DAMS access and mailing an activation link are the two routes that
+            // can hand someone a way into the system — Admin-only, rejected before binding.
+            R("POST", "/api/staff/accounts"),
+            R("POST", "/api/staff/accounts/1/resend-invitation"),
         ];
     }
 
