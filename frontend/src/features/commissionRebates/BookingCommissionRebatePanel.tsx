@@ -186,7 +186,7 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
       <SectionHeader title="Rebates" blurb="A rebate stays Pending until it has all reached the customer."
         action={<Button size="sm" variant="outline" disabled={!active||busy||showRebate||liveRebate} onClick={openNewRebate}>+ Add Rebate</Button>}/>
-      {liveRebate&&!showRebate&&<p className="mt-3 text-xs text-[var(--text-muted)]">A booking carries one live rebate. Cancel or reject the one below before adding another.</p>}
+      {liveRebate&&!showRebate&&<p className="mt-3 text-xs text-[var(--text-muted)]">A booking carries one live rebate. Cancel or reverse the one below before adding another.</p>}
       {showRebate&&<EntryCard title={editingRebate?"Edit rebate":"Rebate entry"} index={editingRebate?workspace.rebates.findIndex(r=>r.id===editingRebate.id)+1:workspace.rebates.length+1}>
         <form onSubmit={saveRebate} className="space-y-4">
           {percentRebate

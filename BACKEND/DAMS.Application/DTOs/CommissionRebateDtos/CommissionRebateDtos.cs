@@ -8,7 +8,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal PayableCommission { get; set; }
         public decimal CommissionPaid { get; set; }
         public decimal CommissionReversalRequired { get; set; }
-        public decimal ApprovedRebates { get; set; }
+        public decimal RebatesGranted { get; set; }
         public decimal RebatesAppliedOrPaid { get; set; }
         public decimal RebateReversalRequired { get; set; }
         public int ActivePartners { get; set; }

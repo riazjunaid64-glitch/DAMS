@@ -51,7 +51,10 @@ namespace DAMS.Application.Services
                 .Where(r => r.Payout.Commission.Status == BookingCommissionStatus.Pending)
                 .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             var payableCommission = Math.Max(0m, payableBase - payablePayouts + payableReversals);
-            var approvedRebates = await _context.CustomerRebates.AsNoTracking()
+            // Everything promised to customers that is still standing — cancelled and reversed
+            // rebates are the only ones left out. A rebate is granted the moment it is entered;
+            // there is no approval between the two.
+            var rebatesGranted = await _context.CustomerRebates.AsNoTracking()
                 .Where(r => r.Status == CustomerRebateStatus.Pending || r.Status == CustomerRebateStatus.Applied
                     || r.Status == CustomerRebateStatus.Paid)
                 .SumAsync(r => (decimal?)r.FinalAmount, cancellationToken) ?? 0m;
@@ -77,7 +80,7 @@ namespace DAMS.Application.Services
                 PayableCommission = payableCommission,
                 CommissionPaid = commissionPaid,
                 CommissionReversalRequired = commissionRecovery,
-                ApprovedRebates = approvedRebates,
+                RebatesGranted = rebatesGranted,
                 RebatesAppliedOrPaid = rebatePaid,
                 RebateReversalRequired = rebateRecovery,
                 ActivePartners = await _context.ThirdPartyPartners.CountAsync(p => p.IsActive, cancellationToken),
