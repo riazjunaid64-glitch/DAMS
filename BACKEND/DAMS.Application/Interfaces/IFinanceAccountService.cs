@@ -9,6 +9,10 @@ namespace DAMS.Application.Interfaces
         Task<List<FinanceAccountOptionDto>> GetOptionsAsync(bool includeInactive, bool cashLikeOnly = true, FinanceAccountType? type = null, CancellationToken cancellationToken = default);
         Task<FinanceAccountResponseDto> GetByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(int id, int skip, int take, CancellationToken cancellationToken = default);
+        Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(int id, int? projectId,
+            DateTime? from, DateTime? to, int skip, int take, CancellationToken cancellationToken = default);
+        Task<FinanceAccountLedgerSliceDto> GetTransactionLedgerSliceAsync(int id, int? projectId,
+            DateTime from, DateTime to, int skip, int take, CancellationToken cancellationToken = default);
         Task<FinanceAccountsOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default);
         Task<FinanceAccountResponseDto> CreateAsync(CreateFinanceAccountDto dto, CancellationToken cancellationToken = default);
         Task<FinanceAccountResponseDto> UpdateAsync(int id, UpdateFinanceAccountDto dto, CancellationToken cancellationToken = default);

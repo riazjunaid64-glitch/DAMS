@@ -61,18 +61,60 @@ namespace DAMS.Application.Services
             ?? throw new InvalidOperationException("Finance account not found.");
 
         public async Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(
-            int id, int skip, int take, CancellationToken cancellationToken = default)
+            int id, int skip, int take, CancellationToken cancellationToken = default) =>
+            await GetTransactionsAsync(id, null, null, null, skip, take, cancellationToken);
+
+        public async Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(
+            int id, int? projectId, DateTime? from, DateTime? to, int skip, int take,
+            CancellationToken cancellationToken = default)
+        {
+            var slice = await QueryTransactionLedgerAsync(
+                id, projectId, from, to, skip, take, newestFirst: true,
+                includeOpeningEvent: false, cancellationToken);
+            return new PagedResult<FinanceAccountTransactionDto>
+            {
+                Items = slice.Items,
+                HasMore = slice.HasMore
+            };
+        }
+
+        public Task<FinanceAccountLedgerSliceDto> GetTransactionLedgerSliceAsync(
+            int id, int? projectId, DateTime from, DateTime to, int skip, int take,
+            CancellationToken cancellationToken = default) =>
+            QueryTransactionLedgerAsync(id, projectId, from, to, skip, take,
+                newestFirst: false, includeOpeningEvent: true, cancellationToken);
+
+        private async Task<FinanceAccountLedgerSliceDto> QueryTransactionLedgerAsync(
+            int id, int? projectId, DateTime? from, DateTime? to, int skip, int take,
+            bool newestFirst, bool includeOpeningEvent, CancellationToken cancellationToken)
         {
             var account = await _context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id)
                 .Select(a => new
                 {
+                    a.Id,
+                    a.Name,
                     a.Type,
+                    a.OpeningBalance,
                     IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable,
                     IsRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable,
                     IsCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits,
                     IsCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables
                 }).SingleOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
+
+            if (projectId.HasValue
+                && !await _context.Projects.AsNoTracking().AnyAsync(p => p.Id == projectId.Value, cancellationToken))
+                throw new InvalidOperationException("Selected project does not exist.");
+            if (from.HasValue && from.Value.Date < FinanceDateRules.SqlMin)
+                throw new InvalidOperationException($"From date cannot be before {FinanceDateRules.SqlMin:dd MMM yyyy}.");
+            if (to.HasValue && (to.Value.Date < FinanceDateRules.SqlMin || to.Value.Year > 9998))
+                throw new InvalidOperationException($"To date must be between {FinanceDateRules.SqlMin:dd MMM yyyy} and 31 Dec 9998.");
+            from = from?.Date;
+            to = to?.Date;
+            if (from.HasValue && to.HasValue && from.Value > to.Value)
+                throw new InvalidOperationException("From date cannot be after to date.");
+            skip = Math.Max(0, skip);
+            take = Math.Max(1, take);
 
             // These projections are unioned below, and EF aligns a union on the FIRST branch's
             // member bindings — a property left unset in this first Select is dropped from every
@@ -82,16 +124,20 @@ namespace DAMS.Application.Services
                 .Select(r => new FinanceAccountTransactionDto
                 {
                     Kind = "Revenue", RecordId = r.Id, Date = r.Date, Label = r.RevenueType,
-                    Reference = r.Reference, ProjectName = r.Project != null ? r.Project.ProjectName : "General",
-                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Reference = r.Reference, Description = r.Description,
+                    ProjectId = r.ProjectId, ProjectName = r.Project != null ? r.Project.ProjectName : "General",
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.CreatedAt, SourceOrder = 10
                 });
             // Net, so the running balance in the detail view matches what the bank statement shows.
             var expenses = _context.Expenses.AsNoTracking().Where(e => e.FinanceAccountId == id)
                 .Select(e => new FinanceAccountTransactionDto
                 {
                     Kind = "Expense", RecordId = e.Id, Date = e.Date, Label = e.Category,
-                    Reference = e.Vendor, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
-                    Amount = -(e.Amount - e.WhtAmount), GrossAmount = e.Amount, WhtAmount = e.WhtAmount
+                    Reference = e.Vendor, Description = e.Description,
+                    ProjectId = e.ProjectId, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
+                    Amount = -(e.Amount - e.WhtAmount), GrossAmount = e.Amount, WhtAmount = e.WhtAmount,
+                    PostedAt = e.CreatedAt, SourceOrder = 20
                 });
             // A purchase appears twice, once on each account it moved, with opposite signs — the
             // bank sees net cash leaving, the asset ledger sees the full price arriving.
@@ -99,38 +145,48 @@ namespace DAMS.Application.Services
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Asset purchase", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
-                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
-                    Amount = -(p.Amount - p.WhtAmount), GrossAmount = p.Amount, WhtAmount = p.WhtAmount
+                    Reference = p.Vendor, Description = p.Description,
+                    ProjectId = p.ProjectId, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = -(p.Amount - p.WhtAmount), GrossAmount = p.Amount, WhtAmount = p.WhtAmount,
+                    PostedAt = p.CreatedAt, SourceOrder = 30
                 });
             var assetPurchasesCapitalised = _context.AssetPurchases.AsNoTracking().Where(p => p.AssetAccountId == id)
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Asset acquired", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
-                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
-                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount
+                    Reference = p.Vendor, Description = p.Description,
+                    ProjectId = p.ProjectId, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount,
+                    PostedAt = p.CreatedAt, SourceOrder = 31
                 });
             var whtDeposits = _context.WhtDeposits.AsNoTracking().Where(d => d.FinanceAccountId == id)
                 .Select(d => new FinanceAccountTransactionDto
                 {
                     Kind = "WHT deposit", RecordId = d.Id, Date = d.DepositDate, Label = "Tax deposited with FBR",
-                    Reference = d.ChallanNumber, ProjectName = "General",
-                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
+                    Reference = d.ChallanNumber, Description = d.Notes,
+                    ProjectId = null, ProjectName = "General",
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m,
+                    PostedAt = d.CreatedAt, SourceOrder = 40
                 });
             var commissionPayouts = _context.CommissionPayouts.AsNoTracking().Where(p => p.FinanceAccountId == id)
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "Commission payout", RecordId = p.Id, Date = p.PaymentDate,
                     Label = p.Commission.Partner.Name, Reference = p.PaymentReference,
+                    Description = p.Notes, ProjectId = p.Commission.Booking.Unit.ProjectId,
                     ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
-                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.RecordedAt, SourceOrder = 50
                 });
             var commissionReversals = _context.CommissionPayoutReversals.AsNoTracking()
                 .Where(r => r.Payout.FinanceAccountId == id).Select(r => new FinanceAccountTransactionDto
                 {
                     Kind = "Commission reversal", RecordId = r.Id, Date = r.ReversedAt,
                     Label = r.Payout.Commission.Partner.Name, Reference = r.Reason,
+                    Description = r.Reason, ProjectId = r.Payout.Commission.Booking.Unit.ProjectId,
                     ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
-                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.ReversedAt, SourceOrder = 51
                 });
             var rebatePayments = _context.RebateDisbursements.AsNoTracking()
                 .Where(d => d.FinanceAccountId == id && d.Method == CustomerRebateMethod.CashOrBankPayment)
@@ -138,8 +194,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer rebate", RecordId = d.Id, Date = d.AppliedAt,
                     Label = d.Rebate.Customer.FullName, Reference = d.Reference,
+                    Description = d.Notes, ProjectId = d.Rebate.Booking.Unit.ProjectId,
                     ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
-                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m,
+                    PostedAt = d.RecordedAt, SourceOrder = 60
                 });
             var rebateReversals = _context.RebateDisbursementReversals.AsNoTracking()
                 .Where(r => r.Disbursement.FinanceAccountId == id
@@ -148,8 +206,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Rebate reversal", RecordId = r.Id, Date = r.ReversedAt,
                     Label = r.Disbursement.Rebate.Customer.FullName, Reference = r.Reason,
+                    Description = r.Reason, ProjectId = r.Disbursement.Rebate.Booking.Unit.ProjectId,
                     ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
-                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.ReversedAt, SourceOrder = 61
                 });
             // Customer money in. Bookings on a cancelled sale are kept, matching the Finance
             // dashboard: the cash really did arrive, and cancelling must not rewrite the bank.
@@ -158,8 +218,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer payment", RecordId = p.Id, Date = p.PaidAt,
                     Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    Description = p.Notes, ProjectId = p.Booking.Unit.ProjectId,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
-                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.CreatedAt, SourceOrder = 70
                 });
             // Tax Payable is the credit side of withholding recorded on supplier expenses. The
             // WhtDeposit.FinanceAccountId is the bank account used, so the payable ledger needs
@@ -168,22 +230,28 @@ namespace DAMS.Application.Services
                 .Select(e => new FinanceAccountTransactionDto
                 {
                     Kind = "WHT withheld", RecordId = e.Id, Date = e.Date, Label = e.Category,
-                    Reference = e.Vendor, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
-                    Amount = e.WhtAmount, GrossAmount = e.Amount, WhtAmount = e.WhtAmount
+                    Reference = e.Vendor, Description = e.Description,
+                    ProjectId = e.ProjectId, ProjectName = e.Project != null ? e.Project.ProjectName : "General",
+                    Amount = e.WhtAmount, GrossAmount = e.Amount, WhtAmount = e.WhtAmount,
+                    PostedAt = e.CreatedAt, SourceOrder = 80
                 });
             var payableWithheldOnAssets = _context.AssetPurchases.AsNoTracking().Where(p => account.IsTaxPayable && p.WhtAmount != 0m)
                 .Select(p => new FinanceAccountTransactionDto
                 {
                     Kind = "WHT withheld", RecordId = p.Id, Date = p.Date, Label = p.ItemName,
-                    Reference = p.Vendor, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
-                    Amount = p.WhtAmount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount
+                    Reference = p.Vendor, Description = p.Description,
+                    ProjectId = p.ProjectId, ProjectName = p.Project != null ? p.Project.ProjectName : "General",
+                    Amount = p.WhtAmount, GrossAmount = p.Amount, WhtAmount = p.WhtAmount,
+                    PostedAt = p.CreatedAt, SourceOrder = 81
                 });
             var payableDeposited = _context.WhtDeposits.AsNoTracking().Where(d => account.IsTaxPayable)
                 .Select(d => new FinanceAccountTransactionDto
                 {
                     Kind = "WHT deposited", RecordId = d.Id, Date = d.DepositDate, Label = "Tax deposited with FBR",
-                    Reference = d.ChallanNumber, ProjectName = "General",
-                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
+                    Reference = d.ChallanNumber, Description = d.Notes,
+                    ProjectId = null, ProjectName = "General",
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m,
+                    PostedAt = d.CreatedAt, SourceOrder = 82
                 });
             // Actual cash refund paid FROM this account.
             var cancellationRefundsCash = _context.BookingCancellationRefunds.AsNoTracking().Where(r => r.FinanceAccountId == id)
@@ -191,8 +259,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer refund", RecordId = r.Id, Date = r.PaidAt,
                     Label = r.Settlement.Booking.Customer.FullName, Reference = r.PaymentReference,
+                    Description = r.Notes, ProjectId = r.Settlement.Booking.Unit.ProjectId,
                     ProjectName = r.Settlement.Booking.Unit.Project.ProjectName,
-                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.RecordedAt, SourceOrder = 90
                 });
             // Customer Refunds Payable liability: created when the settlement is decided,
             // cleared when the cash is actually paid out.
@@ -202,8 +272,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer refund payable", RecordId = s.Id, Date = s.CancellationDate,
                     Label = s.Booking.Customer.FullName, Reference = s.Booking.BookingReference,
+                    Description = s.Reason, ProjectId = s.Booking.Unit.ProjectId,
                     ProjectName = s.Booking.Unit.Project.ProjectName,
-                    Amount = s.RefundAmount, GrossAmount = s.RefundAmount, WhtAmount = 0m
+                    Amount = s.RefundAmount, GrossAmount = s.RefundAmount, WhtAmount = 0m,
+                    PostedAt = s.CancelledAt, SourceOrder = 91
                 });
             var refundPayablePaid = _context.BookingCancellationRefunds.AsNoTracking()
                 .Where(r => account.IsRefundPayable && r.Settlement.RefundPayableAccountId == id)
@@ -211,8 +283,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer refund paid", RecordId = r.Id, Date = r.PaidAt,
                     Label = r.Settlement.Booking.Customer.FullName, Reference = r.Settlement.Booking.BookingReference,
+                    Description = r.Notes, ProjectId = r.Settlement.Booking.Unit.ProjectId,
                     ProjectName = r.Settlement.Booking.Unit.Project.ProjectName,
-                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Amount = -r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.RecordedAt, SourceOrder = 92
                 });
             // ── Customer Deposits ledger ──────────────────────────────────────────────────
             // Derived, never stored: the authoritative record of the cash is the Payment row, and
@@ -237,8 +311,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer deposit received", RecordId = p.Id, Date = p.PaidAt,
                     Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    Description = p.Notes, ProjectId = p.Booking.Unit.ProjectId,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
-                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.CreatedAt, SourceOrder = 100
                 });
             // …and possession clears exactly those deposits into the recognised sale, dated on the
             // recognition date rather than the day the cash arrived.
@@ -251,8 +327,10 @@ namespace DAMS.Application.Services
                     Kind = "Customer deposit recognised", RecordId = p.Id,
                     Date = p.Booking.SaleRecognition!.RecognitionDate,
                     Label = p.Booking.Customer.FullName, Reference = p.Booking.BookingReference,
+                    Description = p.Notes, ProjectId = p.Booking.Unit.ProjectId,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
-                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.Booking.SaleRecognition!.RecognizedAt, SourceOrder = 101
                 });
             // A cancellation clears the deposit too — into the refund payable and retained income,
             // never into revenue.
@@ -263,8 +341,10 @@ namespace DAMS.Application.Services
                     Kind = "Customer deposit released on cancellation", RecordId = p.Id,
                     Date = p.Booking.CancellationSettlement!.CancellationDate,
                     Label = p.Booking.Customer.FullName, Reference = p.Booking.BookingReference,
+                    Description = p.Booking.CancellationSettlement!.Reason, ProjectId = p.Booking.Unit.ProjectId,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
-                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.Booking.CancellationSettlement!.CancelledAt, SourceOrder = 102
                 });
 
             // ── Customer Receivables ledger ───────────────────────────────────────────────
@@ -274,8 +354,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = "Customer receivable recognised", RecordId = r.Id, Date = r.RecognitionDate,
                     Label = r.Booking.Customer.FullName, Reference = r.Booking.BookingReference,
+                    Description = "Unit sale recognised", ProjectId = r.Booking.Unit.ProjectId,
                     ProjectName = r.Booking.Unit.Project.ProjectName,
-                    Amount = r.NetSaleValue, GrossAmount = r.NetSaleValue, WhtAmount = 0m
+                    Amount = r.NetSaleValue, GrossAmount = r.NetSaleValue, WhtAmount = 0m,
+                    PostedAt = r.RecognizedAt, SourceOrder = 110
                 });
             // Every payment on a recognised booking reduces the receivable. Cash taken BEFORE
             // possession does so on the recognition date (it had already cleared the deposit);
@@ -290,8 +372,12 @@ namespace DAMS.Application.Services
                     Date = (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition!.RecognizedAt))
                         ? p.Booking.SaleRecognition!.RecognitionDate : p.PaidAt,
                     Label = p.Booking.Customer.FullName, Reference = p.ReceiptNumber,
+                    Description = p.Notes, ProjectId = p.Booking.Unit.ProjectId,
                     ProjectName = p.Booking.Unit.Project.ProjectName,
-                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition!.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition!.RecognizedAt))
+                        ? p.Booking.SaleRecognition!.RecognizedAt : p.CreatedAt,
+                    SourceOrder = 111
                 });
             // Non-cash customer credits (balance reduction / credit note / installment adjustment)
             // reduce what is genuinely still owed. They move no cash, so their only balance-sheet
@@ -307,8 +393,12 @@ namespace DAMS.Application.Services
                     Date = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? d.Rebate.Booking.SaleRecognition!.RecognitionDate : d.AppliedAt,
                     Label = d.Rebate.Customer.FullName, Reference = d.Reference,
+                    Description = d.Notes, ProjectId = d.Rebate.Booking.Unit.ProjectId,
                     ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
-                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m
+                    Amount = -d.Amount, GrossAmount = d.Amount, WhtAmount = 0m,
+                    PostedAt = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? d.Rebate.Booking.SaleRecognition!.RecognizedAt : d.RecordedAt,
+                    SourceOrder = 112
                 });
             var receivablesCreditsReversed = _context.RebateDisbursementReversals.AsNoTracking()
                 .Where(r => account.IsCustomerReceivables && r.Disbursement.Rebate.Booking.SaleRecognition != null
@@ -321,8 +411,12 @@ namespace DAMS.Application.Services
                     Date = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : r.ReversedAt,
                     Label = r.Disbursement.Rebate.Customer.FullName, Reference = r.Reason,
+                    Description = r.Reason, ProjectId = r.Disbursement.Rebate.Booking.Unit.ProjectId,
                     ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
-                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                        ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognizedAt : r.ReversedAt,
+                    SourceOrder = 113
                 });
 
             var capitalCash = _context.CapitalTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
@@ -330,9 +424,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = t.Type == CapitalTransactionType.Contribution ? "Capital contribution" : "Capital withdrawal",
                     RecordId = t.Id, Date = t.Date, Label = t.CapitalPartner.Name,
-                    Reference = t.Reference, ProjectName = "General",
+                    Reference = t.Reference, Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == CapitalTransactionType.Contribution ? t.Amount : -t.Amount,
-                    GrossAmount = t.Amount, WhtAmount = 0m
+                    GrossAmount = t.Amount, WhtAmount = 0m,
+                    PostedAt = t.CreatedAt, SourceOrder = 120
                 });
             var partnerCapital = _context.CapitalTransactions.AsNoTracking()
                 .Where(t => t.CapitalPartner.FinanceAccountId == id)
@@ -343,22 +438,23 @@ namespace DAMS.Application.Services
                         : t.Type == CapitalTransactionType.Withdrawal ? "Capital withdrawal"
                         : t.Type == CapitalTransactionType.ProfitShare ? "Capital profit share" : "Capital loss share",
                     RecordId = t.Id, Date = t.Date, Label = t.CapitalPartner.Name,
-                    Reference = t.Reference, ProjectName = "General",
+                    Reference = t.Reference, Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == CapitalTransactionType.Withdrawal || t.Type == CapitalTransactionType.LossShare
                         ? -t.Amount : t.Amount,
-                    GrossAmount = t.Amount, WhtAmount = 0m
+                    GrossAmount = t.Amount, WhtAmount = 0m,
+                    PostedAt = t.CreatedAt, SourceOrder = 121
                 });
             var loanCash = _context.LoanTransactions.AsNoTracking().Where(t => t.FinanceAccountId == id)
                 .Select(t => new FinanceAccountTransactionDto
                 {
                     Kind = t.Type == LoanTransactionType.Drawdown ? "Loan drawdown" : "Loan repayment",
                     RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
-                    ProjectName = "General",
+                    Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == LoanTransactionType.Drawdown
                         ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount),
                     GrossAmount = t.Type == LoanTransactionType.Drawdown
                         ? t.PrincipalAmount : t.PrincipalAmount + t.InterestAmount,
-                    WhtAmount = 0m
+                    WhtAmount = 0m, PostedAt = t.CreatedAt, SourceOrder = 130
                 });
             var loanLiability = _context.LoanTransactions.AsNoTracking()
                 .Where(t => t.Loan.FinanceAccountId == id && t.PrincipalAmount != 0m)
@@ -366,9 +462,10 @@ namespace DAMS.Application.Services
                 {
                     Kind = t.Type == LoanTransactionType.Drawdown ? "Loan principal drawn" : "Loan principal repaid",
                     RecordId = t.Id, Date = t.Date, Label = t.Loan.Name, Reference = t.Reference,
-                    ProjectName = "General",
+                    Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount,
-                    GrossAmount = t.PrincipalAmount, WhtAmount = 0m
+                    GrossAmount = t.PrincipalAmount, WhtAmount = 0m,
+                    PostedAt = t.CreatedAt, SourceOrder = 131
                 });
             var staffTransfers = _context.StaffCashTransfers.AsNoTracking()
                 .Where(t => t.StaffFinanceAccountId == id)
@@ -379,9 +476,10 @@ namespace DAMS.Application.Services
                     Label = t.Type == StaffCashMovementType.FundsGiven
                         ? "Received from " + t.CounterpartyFinanceAccount.Name
                         : "Returned to " + t.CounterpartyFinanceAccount.Name,
-                    Reference = t.Reference, ProjectName = "General",
+                    Reference = t.Reference, Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount,
-                    GrossAmount = t.Amount, WhtAmount = 0m
+                    GrossAmount = t.Amount, WhtAmount = 0m,
+                    PostedAt = t.CreatedAt, SourceOrder = 140
                 });
             var staffCounterpartyTransfers = _context.StaffCashTransfers.AsNoTracking()
                 .Where(t => t.CounterpartyFinanceAccountId == id)
@@ -389,11 +487,12 @@ namespace DAMS.Application.Services
                 {
                     Kind = t.Type == StaffCashMovementType.FundsGiven ? "Cash given to staff" : "Cash returned by staff",
                     RecordId = t.Id, Date = t.Date, Label = t.StaffFinanceAccount.AccountHolderName,
-                    Reference = t.Reference, ProjectName = "General",
+                    Reference = t.Reference, Description = t.Note, ProjectId = null, ProjectName = "General",
                     Amount = t.Type == StaffCashMovementType.FundsGiven ? -t.Amount : t.Amount,
-                    GrossAmount = t.Amount, WhtAmount = 0m
+                    GrossAmount = t.Amount, WhtAmount = 0m,
+                    PostedAt = t.CreatedAt, SourceOrder = 141
                 });
-            var rows = await revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
+            var allRows = revenue.Concat(payments).Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .Concat(assetPurchasesPaid).Concat(assetPurchasesCapitalised)
                 .Concat(cancellationRefundsCash).Concat(refundPayableCreated).Concat(refundPayablePaid)
@@ -403,12 +502,106 @@ namespace DAMS.Application.Services
                 .Concat(payableWithheld).Concat(payableWithheldOnAssets).Concat(payableDeposited)
                 .Concat(depositsReceived).Concat(depositsRecognised).Concat(depositsCancelled)
                 .Concat(receivablesRecognised).Concat(receivablesSettled)
-                .Concat(receivablesCredited).Concat(receivablesCreditsReversed)
-                .OrderByDescending(t => t.Date).ThenByDescending(t => t.RecordId)
-                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
-            return new PagedResult<FinanceAccountTransactionDto>
+                .Concat(receivablesCredited).Concat(receivablesCreditsReversed);
+
+            if (projectId.HasValue)
+                allRows = allRows.Where(row => row.ProjectId == projectId.Value);
+
+            var baseline = await FinanceDateRules.BaselineAsync(_context, cancellationToken);
+
+            var openingNormalBalance = 0m;
+            if (from.HasValue)
             {
-                Items = rows.Take(take).ToList(), HasMore = rows.Count > take
+                var priorRows = allRows.Where(row => row.Date < from.Value);
+                if (baseline.HasValue)
+                    priorRows = priorRows.Where(row => row.Date >= baseline.Value.Date);
+                var priorMovement = await priorRows.SumAsync(
+                    row => (decimal?)row.Amount, cancellationToken) ?? 0m;
+                var storedOpening = !projectId.HasValue
+                    && (!baseline.HasValue || baseline.Value.Date <= from.Value)
+                        ? account.OpeningBalance
+                        : 0m;
+                // A committed opening balance is the position at the START of its date. Therefore
+                // From == baseline includes it here, before the first in-period transaction.
+                openingNormalBalance = storedOpening + priorMovement;
+            }
+
+            var periodRows = allRows;
+            if (from.HasValue) periodRows = periodRows.Where(row => row.Date >= from.Value);
+            if (to.HasValue)
+            {
+                var toExclusive = to.Value.AddDays(1);
+                periodRows = periodRows.Where(row => row.Date < toExclusive);
+            }
+
+            // Once a committed baseline exists, earlier movements are already represented by its
+            // opening figures. A valid committed set has none, but the floor also protects a report
+            // from double-counting legacy data if an invariant is ever bypassed operationally.
+            if (baseline.HasValue)
+                periodRows = periodRows.Where(row => row.Date >= baseline.Value.Date);
+
+            var periodMovement = await periodRows.SumAsync(
+                row => (decimal?)row.Amount, cancellationToken) ?? 0m;
+            var openingFallsInsidePeriod = includeOpeningEvent && !projectId.HasValue
+                && baseline.HasValue && from.HasValue && to.HasValue
+                && account.OpeningBalance != 0m
+                && from.Value < baseline.Value.Date && baseline.Value.Date <= to.Value;
+            if (openingFallsInsidePeriod)
+                periodMovement += account.OpeningBalance;
+            var ordered = newestFirst
+                ? periodRows.OrderByDescending(row => row.Date)
+                    .ThenByDescending(row => row.PostedAt)
+                    .ThenByDescending(row => row.SourceOrder)
+                    .ThenByDescending(row => row.RecordId)
+                : periodRows.OrderBy(row => row.Date)
+                    .ThenBy(row => row.PostedAt)
+                    .ThenBy(row => row.SourceOrder)
+                    .ThenBy(row => row.RecordId);
+            var movementBeforePage = skip == 0
+                ? 0m
+                : await ordered.Take(skip).SumAsync(row => (decimal?)row.Amount, cancellationToken) ?? 0m;
+            var probeTake = take == int.MaxValue ? int.MaxValue : take + 1;
+            var rows = await ordered.Skip(skip).Take(probeTake).ToListAsync(cancellationToken);
+            if (openingFallsInsidePeriod)
+            {
+                // Trial Balance details request the complete range, so the synthetic boundary row
+                // participates in the same deterministic chronological order as stored events.
+                if (skip != 0 || take != int.MaxValue)
+                    throw new InvalidOperationException(
+                        "The opening-balance boundary can only be read as a complete ledger range.");
+                rows.Add(new FinanceAccountTransactionDto
+                {
+                    Kind = "Opening balance established",
+                    RecordId = account.Id,
+                    Date = baseline!.Value.Date,
+                    Label = account.Name,
+                    Description = "Committed opening balance",
+                    ProjectId = null,
+                    ProjectName = "General",
+                    Amount = account.OpeningBalance,
+                    GrossAmount = Math.Abs(account.OpeningBalance),
+                    WhtAmount = 0m,
+                    PostedAt = baseline.Value.Date,
+                    SourceOrder = 0
+                });
+                // The committed opening is the start-of-business-day boundary. Its stored
+                // audit timestamp is synthetic, so rank it ahead of every real event before
+                // comparing audit instants (which may be recorded in UTC).
+                rows = rows.OrderBy(row => row.Date)
+                    .ThenBy(row => row.SourceOrder == 0 ? 0 : 1)
+                    .ThenBy(row => row.PostedAt)
+                    .ThenBy(row => row.SourceOrder).ThenBy(row => row.RecordId).ToList();
+            }
+            return new FinanceAccountLedgerSliceDto
+            {
+                AccountId = account.Id,
+                AccountName = account.Name,
+                AccountType = account.Type,
+                OpeningNormalBalance = openingNormalBalance,
+                PeriodNormalMovement = periodMovement,
+                NormalMovementBeforePage = movementBeforePage,
+                Items = rows.Take(take).ToList(),
+                HasMore = take != int.MaxValue && rows.Count > take
             };
         }
 

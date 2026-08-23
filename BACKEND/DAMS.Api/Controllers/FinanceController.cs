@@ -33,12 +33,22 @@ namespace DAMS.Api.Controllers
 
         [HttpGet("trial-balance")]
         public Task<IActionResult> GetTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
-            [FromQuery] int monthsBack = 12, CancellationToken cancellationToken = default) =>
+            [FromQuery] int monthsBack = 0, CancellationToken cancellationToken = default) =>
             Report(() => _financeService.GetTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
+
+        [HttpGet("trial-balance/details")]
+        public Task<IActionResult> GetTrialBalanceDetails(
+            [FromQuery] string accountKey,
+            [FromQuery] int? projectId,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to,
+            CancellationToken cancellationToken = default) =>
+            Report(() => _financeService.GetTrialBalanceDetailsAsync(
+                accountKey, projectId, from, to, cancellationToken));
 
         [HttpGet("trial-balance/export")]
         public Task<IActionResult> ExportTrialBalance([FromQuery] int? projectId, [FromQuery] DateTime? asAt,
-            [FromQuery] int monthsBack = 12, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
+            [FromQuery] int monthsBack = 0, [FromQuery] string format = "xlsx", CancellationToken cancellationToken = default) =>
             Export(format, () => _financeService.ExportTrialBalanceAsync(projectId, asAt ?? default, monthsBack, cancellationToken));
 
         [HttpGet("balance-sheet")]

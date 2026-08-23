@@ -50,21 +50,75 @@ namespace DAMS.Application.DTOs.FinanceDtos
 
     public sealed class TrialBalanceDto
     {
+        /// <summary>The effective cut-off represented by the scalar Debit/Credit values.</summary>
+        public DateTime AsAt { get; set; }
+
         public List<DateTime> ColumnDates { get; set; } = [];
         public List<TrialBalanceRowDto> Rows { get; set; } = [];
         public List<decimal> ColumnDebitTotals { get; set; } = [];
         public List<decimal> ColumnCreditTotals { get; set; } = [];
         public List<bool> ColumnBalanced { get; set; } = [];
+
+        // Scalar counterparts used by the simplified Trial Balance screen. The column collections
+        // remain for backwards compatibility with clients that explicitly request history.
+        public decimal TotalDebit { get; set; }
+        public decimal TotalCredit { get; set; }
+        public bool IsBalanced { get; set; }
     }
 
     public sealed class TrialBalanceRowDto
     {
+        /// <summary>
+        /// Stable, opaque drill-down identity. Physical chart accounts use <c>A:{id}</c>; derived
+        /// income, expense and allocation accounts use the report builder's I:/E:/EQ keys.
+        /// Consumers must pass this value back unchanged rather than trying to recreate it.
+        /// </summary>
+        public string AccountKey { get; set; } = string.Empty;
+
         public int AccountId { get; set; }
         public string? LedgerCode { get; set; }
         public string AccountName { get; set; } = string.Empty;
         public FinanceAccountType Type { get; set; }
         public List<decimal> DebitBalances { get; set; } = [];
         public List<decimal> CreditBalances { get; set; } = [];
+
+        // The effective (latest) column, exposed directly for the manager-facing summary.
+        public decimal Debit { get; set; }
+        public decimal Credit { get; set; }
+    }
+
+    public sealed class TrialBalanceAccountDetailsDto
+    {
+        public string AccountName { get; set; } = string.Empty;
+        public string? LedgerCode { get; set; }
+        public DateTime From { get; set; }
+        public DateTime To { get; set; }
+
+        /// <summary>Absolute amount; <see cref="OpeningBalanceType"/> carries Dr/Cr.</summary>
+        public decimal OpeningBalance { get; set; }
+        public string OpeningBalanceType { get; set; } = "Debit";
+
+        /// <summary>Absolute amount; <see cref="ClosingBalanceType"/> carries Dr/Cr.</summary>
+        public decimal ClosingBalance { get; set; }
+        public string ClosingBalanceType { get; set; } = "Debit";
+
+        public decimal TotalDebit { get; set; }
+        public decimal TotalCredit { get; set; }
+        public List<TrialBalanceTransactionDto> Rows { get; set; } = [];
+    }
+
+    public sealed class TrialBalanceTransactionDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public DateTime Date { get; set; }
+        public string Description { get; set; } = string.Empty;
+        public string? Reference { get; set; }
+        public decimal Debit { get; set; }
+        public decimal Credit { get; set; }
+
+        /// <summary>Absolute amount; <see cref="RunningBalanceType"/> carries Dr/Cr.</summary>
+        public decimal RunningBalance { get; set; }
+        public string RunningBalanceType { get; set; } = "Debit";
     }
 
     public sealed class BalanceSheetDto

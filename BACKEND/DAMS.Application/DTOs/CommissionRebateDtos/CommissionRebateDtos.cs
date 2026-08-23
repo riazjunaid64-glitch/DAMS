@@ -211,7 +211,12 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal? ManualBasisAmount { get; set; }
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
-        public string Reason { get; set; } = string.Empty;
+        // Nullable on purpose. The screen offers this as "Reason (optional)" and the service falls
+        // back to describing the entry itself, but [ApiController] treats a non-nullable reference
+        // type as implicitly [Required] — declaring it `string` made MVC refuse the whole request
+        // before the action ran, answering with a ValidationProblemDetails that carries no
+        // `message` for the screen to show.
+        public string? Reason { get; set; }
         public CustomerRebateMethod Method { get; set; }
         public string? Notes { get; set; }
     }

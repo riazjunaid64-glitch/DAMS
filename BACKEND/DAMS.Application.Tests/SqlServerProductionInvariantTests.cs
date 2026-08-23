@@ -182,6 +182,7 @@ public sealed class SqlServerProductionInvariantTests
     {
         await using var database = await SqlTestDatabase.CreateAsync();
         var options = Options(database.ConnectionString);
+        int accountId;
         await using (var db = new AppDbContext(options))
         {
             var migrator = db.GetService<IMigrator>();
@@ -206,7 +207,7 @@ public sealed class SqlServerProductionInvariantTests
                      '2026-08-01', NULL, SYSUTCDATETIME());
                 SELECT @AccountId;
                 """, connection);
-            _ = Convert.ToInt32(await command.ExecuteScalarAsync());
+            accountId = Convert.ToInt32(await command.ExecuteScalarAsync());
         }
 
         await using (var db = new AppDbContext(options))
@@ -226,6 +227,21 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal("Unclassified", Assert.Single(pnl.IncomeLines).Name);
             var trial = await finance.GetTrialBalanceAsync(null, new DateTime(2026, 8, 31), 0);
             Assert.True(Assert.Single(trial.ColumnBalanced));
+
+            var bankRow = trial.Rows.Single(row => row.AccountKey == $"A:{accountId}");
+            var bankDetails = await finance.GetTrialBalanceDetailsAsync(
+                bankRow.AccountKey, null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+            Assert.Equal("legacy-sql", Assert.Single(bankDetails.Rows).Reference);
+            Assert.Equal(bankRow.Debit, bankDetails.ClosingBalance);
+            Assert.Equal("Debit", bankDetails.ClosingBalanceType);
+
+            var unclassifiedRow = trial.Rows.Single(row => row.AccountName == "Unclassified");
+            var unclassifiedDetails = await finance.GetTrialBalanceDetailsAsync(
+                unclassifiedRow.AccountKey, null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+            Assert.Equal("legacy-sql", Assert.Single(unclassifiedDetails.Rows).Reference);
+            Assert.Equal(unclassifiedRow.Credit, unclassifiedDetails.ClosingBalance);
+            Assert.Equal("Credit", unclassifiedDetails.ClosingBalanceType);
+
             var sheet = await finance.GetBalanceSheetAsync(null, new DateTime(2026, 8, 31));
             Assert.True(sheet.IsBalanced);
             Assert.Equal(100m, sheet.TotalAssets);
