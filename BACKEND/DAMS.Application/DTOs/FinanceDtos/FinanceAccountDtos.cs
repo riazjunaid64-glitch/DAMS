@@ -65,6 +65,8 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public DateTime Date { get; set; }
         public string Label { get; set; } = string.Empty;
         public string? Reference { get; set; }
+        public string? Description { get; set; }
+        public int? ProjectId { get; set; }
         public string ProjectName { get; set; } = "General";
 
         /// <summary>Signed cash effect on the account. For an expense this is the net paid, not
@@ -76,6 +78,27 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal GrossAmount { get; set; }
 
         public decimal WhtAmount { get; set; }
+
+        // Audit ordering is deliberately separate from the user-selected business date. It makes
+        // two entries on the same date deterministic even when their ids came from different tables.
+        public DateTime PostedAt { get; set; }
+        public int SourceOrder { get; set; }
+    }
+
+    /// <summary>
+    /// Internal statement slice shared by the physical-account ledger and Trial Balance details.
+    /// Movements use the account's normal-balance direction; the report layer converts them to Dr/Cr.
+    /// </summary>
+    public sealed class FinanceAccountLedgerSliceDto
+    {
+        public int AccountId { get; set; }
+        public string AccountName { get; set; } = string.Empty;
+        public FinanceAccountType AccountType { get; set; }
+        public decimal OpeningNormalBalance { get; set; }
+        public decimal PeriodNormalMovement { get; set; }
+        public decimal NormalMovementBeforePage { get; set; }
+        public List<FinanceAccountTransactionDto> Items { get; set; } = [];
+        public bool HasMore { get; set; }
     }
 
     public sealed class FinanceHolderBalanceDto

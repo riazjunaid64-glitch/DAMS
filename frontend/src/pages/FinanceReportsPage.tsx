@@ -1,21 +1,36 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
+import {
+  applyTrialFilters,
+  calendarMonthStart,
+  trialDetailsParams,
+  trialFilterError,
+  trialFiltersKey,
+  trialSummaryParams,
+  type AppliedTrialBalanceFilters,
+  type BalanceType,
+  type TrialBalanceDetails,
+  type TrialBalanceFilters,
+  type TrialBalanceReport,
+  type TrialBalanceRow,
+  type TrialDateMode,
+} from "../features/finance/trialBalance.ts";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods";
+import Modal from "../lib/Modal.tsx";
 
 type Tab = "pnl" | "trial" | "balance";
 type Project = { id: number; projectName: string };
 type PnlLine = { categoryId: number | null; name: string; amount: number; priorAmount: number | null; transactionCount: number };
 type Pnl = { periodStart: string; periodEnd: string; periodLabel: string; projectName: string | null; incomeLines: PnlLine[]; totalIncome: number; expenseLines: PnlLine[]; totalExpenses: number; netProfit: number; priorTotalIncome: number; priorTotalExpenses: number; priorNetProfit: number };
-type TrialRow = { accountId: number; ledgerCode: string | null; accountName: string; debitBalances: number[]; creditBalances: number[] };
-type Trial = { columnDates: string[]; rows: TrialRow[]; columnDebitTotals: number[]; columnCreditTotals: number[]; columnBalanced: boolean[] };
 type BsLine = { accountId: number; ledgerCode: string | null; name: string; amount: number };
 type BsGroup = { name: string; lines: BsLine[]; total: number };
 type BalanceSheet = { asAt: string; assetGroups: BsGroup[]; totalAssets: number; liabilityGroups: BsGroup[]; totalLiabilities: number; capitalLines: BsLine[]; retainedProfit: number; unpostedFixedAssetCharge: number; retainedProfitStart: string | null; totalCapital: number; totalLiabilitiesAndCapital: number; isBalanced: boolean; imbalance: number; unbalancedAccounts: string[] };
+type LoadedTrial = { report: TrialBalanceReport; filters: AppliedTrialBalanceFilters };
 
 const money = (value: number) => `Rs ${value.toLocaleString("en-PK", { maximumFractionDigits: 2 })}`;
 
@@ -27,14 +42,18 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [asAt, setAsAt] = useState(pakistanToday());
-  const [monthsBack, setMonthsBack] = useState("12");
+  const [trialDateMode, setTrialDateMode] = useState<TrialDateMode>("asAt");
+  const [trialFrom, setTrialFrom] = useState(calendarMonthStart(pakistanToday()));
+  const [trialTo, setTrialTo] = useState(pakistanToday());
   // null until read back — a P&L preset must not name a financial year the client has not set.
   const { startMonth, failed: startMonthFailed } = useFinancialYearStartMonth(user?.role === "Admin");
   const [pnl, setPnl] = useState<Pnl | null>(null);
-  const [trial, setTrial] = useState<Trial | null>(null);
+  const [trial, setTrial] = useState<LoadedTrial | null>(null);
   const [balance, setBalance] = useState<BalanceSheet | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const reportRequestId = useRef(0);
 
   useEffect(() => {
     if (user?.role !== "Admin") { navigate("/"); return; }
@@ -59,8 +78,17 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     return params;
   }, [projectId, from, to, asAt]);
 
+  const currentTrialFilters = useCallback((): TrialBalanceFilters => ({
+    mode: trialDateMode,
+    projectId,
+    asAt,
+    from: trialFrom,
+    to: trialTo,
+  }), [trialDateMode, projectId, asAt, trialFrom, trialTo]);
+
   const load = useCallback(async () => {
     if (user?.role !== "Admin") return;
+    const requestId = ++reportRequestId.current;
     setLoading(true); setError(null);
     try {
       if (tab === "pnl") {
@@ -68,19 +96,29 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Profit and loss could not be loaded.");
         setPnl(await response.json());
       } else if (tab === "trial") {
-        const params = query(false); params.set("monthsBack", monthsBack);
+        setTrial(null);
+        const draft = currentTrialFilters();
+        const filterError = trialFilterError(draft);
+        if (filterError) throw new Error(filterError);
+        const applied = applyTrialFilters(draft);
+        const params = trialSummaryParams(applied);
         const response = await api(`/api/Finance/trial-balance?${params}`);
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Trial balance could not be loaded.");
-        setTrial(await response.json());
+        const report = await response.json() as TrialBalanceReport;
+        if (requestId !== reportRequestId.current) return;
+        setTrial({ report, filters: applied });
       } else {
         const response = await api(`/api/Finance/balance-sheet?${query(false)}`);
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Balance sheet could not be loaded.");
         setBalance(await response.json());
       }
     } catch (caught) {
+      if (requestId !== reportRequestId.current) return;
       setError(caught instanceof Error ? caught.message : "The report could not be loaded.");
-    } finally { setLoading(false); }
-  }, [tab, query, monthsBack, user]);
+    } finally {
+      if (requestId === reportRequestId.current) setLoading(false);
+    }
+  }, [tab, query, currentTrialFilters, user]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -90,26 +128,41 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   };
 
   const exportReport = async () => {
-    const params = query(tab === "pnl");
-    if (tab === "trial") params.set("monthsBack", monthsBack);
-    params.set("format", "xlsx");
-    const endpoint = tab === "pnl" ? "profit-and-loss" : tab === "trial" ? "trial-balance" : "balance-sheet";
-    const response = await api(`/api/Finance/${endpoint}/export?${params}`);
-    if (!response.ok) { setError((await response.json().catch(() => null))?.message ?? "Export failed."); return; }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a"); link.href = url;
-    link.download = `${endpoint}-${pakistanToday()}.xlsx`; document.body.appendChild(link); link.click(); link.remove();
-    URL.revokeObjectURL(url);
+    if (exporting) return;
+    setExporting(true); setError(null);
+    try {
+      let params: URLSearchParams;
+      if (tab === "trial") {
+        const draft = currentTrialFilters();
+        const filterError = trialFilterError(draft);
+        if (filterError) throw new Error(filterError);
+        params = trialSummaryParams(applyTrialFilters(draft));
+      } else {
+        params = query(tab === "pnl");
+      }
+      params.set("format", "xlsx");
+      const endpoint = tab === "pnl" ? "profit-and-loss" : tab === "trial" ? "trial-balance" : "balance-sheet";
+      const response = await api(`/api/Finance/${endpoint}/export?${params}`);
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Export failed.");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const link = document.createElement("a"); link.href = url;
+        link.download = `${endpoint}-${pakistanToday()}.xlsx`; document.body.appendChild(link); link.click(); link.remove();
+      } finally { URL.revokeObjectURL(url); }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Export failed.");
+    } finally { setExporting(false); }
   };
 
   if (user?.role !== "Admin") return null;
+  const currentTrialError = trialFilterError(currentTrialFilters());
   return <Container className="py-8">
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
       <div><Link to="/finance" className="text-sm text-[var(--accent)]">← Finance dashboard</Link><h1 className="mt-1 text-3xl font-bold text-[var(--text-heading)]">Financial Reports</h1><p className="text-sm text-[var(--text-muted)]">Accrual performance and balanced account statements from one ledger.</p></div>
-      <div className="flex gap-2"><Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link><Button onClick={() => void exportReport()}>Export XLSX</Button></div>
+      <div className="flex gap-2"><Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link><Button disabled={exporting || (tab === "trial" && currentTrialError !== null)} onClick={() => void exportReport()}>{exporting ? "Exporting…" : "Export XLSX"}</Button></div>
     </div>
-    <div className="mb-5 flex flex-wrap gap-2">{([ ["pnl", "Profit & Loss"], ["trial", "Trial Balance"], ["balance", "Balance Sheet"] ] as [Tab,string][]).map(([id,label]) => <button key={id} onClick={() => setTab(id)} className={`rounded-full px-4 py-2 text-sm font-semibold ${tab === id ? "bg-[var(--accent)] text-white" : "border border-[var(--border)] bg-[var(--surface)]"}`}>{label}</button>)}</div>
+    <div className="mb-5 flex flex-wrap gap-2" aria-label="Financial report type">{([ ["pnl", "Profit & Loss"], ["trial", "Trial Balance"], ["balance", "Balance Sheet"] ] as [Tab,string][]).map(([id,label]) => <button type="button" aria-pressed={tab === id} key={id} onClick={() => setTab(id)} className={`rounded-full px-4 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${tab === id ? "bg-[var(--accent)] text-[var(--btn-primary-text)]" : "border border-[var(--border)] bg-[var(--surface)]"}`}>{label}</button>)}</div>
     <div className="mb-5 flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
       <label className="text-xs text-[var(--text-muted)]">Project<select className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label>
       {tab === "pnl" ? <>
@@ -119,14 +172,17 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         <Button variant="outline" disabled={startMonth === null} onClick={() => applyYearPreset("lastYear")}>{financePeriodLabel("lastYear", startMonth)}</Button>
         {startMonthFailed && <p role="alert" className="text-xs text-amber-300">Financial year setting unavailable — use From/To.</p>}
         <DateField label="From" value={from} onChange={setFrom}/><DateField label="To" value={to} onChange={setTo}/>
-      </> : <>
-        <DateField label="As at" value={asAt} onChange={setAsAt}/>
-        {tab === "trial" && <label className="text-xs text-[var(--text-muted)]">Months back<select className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={monthsBack} onChange={(event) => setMonthsBack(event.target.value)}><option value="6">6</option><option value="12">12</option><option value="24">24</option></select></label>}
-      </>}
-      <Button onClick={() => void load()}>Refresh</Button>
+      </> : tab === "trial" ? <>
+        <TrialDateModeField value={trialDateMode} onChange={setTrialDateMode}/>
+        {trialDateMode === "asAt"
+          ? <DateField label="As at" value={asAt} onChange={setAsAt} required/>
+          : <><DateField label="From" value={trialFrom} onChange={setTrialFrom} required/><DateField label="To" value={trialTo} onChange={setTrialTo} required/></>}
+      </> : <DateField label="As at" value={asAt} onChange={setAsAt}/>}
+      <Button disabled={tab === "trial" && currentTrialError !== null} onClick={() => void load()}>Refresh</Button>
+      {tab === "trial" && currentTrialError && <p role="alert" className="w-full text-xs text-amber-300">{currentTrialError}</p>}
     </div>
-    {error && <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}
-    {loading ? <p className="py-20 text-center text-[var(--text-muted)]">Loading report…</p> : tab === "pnl" && pnl ? <PnlView report={pnl}/> : tab === "trial" && trial ? <TrialView report={trial}/> : tab === "balance" && balance ? <BalanceView report={balance}/> : null}
+    {error && <p role="alert" className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}
+    {loading ? <p role="status" className="py-20 text-center text-[var(--text-muted)]">Loading report…</p> : tab === "pnl" && pnl ? <PnlView report={pnl}/> : tab === "trial" && trial ? <TrialView key={trialFiltersKey(trial.filters)} report={trial.report} filters={trial.filters}/> : tab === "balance" && balance ? <BalanceView report={balance}/> : null}
   </Container>;
 }
 
@@ -142,7 +198,145 @@ function TableHeader(){return <div className="grid grid-cols-3 border-b border-[
 function SectionRows({title,lines}:{title:string;lines:PnlLine[]}){return <div className="mt-4"><h3 className="px-3 text-sm font-bold text-[var(--text-heading)]">{title}</h3>{lines.length ? lines.map((line)=><div key={`${line.categoryId}-${line.name}`} className="grid grid-cols-3 border-b border-[var(--border)]/60 px-3 py-2 text-sm"><span>{line.name}<small className="ml-2 text-[var(--text-muted)]">{line.transactionCount} tx</small></span><span className="text-right">{money(line.amount)}</span><span className="text-right text-[var(--text-muted)]">{money(line.priorAmount ?? 0)}</span></div>):<p className="px-3 py-4 text-sm text-[var(--text-muted)]">No {title.toLowerCase()} in this period.</p>}</div>}
 function TotalRow({label,current,prior}:{label:string;current:number;prior:number}){return <div className="grid grid-cols-3 px-3 py-3 font-semibold"><span>{label}</span><span className="text-right">{money(current)}</span><span className="text-right">{money(prior)}</span></div>}
 
-function TrialView({ report }: { report: Trial }) { return <ReportCard title="Trial Balance"><div className="overflow-x-auto"><table className="min-w-max text-xs"><thead><tr><th rowSpan={2} className="sticky left-0 bg-[var(--surface)] p-2 text-left">Account</th>{report.columnDates.map((date,index)=><th key={date} colSpan={2} className={`border-l border-[var(--border)] p-2 ${report.columnBalanced[index] ? "text-emerald-300" : "text-rose-300"}`}>{new Date(date).toLocaleDateString("en-GB")} · {report.columnBalanced[index] ? "Balanced" : "Mismatch"}</th>)}</tr><tr>{report.columnDates.flatMap((date)=>[<th key={`${date}-d`} className="border-l border-[var(--border)] p-2 text-right">Debit</th>,<th key={`${date}-c`} className="p-2 text-right">Credit</th>])}</tr></thead><tbody>{report.rows.map((row)=><tr key={row.accountId} className="border-t border-[var(--border)]"><td className="sticky left-0 min-w-56 bg-[var(--surface)] p-2"><span className="text-[var(--text-muted)]">{row.ledgerCode ?? "—"}</span> · {row.accountName}</td>{report.columnDates.flatMap((_,index)=>[<td key={`${row.accountId}-${index}-d`} className="border-l border-[var(--border)] p-2 text-right">{row.debitBalances[index] ? money(row.debitBalances[index]) : "—"}</td>,<td key={`${row.accountId}-${index}-c`} className="p-2 text-right">{row.creditBalances[index] ? money(row.creditBalances[index]) : "—"}</td>])}</tr>)}</tbody><tfoot><tr className="border-t-2 border-[var(--border)] font-bold"><td className="sticky left-0 bg-[var(--surface)] p-2">Totals</td>{report.columnDates.flatMap((_,index)=>[<td key={`${index}-td`} className="border-l border-[var(--border)] p-2 text-right">{money(report.columnDebitTotals[index])}</td>,<td key={`${index}-tc`} className="p-2 text-right">{money(report.columnCreditTotals[index])}</td>])}</tr></tfoot></table></div></ReportCard> }
+function TrialView({ report, filters }: { report: TrialBalanceReport; filters: AppliedTrialBalanceFilters }) {
+  const [selected, setSelected] = useState<TrialBalanceRow | null>(null);
+  const columnIndex = Math.max(0, report.columnDates.length - 1);
+  const totalDebit = report.columnDebitTotals[columnIndex] ?? 0;
+  const totalCredit = report.columnCreditTotals[columnIndex] ?? 0;
+  const difference = Math.abs(totalDebit - totalCredit);
+  const balanced = report.columnBalanced[columnIndex] ?? difference < 0.005;
+
+  return <>
+    <ReportCard title="Trial Balance">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--text-muted)]">Closing balances as at <strong className="text-[var(--text-primary)]">{formatReportDate(filters.to)}</strong></p>
+        <p role="status" className={`rounded-full px-3 py-1 text-xs font-semibold ${balanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>
+          {balanced ? "Balanced" : `Out of balance by ${money(difference)}`}
+        </p>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+        <table className="data-table w-full min-w-[560px] text-sm">
+          <caption className="sr-only">Trial Balance account summary as at {formatReportDate(filters.to)}</caption>
+          <thead><tr><th scope="col" className="p-3 text-left sm:p-4">Account Name</th><th scope="col" className="p-3 text-right sm:p-4">Debit</th><th scope="col" className="p-3 text-right sm:p-4">Credit</th><th scope="col" className="p-3 text-center sm:p-4">Details</th></tr></thead>
+          <tbody>
+            {report.rows.map((row) => <tr key={row.accountKey}>
+              <th scope="row" className="max-w-sm p-3 text-left font-semibold text-[var(--text-heading)] sm:p-4">{row.accountName}</th>
+              <td className="p-3 text-right tabular-nums sm:p-4">{moneyOrDash(row.debitBalances[columnIndex] ?? 0)}</td>
+              <td className="p-3 text-right tabular-nums sm:p-4">{moneyOrDash(row.creditBalances[columnIndex] ?? 0)}</td>
+              <td className="p-3 text-center sm:p-4"><Button variant="outline" size="sm" aria-label={`View details for ${row.accountName}`} onClick={() => setSelected(row)}>Details</Button></td>
+            </tr>)}
+            {!report.rows.length && <tr><td colSpan={4} className="p-10 text-center text-[var(--text-muted)]">No account balances were found for these filters.</td></tr>}
+          </tbody>
+          <tfoot><tr className="border-t-2 border-[var(--border)] bg-[var(--surface-glass)] font-bold">
+            <th scope="row" className="p-3 text-left sm:p-4">Total</th>
+            <td className="p-3 text-right tabular-nums text-[var(--accent-light)] sm:p-4">{money(totalDebit)}</td>
+            <td className="p-3 text-right tabular-nums text-[var(--accent-light)] sm:p-4">{money(totalCredit)}</td>
+            <td className="p-3 sm:p-4"><span className="sr-only">{balanced ? "Debit and credit totals are balanced." : `Difference ${money(difference)}.`}</span></td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </ReportCard>
+    {selected && <TrialBalanceDetailsModal account={selected} filters={filters} onClose={() => setSelected(null)}/>}
+  </>;
+}
+
+function TrialBalanceDetailsModal({ account, filters, onClose }: { account: TrialBalanceRow; filters: AppliedTrialBalanceFilters; onClose: () => void }) {
+  const headingId = useId();
+  const dialogRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const [details, setDetails] = useState<TrialBalanceDetails | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      returnFocusRef.current?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setError(null); setDetails(null);
+    const loadDetails = async () => {
+      try {
+        const params = trialDetailsParams(account.accountKey, filters);
+        const response = await api(`/api/Finance/trial-balance/details?${params}`, { signal: controller.signal });
+        if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Account details could not be loaded.");
+        const result = await response.json() as TrialBalanceDetails;
+        if (!controller.signal.aborted) setDetails({ ...result, rows: Array.isArray(result.rows) ? result.rows : [] });
+      } catch (caught) {
+        if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "Account details could not be loaded.");
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    };
+    void loadDetails();
+    return () => controller.abort();
+  }, [account.accountKey, filters, attempt]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+    if (event.key !== "Tab") return;
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((element) => element.offsetParent !== null);
+    if (!controls.length) { event.preventDefault(); return; }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === event.currentTarget) { event.preventDefault(); first.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+
+  return <Modal open onClose={onClose} align="top">
+    <section ref={dialogRef} tabIndex={-1} onKeyDown={handleKeyDown} role="dialog" aria-modal="true" aria-labelledby={headingId} className="relative my-2 flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl sm:my-6">
+      <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] p-4 sm:p-6">
+        <div><h2 id={headingId} className="text-lg font-bold text-[var(--text-heading)] sm:text-xl">{details?.accountName ?? account.accountName} — Account Details</h2>{(details?.ledgerCode ?? account.ledgerCode) && <p className="mt-1 text-xs text-[var(--text-muted)]">Ledger {(details?.ledgerCode ?? account.ledgerCode)}</p>}</div>
+        <button type="button" aria-label="Close account details" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-[var(--text-muted)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]">×</button>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        {loading && <p role="status" className="py-16 text-center text-sm text-[var(--text-muted)]">Loading account details…</p>}
+        {!loading && error && <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-200"><p>{error}</p><Button className="mt-4" variant="outline" size="sm" onClick={() => setAttempt((value) => value + 1)}>Try again</Button></div>}
+        {!loading && details && <>
+          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <DetailMetric label="From" value={formatReportDate(details.from)}/>
+            <DetailMetric label="To" value={formatReportDate(details.to)}/>
+            <DetailMetric label="Opening Balance" value={formatBalance(details.openingBalance, details.openingBalanceType)}/>
+            <DetailMetric label="Closing Balance" value={formatBalance(details.closingBalance, details.closingBalanceType)}/>
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+            <table className="data-table w-full min-w-[900px] text-sm">
+              <caption className="sr-only">Ledger entries for {details.accountName}, {formatReportDate(details.from)} to {formatReportDate(details.to)}</caption>
+              <thead><tr><th scope="col" className="p-3 text-left">Date</th><th scope="col" className="p-3 text-left">Description</th><th scope="col" className="p-3 text-left">Reference</th><th scope="col" className="p-3 text-right">Debit</th><th scope="col" className="p-3 text-right">Credit</th><th scope="col" className="p-3 text-right">Running Balance</th></tr></thead>
+              <tbody>
+                {/* Server order is ledger order. Do not group same-date entries: each posting stays visible. */}
+                {details.rows.map((entry, index) => <tr key={`${entry.id}-${index}`}>
+                  <td className="whitespace-nowrap p-3">{formatReportDate(entry.date)}</td>
+                  <td className="max-w-sm whitespace-normal p-3 font-medium text-[var(--text-heading)]">{entry.description || "—"}</td>
+                  <td className="max-w-xs whitespace-normal p-3 text-[var(--text-muted)]">{entry.reference || "—"}</td>
+                  <td className="p-3 text-right tabular-nums">{moneyOrDash(entry.debit)}</td>
+                  <td className="p-3 text-right tabular-nums">{moneyOrDash(entry.credit)}</td>
+                  <td className="whitespace-nowrap p-3 text-right font-semibold tabular-nums">{formatBalance(entry.runningBalance, entry.runningBalanceType)}</td>
+                </tr>)}
+                {!details.rows.length && <tr><td colSpan={6} className="p-10 text-center text-[var(--text-muted)]">No transactions were found in this period.</td></tr>}
+              </tbody>
+              <tfoot><tr className="border-t-2 border-[var(--border)] bg-[var(--surface-glass)] font-bold"><th scope="row" colSpan={3} className="p-3 text-left">Totals</th><td className="p-3 text-right tabular-nums">{money(details.totalDebit)}</td><td className="p-3 text-right tabular-nums">{money(details.totalCredit)}</td><td className="p-3"></td></tr></tfoot>
+            </table>
+          </div>
+        </>}
+      </div>
+      <footer className="flex shrink-0 justify-end border-t border-[var(--border)] p-4 sm:px-6"><Button variant="ghost" size="sm" onClick={onClose}>Close</Button></footer>
+    </section>
+  </Modal>;
+}
+
+function DetailMetric({ label, value }: { label: string; value: string }) { return <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4"><p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{label}</p><p className="mt-1 font-semibold text-[var(--text-heading)]">{value}</p></div>; }
 
 function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard title={`Balance Sheet · ${new Date(report.asAt).toLocaleDateString("en-GB")}`}>
   {!report.isBalanced && <div className="mb-5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200"><p className="font-bold">Statement is out of balance by {money(report.imbalance)}.</p><p className="mt-1">Review: {report.unbalancedAccounts.join(", ")}. No difference row has been inserted.</p></div>}
@@ -163,5 +357,9 @@ function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard 
 function BsGroupView({group}:{group:BsGroup}){return <div className="mt-5"><h3 className="font-bold">{group.name}</h3>{group.lines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<div className="flex justify-between border-t border-[var(--border)] px-3 py-2 font-semibold"><span>Total {group.name}</span><span>{money(group.total)}</span></div></div>}
 function BsLineView({line}:{line:BsLine}){return <div className="flex justify-between px-3 py-2 text-sm"><span>{line.ledgerCode ? `${line.ledgerCode} · ` : ""}{line.name}</span><span>{money(line.amount)}</span></div>}
 function BsTotal({label,amount}:{label:string;amount:number}){return <div className="mt-4 flex justify-between rounded-xl bg-[var(--surface-glass)] p-4 text-lg font-bold"><span>{label}</span><span>{money(amount)}</span></div>}
+function moneyOrDash(value:number){return value ? money(value) : "—"}
+function formatBalance(value:number,type:BalanceType){const normalized=String(type??"").toLowerCase();const suffix=normalized.startsWith("c")?"Cr":normalized.startsWith("d")?"Dr":"";return `${money(value)}${suffix?` ${suffix}`:""}`}
+function formatReportDate(value:string){const match=/^(\d{4})-(\d{2})-(\d{2})/.exec(value);if(!match)return "—";const date=new Date(Number(match[1]),Number(match[2])-1,Number(match[3]));return Number.isNaN(date.getTime())?"—":date.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}
+function TrialDateModeField({value,onChange}:{value:TrialDateMode;onChange:(value:TrialDateMode)=>void}){return <fieldset><legend className="mb-1 text-xs text-[var(--text-muted)]">Date mode</legend><div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-1" aria-label="Trial Balance date mode">{([ ["asAt","As at"], ["range","Date range"] ] as [TrialDateMode,string][]).map(([mode,label])=><button type="button" aria-pressed={value===mode} key={mode} onClick={()=>onChange(mode)} className={`rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${value===mode?"bg-[var(--accent)] text-[var(--btn-primary-text)]":"text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>{label}</button>)}</div></fieldset>}
 function ReportCard({title,children}:{title:string;children:React.ReactNode}){return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><h2 className="mb-5 text-xl font-bold text-[var(--text-heading)]">{title}</h2>{children}</section>}
-function DateField({label,value,onChange}:{label:string;value:string;onChange:(value:string)=>void}){return <label className="text-xs text-[var(--text-muted)]">{label}<input type="date" className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={value} onChange={(event)=>onChange(event.target.value)}/></label>}
+function DateField({label,value,onChange,required=false}:{label:string;value:string;onChange:(value:string)=>void;required?:boolean}){return <label className="text-xs text-[var(--text-muted)]">{label}<input type="date" required={required} max={required?pakistanToday():undefined} className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] [color-scheme:dark]" value={value} onChange={(event)=>onChange(event.target.value)}/></label>}

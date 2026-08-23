@@ -38,6 +38,8 @@ namespace DAMS.Application.Interfaces
 
         Task<ProfitAndLossDto> GetProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
         Task<TrialBalanceDto> GetTrialBalanceAsync(int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken = default);
+        Task<TrialBalanceAccountDetailsDto> GetTrialBalanceDetailsAsync(string accountKey, int? projectId,
+            DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
         Task<BalanceSheetDto> GetBalanceSheetAsync(int? projectId, DateTime asAt, CancellationToken cancellationToken = default);
         Task<FinanceExportDto> ExportProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
         Task<FinanceExportDto> ExportTrialBalanceAsync(int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken = default);

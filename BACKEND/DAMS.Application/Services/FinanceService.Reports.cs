@@ -2,6 +2,7 @@ using DAMS.Application.Common;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace DAMS.Application.Services
 {
@@ -127,11 +128,22 @@ namespace DAMS.Application.Services
             await EnsureProjectExistsAsync(projectId, cancellationToken);
             if (monthsBack is < 0 or > 60) throw new InvalidOperationException("Months back must be between 0 and 60.");
             var date = ValidateReportDate(asAt == default ? PakistanTime.Today : asAt.Date, "As-at date");
-            var currentMonthEnd = new DateTime(date.Year, date.Month, DateTime.DaysInMonth(date.Year, date.Month));
-            var monthEnd = date == currentMonthEnd ? date : new DateTime(date.Year, date.Month, 1).AddDays(-1);
-            if (monthEnd.AddMonths(-monthsBack) < SqlStart)
-                throw new InvalidOperationException($"The requested trial-balance history cannot start before {SqlStart:dd MMM yyyy}.");
-            var dates = Enumerable.Range(0, monthsBack + 1).Select(offset => MonthEnd(monthEnd.AddMonths(offset - monthsBack))).ToList();
+            List<DateTime> dates;
+            if (monthsBack == 0)
+            {
+                // A one-column Trial Balance means the day the user selected, not the previous
+                // completed month. Historical multi-column callers retain the completed-month rule.
+                dates = [date];
+            }
+            else
+            {
+                var currentMonthEnd = new DateTime(date.Year, date.Month, DateTime.DaysInMonth(date.Year, date.Month));
+                var monthEnd = date == currentMonthEnd ? date : new DateTime(date.Year, date.Month, 1).AddDays(-1);
+                if (monthEnd.AddMonths(-monthsBack) < SqlStart)
+                    throw new InvalidOperationException($"The requested trial-balance history cannot start before {SqlStart:dd MMM yyyy}.");
+                dates = Enumerable.Range(0, monthsBack + 1)
+                    .Select(offset => MonthEnd(monthEnd.AddMonths(offset - monthsBack))).ToList();
+            }
             var openingDate = await OpeningDateAsync(cancellationToken);
             var builders = new Dictionary<string, TrialRowBuilder>(StringComparer.Ordinal);
 
@@ -174,7 +186,14 @@ namespace DAMS.Application.Services
                     var profit = allocations.Where(x => x.Key == CapitalTransactionType.ProfitShare).Sum(x => x.Amount);
                     var loss = allocations.Where(x => x.Key == CapitalTransactionType.LossShare).Sum(x => x.Amount);
                     if (profit != 0m || loss != 0m)
-                        values["EQ:allocated"] = new TrialValue(VirtualId("EQ:allocated"), null, "Allocated profit / loss", FinanceAccountType.Capital, profit, loss);
+                    {
+                        var netAllocation = Money(profit - loss);
+                        values["EQ:allocated"] = new TrialValue(
+                            VirtualId("EQ:allocated"), null, "Allocated profit / loss",
+                            FinanceAccountType.Capital,
+                            netAllocation > 0m ? netAllocation : 0m,
+                            netAllocation < 0m ? -netAllocation : 0m);
+                    }
                 }
 
                 foreach (var key in builders.Keys.Union(values.Keys).ToList())
@@ -182,7 +201,7 @@ namespace DAMS.Application.Services
                     if (!builders.TryGetValue(key, out var builder))
                     {
                         var value = values[key];
-                        builder = new TrialRowBuilder(value.AccountId, value.LedgerCode, value.Name, value.Type);
+                        builder = new TrialRowBuilder(key, value.AccountId, value.LedgerCode, value.Name, value.Type);
                         for (var i = 0; i < dates.IndexOf(columnDate); i++) builder.Add(0m, 0m);
                         builders[key] = builder;
                     }
@@ -197,9 +216,361 @@ namespace DAMS.Application.Services
             var creditTotals = Enumerable.Range(0, dates.Count).Select(i => Money(rows.Sum(r => r.CreditBalances[i]))).ToList();
             return new TrialBalanceDto
             {
+                AsAt = dates[^1],
                 ColumnDates = dates, Rows = rows, ColumnDebitTotals = debitTotals, ColumnCreditTotals = creditTotals,
-                ColumnBalanced = debitTotals.Zip(creditTotals, (d, c) => d == c).ToList()
+                ColumnBalanced = debitTotals.Zip(creditTotals, (d, c) => d == c).ToList(),
+                TotalDebit = debitTotals[^1], TotalCredit = creditTotals[^1],
+                IsBalanced = debitTotals[^1] == creditTotals[^1]
             };
+        }
+
+        public async Task<TrialBalanceAccountDetailsDto> GetTrialBalanceDetailsAsync(
+            string accountKey, int? projectId, DateTime? from, DateTime? to,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(accountKey))
+                throw new InvalidOperationException("Account key is required.");
+            accountKey = accountKey.Trim();
+            await EnsureProjectExistsAsync(projectId, cancellationToken);
+
+            var toDate = ValidateReportDate((to ?? PakistanTime.Today).Date, "To date");
+            var fromDate = ValidateReportDate((from ?? toDate).Date, "From date");
+            if (fromDate > toDate)
+                throw new InvalidOperationException("From date cannot be after to date.");
+
+            var openingDate = await OpeningDateAsync(cancellationToken);
+
+            // Looking the row up first both validates the opaque key and gives the exact identity
+            // against which the closing detail must reconcile.
+            var summary = await GetTrialBalanceAsync(projectId, toDate, 0, cancellationToken);
+            var summaryRow = summary.Rows.SingleOrDefault(row => row.AccountKey == accountKey)
+                ?? throw new InvalidOperationException(
+                    "The selected Trial Balance account is not available for these filters.");
+
+            TrialBalanceAccountDetailsDto details;
+            if (TryPhysicalAccountId(accountKey, out var accountId))
+            {
+                var slice = await _accountService.GetTransactionLedgerSliceAsync(
+                    accountId, projectId, fromDate, toDate, 0, int.MaxValue, cancellationToken);
+                details = BuildPhysicalDetails(summaryRow, slice, fromDate, toDate);
+            }
+            else
+            {
+                var accumulationStart = accountKey == "EQ:allocated"
+                    ? SqlStart
+                    : openingDate.HasValue && openingDate.Value.Date <= toDate
+                        ? openingDate.Value.Date
+                        : SqlStart;
+                var movements = await BuildVirtualLedgerAsync(
+                    accountKey, projectId, accumulationStart, toDate.AddDays(1), cancellationToken);
+                details = BuildVirtualDetails(summaryRow, movements, fromDate, toDate);
+            }
+
+            var detailDebit = details.ClosingBalanceType == "Debit" ? details.ClosingBalance : 0m;
+            var detailCredit = details.ClosingBalanceType == "Credit" ? details.ClosingBalance : 0m;
+            if (Money(detailDebit) != Money(summaryRow.Debit)
+                || Money(detailCredit) != Money(summaryRow.Credit))
+            {
+                _logger.LogError(
+                    "Trial Balance detail reconciliation failed for {AccountKey}. Summary Dr {SummaryDebit} Cr {SummaryCredit}; detail Dr {DetailDebit} Cr {DetailCredit}.",
+                    accountKey, summaryRow.Debit, summaryRow.Credit, detailDebit, detailCredit);
+                throw new InvalidOperationException(
+                    "The account details could not be reconciled with the Trial Balance. Refresh and try again.");
+            }
+
+            return details;
+        }
+
+        private static TrialBalanceAccountDetailsDto BuildPhysicalDetails(
+            TrialBalanceRowDto summaryRow, FinanceAccountLedgerSliceDto slice,
+            DateTime from, DateTime to)
+        {
+            var debitNormal = AccountBalanceDirection.IsDebitNormal(slice.AccountType);
+            var direction = debitNormal ? 1m : -1m;
+            var openingSigned = Money(slice.OpeningNormalBalance * direction);
+            var runningSigned = Money(openingSigned + slice.NormalMovementBeforePage * direction);
+            var rows = new List<TrialBalanceTransactionDto>(slice.Items.Count);
+            foreach (var item in slice.Items)
+            {
+                var movement = Money(item.Amount * direction);
+                runningSigned = Money(runningSigned + movement);
+                rows.Add(new TrialBalanceTransactionDto
+                {
+                    Id = $"{item.SourceOrder}:{item.RecordId}",
+                    Date = item.Date.Date,
+                    Description = Describe(item),
+                    Reference = item.Reference,
+                    Debit = movement > 0m ? movement : 0m,
+                    Credit = movement < 0m ? -movement : 0m,
+                    RunningBalance = Math.Abs(runningSigned),
+                    RunningBalanceType = BalanceType(runningSigned)
+                });
+            }
+
+            var closingSigned = Money(openingSigned + slice.PeriodNormalMovement * direction);
+            return Details(summaryRow, from, to, openingSigned, closingSigned, rows);
+        }
+
+        private static TrialBalanceAccountDetailsDto BuildVirtualDetails(
+            TrialBalanceRowDto summaryRow, List<TrialLedgerMovement> movements,
+            DateTime from, DateTime to)
+        {
+            var openingSigned = Money(movements.Where(row => row.Date < from)
+                .Sum(row => row.Debit - row.Credit));
+            var period = movements.Where(row => row.Date >= from && row.Date < to.AddDays(1))
+                .OrderBy(row => row.Date).ThenBy(row => row.PostedAt)
+                .ThenBy(row => row.SourceOrder).ThenBy(row => row.RecordId).ToList();
+            var runningSigned = openingSigned;
+            var rows = new List<TrialBalanceTransactionDto>(period.Count);
+            foreach (var item in period)
+            {
+                runningSigned = Money(runningSigned + item.Debit - item.Credit);
+                rows.Add(new TrialBalanceTransactionDto
+                {
+                    Id = $"{item.SourceOrder}:{item.RecordId}", Date = item.Date.Date,
+                    Description = item.Description, Reference = item.Reference,
+                    Debit = Money(item.Debit), Credit = Money(item.Credit),
+                    RunningBalance = Math.Abs(runningSigned),
+                    RunningBalanceType = BalanceType(runningSigned)
+                });
+            }
+            return Details(summaryRow, from, to, openingSigned, runningSigned, rows);
+        }
+
+        private static TrialBalanceAccountDetailsDto Details(
+            TrialBalanceRowDto summaryRow, DateTime from, DateTime to,
+            decimal openingSigned, decimal closingSigned, List<TrialBalanceTransactionDto> rows) => new()
+        {
+            AccountName = summaryRow.AccountName,
+            LedgerCode = summaryRow.LedgerCode,
+            From = from,
+            To = to,
+            OpeningBalance = Math.Abs(Money(openingSigned)),
+            OpeningBalanceType = BalanceType(openingSigned),
+            ClosingBalance = Math.Abs(Money(closingSigned)),
+            ClosingBalanceType = BalanceType(closingSigned),
+            TotalDebit = Money(rows.Sum(row => row.Debit)),
+            TotalCredit = Money(rows.Sum(row => row.Credit)),
+            Rows = rows
+        };
+
+        private static string Describe(FinanceAccountTransactionDto row)
+        {
+            var detail = string.IsNullOrWhiteSpace(row.Description) ? row.Label : row.Description.Trim();
+            return string.IsNullOrWhiteSpace(detail) ? row.Kind : $"{row.Kind} - {detail}";
+        }
+
+        private static string BalanceType(decimal signedDebitBalance) =>
+            signedDebitBalance < 0m ? "Credit" : "Debit";
+
+        private static bool TryPhysicalAccountId(string accountKey, out int accountId)
+        {
+            accountId = 0;
+            return accountKey.StartsWith("A:", StringComparison.Ordinal)
+                && int.TryParse(accountKey.AsSpan(2), out accountId)
+                && accountId > 0;
+        }
+
+        private async Task<List<TrialLedgerMovement>> BuildVirtualLedgerAsync(
+            string accountKey, int? projectId, DateTime accumulationStart, DateTime toExclusive,
+            CancellationToken cancellationToken)
+        {
+            if (accountKey == "I:unit-sales")
+            {
+                return await SaleRecognitionQuery(projectId, accumulationStart, toExclusive)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.RecognitionDate, PostedAt = row.RecognizedAt,
+                        SourceOrder = 200, Description = "Unit sale - " + row.Booking.Customer.FullName,
+                        Reference = row.Booking.BookingReference,
+                        Debit = row.NetSaleValue < 0m ? -row.NetSaleValue : 0m,
+                        Credit = row.NetSaleValue < 0m ? 0m : row.NetSaleValue
+                    }).ToListAsync(cancellationToken);
+            }
+
+            if (accountKey == "I:cancellation-retained")
+            {
+                return await RetainedCancellationQuery(projectId, accumulationStart, toExclusive)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.CancellationDate, PostedAt = row.CancelledAt,
+                        SourceOrder = 201,
+                        Description = "Cancellation income - " + row.Booking.Customer.FullName,
+                        Reference = row.Booking.BookingReference,
+                        Debit = row.RetainedAmount < 0m ? -row.RetainedAmount : 0m,
+                        Credit = row.RetainedAmount < 0m ? 0m : row.RetainedAmount
+                    }).ToListAsync(cancellationToken);
+            }
+
+            if (accountKey.StartsWith("I:", StringComparison.Ordinal))
+            {
+                var (categoryId, categoryName, unclassified) = ParseVirtualCategoryKey(accountKey, "I:");
+                var query = ManualQuery(projectId, accumulationStart, toExclusive);
+                query = unclassified
+                    ? query.Where(row => row.RevenueCategoryId == null
+                        || row.RevenueCategory!.Code.StartsWith("legacy_"))
+                    : query.Where(row => row.RevenueCategoryId == categoryId
+                        && row.RevenueTypeName == categoryName);
+                return await query.Select(row => new TrialLedgerMovement
+                {
+                    RecordId = row.Id, Date = row.Date, PostedAt = row.CreatedAt,
+                    SourceOrder = 202,
+                    Description = row.Description ?? row.RevenueTypeName,
+                    Reference = row.Reference,
+                    Debit = row.Amount < 0m ? -row.Amount : 0m,
+                    Credit = row.Amount < 0m ? 0m : row.Amount
+                }).ToListAsync(cancellationToken);
+            }
+
+            if (accountKey == "E:commission-payouts")
+            {
+                var rows = await CommissionPayoutQuery(
+                        projectId, accumulationStart, toExclusive, null, false)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.PaymentDate, PostedAt = row.RecordedAt,
+                        SourceOrder = 210,
+                        Description = "Commission payout - " + row.Commission.Partner.Name,
+                        Reference = row.PaymentReference,
+                        Debit = row.Amount, Credit = 0m
+                    }).ToListAsync(cancellationToken);
+                rows.AddRange(await CommissionReversalQuery(
+                        projectId, accumulationStart, toExclusive, null, false)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.ReversedAt, PostedAt = row.ReversedAt,
+                        SourceOrder = 211,
+                        Description = "Commission reversal - " + row.Payout.Commission.Partner.Name,
+                        Reference = row.Reason,
+                        Debit = 0m, Credit = row.Amount
+                    }).ToListAsync(cancellationToken));
+                return rows;
+            }
+
+            if (accountKey == "E:cash-rebates")
+            {
+                var rows = await CashRebateQuery(
+                        projectId, accumulationStart, toExclusive, null, false)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.AppliedAt, PostedAt = row.RecordedAt,
+                        SourceOrder = 220,
+                        Description = "Customer rebate - " + row.Rebate.Customer.FullName,
+                        Reference = row.Reference,
+                        Debit = row.Amount, Credit = 0m
+                    }).ToListAsync(cancellationToken);
+                rows.AddRange(await CashRebateReversalQuery(
+                        projectId, accumulationStart, toExclusive, null, false)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.ReversedAt, PostedAt = row.ReversedAt,
+                        SourceOrder = 221,
+                        Description = "Rebate reversal - " + row.Disbursement.Rebate.Customer.FullName,
+                        Reference = row.Reason,
+                        Debit = 0m, Credit = row.Amount
+                    }).ToListAsync(cancellationToken));
+                return rows;
+            }
+
+            if (accountKey == "E:non-cash-credits")
+            {
+                var rows = await NonCashCreditQuery(projectId, accumulationStart, toExclusive)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id,
+                        Date = row.AppliedAt < row.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                            ? row.Rebate.Booking.SaleRecognition!.RecognitionDate : row.AppliedAt,
+                        PostedAt = row.AppliedAt < row.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                            ? row.Rebate.Booking.SaleRecognition!.RecognizedAt : row.RecordedAt,
+                        SourceOrder = 230,
+                        Description = "Customer credit - " + row.Rebate.Customer.FullName,
+                        Reference = row.Reference,
+                        Debit = row.Amount, Credit = 0m
+                    }).ToListAsync(cancellationToken);
+                rows.AddRange(await NonCashCreditReversalQuery(projectId, accumulationStart, toExclusive)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id,
+                        Date = row.ReversedAt < row.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                            ? row.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : row.ReversedAt,
+                        PostedAt = row.ReversedAt < row.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
+                            ? row.Disbursement.Rebate.Booking.SaleRecognition!.RecognizedAt : row.ReversedAt,
+                        SourceOrder = 231,
+                        Description = "Customer credit reversal - " + row.Disbursement.Rebate.Customer.FullName,
+                        Reference = row.Reason,
+                        Debit = 0m, Credit = row.Amount
+                    }).ToListAsync(cancellationToken));
+                return rows;
+            }
+
+            if (accountKey == "E:loan-interest")
+            {
+                return await LoanInterestQuery(projectId, accumulationStart, toExclusive, null, false)
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.Date, PostedAt = row.CreatedAt,
+                        SourceOrder = 240,
+                        Description = "Loan interest - " + row.Loan.Name,
+                        Reference = row.Reference,
+                        Debit = row.InterestAmount, Credit = 0m
+                    }).ToListAsync(cancellationToken);
+            }
+
+            if (accountKey.StartsWith("E:", StringComparison.Ordinal))
+            {
+                var (categoryId, categoryName, unclassified) = ParseVirtualCategoryKey(accountKey, "E:");
+                var query = ExpenseQuery(projectId, accumulationStart, toExclusive);
+                query = unclassified
+                    ? query.Where(row => row.CategoryId == null && row.Category == categoryName)
+                    : query.Where(row => row.CategoryId == categoryId && row.Category == categoryName);
+                return await query.Select(row => new TrialLedgerMovement
+                {
+                    RecordId = row.Id, Date = row.Date, PostedAt = row.CreatedAt,
+                    SourceOrder = 250,
+                    Description = row.Description ?? row.Category,
+                    Reference = row.Vendor,
+                    Debit = row.Amount < 0m ? 0m : row.Amount,
+                    Credit = row.Amount < 0m ? -row.Amount : 0m
+                }).ToListAsync(cancellationToken);
+            }
+
+            if (accountKey == "EQ:allocated")
+            {
+                if (projectId.HasValue) return [];
+                return await _context.CapitalTransactions.AsNoTracking()
+                    .Where(row => row.Date >= accumulationStart && row.Date < toExclusive
+                        && (row.Type == CapitalTransactionType.ProfitShare
+                            || row.Type == CapitalTransactionType.LossShare))
+                    .Select(row => new TrialLedgerMovement
+                    {
+                        RecordId = row.Id, Date = row.Date, PostedAt = row.CreatedAt,
+                        SourceOrder = 260,
+                        Description = row.Type == CapitalTransactionType.ProfitShare
+                            ? "Profit allocated - " + row.CapitalPartner.Name
+                            : "Loss allocated - " + row.CapitalPartner.Name,
+                        Reference = row.Reference,
+                        Debit = row.Type == CapitalTransactionType.ProfitShare ? row.Amount : 0m,
+                        Credit = row.Type == CapitalTransactionType.LossShare ? row.Amount : 0m
+                    }).ToListAsync(cancellationToken);
+            }
+
+            throw new InvalidOperationException(
+                "Details are not supported for this Trial Balance account key.");
+        }
+
+        private static (int? CategoryId, string Name, bool Unclassified) ParseVirtualCategoryKey(
+            string accountKey, string prefix)
+        {
+            var source = accountKey[prefix.Length..];
+            var separator = source.IndexOf(':');
+            if (separator <= 0 || separator == source.Length - 1)
+                throw new InvalidOperationException("The Trial Balance account key is invalid.");
+            var idPart = source[..separator];
+            var name = source[(separator + 1)..];
+            if (idPart == "U") return (null, name, true);
+            if (!int.TryParse(idPart, out var id) || id <= 0)
+                throw new InvalidOperationException("The Trial Balance account key is invalid.");
+            return (id, name, false);
         }
 
         public async Task<FinanceExportDto> ExportProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
@@ -738,18 +1109,36 @@ namespace DAMS.Application.Services
         }
         private sealed record AccountAmount(int Id, decimal Amount);
         private sealed record TrialValue(int AccountId, string? LedgerCode, string Name, FinanceAccountType Type, decimal Debit, decimal Credit);
+        private sealed class TrialLedgerMovement
+        {
+            public int RecordId { get; set; }
+            public DateTime Date { get; set; }
+            public DateTime PostedAt { get; set; }
+            public int SourceOrder { get; set; }
+            public string Description { get; set; } = string.Empty;
+            public string? Reference { get; set; }
+            public decimal Debit { get; set; }
+            public decimal Credit { get; set; }
+        }
         private sealed class TrialRowBuilder
         {
+            public string AccountKey { get; }
             public int AccountId { get; }
             public string? LedgerCode { get; }
             public string Name { get; }
             public FinanceAccountType Type { get; }
             private readonly List<decimal> _debits = [];
             private readonly List<decimal> _credits = [];
-            public TrialRowBuilder(int accountId, string? ledgerCode, string name, FinanceAccountType type)
-            { AccountId = accountId; LedgerCode = ledgerCode; Name = name; Type = type; }
+            public TrialRowBuilder(string accountKey, int accountId, string? ledgerCode, string name, FinanceAccountType type)
+            { AccountKey = accountKey; AccountId = accountId; LedgerCode = ledgerCode; Name = name; Type = type; }
             public void Add(decimal debit, decimal credit) { _debits.Add(debit); _credits.Add(credit); }
-            public TrialBalanceRowDto Build() => new() { AccountId = AccountId, LedgerCode = LedgerCode, AccountName = Name, Type = Type, DebitBalances = _debits, CreditBalances = _credits };
+            public TrialBalanceRowDto Build() => new()
+            {
+                AccountKey = AccountKey, AccountId = AccountId, LedgerCode = LedgerCode,
+                AccountName = Name, Type = Type, DebitBalances = _debits, CreditBalances = _credits,
+                Debit = _debits.Count == 0 ? 0m : _debits[^1],
+                Credit = _credits.Count == 0 ? 0m : _credits[^1]
+            };
         }
     }
 }
