@@ -10,7 +10,7 @@ export interface PagedResult<T> { items:T[]; hasMore:boolean; }
 export interface CommissionRebateSummary {
   accruedCommission: number; payableCommission: number; commissionPaid: number;
   commissionReversalRequired: number; approvedRebates: number; rebatesAppliedOrPaid: number;
-  rebateReversalRequired: number; activePartners: number; pendingApprovals: number;
+  rebateReversalRequired: number; activePartners: number; pendingRecords: number;
 }
 
 export interface Partner {

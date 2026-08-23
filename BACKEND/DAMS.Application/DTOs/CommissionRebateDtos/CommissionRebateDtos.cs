@@ -12,7 +12,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal RebatesAppliedOrPaid { get; set; }
         public decimal RebateReversalRequired { get; set; }
         public int ActivePartners { get; set; }
-        public int PendingApprovals { get; set; }
+        public int PendingRecords { get; set; }
     }
 
     public sealed class ThirdPartyPartnerDto

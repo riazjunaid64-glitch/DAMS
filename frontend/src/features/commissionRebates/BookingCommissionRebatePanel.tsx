@@ -3,7 +3,7 @@ import { api } from "../../api/api";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
-import { commissionActions, idempotencyKey, money, pakistanToday, prettyEnum, rebateActions, trapDialogKeys } from "./state";
+import { commissionActions, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, statusLabel, trapDialogKeys } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -112,11 +112,13 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   const openNewRebate=()=>{setEditingRebate(null);setRebate(emptyRebateForm());setShowRebate(true);};
   const editCommission=(value:Commission,changeReason:string)=>{setEditingCommission(value);setCommission({partnerId:String(value.partnerId),calculationType:value.calculationType,calculationBasis:commissionBases.includes(value.calculationBasis)?value.calculationBasis:"NetSalePriceAfterDiscount",percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",notes:value.manualReason??"",changeReason});setShowCommission(true);};
   const editRebate=(value:Rebate,changeReason:string)=>{setEditingRebate(value);setRebate({calculationType:value.calculationType,calculationBasis:rebateBases.includes(value.calculationBasis)?value.calculationBasis:"AgreedSalePrice",percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",reason:value.reason,changeReason});setShowRebate(true);};
-  const editCommissionWithReason=(value:Commission)=>{const reason=window.prompt("Reason for correcting this draft commission")?.trim();if(!reason)return;editCommission(value,reason);};
-  const editRebateWithReason=(value:Rebate)=>{const reason=window.prompt("Reason for correcting this draft rebate")?.trim();if(!reason)return;editRebate(value,reason);};
+  const editCommissionWithReason=(value:Commission)=>{const reason=window.prompt("Reason for correcting this commission")?.trim();if(!reason)return;editCommission(value,reason);};
+  const editRebateWithReason=(value:Rebate)=>{const reason=window.prompt("Reason for correcting this rebate")?.trim();if(!reason)return;editRebate(value,reason);};
 
-  const commissionStatus=async(c:Commission,target:string)=>{let reason:string|null=null;let approvedAmount:number|undefined;if(target==="Approved"){const amount=window.prompt("Approved amount",String(c.finalAmount));if(amount===null)return;approvedAmount=Number(amount);if(!Number.isFinite(approvedAmount)||approvedAmount<=0){setError("Enter a valid approved amount greater than zero.");return;}if(approvedAmount!==c.finalAmount)reason=window.prompt("Reason for changing the approved amount")??"";}else if(["Rejected","Draft","Cancelled","Earned"].includes(target)){reason=window.prompt(target==="Earned"?"Milestone confirmation / note":"Reason");if(reason===null)return;}await execute(()=>commissionRebateApi.commissionStatus(bookingId,c.id,{targetStatus:target,approvedAmount,reason,concurrencyToken:c.concurrencyToken}));};
-  const rebateStatus=async(r:Rebate,target:string)=>{let reason:string|null=null;let approvedAmount:number|undefined;if(target==="Approved"){const amount=window.prompt("Approved rebate amount",String(r.finalAmount));if(amount===null)return;approvedAmount=Number(amount);if(!Number.isFinite(approvedAmount)||approvedAmount<=0){setError("Enter a valid approved rebate amount greater than zero.");return;}if(approvedAmount!==r.finalAmount)reason=window.prompt("Reason for changing the approved amount")??"";}else if(["Rejected","Draft","Cancelled"].includes(target)){reason=window.prompt("Reason");if(reason===null)return;}await execute(()=>commissionRebateApi.rebateStatus(bookingId,r.id,{targetStatus:target,approvedAmount,reason,concurrencyToken:r.concurrencyToken}));};
+  // Cancelling is the only status a person still sets by hand: a commission is pending from the
+  // moment it is entered, and the payouts move it to Paid on their own.
+  const cancelCommission=async(c:Commission)=>{const reason=window.prompt(`Reason for cancelling the commission for ${c.partnerName}`)?.trim();if(!reason)return;await execute(()=>commissionRebateApi.commissionStatus(bookingId,c.id,{targetStatus:"Cancelled",reason,concurrencyToken:c.concurrencyToken}));};
+  const cancelRebate=async(r:Rebate)=>{const reason=window.prompt("Reason for cancelling this rebate")?.trim();if(!reason)return;await execute(()=>commissionRebateApi.rebateStatus(bookingId,r.id,{targetStatus:"Cancelled",reason,concurrencyToken:r.concurrencyToken}));};
   const recordPayout=async(e:FormEvent)=>{e.preventDefault();if(!payoutFor)return;await execute(async()=>{const result=await commissionRebateApi.payout(bookingId,payoutFor.id,{financeAccountId:Number(payout.financeAccountId),amount:Number(payout.amount),paymentDate:payout.paymentDate,paymentMethod:payout.paymentMethod,paymentReference:payout.paymentReference||null,idempotencyKey:payout.idempotencyKey,notes:payout.notes||null,commissionConcurrencyToken:payoutFor.concurrencyToken});setPayoutFor(null);return result;});};
   const recordDisbursement=async(e:FormEvent)=>{e.preventDefault();if(!disburseFor)return;await execute(async()=>{const cash=disbursement.method==="CashOrBankPayment",installment=disbursement.method==="InstallmentAdjustment";const result=await commissionRebateApi.disburseRebate(bookingId,disburseFor.id,{method:disbursement.method,amount:Number(disbursement.amount),appliedAt:disbursement.appliedAt,financeAccountId:cash?Number(disbursement.financeAccountId):null,installmentId:installment?Number(disbursement.installmentId):null,paymentMethod:cash?disbursement.paymentMethod:null,reference:disbursement.reference||null,idempotencyKey:disbursement.idempotencyKey,notes:disbursement.notes||null,rebateConcurrencyToken:disburseFor.concurrencyToken});setDisburseFor(null);return result;});};
   const openPayout=(c:Commission)=>{setPayoutFor(c);setPayout({financeAccountId:"",amount:String(c.outstandingAmount),paymentDate:pakistanToday(),paymentMethod:"BankTransfer",paymentReference:"",notes:"",idempotencyKey:idempotencyKey(`commission-${c.id}`)});};
@@ -133,8 +135,6 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   const percentCommission=commission.calculationType==="Percentage";
   const percentRebate=rebate.calculationType==="Percentage";
   const cashDisbursement=disbursement.method==="CashOrBankPayment";
-  const draftCommissions=workspace.commissions.filter(row=>row.status==="Draft");
-  const draftRebates=workspace.rebates.filter(row=>row.status==="Draft");
 
   return <section className="mb-8 mt-8 space-y-6" aria-labelledby="commission-rebate-heading">
     <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -147,7 +147,7 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
     {error&&<p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
 
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
-      <SectionHeader id="commission-rebate-heading" title="Partner commissions" blurb="Add and manage commissions for partners associated with this booking."
+      <SectionHeader id="commission-rebate-heading" title="Partner commissions" blurb="Each commission stays Pending until it is fully paid, then becomes Paid on its own."
         action={<Button size="sm" variant="outline" disabled={!active||busy||showCommission} onClick={openNewCommission}>+ Add Commission</Button>}/>
       {showCommission&&<EntryCard title={editingCommission?"Edit commission":"Commission entry"} index={editingCommission?workspace.commissions.findIndex(c=>c.id===editingCommission.id)+1:workspace.commissions.length+1}>
         <form onSubmit={saveCommission} className="space-y-4">
@@ -175,15 +175,14 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
           <FormButtons busy={busy} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
         </form>
       </EntryCard>}
-      {draftCommissions.length>0&&<div className="mt-4 flex flex-wrap items-center gap-2"><span className="text-xs text-[var(--text-muted)]">Correct a draft:</span>{draftCommissions.map(row=><Button key={`edit-commission-${row.id}`} type="button" size="sm" variant="ghost" disabled={busy} onClick={()=>editCommissionWithReason(row)}>Edit {row.partnerName}</Button>)}</div>}
       <div className="mt-5 space-y-4">
         {workspace.commissions.length===0&&!showCommission?<Empty text="No partner commissions on this booking yet."/>
-          :workspace.commissions.map((c,i)=><CommissionCard key={c.id} value={c} index={i+1} busy={busy} status={t=>void commissionStatus(c,t)} pay={()=>openPayout(c)} reverse={(id,amount)=>void reversePayout(c,id,amount)} upload={f=>void upload("Commission",c.id,f)} uploadMovement={(id,f)=>void upload("CommissionPayout",id,f)} onEvidenceError={setError}/>)}
+          :workspace.commissions.map((c,i)=><CommissionCard key={c.id} value={c} index={i+1} busy={busy} cancel={()=>void cancelCommission(c)} edit={()=>editCommissionWithReason(c)} pay={()=>openPayout(c)} reverse={(id,amount)=>void reversePayout(c,id,amount)} upload={f=>void upload("Commission",c.id,f)} uploadMovement={(id,f)=>void upload("CommissionPayout",id,f)} onEvidenceError={setError}/>)}
       </div>
     </div>
 
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
-      <SectionHeader title="Rebates" blurb="Add and manage rebates applied to this booking."
+      <SectionHeader title="Rebates" blurb="A rebate stays Pending until it has all reached the customer."
         action={<Button size="sm" variant="outline" disabled={!active||busy||showRebate||liveRebate} onClick={openNewRebate}>+ Add Rebate</Button>}/>
       {liveRebate&&!showRebate&&<p className="mt-3 text-xs text-[var(--text-muted)]">A booking carries one live rebate. Cancel or reject the one below before adding another.</p>}
       {showRebate&&<EntryCard title={editingRebate?"Edit rebate":"Rebate entry"} index={editingRebate?workspace.rebates.findIndex(r=>r.id===editingRebate.id)+1:workspace.rebates.length+1}>
@@ -207,10 +206,9 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
           <FormButtons busy={busy} cancel={()=>{setShowRebate(false);setEditingRebate(null);}}/>
         </form>
       </EntryCard>}
-      {draftRebates.length>0&&<div className="mt-4 flex flex-wrap items-center gap-2"><span className="text-xs text-[var(--text-muted)]">Correct a draft:</span>{draftRebates.map(row=><Button key={`edit-rebate-${row.id}`} type="button" size="sm" variant="ghost" disabled={busy} onClick={()=>editRebateWithReason(row)}>Edit rebate</Button>)}</div>}
       <div className="mt-5 space-y-4">
         {workspace.rebates.length===0&&!showRebate?<Empty text="No rebate on this booking yet."/>
-          :workspace.rebates.map((r,i)=><RebateCard key={r.id} value={r} index={i+1} netSalePrice={workspace.netSalePrice} busy={busy} status={t=>void rebateStatus(r,t)} disburse={()=>openDisbursement(r)} reverse={(id,amount)=>void reverseDisbursement(r,id,amount)} upload={f=>void upload("Rebate",r.id,f)} uploadMovement={(id,f)=>void upload("RebateDisbursement",id,f)} onEvidenceError={setError}/>)}
+          :workspace.rebates.map((r,i)=><RebateCard key={r.id} value={r} index={i+1} netSalePrice={workspace.netSalePrice} busy={busy} cancel={()=>void cancelRebate(r)} edit={()=>editRebateWithReason(r)} disburse={()=>openDisbursement(r)} reverse={(id,amount)=>void reverseDisbursement(r,id,amount)} upload={f=>void upload("Rebate",r.id,f)} uploadMovement={(id,f)=>void upload("RebateDisbursement",id,f)} onEvidenceError={setError}/>)}
       </div>
     </div>
 
@@ -229,11 +227,11 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
       </form>
     </Dialog>}
 
-    {payoutFor&&<Dialog title={`Pay ${payoutFor.partnerName}`} close={()=>!busy&&setPayoutFor(null)}><form onSubmit={recordPayout} className="space-y-3"><p className="text-sm text-[var(--text-muted)]">Outstanding {money(payoutFor.outstandingAmount)}. The selected finance account will record an outgoing transaction.</p><Select label="Finance account" required value={payout.financeAccountId} set={v=>setPayout({...payout,financeAccountId:v})} options={[{v:"",n:"Select account"},...accounts.map(a=>({v:String(a.id),n:`${a.name} · ${a.accountHolderName}`}))]}/><Field label="Amount" required type="number" min="0.01" max={payoutFor.outstandingAmount} step="0.01" value={payout.amount} onChange={e=>setPayout({...payout,amount:e.target.value})}/><Field label="Payment date" required type="date" max={pakistanToday()} value={payout.paymentDate} onChange={e=>setPayout({...payout,paymentDate:e.target.value})}/><Select label="Method" value={payout.paymentMethod} set={v=>setPayout({...payout,paymentMethod:v})} options={paymentMethods}/><Field label="Reference" required={payout.paymentMethod!=="Cash"} value={payout.paymentReference} onChange={e=>setPayout({...payout,paymentReference:e.target.value})}/><Field label="Notes" value={payout.notes} onChange={e=>setPayout({...payout,notes:e.target.value})}/><FormButtons busy={busy} cancel={()=>setPayoutFor(null)}/></form></Dialog>}
+    {payoutFor&&<Dialog title={`Pay ${payoutFor.partnerName}`} close={()=>!busy&&setPayoutFor(null)}><form onSubmit={recordPayout} className="space-y-3"><p className="text-sm text-[var(--text-muted)]">Remaining {money(payoutFor.outstandingAmount)}. The selected finance account will record an outgoing transaction.</p><Select label="Finance account" required value={payout.financeAccountId} set={v=>setPayout({...payout,financeAccountId:v})} options={[{v:"",n:"Select account"},...accounts.map(a=>({v:String(a.id),n:`${a.name} · ${a.accountHolderName}`}))]}/><Field label="Amount" required type="number" min="0.01" max={payoutFor.outstandingAmount} step="0.01" value={payout.amount} onChange={e=>setPayout({...payout,amount:e.target.value})}/><Field label="Payment date" required type="date" max={pakistanToday()} value={payout.paymentDate} onChange={e=>setPayout({...payout,paymentDate:e.target.value})}/><Select label="Method" value={payout.paymentMethod} set={v=>setPayout({...payout,paymentMethod:v})} options={paymentMethods}/><Field label="Reference" required={payout.paymentMethod!=="Cash"} value={payout.paymentReference} onChange={e=>setPayout({...payout,paymentReference:e.target.value})}/><Field label="Notes" value={payout.notes} onChange={e=>setPayout({...payout,notes:e.target.value})}/><FormButtons busy={busy} cancel={()=>setPayoutFor(null)}/></form></Dialog>}
 
     {disburseFor&&<Dialog title="Apply or pay rebate" close={()=>!busy&&setDisburseFor(null)}>
       <form onSubmit={recordDisbursement} className="space-y-3">
-        <p className="text-sm text-[var(--text-muted)]">Outstanding {money(disburseFor.outstandingAmount)}.</p>
+        <p className="text-sm text-[var(--text-muted)]">Remaining {money(disburseFor.outstandingAmount)}.</p>
         <Select label="How the customer receives it" value={disbursement.method} disabled={disburseFor.disbursements.length>0}
           set={v=>setDisbursement({...disbursement,method:v as RebateMethod,financeAccountId:"",installmentId:""})} options={rebateMethods.map(v=>({v,n:prettyEnum(v)}))}/>
         {disburseFor.disbursements.length>0&&<p className="text-xs text-[var(--text-muted)]">The method was set by the first entry and stays the same for the rest of this rebate.</p>}
@@ -313,8 +311,11 @@ function Dialog({title,close,children}:{title:string;close:()=>void;children:Rea
 function EvidenceList({items,onError}:{items:{id:number;originalFileName:string;fileSize:number}[];onError:(message:string)=>void}){const open=async(id:number)=>{try{await commissionRebateApi.openEvidence(id);}catch(x){onError(x instanceof Error?x.message:"Evidence could not be opened.");}};return <div className="mt-2 flex flex-wrap gap-2">{items.map(e=><button key={e.id} type="button" onClick={()=>void open(e.id)} className="max-w-full truncate rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs text-indigo-300" title={e.originalFileName}>{e.originalFileName} · {(e.fileSize/1024).toFixed(0)} KB</button>)}</div>}
 function MovementEvidence({id,items,busy,upload,onError}:{id:number;items:{id:number;originalFileName:string;fileSize:number}[];busy:boolean;upload:(id:number,file:File|null)=>void;onError:(message:string)=>void}){return <div><label title="PDF, image, Word, or Excel; maximum 15 MB" className="cursor-pointer text-xs text-[var(--accent)] underline">Attach proof<input className="sr-only" type="file" accept={evidenceAccept} disabled={busy} onChange={e=>upload(id,e.target.files?.[0]??null)}/></label><EvidenceList items={items} onError={onError}/></div>}
 
-function CommissionCard({value:c,index,busy,status,pay,reverse,upload,uploadMovement,onEvidenceError}:{value:Commission;index:number;busy:boolean;status:(v:string)=>void;pay:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
+function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploadMovement,onEvidenceError}:{value:Commission;index:number;busy:boolean;cancel:()=>void;edit:()=>void;pay:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
   const a=commissionActions(c.status);
+  // Correcting the agreed figures is only honest while none of it has been paid; after that the
+  // payout has to be reversed first, which is the same rule the server enforces.
+  const untouched=c.payouts.length===0;
   return <article className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
     <div className="flex flex-wrap justify-between gap-3">
       <div>
@@ -328,19 +329,20 @@ function CommissionCard({value:c,index,busy,status,pay,reverse,upload,uploadMove
         {c.cancellationOrReversalReason&&<p className="mt-1 text-xs text-rose-300">{c.cancellationOrReversalReason}</p>}
       </div>
       <div className="flex items-start gap-4">
-        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Approved" value={c.approvedAmount??c.finalAmount}/><Amount label="Paid" value={c.paidAmount}/><Amount label="Outstanding" value={c.outstandingAmount}/>{c.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={c.recoveryRequiredAmount}/>}</div>
+        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Commission" value={c.approvedAmount??c.finalAmount}/><Amount label="Paid" value={c.paidAmount}/><Amount label="Remaining" value={c.outstandingAmount}/>{c.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={c.recoveryRequiredAmount}/>}</div>
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">#{index}</span>
       </div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-2">{a.canSubmit&&<Action text="Submit" onClick={()=>status("PendingApproval")} disabled={busy}/>} {a.canApprove&&<><Action text="Approve" onClick={()=>status("Approved")} disabled={busy}/><Action text="Reject" onClick={()=>status("Rejected")} disabled={busy}/><Action text="Return" onClick={()=>status("Draft")} disabled={busy}/></>} {a.canEarn&&<Action text="Mark earned" onClick={()=>status("Earned")} disabled={busy}/>} {a.canMakePayable&&<Action text="Make payable" onClick={()=>status("Payable")} disabled={busy}/>} {a.canPay&&<Action text="Record payout" onClick={pay} disabled={busy}/>} {a.canCancel&&<Action text="Cancel" onClick={()=>status("Cancelled")} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
+    <div className="mt-3 flex flex-wrap gap-2">{a.canPay&&<Action text="Record payment" onClick={pay} disabled={busy}/>} {a.canEdit&&untouched&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&untouched&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
     <EvidenceList items={c.evidence} onError={onEvidenceError}/>
     {c.payouts.length>0&&<div className="mt-3 space-y-2">{c.payouts.map(p=><div key={p.id} className="rounded-lg border border-[var(--border)] p-2 text-xs text-[var(--text-muted)]"><div className="flex flex-wrap justify-between gap-2"><span>{new Date(p.date).toLocaleDateString()} · {p.financeAccountName} · {p.reference??prettyEnum(p.paymentMethod??"")}</span><span>Original {money(p.amount)}{p.reversedAmount>0?` · Reversed ${money(p.reversedAmount)} · Net ${money(p.amount-p.reversedAmount)}`:""} {p.amount>p.reversedAmount&&<button className="ml-2 text-rose-300 underline" disabled={busy} onClick={()=>reverse(p.id,p.amount-p.reversedAmount)}>Reverse</button>}</span></div><MovementEvidence id={p.id} items={p.evidence} busy={busy} upload={uploadMovement} onError={onEvidenceError}/></div>)}</div>}
   </article>;
 }
 
-function RebateCard({value:r,index,netSalePrice,busy,status,disburse,reverse,upload,uploadMovement,onEvidenceError}:{value:Rebate;index:number;netSalePrice:number;busy:boolean;status:(v:string)=>void;disburse:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
+function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,reverse,upload,uploadMovement,onEvidenceError}:{value:Rebate;index:number;netSalePrice:number;busy:boolean;cancel:()=>void;edit:()=>void;disburse:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
   const a=rebateActions(r.status);
   const settled=r.approvedAmount??r.finalAmount;
+  const untouched=r.disbursements.length===0;
   return <article className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
     <div className="flex flex-wrap justify-between gap-3">
       <div>
@@ -353,11 +355,11 @@ function RebateCard({value:r,index,netSalePrice,busy,status,disburse,reverse,upl
         {r.cancellationOrReversalReason&&<p className="mt-1 text-xs text-rose-300">{r.cancellationOrReversalReason}</p>}
       </div>
       <div className="flex items-start gap-4">
-        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Approved" value={settled}/><Amount label="Completed" value={r.appliedOrPaidAmount}/><Amount label="Outstanding" value={r.outstandingAmount}/>{r.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={r.recoveryRequiredAmount}/>}</div>
+        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Rebate" value={settled}/><Amount label="Given" value={r.appliedOrPaidAmount}/><Amount label="Remaining" value={r.outstandingAmount}/>{r.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={r.recoveryRequiredAmount}/>}</div>
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">#{index}</span>
       </div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-2">{a.canSubmit&&<Action text="Submit" onClick={()=>status("PendingApproval")} disabled={busy}/>} {a.canApprove&&<><Action text="Approve" onClick={()=>status("Approved")} disabled={busy}/><Action text="Reject" onClick={()=>status("Rejected")} disabled={busy}/><Action text="Return" onClick={()=>status("Draft")} disabled={busy}/></>} {a.canDisburse&&<Action text="Apply / pay" onClick={disburse} disabled={busy}/>} {a.canCancel&&<Action text="Cancel" onClick={()=>status("Cancelled")} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
+    <div className="mt-3 flex flex-wrap gap-2">{a.canDisburse&&<Action text="Apply / pay" onClick={disburse} disabled={busy}/>} {a.canEdit&&untouched&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&untouched&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
     <EvidenceList items={r.evidence} onError={onEvidenceError}/>
     {r.disbursements.length>0&&<div className="mt-3 space-y-2">{r.disbursements.map(d=><div key={d.id} className="rounded-lg border border-[var(--border)] p-2 text-xs text-[var(--text-muted)]"><div className="flex flex-wrap justify-between gap-2"><span>{new Date(d.date).toLocaleDateString()} · {prettyEnum(d.rebateMethod??r.method)} · {d.reference??"No reference"}</span><span>Original {money(d.amount)}{d.reversedAmount>0?` · Reversed ${money(d.reversedAmount)} · Net ${money(d.amount-d.reversedAmount)}`:""} {d.amount>d.reversedAmount&&<button className="ml-2 text-rose-300 underline" disabled={busy} onClick={()=>reverse(d.id,d.amount-d.reversedAmount)}>Reverse</button>}</span></div><MovementEvidence id={d.id} items={d.evidence} busy={busy} upload={uploadMovement} onError={onEvidenceError}/></div>)}</div>}
   </article>;
@@ -365,4 +367,8 @@ function RebateCard({value:r,index,netSalePrice,busy,status,disburse,reverse,upl
 
 function Action({text,...props}:{text:string}&ButtonHTMLAttributes<HTMLButtonElement>){return <button type="button" {...props} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-semibold text-[var(--accent)] disabled:opacity-40">{text}</button>}
 function Amount({label,value}:{label:string;value:number}){return <span><small className="block text-[var(--text-muted)]">{label}</small><strong>{money(value)}</strong></span>}
-function Status({value}:{value:string}){return <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] ${value.includes("Reversal")||value==="Rejected"||value==="Cancelled"?"border-rose-500/30 text-rose-300":"border-emerald-500/30 text-emerald-300"}`}>{prettyEnum(value)}</span>}
+function Status({value}:{value:string}){
+  const tone=value.includes("Reversal")||value==="Rejected"||value==="Cancelled"?"border-rose-500/30 text-rose-300"
+    :isPendingStatus(value)?"border-amber-500/30 text-amber-300":"border-emerald-500/30 text-emerald-300";
+  return <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] ${tone}`}>{statusLabel(value)}</span>;
+}

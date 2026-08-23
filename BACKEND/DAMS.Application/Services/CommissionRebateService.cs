@@ -31,6 +31,17 @@ namespace DAMS.Application.Services
         public async Task<CommissionRebateSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default)
         {
             var payableStatuses = new[] { BookingCommissionStatus.Payable, BookingCommissionStatus.PartiallyPaid };
+            // The open states, matching IsPending in the Commissions and Rebates partials.
+            var pendingCommissionStatuses = new[]
+            {
+                BookingCommissionStatus.Draft, BookingCommissionStatus.PendingApproval, BookingCommissionStatus.Approved,
+                BookingCommissionStatus.Earned, BookingCommissionStatus.Payable, BookingCommissionStatus.PartiallyPaid
+            };
+            var pendingRebateStatuses = new[]
+            {
+                CustomerRebateStatus.Draft, CustomerRebateStatus.PendingApproval,
+                CustomerRebateStatus.Approved, CustomerRebateStatus.PartiallyApplied
+            };
 
             var accruedCommission = await _context.BookingCommissions.AsNoTracking()
                 .Where(c => c.Status == BookingCommissionStatus.Approved || c.Status == BookingCommissionStatus.Earned
@@ -81,8 +92,10 @@ namespace DAMS.Application.Services
                 RebatesAppliedOrPaid = rebatePaid,
                 RebateReversalRequired = rebateRecovery,
                 ActivePartners = await _context.ThirdPartyPartners.CountAsync(p => p.IsActive, cancellationToken),
-                PendingApprovals = await _context.BookingCommissions.CountAsync(c => c.Status == BookingCommissionStatus.PendingApproval, cancellationToken)
-                    + await _context.CustomerRebates.CountAsync(r => r.Status == CustomerRebateStatus.PendingApproval, cancellationToken)
+                // How many commissions and rebates are still owed. Everything from entry until the
+                // last rupee is paid or applied counts, which is exactly what the screens call Pending.
+                PendingRecords = await _context.BookingCommissions.CountAsync(c => pendingCommissionStatuses.Contains(c.Status), cancellationToken)
+                    + await _context.CustomerRebates.CountAsync(r => pendingRebateStatuses.Contains(r.Status), cancellationToken)
             };
         }
 

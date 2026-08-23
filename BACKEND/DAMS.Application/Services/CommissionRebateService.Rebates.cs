@@ -79,7 +79,9 @@ namespace DAMS.Application.Services
                 FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null,
                 CalculationBasis = dto.CalculationBasis, BasisAmount = basis, CalculatedAmount = calculated,
                 AdjustmentAmount = adjustment, AdjustmentReason = adjustmentReason, FinalAmount = final,
-                Reason = reason, Method = dto.Method, Status = CustomerRebateStatus.Draft,
+                // Agreeing the rebate is the decision, so it starts pending: ready to be applied or
+                // paid, and it completes itself once the disbursements cover it. See IsPending.
+                Reason = reason, Method = dto.Method, Status = CustomerRebateStatus.Approved,
                 Notes = Limited(dto.Notes, "Notes", 2000), CreatedByUserId = actor.UserId,
                 CreatedByName = actor.DisplayName, CreatedAt = DateTime.UtcNow
             };
@@ -98,11 +100,14 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
                 ?? throw new KeyNotFoundException("Rebate not found for this booking.");
             ApplyToken(rebate, dto.ConcurrencyToken, "rebate");
-            if (rebate.Status != CustomerRebateStatus.Draft)
-                throw new InvalidOperationException("Only a draft rebate can be edited. Return it for correction first.");
+            // Same rule as a commission: correctable while it is still only an agreement, and
+            // unwound by reversing the disbursement once any of it has actually reached the customer.
+            if (!IsPending(rebate.Status))
+                throw new InvalidOperationException("Only a pending rebate can be edited.");
             if (NetDisbursed(rebate) != 0m || rebate.Disbursements.Count != 0)
                 throw new InvalidOperationException("A rebate with application or payment history cannot be edited.");
 
+            var previousStatus = rebate.Status;
             var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
@@ -155,9 +160,10 @@ namespace DAMS.Application.Services
             rebate.DecisionByUserId = null;
             rebate.DecisionByName = null;
             rebate.DecisionReason = null;
+            rebate.Status = CustomerRebateStatus.Approved;
             rebate.UpdatedAt = DateTime.UtcNow;
             Audit(FinancialWorkflowAction.RebateAdjusted, actor, customerId: booking.CustomerId, bookingId: bookingId,
-                rebateId: rebate.Id, oldRebate: CustomerRebateStatus.Draft, newRebate: CustomerRebateStatus.Draft,
+                rebateId: rebate.Id, oldRebate: previousStatus, newRebate: rebate.Status,
                 previousAmount: previousAmount, newAmount: rebate.FinalAmount, reason: changeReason);
             await _context.SaveChangesAsync(cancellationToken);
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
@@ -172,35 +178,13 @@ namespace DAMS.Application.Services
                 ?? throw new KeyNotFoundException("Rebate not found for this booking.");
             ApplyToken(rebate, dto.ConcurrencyToken, "rebate");
             var previous = rebate.Status; var reason = Limited(dto.Reason, "Reason", 2000);
-            var action = FinancialWorkflowAction.RebateCreated;
+            FinancialWorkflowAction action;
             switch (dto.TargetStatus)
             {
-                // Optional, for the same reason as a commission submission: the approver is the control,
-                // not an upload gate. Evidence attached at any point is still stored and audited.
-                case CustomerRebateStatus.PendingApproval when previous == CustomerRebateStatus.Draft:
-                    rebate.Status = CustomerRebateStatus.PendingApproval; rebate.SubmittedAt = DateTime.UtcNow;
-                    rebate.SubmittedByUserId = actor.UserId; rebate.SubmittedByName = actor.DisplayName;
-                    action = FinancialWorkflowAction.RebateSubmitted; break;
-                case CustomerRebateStatus.Approved when previous == CustomerRebateStatus.PendingApproval:
-                    var approved = Money(dto.ApprovedAmount ?? rebate.FinalAmount);
-                    if (approved <= 0m) throw new InvalidOperationException("Approved rebate must be greater than zero.");
-                    if (approved > Money(rebate.Booking.AgreedSalePrice - rebate.Booking.DiscountAmount))
-                        throw new InvalidOperationException("Approved rebate cannot exceed the booking's net sale price.");
-                    if (approved != rebate.FinalAmount && reason == null)
-                        throw new InvalidOperationException("A reason is required when the approved amount differs from the calculated amount.");
-                    rebate.ApprovedAmount = approved; rebate.Status = CustomerRebateStatus.Approved;
-                    rebate.DecisionAt = DateTime.UtcNow; rebate.DecisionByUserId = actor.UserId; rebate.DecisionByName = actor.DisplayName;
-                    rebate.DecisionReason = reason; action = FinancialWorkflowAction.RebateApproved; break;
-                case CustomerRebateStatus.Rejected when previous == CustomerRebateStatus.PendingApproval:
-                    RequireReason(reason, "A rejection reason is required."); rebate.Status = CustomerRebateStatus.Rejected;
-                    rebate.DecisionAt = DateTime.UtcNow; rebate.DecisionByUserId = actor.UserId; rebate.DecisionByName = actor.DisplayName;
-                    rebate.DecisionReason = reason; action = FinancialWorkflowAction.RebateRejected; break;
-                case CustomerRebateStatus.Draft when previous == CustomerRebateStatus.PendingApproval:
-                    RequireReason(reason, "A return reason is required."); rebate.Status = CustomerRebateStatus.Draft;
-                    rebate.DecisionAt = DateTime.UtcNow; rebate.DecisionByUserId = actor.UserId; rebate.DecisionByName = actor.DisplayName;
-                    rebate.DecisionReason = reason; action = FinancialWorkflowAction.RebateReturned; break;
-                case CustomerRebateStatus.Cancelled when previous is CustomerRebateStatus.Draft or CustomerRebateStatus.Approved
-                    or CustomerRebateStatus.Rejected:
+                // As with a commission, cancelling is the only status left for a person to choose:
+                // the rebate is pending from entry and completes itself once it has all been applied
+                // or paid. Anything already given to the customer is unwound by reversing it.
+                case CustomerRebateStatus.Cancelled when IsPending(previous) || previous == CustomerRebateStatus.Rejected:
                     RequireReason(reason, "A cancellation reason is required.");
                     if (NetDisbursed(rebate) > 0m) throw new InvalidOperationException("Applied or paid rebates require reversal, not cancellation.");
                     rebate.Status = CustomerRebateStatus.Cancelled; rebate.CancellationOrReversalReason = reason;
@@ -261,8 +245,8 @@ namespace DAMS.Application.Services
                     .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
                     ?? throw new KeyNotFoundException("Rebate not found for this booking.");
                 ApplyToken(rebate, dto.RebateConcurrencyToken, "rebate"); EnsureActiveBooking(rebate.Booking);
-                if (rebate.Status is not (CustomerRebateStatus.Approved or CustomerRebateStatus.PartiallyApplied))
-                    throw new InvalidOperationException("Only approved or partially-applied rebates can be disbursed.");
+                if (!IsPending(rebate.Status))
+                    throw new InvalidOperationException("Only a pending rebate can be applied or paid.");
                 // How a rebate is delivered is decided when it is first applied, not when it is entered,
                 // so the entry screen stays a plain amount. The first disbursement locks the method:
                 // every disbursement of one rebate still shares a single method, which is what the
@@ -475,6 +459,13 @@ namespace DAMS.Application.Services
 
         private static decimal NetDisbursed(CustomerRebate rebate) =>
             Money(rebate.Disbursements.Sum(d => d.Amount - d.Reversals.Sum(r => r.Amount)));
+
+        // The rebate mirror of the commission's IsPending: one open state until the whole rebate has
+        // reached the customer. Draft and PendingApproval are approval-ladder leftovers and still
+        // count as pending so records created before this change can be finished normally.
+        private static bool IsPending(CustomerRebateStatus status) => status
+            is CustomerRebateStatus.Draft or CustomerRebateStatus.PendingApproval
+            or CustomerRebateStatus.Approved or CustomerRebateStatus.PartiallyApplied;
 
         private async Task RefreshInstallmentStatusAsync(int installmentId, decimal pendingCreditChange,
             DateTime effectiveAt, CancellationToken cancellationToken)

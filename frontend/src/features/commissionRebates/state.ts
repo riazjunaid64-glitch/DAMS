@@ -1,22 +1,37 @@
 import type { KeyboardEvent } from "react";
 import type { CommissionStatus, RebateStatus } from "./types";
 
+// A commission or rebate has one open state, shown as "Pending", and reaches its end state on its
+// own once the money is fully paid or applied. Draft, PendingApproval, Approved and Earned are
+// approval-ladder leftovers: records created before that ladder was removed are still pending, so
+// they can be paid, corrected or cancelled like any other. Mirrors IsPending on the server.
+const pendingCommission = ["Draft","PendingApproval","Approved","Earned","Payable","PartiallyPaid"];
+const pendingRebate = ["Draft","PendingApproval","Approved","PartiallyApplied"];
+
 export const commissionActions = (status:CommissionStatus) => ({
-  canSubmit: status === "Draft", canApprove: status === "PendingApproval", canReject: status === "PendingApproval",
-  canReturn: status === "PendingApproval", canEarn: status === "Approved", canMakePayable: status === "Earned",
-  canPay: status === "Payable" || status === "PartiallyPaid",
-  canCancel: ["Draft","Approved","Earned","Payable","Rejected"].includes(status),
+  canPay: pendingCommission.includes(status),
+  // Correcting or cancelling is only about the agreement, so both stop the moment a payout lands —
+  // PartiallyPaid is the one pending status that always has money already out.
+  canEdit: pendingCommission.includes(status) && status !== "PartiallyPaid",
+  canCancel: pendingCommission.includes(status) && status !== "PartiallyPaid",
   canReverse: status === "Paid" || status === "PartiallyPaid" || status === "ReversalRequired",
 });
 
 export const rebateActions = (status:RebateStatus) => ({
-  canSubmit: status === "Draft", canApprove: status === "PendingApproval", canReject: status === "PendingApproval",
-  canReturn: status === "PendingApproval", canDisburse: status === "Approved" || status === "PartiallyApplied",
-  canCancel: ["Draft","Approved","Rejected"].includes(status),
+  canDisburse: pendingRebate.includes(status),
+  canEdit: pendingRebate.includes(status) && status !== "PartiallyApplied",
+  canCancel: pendingRebate.includes(status) && status !== "PartiallyApplied",
   canReverse: status === "Applied" || status === "Paid" || status === "PartiallyApplied" || status === "ReversalRequired",
 });
 
 export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 $2");
+
+// What the user reads on the badge. Every open status collapses to one word; the end states and the
+// exceptions keep their own names, because those are the ones worth noticing.
+export const statusLabel = (status:string) =>
+  pendingCommission.includes(status) || pendingRebate.includes(status) ? "Pending" : prettyEnum(status);
+export const isPendingStatus = (status:string) =>
+  pendingCommission.includes(status) || pendingRebate.includes(status);
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
 // One implementation, in lib/idempotency, because every screen that records money needs it — not
