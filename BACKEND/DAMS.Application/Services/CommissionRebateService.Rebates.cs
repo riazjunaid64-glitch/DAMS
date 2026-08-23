@@ -175,8 +175,9 @@ namespace DAMS.Application.Services
             var action = FinancialWorkflowAction.RebateCreated;
             switch (dto.TargetStatus)
             {
+                // Optional, for the same reason as a commission submission: the approver is the control,
+                // not an upload gate. Evidence attached at any point is still stored and audited.
                 case CustomerRebateStatus.PendingApproval when previous == CustomerRebateStatus.Draft:
-                    if (rebate.Evidence.Count == 0) throw new InvalidOperationException("Supporting evidence is required before submitting a rebate.");
                     rebate.Status = CustomerRebateStatus.PendingApproval; rebate.SubmittedAt = DateTime.UtcNow;
                     rebate.SubmittedByUserId = actor.UserId; rebate.SubmittedByName = actor.DisplayName;
                     action = FinancialWorkflowAction.RebateSubmitted; break;

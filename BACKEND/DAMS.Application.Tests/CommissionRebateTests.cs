@@ -409,7 +409,7 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
-    public async Task Rebate_IsSeparateRequiresEvidenceAndCannotApplyTwiceOrBelowZero()
+    public async Task Rebate_IsSeparateAndCannotApplyTwiceOrBelowZero()
     {
         await using var harness = await Harness.Create();
         var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
@@ -418,9 +418,6 @@ public sealed class CommissionRebateTests
             FixedAmount = 1_000m, Reason = "Customer retention", Method = CustomerRebateMethod.OutstandingBalanceReduction
         }, Actor);
         var rebate = Assert.Single(workspace.Rebates);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.ChangeRebateStatusAsync(harness.BookingId,
-            rebate.Id, RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor));
-        await harness.UploadPdf(FinancialEvidenceOwnerType.Rebate, rebate.Id);
         workspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
             RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor);
         rebate = Assert.Single(workspace.Rebates);
@@ -1129,6 +1126,43 @@ public sealed class CommissionRebateTests
                     IdempotencyKey = "rebate-method-switch", RebateConcurrencyToken = rebate.ConcurrencyToken
                 }, Actor));
         Assert.Contains("same method", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Neither a commission nor a rebate needs a proof file to reach an approver. Evidence stays
+    /// available and audited, but it is the approval decision that gates the money, not an upload.
+    /// </summary>
+    [Fact]
+    public async Task SubmittingForApproval_NeedsNoEvidence_AndStillReachesApproval()
+    {
+        await using var harness = await Harness.Create();
+        var created = await harness.Service.CreateCommissionAsync(harness.BookingId, Direct(harness.PartnerId, rate: 2m), Actor);
+        var commission = Assert.Single(created.Commissions);
+        Assert.True(commission.IsManual);
+        Assert.Empty(commission.Evidence);
+
+        var submitted = await harness.Service.ChangeCommissionStatusAsync(harness.BookingId, commission.Id,
+            Change(commission, BookingCommissionStatus.PendingApproval), Actor);
+        commission = Assert.Single(submitted.Commissions);
+        Assert.Equal(BookingCommissionStatus.PendingApproval, commission.Status);
+        var approved = await harness.Service.ChangeCommissionStatusAsync(harness.BookingId, commission.Id,
+            Change(commission, BookingCommissionStatus.Approved, approved: commission.FinalAmount), Actor);
+        Assert.Equal(BookingCommissionStatus.Approved, Assert.Single(approved.Commissions).Status);
+
+        var rebateWorkspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.AgreedSalePrice, FixedAmount = 5_000m
+        }, Actor);
+        var rebate = Assert.Single(rebateWorkspace.Rebates);
+        Assert.Empty(rebate.Evidence);
+        rebateWorkspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.PendingApproval), Actor);
+        rebate = Assert.Single(rebateWorkspace.Rebates);
+        Assert.Equal(CustomerRebateStatus.PendingApproval, rebate.Status);
+        rebateWorkspace = await harness.Service.ChangeRebateStatusAsync(harness.BookingId, rebate.Id,
+            RebateChange(rebate, CustomerRebateStatus.Approved, rebate.FinalAmount), Actor);
+        Assert.Equal(CustomerRebateStatus.Approved, Assert.Single(rebateWorkspace.Rebates).Status);
     }
 
     /// <summary>A partner added from the booking screen supplies only a name and type.</summary>

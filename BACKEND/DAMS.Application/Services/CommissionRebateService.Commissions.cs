@@ -190,9 +190,10 @@ namespace DAMS.Application.Services
             var action = FinancialWorkflowAction.CommissionAdjusted;
             switch (dto.TargetStatus)
             {
+                // Supporting evidence is optional. Attaching it is still encouraged and still audited,
+                // but a commission agreed directly on the booking has nothing to attach at entry time,
+                // and the approver — not an upload gate — is the control that decides what is paid.
                 case BookingCommissionStatus.PendingApproval when previous == BookingCommissionStatus.Draft:
-                    if (commission.IsManual && commission.Evidence.Count == 0)
-                        throw new InvalidOperationException("Manual commissions require supporting evidence before submission.");
                     commission.Status = BookingCommissionStatus.PendingApproval;
                     commission.SubmittedAt = DateTime.UtcNow; commission.SubmittedByUserId = actor.UserId; commission.SubmittedByName = actor.DisplayName;
                     action = FinancialWorkflowAction.CommissionSubmitted; break;
