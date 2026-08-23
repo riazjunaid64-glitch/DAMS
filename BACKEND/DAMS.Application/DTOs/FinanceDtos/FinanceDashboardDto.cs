@@ -263,6 +263,22 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// <summary>Set only on ordinary expense rows — the ones that can be opened and corrected.
         /// Null on every other component, which is recorded elsewhere in its own workflow.</summary>
         public int? ExpenseId { get; set; }
+
+        /// <summary>
+        /// Which kind of record produced this row: "expense", "assetPurchase", "commission",
+        /// "rebate", "customerCredit" or "loanInterest". The drill-down is a list of six different
+        /// things, and a reader who clicks one has to be taken to the workflow that owns it — the
+        /// label alone cannot be parsed for that, and guessing from it would break the moment a
+        /// category is renamed.
+        /// </summary>
+        public string Source { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The id of the record named by <see cref="Source"/>. Always set: every component of the
+        /// card is a row in some table. Only "expense" and "assetPurchase" can be edited in place;
+        /// the rest identify a record on another page.
+        /// </summary>
+        public int SourceId { get; set; }
     }
 
     /// <summary>

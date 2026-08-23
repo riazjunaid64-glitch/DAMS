@@ -41,6 +41,17 @@ namespace DAMS.Application.Services
     /// </summary>
     public partial class FinanceService
     {
+        /// <summary>
+        /// One fixed-asset purchase, in the same shape the drill-down list uses — concurrency token
+        /// included, so an editor opened from the Total Expenses breakdown can actually save.
+        /// Null when the id is not a purchase (or was deleted since the list was drawn).
+        /// </summary>
+        public async Task<AssetPurchaseLineDto?> GetAssetPurchaseAsync(int id, CancellationToken cancellationToken = default) =>
+            await _context.AssetPurchases.AsNoTracking()
+                .Where(p => p.Id == id)
+                .Select(AssetPurchaseLineProjection)
+                .SingleOrDefaultAsync(cancellationToken);
+
         public async Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(
             int? projectId, DateTime? from, DateTime? to, int skip, int take,
             int? assetAccountId = null, int? accountId = null, bool unassigned = false,
@@ -50,7 +61,18 @@ namespace DAMS.Application.Services
                 .OrderByDescending(p => p.Date)
                 .ThenByDescending(p => p.Id)
                 .Skip(skip).Take(take + 1)
-                .Select(p => new AssetPurchaseLineDto
+                .Select(AssetPurchaseLineProjection)
+                .ToListAsync(cancellationToken);
+
+            return Page(rows, take);
+        }
+
+        /// <summary>
+        /// The single definition of a purchase row, shared by the list and the by-id lookup so the
+        /// editor cannot be handed a differently-shaped record than the row it was opened from.
+        /// </summary>
+        private static readonly System.Linq.Expressions.Expression<Func<AssetPurchase, AssetPurchaseLineDto>> AssetPurchaseLineProjection =
+            p => new AssetPurchaseLineDto
                 {
                     Id = p.Id,
                     Date = p.Date,
@@ -80,11 +102,7 @@ namespace DAMS.Application.Services
                         FileSize = p.Attachment.FileSize,
                         UploadedAt = p.Attachment.UploadedAt
                     }
-                })
-                .ToListAsync(cancellationToken);
-
-            return Page(rows, take);
-        }
+                };
 
         public async Task<AssetPurchaseResponseDto> CreateAssetPurchaseAsync(
             CreateAssetPurchaseDto dto,

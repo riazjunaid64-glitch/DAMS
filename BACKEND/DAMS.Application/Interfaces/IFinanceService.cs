@@ -20,6 +20,9 @@ namespace DAMS.Application.Interfaces
 
         // ── Paged table rows (infinite scroll). Each returns one page + HasMore. ──
         Task<PagedResult<RevenueLineDto>> GetRevenuePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default);
+        /// <summary>One expense by id, in drill-down shape (concurrency token included), or null.</summary>
+        Task<ExpenseLineDto?> GetExpenseAsync(int id, CancellationToken cancellationToken = default);
+
         Task<PagedResult<ExpenseLineDto>> GetExpensePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default);
         /// <summary>Customer money held but not yet earned, one row per booking, as at
         /// <paramref name="to"/>. A balance view: there is no period start.</summary>
@@ -34,6 +37,9 @@ namespace DAMS.Application.Interfaces
         /// amounts total to <c>FinancialSummaryDto.TotalExpenses</c>, which the ordinary expense page
         /// cannot do because it holds only the first of those.</summary>
         Task<PagedResult<CostLineDto>> GetCostBreakdownPageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default);
+        /// <summary>One fixed-asset purchase by id, in drill-down shape, or null.</summary>
+        Task<AssetPurchaseLineDto?> GetAssetPurchaseAsync(int id, CancellationToken cancellationToken = default);
+
         Task<PagedResult<AssetPurchaseLineDto>> GetAssetPurchasePageAsync(int? projectId, DateTime? from, DateTime? to, int skip, int take, int? assetAccountId = null, int? accountId = null, bool unassigned = false, CancellationToken cancellationToken = default);
 
         Task<ProfitAndLossDto> GetProfitAndLossAsync(int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);

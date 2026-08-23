@@ -328,6 +328,19 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        /// <summary>
+        /// One expense, for reopening a row in the editor. The Total Expenses breakdown lists six
+        /// different kinds of cost and carries only an id for each, so opening one for correction
+        /// needs the full record — above all its concurrency token, without which the save that
+        /// follows would silently overwrite someone else's edit.
+        /// </summary>
+        [HttpGet("expenses/{id:int}")]
+        public async Task<IActionResult> GetExpense(int id, CancellationToken cancellationToken)
+        {
+            var expense = await _financeService.GetExpenseAsync(id, cancellationToken);
+            return expense == null ? NotFound(new { message = "This expense no longer exists. Refresh the list." }) : Ok(expense);
+        }
+
         [HttpPut("expenses/{id:int}")]
         [Consumes("application/json")]
         public async Task<IActionResult> UpdateExpense(int id, [FromBody] UpdateExpenseDto dto)
@@ -423,6 +436,14 @@ namespace DAMS.Api.Controllers
                     dto, GetUserId(), ToUpload(attachment, stream), cancellationToken));
             }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        }
+
+        /// <summary>One fixed-asset purchase, for reopening a breakdown row in the editor.</summary>
+        [HttpGet("asset-purchases/{id:int}")]
+        public async Task<IActionResult> GetAssetPurchase(int id, CancellationToken cancellationToken)
+        {
+            var purchase = await _financeService.GetAssetPurchaseAsync(id, cancellationToken);
+            return purchase == null ? NotFound(new { message = "This purchase no longer exists. Refresh the list." }) : Ok(purchase);
         }
 
         [HttpPut("asset-purchases/{id:int}")]
