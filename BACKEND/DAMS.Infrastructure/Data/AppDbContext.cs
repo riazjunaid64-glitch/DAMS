@@ -933,14 +933,26 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(a => a.AssetPurchaseId)
                       .IsUnique()
                       .HasFilter("[AssetPurchaseId] IS NOT NULL");
+                entity.HasIndex(a => a.LoanTransactionId)
+                      .IsUnique()
+                      .HasFilter("[LoanTransactionId] IS NOT NULL");
+                entity.HasIndex(a => a.CapitalTransactionId)
+                      .IsUnique()
+                      .HasFilter("[CapitalTransactionId] IS NOT NULL");
+                entity.HasIndex(a => a.StaffCashTransferId)
+                      .IsUnique()
+                      .HasFilter("[StaffCashTransferId] IS NOT NULL");
 
-                // Counted rather than enumerated as pairs: with three owners the pairwise form
-                // needs six clauses and gains one more every time a record type is added.
+                // Counted rather than enumerated as pairs: with six owners the pairwise form needs
+                // thirty clauses and gains more every time a record type is added.
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_FinanceAttachments_ExactlyOneOwner",
                     "(CASE WHEN [ManualRevenueId] IS NULL THEN 0 ELSE 1 END"
                     + " + CASE WHEN [ExpenseId] IS NULL THEN 0 ELSE 1 END"
-                    + " + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END) = 1"));
+                    + " + CASE WHEN [AssetPurchaseId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [LoanTransactionId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [CapitalTransactionId] IS NULL THEN 0 ELSE 1 END"
+                    + " + CASE WHEN [StaffCashTransferId] IS NULL THEN 0 ELSE 1 END) = 1"));
 
                 entity.HasOne(a => a.ManualRevenue)
                       .WithOne(r => r.Attachment)
@@ -955,6 +967,21 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.AssetPurchase)
                       .WithOne(p => p.Attachment)
                       .HasForeignKey<FinanceAttachment>(a => a.AssetPurchaseId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.LoanTransaction)
+                      .WithOne(t => t.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.LoanTransactionId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.CapitalTransaction)
+                      .WithOne(t => t.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.CapitalTransactionId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(a => a.StaffCashTransfer)
+                      .WithOne(t => t.Attachment)
+                      .HasForeignKey<FinanceAttachment>(a => a.StaffCashTransferId)
                       .OnDelete(DeleteBehavior.Cascade);
             });
 

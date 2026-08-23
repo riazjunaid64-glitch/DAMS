@@ -67,6 +67,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
+
+        /// <summary>The bank slip or lender statement behind this movement, when one was attached.</summary>
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 
     public sealed class LoanStatementDto

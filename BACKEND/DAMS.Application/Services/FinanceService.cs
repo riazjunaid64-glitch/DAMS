@@ -660,31 +660,43 @@ namespace DAMS.Application.Services
                 .Select(e => new CostRow
                 {
                     SortId = e.Id, Date = e.Date, ProjectName = e.Project!.ProjectName,
-                    Source = "expense", Kind = "cost", Amount = e.Amount, ExpenseId = e.Id, Label = e.Category
+                    Source = "expense", Kind = "cost", Amount = e.Amount, ExpenseId = e.Id, Label = e.Category,
+                    AttachmentFileName = e.Attachment != null ? e.Attachment.OriginalFileName : null,
+                    AttachmentContentType = e.Attachment != null ? e.Attachment.ContentType : null,
+                    AttachmentFileSize = e.Attachment != null ? e.Attachment.FileSize : 0L,
+                    AttachmentUploadedAt = e.Attachment != null ? e.Attachment.UploadedAt : (DateTime?)null
                 });
             var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(p => new CostRow
                 {
                     SortId = p.Id, Date = p.PaymentDate, ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
-                    Source = "commission", Kind = "cost", Amount = p.Amount, ExpenseId = null, Label = "Partner commission"
+                    Source = "commission", Kind = "cost", Amount = p.Amount, ExpenseId = null, Label = "Partner commission",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new CostRow
                 {
                     SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
-                    Source = "commission", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Commission payout reversal"
+                    Source = "commission", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Commission payout reversal",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var rebatePayments = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(d => new CostRow
                 {
                     SortId = d.Id, Date = d.AppliedAt, ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
-                    Source = "rebate", Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer rebate"
+                    Source = "rebate", Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer rebate",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var rebateReversals = CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new CostRow
                 {
                     SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
-                    Source = "rebate", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer rebate reversal"
+                    Source = "rebate", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer rebate reversal",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             // Dated at the later of the credit and the recognition, exactly as the summary and the
             // Net Profit list date them — a credit cannot be a cost before the sale it reduces is
@@ -696,7 +708,9 @@ namespace DAMS.Application.Services
                     Date = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? d.Rebate.Booking.SaleRecognition!.RecognitionDate : d.AppliedAt,
                     ProjectName = d.Rebate.Booking.Unit.Project.ProjectName,
-                    Source = "customerCredit", Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer credit (non-cash)"
+                    Source = "customerCredit", Kind = "cost", Amount = d.Amount, ExpenseId = null, Label = "Customer credit (non-cash)",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var nonCashCreditReversals = NonCashCreditReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(r => new CostRow
@@ -705,13 +719,17 @@ namespace DAMS.Application.Services
                     Date = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : r.ReversedAt,
                     ProjectName = r.Disbursement.Rebate.Booking.Unit.Project.ProjectName,
-                    Source = "customerCredit", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer credit reversal"
+                    Source = "customerCredit", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Customer credit reversal",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var loanInterest = LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(t => new CostRow
                 {
                     SortId = t.Id, Date = t.Date, ProjectName = "General",
-                    Source = "loanInterest", Kind = "cost", Amount = t.InterestAmount, ExpenseId = null, Label = "Loan Interest"
+                    Source = "loanInterest", Kind = "cost", Amount = t.InterestAmount, ExpenseId = null, Label = "Loan Interest",
+                    AttachmentFileName = null, AttachmentContentType = null,
+                    AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
             var assetPurchases = FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(p => new CostRow
@@ -719,7 +737,11 @@ namespace DAMS.Application.Services
                     SortId = p.Id, Date = p.Date,
                     ProjectName = p.Project != null ? p.Project.ProjectName : "General",
                     Source = "assetPurchase", Kind = "cost", Amount = p.Amount, ExpenseId = null,
-                    Label = "Fixed asset purchase — " + p.ItemName
+                    Label = "Fixed asset purchase — " + p.ItemName,
+                    AttachmentFileName = p.Attachment != null ? p.Attachment.OriginalFileName : null,
+                    AttachmentContentType = p.Attachment != null ? p.Attachment.ContentType : null,
+                    AttachmentFileSize = p.Attachment != null ? p.Attachment.FileSize : 0L,
+                    AttachmentUploadedAt = p.Attachment != null ? p.Attachment.UploadedAt : (DateTime?)null
                 });
 
             var raw = await expenses.Concat(commissionPayouts).Concat(commissionReversals)
@@ -746,7 +768,16 @@ namespace DAMS.Application.Services
                 SourceId = r.SortId,
                 // "cost" is named as the positive case rather than "reduction" as the negative one,
                 // so a component added here later cannot default itself into giving money back.
-                Amount = r.Kind == "cost" ? r.Amount : -r.Amount
+                Amount = r.Kind == "cost" ? r.Amount : -r.Amount,
+                // Built after materialising, not inside the union: every branch of a Concat has to
+                // project the same flat shape, and only two of the nine have a file at all.
+                Attachment = r.AttachmentFileName == null ? null : new FinanceAttachmentDto
+                {
+                    FileName = r.AttachmentFileName,
+                    ContentType = r.AttachmentContentType ?? "application/octet-stream",
+                    FileSize = r.AttachmentFileSize,
+                    UploadedAt = r.AttachmentUploadedAt ?? default
+                }
             }).ToList();
 
             return new PagedResult<CostLineDto> { Items = items, HasMore = raw.Count > take };
@@ -762,6 +793,10 @@ namespace DAMS.Application.Services
             public int? ExpenseId { get; set; }
             public string Source { get; set; } = string.Empty;
             public string? Label { get; set; }
+            public string? AttachmentFileName { get; set; }
+            public string? AttachmentContentType { get; set; }
+            public long AttachmentFileSize { get; set; }
+            public DateTime? AttachmentUploadedAt { get; set; }
         }
 
         /// <summary>

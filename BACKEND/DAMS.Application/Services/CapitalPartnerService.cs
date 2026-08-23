@@ -12,10 +12,12 @@ namespace DAMS.Application.Services
         private const decimal ShareTolerance = 0.01m;
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
-        public CapitalPartnerService(AppDbContext context, IFinanceAccountService accounts)
+        private readonly IFinanceAttachmentWriter _attachments;
+        public CapitalPartnerService(AppDbContext context, IFinanceAccountService accounts, IFinanceAttachmentWriter attachments)
         {
             _context = context;
             _accounts = accounts;
+            _attachments = attachments;
         }
 
         public async Task<List<CapitalPartnerDto>> GetAllAsync(bool includeInactive, CancellationToken cancellationToken = default)
@@ -103,7 +105,7 @@ namespace DAMS.Application.Services
                 : 0m;
             if (fromDate.HasValue) query = query.Where(t => t.Date >= fromDate.Value);
             if (toExclusive.HasValue) query = query.Where(t => t.Date < toExclusive.Value);
-            var rows = await query.OrderBy(t => t.Date).ThenBy(t => t.Id).ToListAsync(cancellationToken);
+            var rows = await query.Include(t => t.Attachment).OrderBy(t => t.Date).ThenBy(t => t.Id).ToListAsync(cancellationToken);
             var transactions = rows.Select(MapTransaction).ToList();
             var baseline = partner.FinanceAccount?.OpeningBalance ?? 0m;
             var baselineDate = await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
@@ -129,7 +131,8 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId, CancellationToken cancellationToken = default)
+        public async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
         {
             if (!Enum.IsDefined(dto.Type)) throw new InvalidOperationException("Capital transaction type is invalid.");
             if (dto.Amount <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
@@ -169,9 +172,59 @@ namespace DAMS.Application.Services
                 ProfitSharePercentSnapshot = dto.Type == CapitalTransactionType.ProfitShare ? partner.ProfitSharePercent : null,
                 RecordedByUserId = userId, CreatedAt = DateTime.UtcNow
             };
+            // Stored after every validation above and before the save, so a rejected amount or date
+            // never leaves a file on disk, and a save that fails takes its upload with it.
+            if (attachment != null)
+            {
+                var stored = await _attachments.StoreAsync(attachment, cancellationToken);
+                transaction.Attachment = new FinanceAttachment();
+                stored.ApplyTo(transaction.Attachment);
+                _context.CapitalTransactions.Add(transaction);
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+                catch
+                {
+                    await _attachments.DiscardAsync(stored.StoredFileName);
+                    throw;
+                }
+                return MapTransaction(transaction);
+            }
             _context.CapitalTransactions.Add(transaction);
             await _context.SaveChangesAsync(cancellationToken);
             return MapTransaction(transaction);
+        }
+
+        public async Task<FinanceAttachmentDownload> GetTransactionAttachmentAsync(
+            int partnerId, int transactionId, CancellationToken cancellationToken = default)
+        {
+            var attachment = await _context.CapitalTransactions.AsNoTracking()
+                .Where(t => t.Id == transactionId && t.CapitalPartnerId == partnerId && t.Attachment != null)
+                .Select(t => t.Attachment!)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new FileNotFoundException("This capital movement does not have an attachment.");
+            var content = await _attachments.OpenAsync(attachment.StoredFileName, cancellationToken)
+                ?? throw new FileNotFoundException("The attachment file is missing from storage. Please attach it again.");
+            return new FinanceAttachmentDownload
+            {
+                Content = content,
+                FileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType
+            };
+        }
+
+        public async Task RemoveTransactionAttachmentAsync(
+            int partnerId, int transactionId, CancellationToken cancellationToken = default)
+        {
+            var transaction = await _context.CapitalTransactions.Include(t => t.Attachment)
+                .SingleOrDefaultAsync(t => t.Id == transactionId && t.CapitalPartnerId == partnerId, cancellationToken)
+                ?? throw new InvalidOperationException("Capital transaction not found.");
+            if (transaction.Attachment == null) return;
+            var storedFileName = transaction.Attachment.StoredFileName;
+            _context.FinanceAttachments.Remove(transaction.Attachment);
+            await _context.SaveChangesAsync(cancellationToken);
+            await _attachments.ForgetAsync(storedFileName);
         }
 
         private async Task<CapitalPartnerDto> GetAsync(int id, CancellationToken cancellationToken)
@@ -274,7 +327,14 @@ namespace DAMS.Application.Services
         {
             Id = transaction.Id, Type = transaction.Type, Amount = transaction.Amount, Date = transaction.Date,
             FinanceAccountId = transaction.FinanceAccountId, Reference = transaction.Reference, Note = transaction.Note,
-            ProfitSharePercentSnapshot = transaction.ProfitSharePercentSnapshot, CreatedAt = transaction.CreatedAt
+            ProfitSharePercentSnapshot = transaction.ProfitSharePercentSnapshot, CreatedAt = transaction.CreatedAt,
+            Attachment = transaction.Attachment == null ? null : new FinanceAttachmentDto
+            {
+                FileName = transaction.Attachment.OriginalFileName,
+                ContentType = transaction.Attachment.ContentType,
+                FileSize = transaction.Attachment.FileSize,
+                UploadedAt = transaction.Attachment.UploadedAt
+            }
         };
 
         private async Task ValidateCapitalAccount(int? accountId, int? partnerId, CancellationToken cancellationToken)

@@ -23,11 +23,13 @@ namespace DAMS.Application.Services
         private const int AgingPageSize = 200;
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
+        private readonly IFinanceAttachmentWriter _attachments;
 
-        public StaffCashService(AppDbContext context, IFinanceAccountService accounts)
+        public StaffCashService(AppDbContext context, IFinanceAccountService accounts, IFinanceAttachmentWriter attachments)
         {
             _context = context;
             _accounts = accounts;
+            _attachments = attachments;
         }
 
         public async Task<StaffCashOverviewDto> GetOverviewAsync(
@@ -174,6 +176,7 @@ namespace DAMS.Application.Services
             int staffFinanceAccountId,
             SaveStaffCashTransferDto dto,
             int? userId,
+            FinanceAttachmentUpload? attachment = null,
             CancellationToken cancellationToken = default)
         {
             ValidateTransfer(dto);
@@ -194,8 +197,26 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             };
+            // Stored only after every check above has passed, so a rejected transfer never leaves a
+            // file behind; discarded if the save itself fails, so no file outlives its row.
+            string? newFile = null;
+            if (attachment != null)
+            {
+                var stored = await _attachments.StoreAsync(attachment, cancellationToken);
+                newFile = stored.StoredFileName;
+                transfer.Attachment = new FinanceAttachment();
+                stored.ApplyTo(transfer.Attachment);
+            }
             _context.StaffCashTransfers.Add(transfer);
-            await _context.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await _attachments.DiscardAsync(newFile);
+                throw;
+            }
             return await GetTransferHistoryAsync(staffFinanceAccountId, transfer.Id, cancellationToken);
         }
 
@@ -204,12 +225,16 @@ namespace DAMS.Application.Services
             int transferId,
             SaveStaffCashTransferDto dto,
             int? userId,
+            FinanceAttachmentUpload? attachment = null,
+            bool removeAttachment = false,
             CancellationToken cancellationToken = default)
         {
+            if (attachment != null && removeAttachment)
+                throw new InvalidOperationException("Choose either a replacement attachment or removing the existing one, not both.");
             ValidateTransfer(dto);
             await ValidateDateAsync(dto.Date, cancellationToken);
             await EnsureStaffAccountAsync(staffFinanceAccountId, requireActive: true, cancellationToken);
-            var transfer = await _context.StaffCashTransfers.SingleOrDefaultAsync(
+            var transfer = await _context.StaffCashTransfers.Include(t => t.Attachment).SingleOrDefaultAsync(
                     t => t.Id == transferId && t.StaffFinanceAccountId == staffFinanceAccountId, cancellationToken)
                 ?? throw new InvalidOperationException("Staff cash transfer not found.");
             ApplyToken(transfer, dto.ConcurrencyToken);
@@ -223,7 +248,33 @@ namespace DAMS.Application.Services
             transfer.Note = Clean(dto.Note);
             transfer.UpdatedByUserId = userId;
             transfer.UpdatedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync(cancellationToken);
+            string? newFile = null, replacedFile = null;
+            if (attachment != null)
+            {
+                var stored = await _attachments.StoreAsync(attachment, cancellationToken);
+                newFile = stored.StoredFileName;
+                replacedFile = transfer.Attachment?.StoredFileName;
+                transfer.Attachment ??= new FinanceAttachment { StaffCashTransferId = transfer.Id };
+                stored.ApplyTo(transfer.Attachment);
+            }
+            else if (removeAttachment && transfer.Attachment != null)
+            {
+                replacedFile = transfer.Attachment.StoredFileName;
+                _context.FinanceAttachments.Remove(transfer.Attachment);
+                transfer.Attachment = null;
+            }
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch
+            {
+                await _attachments.DiscardAsync(newFile);
+                throw;
+            }
+            // Only once the row is committed: a failed save leaves the transfer still pointing at
+            // the file it had, so deleting it earlier would break a record that never changed.
+            await _attachments.ForgetAsync(replacedFile);
             return await GetTransferHistoryAsync(staffFinanceAccountId, transfer.Id, cancellationToken);
         }
 
@@ -234,12 +285,45 @@ namespace DAMS.Application.Services
             CancellationToken cancellationToken = default)
         {
             await EnsureStaffAccountAsync(staffFinanceAccountId, requireActive: true, cancellationToken);
-            var transfer = await _context.StaffCashTransfers.SingleOrDefaultAsync(
+            var transfer = await _context.StaffCashTransfers.Include(t => t.Attachment).SingleOrDefaultAsync(
                     t => t.Id == transferId && t.StaffFinanceAccountId == staffFinanceAccountId, cancellationToken)
                 ?? throw new InvalidOperationException("Staff cash transfer not found.");
             ApplyToken(transfer, concurrencyToken);
+            var orphanedFile = transfer.Attachment?.StoredFileName;
             _context.StaffCashTransfers.Remove(transfer);
             await _context.SaveChangesAsync(cancellationToken);
+            await _attachments.ForgetAsync(orphanedFile);
+        }
+
+        public async Task<FinanceAttachmentDownload> GetTransferAttachmentAsync(
+            int staffFinanceAccountId, int transferId, CancellationToken cancellationToken = default)
+        {
+            var attachment = await _context.StaffCashTransfers.AsNoTracking()
+                .Where(t => t.Id == transferId && t.StaffFinanceAccountId == staffFinanceAccountId && t.Attachment != null)
+                .Select(t => t.Attachment!)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new FileNotFoundException("This transfer does not have an attachment.");
+            var content = await _attachments.OpenAsync(attachment.StoredFileName, cancellationToken)
+                ?? throw new FileNotFoundException("The attachment file is missing from storage. Please replace it from the edit form.");
+            return new FinanceAttachmentDownload
+            {
+                Content = content,
+                FileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType
+            };
+        }
+
+        public async Task RemoveTransferAttachmentAsync(
+            int staffFinanceAccountId, int transferId, CancellationToken cancellationToken = default)
+        {
+            var transfer = await _context.StaffCashTransfers.Include(t => t.Attachment)
+                .SingleOrDefaultAsync(t => t.Id == transferId && t.StaffFinanceAccountId == staffFinanceAccountId, cancellationToken)
+                ?? throw new InvalidOperationException("Staff cash transfer not found.");
+            if (transfer.Attachment == null) return;
+            var storedFileName = transfer.Attachment.StoredFileName;
+            _context.FinanceAttachments.Remove(transfer.Attachment);
+            await _context.SaveChangesAsync(cancellationToken);
+            await _attachments.ForgetAsync(storedFileName);
         }
 
         private IQueryable<StaffAccountRow> StaffAccounts() =>
@@ -280,7 +364,11 @@ namespace DAMS.Application.Services
                     GrossAmount = t.Amount, WhtAmount = 0m, MovementType = t.Type,
                     CounterpartyFinanceAccountId = t.CounterpartyFinanceAccountId,
                     CounterpartyFinanceAccountName = t.CounterpartyFinanceAccount.Name,
-                    RowVersion = t.RowVersion
+                    RowVersion = t.RowVersion,
+                    AttachmentFileName = t.Attachment != null ? t.Attachment.OriginalFileName : null,
+                    AttachmentContentType = t.Attachment != null ? t.Attachment.ContentType : null,
+                    AttachmentFileSize = t.Attachment != null ? t.Attachment.FileSize : 0,
+                    AttachmentUploadedAt = t.Attachment != null ? t.Attachment.UploadedAt : (DateTime?)null
                 });
             var expenses = _context.Expenses.AsNoTracking()
                 .Where(e => e.FinanceAccountId.HasValue && accountIds.Contains(e.FinanceAccountId.Value));
@@ -299,7 +387,13 @@ namespace DAMS.Application.Services
                     // supplier, so it never leaves the person's pocket either.
                     Amount = -(e.Amount - e.WhtAmount), GrossAmount = e.Amount, WhtAmount = e.WhtAmount,
                     MovementType = null, CounterpartyFinanceAccountId = null,
-                    CounterpartyFinanceAccountName = null, RowVersion = null
+                    CounterpartyFinanceAccountName = null, RowVersion = null,
+                    // An expense paid out of the float has a receipt of its own, and this ledger is
+                    // where the person is asked to account for the cash — so it belongs here too.
+                    AttachmentFileName = e.Attachment != null ? e.Attachment.OriginalFileName : null,
+                    AttachmentContentType = e.Attachment != null ? e.Attachment.ContentType : null,
+                    AttachmentFileSize = e.Attachment != null ? e.Attachment.FileSize : 0,
+                    AttachmentUploadedAt = e.Attachment != null ? e.Attachment.UploadedAt : (DateTime?)null
                 });
             return transferRows.Concat(expenseRows);
         }
@@ -676,7 +770,14 @@ namespace DAMS.Application.Services
             Note = row.Note,
             // Only transfers can be corrected here; an expense is edited on the expense screen and
             // carries no token of its own on this ledger.
-            ConcurrencyToken = row.RowVersion == null ? null : Convert.ToBase64String(row.RowVersion)
+            ConcurrencyToken = row.RowVersion == null ? null : Convert.ToBase64String(row.RowVersion),
+            Attachment = row.AttachmentFileName == null ? null : new FinanceAttachmentDto
+            {
+                FileName = row.AttachmentFileName,
+                ContentType = row.AttachmentContentType ?? "application/octet-stream",
+                FileSize = row.AttachmentFileSize,
+                UploadedAt = row.AttachmentUploadedAt ?? default
+            }
         };
 
         private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
@@ -717,6 +818,10 @@ namespace DAMS.Application.Services
             public string? CounterpartyFinanceAccountName { get; set; }
             public string? Note { get; set; }
             public byte[]? RowVersion { get; set; }
+            public string? AttachmentFileName { get; set; }
+            public string? AttachmentContentType { get; set; }
+            public long AttachmentFileSize { get; set; }
+            public DateTime? AttachmentUploadedAt { get; set; }
         }
 
         private sealed record LedgerCursor(

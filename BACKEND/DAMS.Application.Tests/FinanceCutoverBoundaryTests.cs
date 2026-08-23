@@ -518,7 +518,7 @@ public sealed class FinanceCutoverBoundaryTests
     }
 
     private static CapitalPartnerService Capital(AppDbContext context) =>
-        new(context, new FinanceAccountService(context));
+        new(context, new FinanceAccountService(context), TestAttachments.Writer());
 
     private static AppDbContext Context()
     {

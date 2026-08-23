@@ -5,6 +5,8 @@ import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
+import FinanceAttachmentField from "../components/FinanceAttachmentField";
+import { financeApiError, openAttachmentAt, openFinanceAttachment, type FinanceAttachmentInfo } from "../api/financeAttachments";
 import { pakistanToday } from "../lib/financePeriods";
 import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency";
 
@@ -51,6 +53,7 @@ type HistoryItem = {
   counterpartyFinanceAccountName: string | null;
   note: string | null;
   concurrencyToken: string | null;
+  attachment: FinanceAttachmentInfo | null;
 };
 
 type Statement = { holder: Holder; items: HistoryItem[]; hasMore: boolean; nextCursor: string | null };
@@ -64,6 +67,9 @@ type TransferForm = {
   reference: string;
   note: string;
   concurrencyToken: string;
+  attachment: FinanceAttachmentInfo | null;
+  selectedAttachment: File | null;
+  removeAttachment: boolean;
 };
 
 const today = pakistanToday;
@@ -79,6 +85,7 @@ const date = (value: string | null) => value
 const emptyTransfer = (type: TransferForm["type"], amount = ""): TransferForm => ({
   id: null, type, amount, date: today(), counterpartyFinanceAccountId: "",
   reference: "", note: "", concurrencyToken: "",
+  attachment: null, selectedAttachment: null, removeAttachment: false,
 });
 
 export default function StaffCashPage({ user }: Props) {
@@ -204,19 +211,22 @@ export default function StaffCashPage({ user }: Props) {
     }
     setSaving(true); setError(null);
     try {
+      // Always the multipart route, file or no file: the slip and the figures are one save, so
+      // there is no second request that can leave the cash recorded and the evidence lost.
       const url = transfer.id
-        ? `/api/finance/staff-cash/${selectedId}/transfers/${transfer.id}`
-        : `/api/finance/staff-cash/${selectedId}/transfers`;
-      const init: RequestInit = {
-        method: transfer.id ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: transfer.type, amount, date: transfer.date,
-          counterpartyFinanceAccountId: Number(transfer.counterpartyFinanceAccountId),
-          reference: transfer.reference.trim() || null, note: transfer.note.trim() || null,
-          concurrencyToken: transfer.concurrencyToken,
-        }),
-      };
+        ? `/api/finance/staff-cash/${selectedId}/transfers/${transfer.id}/form`
+        : `/api/finance/staff-cash/${selectedId}/transfers/form`;
+      const body = new FormData();
+      body.append("type", transfer.type);
+      body.append("amount", String(amount));
+      body.append("date", transfer.date);
+      body.append("counterpartyFinanceAccountId", transfer.counterpartyFinanceAccountId);
+      if (transfer.reference.trim()) body.append("reference", transfer.reference.trim());
+      if (transfer.note.trim()) body.append("note", transfer.note.trim());
+      body.append("concurrencyToken", transfer.concurrencyToken);
+      if (transfer.selectedAttachment) body.append("attachment", transfer.selectedAttachment);
+      if (transfer.removeAttachment) body.append("removeAttachment", "true");
+      const init: RequestInit = { method: transfer.id ? "PUT" : "POST", body };
       // New movements only: an edit is already protected by its row version, and it is the insert a
       // lost response can duplicate.
       const signature = `staff-cash:${selectedId}:${transfer.type}:${amount}:${transfer.date}`;
@@ -224,7 +234,7 @@ export default function StaffCashPage({ user }: Props) {
         url,
         transfer.id ? init : moneyRequest(idempotency.key(signature, "staff-cash-transfer"), init),
       );
-      if (!response.ok) throw new Error(await message(response, "Could not record this movement."));
+      if (!response.ok) throw new Error(await financeApiError(response, "Could not record this movement."));
       if (!transfer.id) idempotency.release(signature);
       setTransfer(null);
       await load();
@@ -237,7 +247,26 @@ export default function StaffCashPage({ user }: Props) {
     id: row.recordId, type: row.movementType ?? "FundsGiven", amount: String(row.grossAmount),
     date: row.date.slice(0, 10), counterpartyFinanceAccountId: String(row.counterpartyFinanceAccountId ?? ""),
     reference: row.reference ?? "", note: row.note ?? "", concurrencyToken: row.concurrencyToken ?? "",
+    attachment: row.attachment, selectedAttachment: null, removeAttachment: false,
   });
+
+  // Two different stores behind one column: a transfer's slip hangs off the float, an expense's
+  // receipt off the expense itself, and the row already says which it is.
+  const viewAttachment = async (row: HistoryItem, download: boolean) => {
+    if (!row.attachment || !selectedId) return;
+    try {
+      if (row.recordType === "Expense") {
+        await openFinanceAttachment("expense", row.recordId, row.attachment.fileName, download);
+      } else {
+        await openAttachmentAt(
+          `/api/finance/staff-cash/${selectedId}/transfers/${row.recordId}/attachment`,
+          row.attachment.fileName, download,
+        );
+      }
+    } catch (openError) {
+      setError(openError instanceof Error ? openError.message : "The attachment could not be opened.");
+    }
+  };
 
   const deleteTransfer = async (row: HistoryItem) => {
     if (!selectedId || !confirm("Delete this staff cash movement? The account balances will be recalculated.")) return;
@@ -308,7 +337,7 @@ export default function StaffCashPage({ user }: Props) {
             </div>
             <p className="mt-2 text-xs text-[var(--text-muted)]">On the expense form, choose “{selected.accountName}” under Paid From Account.</p>
           </div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement", "Account / project", "Amount", "Running balance", "Actions"].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement.items.map((row) => <tr key={`${row.recordType}-${row.recordId}`} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className="font-semibold text-[var(--text-heading)]">{row.kind}</p><p className="text-xs text-[var(--text-muted)]">{date(row.date)}</p>{row.description && <p className="mt-1 text-xs text-[var(--text-muted)]">{row.description}</p>}{row.note && <p className="mt-1 max-w-xs text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3"><p>{row.counterpartyFinanceAccountName ?? row.projectName ?? "General"}</p>{row.reference && <p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.recordType === "Expense" && row.whtAmount > 0 && <p className="text-xs text-amber-300">Gross {money(row.grossAmount)} · WHT {money(row.whtAmount)}</p>}</td><td className={`p-3 font-bold ${row.amount >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.amount >= 0 ? "+" : "−"}{money(Math.abs(row.amount))}</td><td className={`p-3 font-bold ${row.runningBalance < 0 ? "text-rose-300" : "text-[var(--text-heading)]"}`}>{money(row.runningBalance)}</td><td className="p-3">{row.recordType === "Transfer" ? <div className="flex gap-3"><button className="text-[var(--accent)]" onClick={() => editTransfer(row)}>Correct</button><button className="text-rose-300" onClick={() => void deleteTransfer(row)}>Delete</button></div> : <Link to="/finance" className="text-[var(--accent)]">View expenses</Link>}</td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[950px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement", "Account / project", "Amount", "Running balance", "Attachment", "Actions"].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement.items.map((row) => <tr key={`${row.recordType}-${row.recordId}`} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className="font-semibold text-[var(--text-heading)]">{row.kind}</p><p className="text-xs text-[var(--text-muted)]">{date(row.date)}</p>{row.description && <p className="mt-1 text-xs text-[var(--text-muted)]">{row.description}</p>}{row.note && <p className="mt-1 max-w-xs text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3"><p>{row.counterpartyFinanceAccountName ?? row.projectName ?? "General"}</p>{row.reference && <p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.recordType === "Expense" && row.whtAmount > 0 && <p className="text-xs text-amber-300">Gross {money(row.grossAmount)} · WHT {money(row.whtAmount)}</p>}</td><td className={`p-3 font-bold ${row.amount >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.amount >= 0 ? "+" : "−"}{money(Math.abs(row.amount))}</td><td className={`p-3 font-bold ${row.runningBalance < 0 ? "text-rose-300" : "text-[var(--text-heading)]"}`}>{money(row.runningBalance)}</td><td className="p-3">{row.attachment ? <span className="inline-flex items-center gap-2 whitespace-nowrap"><button type="button" onClick={() => void viewAttachment(row, false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button><button type="button" aria-label={`Download ${row.attachment.fileName}`} title={`Download ${row.attachment.fileName}`} onClick={() => void viewAttachment(row, true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button></span> : <span className="text-xs text-[var(--text-muted)]">None</span>}</td><td className="p-3">{row.recordType === "Transfer" ? <div className="flex gap-3"><button className="text-[var(--accent)]" onClick={() => editTransfer(row)}>Correct</button><button className="text-rose-300" onClick={() => void deleteTransfer(row)}>Delete</button></div> : <Link to="/finance" className="text-[var(--accent)]">View expenses</Link>}</td></tr>)}</tbody></table></div>
           {!shownStatement.items.length && !loadingStatement && <p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements yet. Record money given to begin this float.</p>}
           {loadingStatement && <p className="border-t border-[var(--border)] p-4 text-center text-sm text-[var(--text-muted)]">Loading movements…</p>}
           {shownStatement.hasMore && (
@@ -329,6 +358,7 @@ export default function StaffCashPage({ user }: Props) {
       <label className="block text-sm text-[var(--text-muted)]">{transfer.type === "FundsGiven" ? "Paid from company account" : "Returned to company account"}<select value={transfer.counterpartyFinanceAccountId} onChange={(event) => setTransfer({ ...transfer, counterpartyFinanceAccountId: event.target.value })} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]"><option value="">Select cash, bank, or wallet</option>{accounts.filter((account) => account.isActive || String(account.id) === transfer.counterpartyFinanceAccountId).map((account) => <option key={account.id} value={account.id}>{account.name} · {account.accountHolderName}{account.isActive ? "" : " (Inactive)"}</option>)}</select></label>
       <Field label="Reference (optional)" value={transfer.reference} set={(value) => setTransfer({ ...transfer, reference: value })} />
       <label className="block text-sm text-[var(--text-muted)]">Note (optional)<textarea value={transfer.note} onChange={(event) => setTransfer({ ...transfer, note: event.target.value })} className="mt-1 min-h-24 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]" /></label>
+      <FinanceAttachmentField existing={transfer.attachment} selected={transfer.selectedAttachment} removeExisting={transfer.removeAttachment} disabled={saving} onSelected={(file) => setTransfer((current) => current ? { ...current, selectedAttachment: file } : current)} onRemoveExisting={(remove) => setTransfer((current) => current ? { ...current, removeAttachment: remove } : current)} onViewExisting={() => { const row = shownStatement?.items.find((item) => item.recordType === "Transfer" && item.recordId === transfer.id); if (row) void viewAttachment(row, false); }} onDownloadExisting={() => { const row = shownStatement?.items.find((item) => item.recordType === "Transfer" && item.recordId === transfer.id); if (row) void viewAttachment(row, true); }} />
       <p className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.06] p-3 text-xs text-[var(--text-muted)]">This movement only relocates company cash. It does not change profit.</p>
       <div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={() => setTransfer(null)}>Cancel</Button><Button disabled={saving} onClick={() => void saveTransfer()}>{saving ? "Saving…" : "Record movement"}</Button></div>
     </div></Modal>}

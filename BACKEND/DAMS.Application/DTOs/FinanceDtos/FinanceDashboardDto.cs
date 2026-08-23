@@ -279,6 +279,15 @@ namespace DAMS.Application.DTOs.FinanceDtos
         /// the rest identify a record on another page.
         /// </summary>
         public int SourceId { get; set; }
+
+        /// <summary>
+        /// The supporting file behind this cost, when the record that drew the row can carry one —
+        /// expenses and fixed asset purchases. A cost read here without its receipt is a number
+        /// nobody can check, and sending the reader to another page to see whether one exists is
+        /// the same as not showing it. Null when there is no file, and on the four components
+        /// recorded by another workflow, which keep their evidence in their own store.
+        /// </summary>
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 
     /// <summary>

@@ -15,11 +15,13 @@ namespace DAMS.Application.Services
         private const decimal MaximumAmount = 999_999_999_999_999.99m;
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
+        private readonly IFinanceAttachmentWriter _attachments;
 
-        public LoanService(AppDbContext context, IFinanceAccountService accounts)
+        public LoanService(AppDbContext context, IFinanceAccountService accounts, IFinanceAttachmentWriter attachments)
         {
             _context = context;
             _accounts = accounts;
+            _attachments = attachments;
         }
 
         public async Task<List<LoanDto>> GetAllAsync(bool includeInactive, CancellationToken cancellationToken = default)
@@ -115,7 +117,8 @@ namespace DAMS.Application.Services
                 .ThenByDescending(t => t.CreatedAt).ThenByDescending(t => t.Id);
             var skippedMovement = skip == 0 ? 0m : await ordered.Take(skip)
                 .SumAsync(t => t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount, cancellationToken);
-            var rows = await ordered.Skip(skip).Take(take + 1).Include(t => t.FinanceAccount).ToListAsync(cancellationToken);
+            var rows = await ordered.Skip(skip).Take(take + 1)
+                .Include(t => t.FinanceAccount).Include(t => t.Attachment).ToListAsync(cancellationToken);
             var running = loan.CurrentBalance - skippedMovement;
             var items = new List<LoanTransactionDto>();
             foreach (var transaction in rows.Take(take))
@@ -126,17 +129,30 @@ namespace DAMS.Application.Services
             return new LoanStatementDto { Loan = loan, Items = items, HasMore = rows.Count > take };
         }
 
-        public Task<LoanTransactionDto> RecordTransactionAsync(int loanId, SaveLoanTransactionDto dto, int? userId, CancellationToken cancellationToken = default)
+        public async Task<LoanTransactionDto> RecordTransactionAsync(int loanId, SaveLoanTransactionDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
         {
             // Generated outside the retry delegate: if SQL reports a transient failure after the
             // commit actually reached the server, the retry finds and returns the first row instead
             // of recording the same drawdown or repayment twice.
             var operationId = Guid.NewGuid();
-            return ExecuteResilientlyAsync(() => RecordTransactionCoreAsync(loanId, dto, userId, operationId, cancellationToken));
+            // Written outside the retry delegate too, and for a related reason: the upload is a
+            // forward-only stream, so a second attempt would find it already consumed and store an
+            // empty file. Stored once, then only its metadata crosses the retry boundary.
+            var stored = attachment == null ? null : await _attachments.StoreAsync(attachment, cancellationToken);
+            try
+            {
+                return await ExecuteResilientlyAsync(() => RecordTransactionCoreAsync(loanId, dto, userId, operationId, stored, cancellationToken));
+            }
+            catch
+            {
+                await _attachments.DiscardAsync(stored?.StoredFileName);
+                throw;
+            }
         }
 
         private async Task<LoanTransactionDto> RecordTransactionCoreAsync(int loanId, SaveLoanTransactionDto dto, int? userId,
-            Guid operationId, CancellationToken cancellationToken)
+            Guid operationId, StoredFinanceAttachment? stored, CancellationToken cancellationToken)
         {
             ValidateTransaction(dto);
             await using var guard = await BeginGuardAsync(cancellationToken);
@@ -173,6 +189,11 @@ namespace DAMS.Application.Services
                     FinanceAccountId = dto.FinanceAccountId, Reference = Clean(dto.Reference), Note = Clean(dto.Note),
                     CreatedByUserId = userId, UpdatedByUserId = userId, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
                 };
+                if (stored != null)
+                {
+                    transaction.Attachment = new FinanceAttachment();
+                    stored.ApplyTo(transaction.Attachment);
+                }
                 await EnsurePrincipalNeverNegativeAsync(loanId, transaction, null, cancellationToken);
                 _context.LoanTransactions.Add(transaction);
                 await _context.SaveChangesAsync(cancellationToken);
@@ -187,10 +208,34 @@ namespace DAMS.Application.Services
             }
         }
 
-        public Task<LoanTransactionDto> UpdateTransactionAsync(int loanId, int transactionId, SaveLoanTransactionDto dto, int? userId, CancellationToken cancellationToken = default) =>
-            ExecuteResilientlyAsync(() => UpdateTransactionCoreAsync(loanId, transactionId, dto, userId, cancellationToken));
+        public async Task<LoanTransactionDto> UpdateTransactionAsync(int loanId, int transactionId, SaveLoanTransactionDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, bool removeAttachment = false, CancellationToken cancellationToken = default)
+        {
+            if (attachment != null && removeAttachment)
+                throw new InvalidOperationException("Choose either a replacement attachment or removing the existing one, not both.");
+            var stored = attachment == null ? null : await _attachments.StoreAsync(attachment, cancellationToken);
+            string? replaced;
+            try
+            {
+                LoanTransactionDto result;
+                (result, replaced) = await ExecuteResilientlyAsync(() =>
+                    UpdateTransactionCoreAsync(loanId, transactionId, dto, userId, stored, removeAttachment, cancellationToken));
+                // Only once the row is safely saved: a failed save leaves the record still pointing
+                // at the old file, so deleting it before the commit would break a movement that was
+                // never changed.
+                await _attachments.ForgetAsync(replaced);
+                return result;
+            }
+            catch
+            {
+                await _attachments.DiscardAsync(stored?.StoredFileName);
+                throw;
+            }
+        }
 
-        private async Task<LoanTransactionDto> UpdateTransactionCoreAsync(int loanId, int transactionId, SaveLoanTransactionDto dto, int? userId, CancellationToken cancellationToken)
+        private async Task<(LoanTransactionDto Transaction, string? ReplacedFile)> UpdateTransactionCoreAsync(
+            int loanId, int transactionId, SaveLoanTransactionDto dto, int? userId,
+            StoredFinanceAttachment? stored, bool removeAttachment, CancellationToken cancellationToken)
         {
             ValidateTransaction(dto);
             await using var guard = await BeginGuardAsync(cancellationToken);
@@ -199,7 +244,8 @@ namespace DAMS.Application.Services
             {
                 var loan = await _context.Loans.AsNoTracking().SingleOrDefaultAsync(l => l.Id == loanId, cancellationToken)
                     ?? throw new InvalidOperationException("Loan not found.");
-                var transaction = await _context.LoanTransactions.SingleOrDefaultAsync(t => t.Id == transactionId && t.LoanId == loanId, cancellationToken)
+                var transaction = await _context.LoanTransactions.Include(t => t.Attachment)
+                    .SingleOrDefaultAsync(t => t.Id == transactionId && t.LoanId == loanId, cancellationToken)
                     ?? throw new InvalidOperationException("Loan transaction not found.");
                 ApplyToken(transaction, dto.ConcurrencyToken);
                 await ValidateTransactionDateAsync(dto.Date, cancellationToken);
@@ -226,10 +272,26 @@ namespace DAMS.Application.Services
                 transaction.Note = Clean(dto.Note);
                 transaction.UpdatedByUserId = userId;
                 transaction.UpdatedAt = DateTime.UtcNow;
+                var replaced = transaction.Attachment?.StoredFileName;
+                if (stored != null)
+                {
+                    transaction.Attachment ??= new FinanceAttachment { LoanTransactionId = transaction.Id };
+                    stored.ApplyTo(transaction.Attachment);
+                }
+                else if (removeAttachment && transaction.Attachment != null)
+                {
+                    _context.FinanceAttachments.Remove(transaction.Attachment);
+                    transaction.Attachment = null;
+                }
+                else
+                {
+                    // Nothing asked for: the existing file stays, so nothing is queued for deletion.
+                    replaced = null;
+                }
                 await _context.SaveChangesAsync(cancellationToken);
                 if (guard != null) await guard.CommitAsync(cancellationToken);
                 committed = true;
-                return await GetTransactionAsync(transaction.Id, cancellationToken);
+                return (await GetTransactionAsync(transaction.Id, cancellationToken), replaced);
             }
             catch
             {
@@ -251,7 +313,8 @@ namespace DAMS.Application.Services
             var committed = false;
             try
             {
-                var transaction = await _context.LoanTransactions.SingleOrDefaultAsync(t => t.Id == transactionId && t.LoanId == loanId, cancellationToken)
+                var transaction = await _context.LoanTransactions.Include(t => t.Attachment)
+                    .SingleOrDefaultAsync(t => t.Id == transactionId && t.LoanId == loanId, cancellationToken)
                     ?? throw new InvalidOperationException("Loan transaction not found.");
                 ApplyToken(transaction, concurrencyToken);
                 var loanIsActive = await _context.Loans.AsNoTracking().Where(l => l.Id == loanId)
@@ -261,10 +324,13 @@ namespace DAMS.Application.Services
                 if (!loanIsActive && resultingBalance != 0m)
                     throw new InvalidOperationException(
                         "Deleting this movement would leave principal outstanding on an inactive loan. Reactivate the loan first.");
+                var orphanedFile = transaction.Attachment?.StoredFileName;
                 _context.LoanTransactions.Remove(transaction);
                 await _context.SaveChangesAsync(cancellationToken);
                 if (guard != null) await guard.CommitAsync(cancellationToken);
                 committed = true;
+                // After the commit: a rolled-back delete must leave the evidence where it was.
+                await _attachments.ForgetAsync(orphanedFile);
             }
             catch
             {
@@ -281,9 +347,41 @@ namespace DAMS.Application.Services
             return MapLoan(loan);
         }
 
+        public async Task<FinanceAttachmentDownload> GetTransactionAttachmentAsync(
+            int loanId, int transactionId, CancellationToken cancellationToken = default)
+        {
+            var attachment = await _context.LoanTransactions.AsNoTracking()
+                .Where(t => t.Id == transactionId && t.LoanId == loanId && t.Attachment != null)
+                .Select(t => t.Attachment!)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new FileNotFoundException("This loan movement does not have an attachment.");
+            var content = await _attachments.OpenAsync(attachment.StoredFileName, cancellationToken)
+                ?? throw new FileNotFoundException("The attachment file is missing from storage. Please replace it from the edit form.");
+            return new FinanceAttachmentDownload
+            {
+                Content = content,
+                FileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType
+            };
+        }
+
+        public async Task RemoveTransactionAttachmentAsync(
+            int loanId, int transactionId, CancellationToken cancellationToken = default)
+        {
+            var transaction = await _context.LoanTransactions.Include(t => t.Attachment)
+                .SingleOrDefaultAsync(t => t.Id == transactionId && t.LoanId == loanId, cancellationToken)
+                ?? throw new InvalidOperationException("Loan transaction not found.");
+            if (transaction.Attachment == null) return;
+            var storedFileName = transaction.Attachment.StoredFileName;
+            _context.FinanceAttachments.Remove(transaction.Attachment);
+            await _context.SaveChangesAsync(cancellationToken);
+            await _attachments.ForgetAsync(storedFileName);
+        }
+
         private async Task<LoanTransactionDto> GetTransactionAsync(int id, CancellationToken cancellationToken)
         {
-            var transaction = await _context.LoanTransactions.AsNoTracking().Include(t => t.FinanceAccount)
+            var transaction = await _context.LoanTransactions.AsNoTracking()
+                .Include(t => t.FinanceAccount).Include(t => t.Attachment)
                 .SingleAsync(t => t.Id == id, cancellationToken);
             var balance = await _context.Loans.AsNoTracking().Where(l => l.Id == transaction.LoanId)
                 .Select(l => l.FinanceAccount.OpeningBalance + l.Transactions
@@ -446,7 +544,14 @@ namespace DAMS.Application.Services
             Date = transaction.Date, FinanceAccountId = transaction.FinanceAccountId,
             FinanceAccountName = transaction.FinanceAccount.Name, Reference = transaction.Reference, Note = transaction.Note,
             RunningBalance = Money(runningBalance), CreatedAt = transaction.CreatedAt, UpdatedAt = transaction.UpdatedAt,
-            ConcurrencyToken = Convert.ToBase64String(transaction.RowVersion)
+            ConcurrencyToken = Convert.ToBase64String(transaction.RowVersion),
+            Attachment = transaction.Attachment == null ? null : new FinanceAttachmentDto
+            {
+                FileName = transaction.Attachment.OriginalFileName,
+                ContentType = transaction.Attachment.ContentType,
+                FileSize = transaction.Attachment.FileSize,
+                UploadedAt = transaction.Attachment.UploadedAt
+            }
         };
 
         private static decimal SignedPrincipal(LoanTransaction transaction) =>

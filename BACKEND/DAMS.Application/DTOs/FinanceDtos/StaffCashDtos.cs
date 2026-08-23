@@ -75,5 +75,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public string? CounterpartyFinanceAccountName { get; set; }
         public string? Note { get; set; }
         public string? ConcurrencyToken { get; set; }
+
+        /// <summary>The slip for the cash that changed hands, or the receipt behind an expense paid
+        /// from the float. Null when the movement has none.</summary>
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 }

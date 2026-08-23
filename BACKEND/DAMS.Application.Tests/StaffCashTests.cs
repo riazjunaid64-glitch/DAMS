@@ -34,7 +34,7 @@ public sealed class StaffCashTests
         await context.SaveChangesAsync();
 
         var accounts = new FinanceAccountService(context);
-        var staff = new StaffCashService(context, accounts);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
         var finance = Finance(context, accounts);
         var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Shahzeb" });
         var issued = PakistanTime.Today.AddDays(-10);
@@ -111,7 +111,7 @@ public sealed class StaffCashTests
         context.ExpenseCategories.Add(category);
         await context.SaveChangesAsync();
         var accounts = new FinanceAccountService(context);
-        var staff = new StaffCashService(context, accounts);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
         var finance = Finance(context, accounts);
         var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Shahid" });
         var day = PakistanTime.Today.AddDays(-3);
@@ -158,7 +158,7 @@ public sealed class StaffCashTests
         context.FinanceAccounts.AddRange(cash, bank);
         await context.SaveChangesAsync();
         var accounts = new FinanceAccountService(context);
-        var staff = new StaffCashService(context, accounts);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
         var a = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "A" });
         var b = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "B" });
 
@@ -202,7 +202,7 @@ public sealed class StaffCashTests
         await context.SaveChangesAsync();
 
         var accounts = new FinanceAccountService(context);
-        var staff = new StaffCashService(context, accounts);
+        var staff = new StaffCashService(context, accounts, TestAttachments.Writer());
         var finance = Finance(context, accounts);
         var holder = await staff.CreateHolderAsync(new CreateStaffCashHolderDto { PersonName = "Bilal" });
         var start = PakistanTime.Today.AddDays(-20);

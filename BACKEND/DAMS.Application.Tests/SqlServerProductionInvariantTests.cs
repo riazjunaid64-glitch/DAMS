@@ -552,7 +552,7 @@ public sealed class SqlServerProductionInvariantTests
         db.AddRange(bank, liability);
         await db.SaveChangesAsync();
         var accounts = new FinanceAccountService(db);
-        var loans = new LoanService(db, accounts);
+        var loans = new LoanService(db, accounts, TestAttachments.Writer());
         var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
             new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
         var loan = await loans.CreateAsync(new SaveLoanDto

@@ -218,6 +218,8 @@ interface CostLine {
   /** Which record drew this row, and which one. Six different things share this list. */
   source: CostSource;
   sourceId: number;
+  /** The receipt behind the cost. Only expenses and asset purchases can carry one. */
+  attachment: FinanceAttachmentInfo | null;
 }
 
 type CostSource = "expense" | "assetPurchase" | "commission" | "rebate" | "customerCredit" | "loanInterest";
@@ -251,20 +253,6 @@ const VIEW_PARAM: Record<View, string> = {
   netProfit: "netProfit",
   outstanding: "outstanding",
   overdue: "overdue",
-};
-
-const VIEW_TITLES: Record<View, string> = {
-  revenue: "Revenue",
-  expense: "Expense Records",
-  // Everything inside the Total Expenses card, not just the expense table — the card also carries
-  // commissions, rebates, customer credits, loan interest and fixed assets.
-  totalExpenses: "Total Expenses Breakdown",
-  // Things the company keeps — and still a cost of the period the client's rule charges to profit.
-  assetPurchase: "Fixed Asset Purchases",
-  customerDeposits: "Customer Deposits",
-  netProfit: "Net Profit Breakdown",
-  outstanding: "Outstanding Balances",
-  overdue: "Overdue Installments",
 };
 
 // Ancillary developer revenue (charges NOT auto-captured by booking/installment/possession
@@ -1172,8 +1160,8 @@ export default function FinanceDashboardPage({ user }: Props) {
     attachment: FinanceAttachmentInfo | null,
   ) => attachment && id != null ? (
     <span className="inline-flex items-center gap-2 whitespace-nowrap">
-      <button type="button" onClick={() => void accessAttachment(kind, id, attachment, false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
-      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={() => void accessAttachment(kind, id, attachment, true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
+      <button type="button" onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, false); }} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
+      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, true); }} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
     </span>
   ) : <span className="text-xs text-[var(--text-muted)]">None</span>;
 
@@ -1341,7 +1329,7 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "totalExpenses":
         return {
-          minWidth: 920,
+          minWidth: 1050,
           emptyText: "No costs for the selected filters.",
           columns: [
             { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
@@ -1358,6 +1346,16 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
               const row = r as CostLine;
               return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+            } },
+            // The receipt, in the list where the cost is actually read. "None" is only honest for
+            // the two kinds that could have carried a file; the other four keep their evidence in
+            // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
+            { key: "attachment", header: "Attachment", width: "130px", render: (r) => {
+              const row = r as CostLine;
+              if (row.source !== "expense" && row.source !== "assetPurchase") {
+                return <span className="text-xs text-[var(--text-muted)]">—</span>;
+              }
+              return attachmentCell(row.source, row.sourceId, row.attachment);
             } },
             // Edit and delete where the cost is read, so the breakdown is not a list you have to
             // leave to correct. Only the two kinds this page owns get them; stopPropagation keeps
@@ -1625,31 +1623,25 @@ export default function FinanceDashboardPage({ user }: Props) {
 
       {/* Content */}
       <div className="fin-page py-8">
-        {/* View title + actions */}
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          {/* nowrap + shrink-0: the action buttons opposite wrap to two rows and were squeezing
-              this column until the switch button dropped below the heading. */}
-          <div className="flex shrink-0 flex-nowrap items-center gap-3 whitespace-nowrap">
-            <h2 className="text-xl font-bold text-[var(--text-heading)]">{VIEW_TITLES[view]}</h2>
-          </div>
-          <div className="flex flex-wrap gap-2.5">
-            <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
-            <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
-            <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
-            <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
-            <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
-            <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
-            <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
-            <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
-              + Add Revenue
-            </Button>
-            <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
-              ◆ Add Fixed Asset
-            </Button>
-            <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
-              − Add Expense
-            </Button>
-          </div>
+        {/* Actions. No heading: the selected card above already names what the table is showing,
+            and a title repeating it was a line of furniture rather than information. */}
+        <div className="mb-5 flex flex-wrap gap-2.5 sm:justify-end">
+          <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
+          <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
+          <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
+          <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
+          <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+          <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
+          <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
+          <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
+            + Add Revenue
+          </Button>
+          <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
+            ◆ Add Fixed Asset
+          </Button>
+          <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
+            − Add Expense
+          </Button>
         </div>
 
         {(error ?? rowError) && (

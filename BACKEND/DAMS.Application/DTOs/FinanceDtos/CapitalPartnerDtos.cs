@@ -44,6 +44,9 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public int Id { get; set; }
         public decimal? ProfitSharePercentSnapshot { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        /// <summary>The receipt for money the partner put in, or took out.</summary>
+        public FinanceAttachmentDto? Attachment { get; set; }
     }
 
     public sealed class CapitalPartnerStatementDto

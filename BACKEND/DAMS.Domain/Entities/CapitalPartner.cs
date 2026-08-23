@@ -36,5 +36,9 @@ namespace DAMS.Domain.Entities
 
         public CapitalPartner CapitalPartner { get; set; } = null!;
         public FinanceAccount? FinanceAccount { get; set; }
+
+        /// <summary>Receipt for money a partner put in, or took out. See
+        /// <see cref="LoanTransaction.Attachment"/> — the same reason.</summary>
+        public FinanceAttachment? Attachment { get; set; }
     }
 }
