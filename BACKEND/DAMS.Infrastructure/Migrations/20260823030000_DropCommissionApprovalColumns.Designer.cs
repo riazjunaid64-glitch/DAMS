@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260823020000_SimplifyCommissionRebateStatuses")]
-    partial class SimplifyCommissionRebateStatuses
+    [Migration("20260823030000_DropCommissionApprovalColumns")]
+    partial class DropCommissionApprovalColumns
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -477,9 +477,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<decimal>("AllocationPercentSnapshot")
                         .HasColumnType("decimal(5,2)");
 
-                    b.Property<decimal?>("ApprovedAmount")
-                        .HasColumnType("decimal(18,2)");
-
                     b.Property<int?>("AttributionId")
                         .HasColumnType("int");
 
@@ -512,30 +509,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("CreatedByUserId")
                         .HasColumnType("int");
 
-                    b.Property<DateTime?>("DecisionAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("DecisionByName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("DecisionByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("DecisionReason")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
-                    b.Property<DateTime?>("EarnedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("EarningCondition")
-                        .HasColumnType("int");
-
-                    b.Property<string>("EligibilityConditionSnapshot")
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
-
                     b.Property<decimal>("FinalAmount")
                         .HasColumnType("decimal(18,2)");
 
@@ -551,9 +524,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Property<decimal?>("MaximumCommissionSnapshot")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("MinimumCollectionPercent")
-                        .HasColumnType("decimal(5,2)");
 
                     b.Property<decimal?>("MinimumCommissionSnapshot")
                         .HasColumnType("decimal(18,2)");
@@ -576,14 +546,8 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
 
-                    b.Property<DateTime?>("PayableAt")
-                        .HasColumnType("datetime2");
-
                     b.Property<decimal?>("PercentageRate")
                         .HasColumnType("decimal(9,6)");
-
-                    b.Property<bool>("RequiresApprovalSnapshot")
-                        .HasColumnType("bit");
 
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
@@ -607,16 +571,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
-                    b.Property<DateTime?>("SubmittedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("SubmittedByName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("SubmittedByUserId")
-                        .HasColumnType("int");
-
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime2");
 
@@ -638,7 +592,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.ToTable("BookingCommissions", t =>
                         {
-                            t.HasCheckConstraint("CK_BookingCommissions_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0) AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100");
+                            t.HasCheckConstraint("CK_BookingCommissions_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100");
                         });
                 });
 
@@ -1054,18 +1008,11 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
-                    b.Property<int>("EarningCondition")
-                        .HasColumnType("int");
-
                     b.Property<DateTime>("EffectiveFrom")
                         .HasColumnType("datetime2");
 
                     b.Property<DateTime?>("EffectiveTo")
                         .HasColumnType("datetime2");
-
-                    b.Property<string>("EligibilityCondition")
-                        .HasMaxLength(1000)
-                        .HasColumnType("nvarchar(1000)");
 
                     b.Property<decimal?>("FixedAmount")
                         .HasColumnType("decimal(18,2)");
@@ -1075,9 +1022,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Property<decimal?>("MaximumCommission")
                         .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("MinimumCollectionPercent")
-                        .HasColumnType("decimal(5,2)");
 
                     b.Property<decimal?>("MinimumCommission")
                         .HasColumnType("decimal(18,2)");
@@ -1106,9 +1050,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.Property<int?>("ProjectId")
                         .HasColumnType("int");
-
-                    b.Property<bool>("RequiresApproval")
-                        .HasColumnType("bit");
 
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
@@ -1723,9 +1664,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
 
-                    b.Property<decimal?>("ApprovedAmount")
-                        .HasColumnType("decimal(18,2)");
-
                     b.Property<decimal>("BasisAmount")
                         .HasColumnType("decimal(18,2)");
 
@@ -1758,20 +1696,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("CustomerId")
                         .HasColumnType("int");
 
-                    b.Property<DateTime?>("DecisionAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("DecisionByName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("DecisionByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("DecisionReason")
-                        .HasMaxLength(2000)
-                        .HasColumnType("nvarchar(2000)");
-
                     b.Property<decimal>("FinalAmount")
                         .HasColumnType("decimal(18,2)");
 
@@ -1802,16 +1726,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
-                    b.Property<DateTime?>("SubmittedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("SubmittedByName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<int?>("SubmittedByUserId")
-                        .HasColumnType("int");
-
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime2");
 
@@ -1827,7 +1741,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.ToTable("CustomerRebates", t =>
                         {
-                            t.HasCheckConstraint("CK_CustomerRebates_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0)");
+                            t.HasCheckConstraint("CK_CustomerRebates_Amounts", "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0");
                         });
                 });
 
