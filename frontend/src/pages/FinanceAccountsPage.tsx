@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
@@ -35,15 +35,68 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
   const [form,setForm]=useState<Form|null>(null), [saving,setSaving]=useState(false), [error,setError]=useState<string|null>(null);
   const [selected,setSelected]=useState<Account|null>(null), [transactions,setTransactions]=useState<Transaction[]>([]);
   const [overview,setOverview]=useState<Overview|null>(null);
-  const loadOverview=useCallback(async()=>{try{const r=await api("/api/finance/accounts/overview");if(r.ok)setOverview(await r.json());}catch{/* Summary cards retain their last successful values. */}},[]);
-  const load=useCallback(async()=>{ setLoading(true); try { const p=new URLSearchParams({take:"200"}); if(search)p.set("search",search); if(status!=="all")p.set("isActive",String(status==="active")); if(typeFilter)p.set("type",typeFilter); if(holderFilter)p.set("holder",holderFilter); const r=await api(`/api/finance/accounts?${p}`); if(!r.ok) throw new Error("Accounts could not be loaded."); setAccounts((await r.json()).items); await loadOverview(); } catch { setAccounts([]); } finally { setLoading(false); } },[search,status,typeFilter,holderFilter,loadOverview]);
-  useEffect(()=>{ if(user?.role!=="Admin"){navigate("/");return;} const timer=window.setTimeout(()=>void load(),0); return()=>window.clearTimeout(timer); },[user,navigate,load]);
+  const accountsRequest=useRef(0), overviewRequest=useRef(0);
+  const accountsController=useRef<AbortController|null>(null), overviewController=useRef<AbortController|null>(null);
+  const accountsDebounceTimer=useRef<number|null>(null);
+
+  const loadOverview=useCallback(async()=>{
+    overviewController.current?.abort();
+    const controller=new AbortController();overviewController.current=controller;
+    const request=++overviewRequest.current;
+    try{
+      const r=await api("/api/finance/accounts/overview",{signal:controller.signal});
+      if(!r.ok)return;
+      const next=await r.json() as Overview;
+      if(!controller.signal.aborted&&request===overviewRequest.current)setOverview(next);
+    }catch{/* Summary cards retain their last successful values. */}
+    finally{if(overviewController.current===controller)overviewController.current=null;}
+  },[]);
+
+  const loadAccounts=useCallback(async()=>{
+    accountsController.current?.abort();
+    const controller=new AbortController();accountsController.current=controller;
+    const request=++accountsRequest.current;
+    setLoading(true);
+    try{
+      const p=new URLSearchParams({take:"200"});
+      if(search)p.set("search",search);
+      if(status!=="all")p.set("isActive",String(status==="active"));
+      if(typeFilter)p.set("type",typeFilter);
+      if(holderFilter)p.set("holder",holderFilter);
+      const r=await api(`/api/finance/accounts?${p}`,{signal:controller.signal});
+      if(!r.ok)throw new Error("Accounts could not be loaded.");
+      const next=(await r.json()).items as Account[];
+      if(!controller.signal.aborted&&request===accountsRequest.current)setAccounts(next);
+    }catch{
+      if(!controller.signal.aborted&&request===accountsRequest.current)setAccounts([]);
+    }finally{
+      if(!controller.signal.aborted&&request===accountsRequest.current)setLoading(false);
+      if(accountsController.current===controller)accountsController.current=null;
+    }
+  },[search,status,typeFilter,holderFilter]);
+
+  const refresh=useCallback(async()=>{
+    if(accountsDebounceTimer.current!==null){window.clearTimeout(accountsDebounceTimer.current);accountsDebounceTimer.current=null;}
+    await Promise.all([loadAccounts(),loadOverview()]);
+  },[loadAccounts,loadOverview]);
+
+  useEffect(()=>{
+    if(user?.role!=="Admin"){navigate("/");return;}
+    const timer=window.setTimeout(()=>{if(accountsDebounceTimer.current===timer)accountsDebounceTimer.current=null;void loadAccounts();},250);
+    accountsDebounceTimer.current=timer;
+    return()=>{window.clearTimeout(timer);if(accountsDebounceTimer.current===timer)accountsDebounceTimer.current=null;accountsController.current?.abort();};
+  },[user,navigate,loadAccounts]);
+  useEffect(()=>{
+    if(user?.role!=="Admin")return;
+    void loadOverview();
+    return()=>overviewController.current?.abort();
+  },[user,loadOverview]);
   const openDetail=async(a:Account)=>{setSelected(a);setTransactions([]);try{const [detail,tx]=await Promise.all([api(`/api/finance/accounts/${a.id}`),api(`/api/finance/accounts/${a.id}/transactions?take=200`)]);if(detail.ok)setSelected(await detail.json());if(tx.ok)setTransactions((await tx.json()).items);}catch{/* Empty history is shown with a safe fallback. */}};
-  const save=async()=>{ if(!form||saving)return; setError(null); if(!form.name.trim()||!form.accountHolderName.trim()){setError("Account name and account holder are required.");return;} const opening=Number(form.openingBalance); if(!Number.isFinite(opening)){setError("Enter a valid opening balance.");return;} setSaving(true); try { const body={name:form.name.trim(),type:Number(form.type),accountHolderName:form.accountHolderName.trim(),openingBalance:opening,ledgerCode:form.ledgerCode.trim()||null,displayOrder:Number(form.displayOrder)||0,bankOrWalletName:form.bankOrWalletName.trim()||null,description:form.description.trim()||null,concurrencyToken:form.concurrencyToken}; const r=await api(form.id?`/api/finance/accounts/${form.id}`:"/api/finance/accounts",{method:form.id?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok){const d=await r.json().catch(()=>null);throw new Error(d?.message??"Account could not be saved.");} setForm(null);await load(); } catch(saveError) { setError(saveError instanceof Error?saveError.message:"Account could not be saved. Check your connection and try again."); } finally { setSaving(false); } };
+  const save=async()=>{ if(!form||saving)return; setError(null); if(!form.name.trim()||!form.accountHolderName.trim()){setError("Account name and account holder are required.");return;} const opening=Number(form.openingBalance); if(!Number.isFinite(opening)){setError("Enter a valid opening balance.");return;} setSaving(true); try { const body={name:form.name.trim(),type:Number(form.type),accountHolderName:form.accountHolderName.trim(),openingBalance:opening,ledgerCode:form.ledgerCode.trim()||null,displayOrder:Number(form.displayOrder)||0,bankOrWalletName:form.bankOrWalletName.trim()||null,description:form.description.trim()||null,concurrencyToken:form.concurrencyToken}; const r=await api(form.id?`/api/finance/accounts/${form.id}`:"/api/finance/accounts",{method:form.id?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok){const d=await r.json().catch(()=>null);throw new Error(d?.message??"Account could not be saved.");} setForm(null);await refresh(); } catch(saveError) { setError(saveError instanceof Error?saveError.message:"Account could not be saved. Check your connection and try again."); } finally { setSaving(false); } };
   const edit=(a:Account)=>setForm({id:a.id,name:a.name,type:String(typeValue(a.type)),accountHolderName:a.accountHolderName,openingBalance:String(a.openingBalance),ledgerCode:a.ledgerCode??"",displayOrder:String(a.displayOrder),bankOrWalletName:a.bankOrWalletName??"",description:a.description??"",concurrencyToken:a.concurrencyToken,isSystemAccount:a.isSystemAccount});
-  const toggle=async(a:Account)=>{const action=a.isActive?"deactivate":"reactivate";if(!confirm(`${action[0].toUpperCase()+action.slice(1)} ${a.name}? Historical transactions will be preserved.`))return;try{const r=await api(`/api/finance/accounts/${a.id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isActive:!a.isActive,concurrencyToken:a.concurrencyToken})});if(!r.ok)throw new Error((await r.json().catch(()=>null))?.message??"Status could not be changed.");await load();}catch(statusError){alert(statusError instanceof Error?statusError.message:"Status could not be changed. Check your connection and try again.");}};
+  const toggle=async(a:Account)=>{const action=a.isActive?"deactivate":"reactivate";if(!confirm(`${action[0].toUpperCase()+action.slice(1)} ${a.name}? Historical transactions will be preserved.`))return;try{const r=await api(`/api/finance/accounts/${a.id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isActive:!a.isActive,concurrencyToken:a.concurrencyToken})});if(!r.ok)throw new Error((await r.json().catch(()=>null))?.message??"Status could not be changed.");await refresh();}catch(statusError){alert(statusError instanceof Error?statusError.message:"Status could not be changed. Check your connection and try again.");}};
   return <Container className="py-8">
-    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><Link to="/finance" className="text-sm text-[var(--accent)]">← Finance dashboard</Link><h1 className="mt-1 text-2xl font-bold text-[var(--text-heading)]">Finance Accounts</h1><p className="text-sm text-[var(--text-muted)]">Cash, assets, receivables, liabilities and partner capital in the verified chart.</p></div><div className="flex gap-2"><Button variant="outline" onClick={async()=>{if(!confirm("Create any missing Seven Ventures chart accounts and link the nine capital partners? Existing accounts will be preserved."))return;const response=await api("/api/finance/accounts/setup-client-chart",{method:"POST"});if(!response.ok){setError((await response.json().catch(()=>null))?.message??"Chart setup failed.");return;}await load();}}>Set up client chart</Button><Button onClick={()=>setForm(emptyForm())}>Add Account</Button></div></div>
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><Link to="/finance" className="text-sm text-[var(--accent)]">← Finance dashboard</Link><h1 className="mt-1 text-2xl font-bold text-[var(--text-heading)]">Finance Accounts</h1><p className="text-sm text-[var(--text-muted)]">Cash, assets, receivables, liabilities and partner capital in the verified chart.</p></div><div className="flex gap-2"><Button variant="outline" onClick={async()=>{if(!confirm("Create any missing Seven Ventures chart accounts and link the nine capital partners? Existing accounts will be preserved."))return;const response=await api("/api/finance/accounts/setup-client-chart",{method:"POST"});if(!response.ok){setError((await response.json().catch(()=>null))?.message??"Chart setup failed.");return;}await refresh();}}>Set up client chart</Button><Button onClick={()=>setForm(emptyForm())}>Add Account</Button></div></div>
     <div className="mb-5 grid gap-3 sm:grid-cols-3"><Stat label="Active accounts" value={String(overview?.activeAccounts??0)}/><Stat label="Combined balance" value={money(overview?.totalBalance??0)}/><Stat label="Account holders" value={String(overview?.holderBalances.length??0)}/></div>
     <div className="mb-4 flex flex-wrap gap-3"><input aria-label="Search accounts" className="min-w-[200px] flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-[var(--text-primary)]" placeholder="Search account, holder, bank or wallet" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="Filter by type" className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-[var(--text-primary)]" value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="">All types</option>{Object.entries(types).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><select aria-label="Filter by holder" className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-[var(--text-primary)]" value={holderFilter} onChange={e=>setHolderFilter(e.target.value)}><option value="">All holders</option>{overview?.holderBalances.map(h=><option key={h.accountHolderName} value={h.accountHolderName}>{h.accountHolderName}</option>)}</select><select aria-label="Filter by status" className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 text-[var(--text-primary)]" value={status} onChange={e=>setStatus(e.target.value)}><option value="all">All status</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
     <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]"><table className="w-full min-w-[900px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Account","Type / holder","Opening","Increases","Decreases","Current balance","Status","Actions"].map(x=><th key={x} className="p-4">{x}</th>)}</tr></thead><tbody>{groups.map(([group,values])=>{const rows=accounts.filter(account=>values.includes(typeValue(account.type)));return rows.length?<Fragment key={group}><tr className="bg-[var(--surface-glass)]"><td colSpan={8} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-[var(--accent)]">{group}</td></tr>{rows.map(a=><tr key={a.id} className="border-b border-[var(--border)]"><td className="p-4 font-semibold text-[var(--text-heading)]"><button onClick={()=>void openDetail(a)} className="text-left hover:underline">{a.name}</button><div className="text-xs font-normal text-[var(--text-muted)]">{a.ledgerCode?`GL ${a.ledgerCode}`:""}{a.bankOrWalletName?` · ${a.bankOrWalletName}`:""}</div></td><td className="p-4">{typeName(a.type)}<div className="text-xs text-[var(--text-muted)]">{a.accountHolderName}</div></td><td className="p-4">{money(a.openingBalance)}</td><td className="p-4 text-emerald-400">{money(a.revenueReceived)}</td><td className="p-4 text-rose-400">{money(a.expensesPaid)}</td><td className="p-4 font-semibold">{money(a.currentBalance)}</td><td className="p-4"><span className={a.isActive?"text-emerald-400":"text-[var(--text-muted)]"}>{a.isActive?"Active":"Inactive"}</span></td><td className="p-4"><div className="flex gap-2"><button className="text-[var(--accent)]" onClick={()=>edit(a)}>Edit</button><button className="text-[var(--text-muted)] disabled:opacity-50" disabled={a.isSystemAccount&&a.isActive} onClick={()=>void toggle(a)}>{a.isSystemAccount&&a.isActive?"Protected":a.isActive?"Deactivate":"Reactivate"}</button></div></td></tr>)}</Fragment>:null})}</tbody></table>{loading&&<p className="p-6 text-center text-[var(--text-muted)]">Loading…</p>}{!loading&&!accounts.length&&<p className="p-8 text-center text-[var(--text-muted)]">No finance accounts found.</p>}</div>

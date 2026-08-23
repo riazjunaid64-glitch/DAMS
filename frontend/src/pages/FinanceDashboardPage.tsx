@@ -13,6 +13,7 @@ import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
+import { useProjects } from "../contexts/projectsContextValue.ts";
 import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
 import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
@@ -24,11 +25,6 @@ import {
 } from "../api/financeAttachments.ts";
 
 type Props = { user: User | null };
-
-interface ProjectOption {
-  id: number;
-  projectName: string;
-}
 
 interface FinanceAccountOption {
   id: number;
@@ -431,13 +427,16 @@ const emptyExpenseForm = (): ExpenseFormState => ({
 export default function FinanceDashboardPage({ user }: Props) {
   const navigate = useNavigate();
   const isAdmin = user?.role === "Admin";
+  const { projects } = useProjects();
 
-  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
   const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
   const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
   const [vendors, setVendors] = useState<VendorOption[]>([]);
+  const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
+  const [revenueCategoriesLoading, setRevenueCategoriesLoading] = useState(false);
+  const [whtLookupsLoading, setWhtLookupsLoading] = useState(false);
   const [projectId, setProjectId] = useState<string>("");
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
@@ -460,7 +459,7 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
   const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
-    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter, !rangeError);
+    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter, isAdmin && !rangeError);
 
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
@@ -471,26 +470,12 @@ export default function FinanceDashboardPage({ user }: Props) {
   // operator cannot tell from a genuine failure. See lib/idempotency.
   const idempotency = useIdempotencyKeys();
   const [formError, setFormError] = useState<string | null>(null);
-
-  const loadProjects = useCallback(async () => {
-    try {
-      const res = await api("/api/Project", undefined, false);
-      if (!res.ok) return;
-      const raw: unknown = await res.json();
-      if (Array.isArray(raw)) {
-        setProjects(
-          raw
-            .map((p) => {
-              const obj = p as Record<string, unknown>;
-              return { id: Number(obj.id), projectName: String(obj.projectName ?? "") };
-            })
-            .filter((p) => Number.isFinite(p.id) && p.projectName)
-        );
-      }
-    } catch {
-      /* dropdown is non-critical */
-    }
-  }, []);
+  const assetAccountsLoaded = useRef(false);
+  const assetAccountsRequest = useRef<Promise<void> | null>(null);
+  const whtLookupsLoaded = useRef(false);
+  const whtLookupsRequest = useRef<Promise<void> | null>(null);
+  const revenueCategoriesLoaded = useRef(false);
+  const revenueCategoriesRequest = useRef<Promise<void> | null>(null);
 
   const loadFinanceAccounts = useCallback(async () => {
     try {
@@ -516,34 +501,71 @@ export default function FinanceDashboardPage({ user }: Props) {
   // a cost on the day it is paid, so it belongs on the Expense form under its construction head;
   // the server refuses a work-in-progress destination and this list simply agrees with it. The WIP
   // accounts still exist and still carry their inherited ERP balances.
-  const loadAssetAccounts = useCallback(async () => {
-    try {
-      const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
-      if (response.ok) setAssetAccounts(await response.json() as FinanceAccountOption[]);
-    } catch {
-      /* The purchase form shows its validation message if these cannot be loaded. */
-    }
+  const loadAssetAccounts = useCallback((): Promise<void> => {
+    if (assetAccountsLoaded.current) return Promise.resolve();
+    if (assetAccountsRequest.current) return assetAccountsRequest.current;
+    setAssetAccountsLoading(true);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
+        if (response.ok) {
+          setAssetAccounts(await response.json() as FinanceAccountOption[]);
+          assetAccountsLoaded.current = true;
+        }
+      } catch {
+        /* The purchase form shows its validation message if these cannot be loaded. */
+      } finally {
+        assetAccountsRequest.current = null;
+        setAssetAccountsLoading(false);
+      }
+    })();
+    assetAccountsRequest.current = request;
+    return request;
   }, []);
 
   // Inactive entries are included so editing an old expense still shows the head or payee it was
   // booked against, rather than silently blanking it.
-  const loadWhtLookups = useCallback(async () => {
-    try {
-      const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
-      setExpenseCategories(categories);
-      setVendors(vendorRows);
-    } catch {
-      /* The expense form falls back to free-text entry if these cannot be loaded. */
-    }
+  const loadWhtLookups = useCallback((): Promise<void> => {
+    if (whtLookupsLoaded.current) return Promise.resolve();
+    if (whtLookupsRequest.current) return whtLookupsRequest.current;
+    setWhtLookupsLoading(true);
+    const request = (async () => {
+      try {
+        const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
+        setExpenseCategories(categories);
+        setVendors(vendorRows);
+        whtLookupsLoaded.current = true;
+      } catch {
+        /* The expense form falls back to free-text entry if these cannot be loaded. */
+      } finally {
+        whtLookupsRequest.current = null;
+        setWhtLookupsLoading(false);
+      }
+    })();
+    whtLookupsRequest.current = request;
+    return request;
   }, []);
 
-  const loadRevenueCategories = useCallback(async () => {
-    try {
-      const response = await api("/api/finance/revenue-categories?includeInactive=true");
-      if (response.ok) setRevenueCategories(await response.json());
-    } catch {
-      /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
-    }
+  const loadRevenueCategories = useCallback((): Promise<void> => {
+    if (revenueCategoriesLoaded.current) return Promise.resolve();
+    if (revenueCategoriesRequest.current) return revenueCategoriesRequest.current;
+    setRevenueCategoriesLoading(true);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/revenue-categories?includeInactive=true");
+        if (response.ok) {
+          setRevenueCategories(await response.json());
+          revenueCategoriesLoaded.current = true;
+        }
+      } catch {
+        /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
+      } finally {
+        revenueCategoriesRequest.current = null;
+        setRevenueCategoriesLoading(false);
+      }
+    })();
+    revenueCategoriesRequest.current = request;
+    return request;
   }, []);
 
   // The signal matters as much as the request. These seven cards are Revenue, Expenses, Net Profit,
@@ -587,8 +609,9 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // After a create/edit/delete, refresh the totals, the charts and the visible rows.
   const refreshAll = useCallback(async () => {
-    await loadSummary();
+    const summaryRefresh = loadSummary();
     reload();
+    await summaryRefresh;
   }, [loadSummary, reload]);
 
   useEffect(() => {
@@ -596,12 +619,23 @@ export default function FinanceDashboardPage({ user }: Props) {
       navigate("/");
       return;
     }
-    loadProjects();
-    loadFinanceAccounts();
-    void loadAssetAccounts();
-    void loadWhtLookups();
-    void loadRevenueCategories();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadWhtLookups, loadRevenueCategories]);
+    void loadFinanceAccounts();
+  }, [isAdmin, navigate, loadFinanceAccounts]);
+
+  // These lists are used only inside their respective forms. Deferring them keeps the dashboard's
+  // normal read path lean; the in-flight refs above also prevent a quick close/reopen duplicating it.
+  const revenueFormOpen = revenueForm !== null;
+  const assetFormOpen = assetForm !== null;
+  const whtFormOpen = expenseForm !== null || assetFormOpen;
+  useEffect(() => {
+    if (isAdmin && revenueFormOpen) void loadRevenueCategories();
+  }, [isAdmin, revenueFormOpen, loadRevenueCategories]);
+  useEffect(() => {
+    if (isAdmin && assetFormOpen) void loadAssetAccounts();
+  }, [isAdmin, assetFormOpen, loadAssetAccounts]);
+  useEffect(() => {
+    if (isAdmin && whtFormOpen) void loadWhtLookups();
+  }, [isAdmin, whtFormOpen, loadWhtLookups]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -1625,7 +1659,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   setRevenueForm({ ...revenueForm, revenueCategoryId: v, revenueType: category?.name ?? revenueForm.revenueType });
                 }}
               >
-                <option value="">Select a category</option>
+                <option value="">{revenueCategoriesLoading ? "Loading categories…" : "Select a category"}</option>
                 {revenueCategories.filter((item) => item.isActive || String(item.id) === revenueForm.revenueCategoryId)
                   .map((item) => <option key={item.id} value={item.id}>{item.name}{item.isActive ? "" : " (Retired)"}</option>)}
               </FormSelect>
@@ -1692,7 +1726,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   not in the list — an old work-in-progress purchase must stay correctable in place
                   rather than being pushed onto the wrong account by a blank select. */}
               <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
-                <option value="">Select a fixed asset account</option>
+                <option value="">{assetAccountsLoading ? "Loading asset accounts…" : "Select a fixed asset account"}</option>
                 {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
                   <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
                 ))}
@@ -1722,7 +1756,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   wht: v ? assetForm.wht : emptyWht(),
                 })}
               >
-                <option value="">Select a category</option>
+                <option value="">{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
                 {expenseCategories
                   .filter((c) => c.isActive || String(c.id) === assetForm.categoryId)
                   .map((c) => (
@@ -1741,7 +1775,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
                 })}
               >
-                <option value={CUSTOM_TYPE}>One-off supplier (enter manually)…</option>
+                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading suppliers…" : "One-off supplier (enter manually)…"}</option>
                 {vendors
                   .filter((v) => v.isActive || String(v.id) === assetForm.vendorId)
                   .map((v) => (
@@ -1840,7 +1874,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 {expenseForm.legacyCategory ? (
                   <option value={CUSTOM_TYPE}>Keep the original text — “{expenseForm.category}”</option>
                 ) : (
-                  <option value={CUSTOM_TYPE}>Select a category</option>
+                  <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
                 )}
                 {expenseCategories
                   .filter((c) => c.isActive || String(c.id) === expenseForm.categoryId)
@@ -1867,7 +1901,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
                 })}
               >
-                <option value={CUSTOM_TYPE}>One-off payee (enter manually)…</option>
+                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading vendors…" : "One-off payee (enter manually)…"}</option>
                 {vendors
                   .filter((v) => v.isActive || String(v.id) === expenseForm.vendorId)
                   .map((v) => (

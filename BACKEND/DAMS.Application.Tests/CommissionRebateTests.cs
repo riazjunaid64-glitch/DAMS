@@ -49,6 +49,151 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
+    public async Task Summary_PreservesStatusPartialPaymentReversalAndPartnerSemantics()
+    {
+        await using var harness = await Harness.Create();
+        var booking = await harness.Context.Bookings.SingleAsync(b => b.Id == harness.BookingId);
+        var partner = await harness.Context.ThirdPartyPartners.SingleAsync(p => p.Id == harness.PartnerId);
+        var account = await harness.Context.FinanceAccounts.SingleAsync(a => a.Id == harness.AccountId);
+
+        harness.Context.ThirdPartyPartners.AddRange(
+            new ThirdPartyPartner
+            {
+                Name = "Second active", PartnerType = "Broker", InternalCode = "ACTIVE-2", IsActive = true
+            },
+            new ThirdPartyPartner
+            {
+                Name = "Inactive", PartnerType = "Dealer", InternalCode = "INACTIVE-1", IsActive = false
+            });
+
+        BookingCommission Commission(BookingCommissionStatus status, decimal amount) => new()
+        {
+            Booking = booking,
+            Partner = partner,
+            PartnerNameSnapshot = partner.Name,
+            PartnerTypeSnapshot = partner.PartnerType,
+            PartnerInternalCodeSnapshot = partner.InternalCode,
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.ManuallyApprovedAmount,
+            FixedAmount = amount,
+            BasisAmount = amount,
+            CalculatedAmount = amount,
+            FinalAmount = amount,
+            Status = status
+        };
+
+        var pendingCommission = Commission(BookingCommissionStatus.Pending, 100m);
+        var paidCommission = Commission(BookingCommissionStatus.Paid, 200m);
+        var cancelledCommission = Commission(BookingCommissionStatus.Cancelled, 300m);
+        var recoveryCommission = Commission(BookingCommissionStatus.ReversalRequired, 400m);
+        var reversedCommission = Commission(BookingCommissionStatus.Reversed, 500m);
+        harness.Context.BookingCommissions.AddRange(pendingCommission, paidCommission, cancelledCommission,
+            recoveryCommission, reversedCommission);
+
+        CommissionPayout Payout(BookingCommission commission, decimal amount, string key) => new()
+        {
+            Commission = commission,
+            FinanceAccount = account,
+            Amount = amount,
+            PaymentDate = PakistanTime.Today,
+            PaymentMethod = PaymentMethod.Cash,
+            IdempotencyKey = key
+        };
+
+        var pendingPayout = Payout(pendingCommission, 40m, "summary-commission-pending");
+        var paidPayout = Payout(paidCommission, 200m, "summary-commission-paid");
+        var recoveryPayout = Payout(recoveryCommission, 150m, "summary-commission-recovery");
+        var reversedPayout = Payout(reversedCommission, 80m, "summary-commission-reversed");
+        harness.Context.CommissionPayouts.AddRange(pendingPayout, paidPayout, recoveryPayout, reversedPayout);
+        harness.Context.CommissionPayoutReversals.AddRange(
+            new CommissionPayoutReversal
+            {
+                Payout = pendingPayout, Amount = 10m, Reason = "Partial correction",
+                IdempotencyKey = "summary-commission-pending-reversal"
+            },
+            new CommissionPayoutReversal
+            {
+                Payout = recoveryPayout, Amount = 50m, Reason = "Partial recovery",
+                IdempotencyKey = "summary-commission-recovery-reversal"
+            },
+            new CommissionPayoutReversal
+            {
+                Payout = reversedPayout, Amount = 80m, Reason = "Fully reversed",
+                IdempotencyKey = "summary-commission-full-reversal"
+            });
+
+        CustomerRebate Rebate(CustomerRebateStatus status, decimal amount) => new()
+        {
+            Booking = booking,
+            Customer = booking.Customer,
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.ManuallyApprovedAmount,
+            FixedAmount = amount,
+            BasisAmount = amount,
+            CalculatedAmount = amount,
+            FinalAmount = amount,
+            Reason = "Summary fixture",
+            Status = status
+        };
+
+        var pendingRebate = Rebate(CustomerRebateStatus.Pending, 60m);
+        var appliedRebate = Rebate(CustomerRebateStatus.Applied, 70m);
+        var paidRebate = Rebate(CustomerRebateStatus.Paid, 80m);
+        var cancelledRebate = Rebate(CustomerRebateStatus.Cancelled, 90m);
+        var recoveryRebate = Rebate(CustomerRebateStatus.ReversalRequired, 100m);
+        var reversedRebate = Rebate(CustomerRebateStatus.Reversed, 110m);
+        harness.Context.CustomerRebates.AddRange(pendingRebate, appliedRebate, paidRebate, cancelledRebate,
+            recoveryRebate, reversedRebate);
+
+        RebateDisbursement Disbursement(CustomerRebate rebate, decimal amount, string key) => new()
+        {
+            Rebate = rebate,
+            Method = CustomerRebateMethod.CreditNote,
+            Amount = amount,
+            AppliedAt = PakistanTime.Today,
+            IdempotencyKey = key
+        };
+
+        var pendingDisbursement = Disbursement(pendingRebate, 20m, "summary-rebate-pending");
+        var appliedDisbursement = Disbursement(appliedRebate, 70m, "summary-rebate-applied");
+        var paidDisbursement = Disbursement(paidRebate, 80m, "summary-rebate-paid");
+        var recoveryDisbursement = Disbursement(recoveryRebate, 50m, "summary-rebate-recovery");
+        var reversedDisbursement = Disbursement(reversedRebate, 40m, "summary-rebate-reversed");
+        harness.Context.RebateDisbursements.AddRange(pendingDisbursement, appliedDisbursement, paidDisbursement,
+            recoveryDisbursement, reversedDisbursement);
+        harness.Context.RebateDisbursementReversals.AddRange(
+            new RebateDisbursementReversal
+            {
+                Disbursement = pendingDisbursement, Amount = 5m, Reason = "Partial correction",
+                IdempotencyKey = "summary-rebate-pending-reversal"
+            },
+            new RebateDisbursementReversal
+            {
+                Disbursement = recoveryDisbursement, Amount = 20m, Reason = "Partial recovery",
+                IdempotencyKey = "summary-rebate-recovery-reversal"
+            },
+            new RebateDisbursementReversal
+            {
+                Disbursement = reversedDisbursement, Amount = 40m, Reason = "Fully reversed",
+                IdempotencyKey = "summary-rebate-full-reversal"
+            });
+
+        await harness.Context.SaveChangesAsync();
+
+        var summary = await harness.Service.GetSummaryAsync();
+
+        Assert.Equal(300m, summary.AccruedCommission);
+        Assert.Equal(70m, summary.PayableCommission);
+        Assert.Equal(330m, summary.CommissionPaid);
+        Assert.Equal(100m, summary.CommissionReversalRequired);
+        Assert.Equal(210m, summary.RebatesGranted);
+        Assert.Equal(195m, summary.RebatesAppliedOrPaid);
+        Assert.Equal(30m, summary.RebateReversalRequired);
+        Assert.Equal(2, summary.ActivePartners);
+        Assert.Equal(2, summary.PendingRecords);
+    }
+
+    [Fact]
     public async Task Partner_DuplicatesAndInactiveNewBusiness_AreRejected()
     {
         await using var harness = await Harness.Create();

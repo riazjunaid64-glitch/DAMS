@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rowsKey, visibleRows, type Loaded } from "./usePaginatedRows";
+import { isCurrentRowsRequest, rowsKey, visibleRows, type Loaded } from "./usePaginatedRows";
 
 /**
  * The finance dashboard picks its table columns from the active view, and each view's columns read
@@ -53,5 +53,14 @@ describe("usePaginatedRows row/key coupling", () => {
     // A separator-joined key would collide here; a serialised one cannot.
     expect(rowsKey("revenue", "1 2", "", "", "")).not.toBe(rowsKey("revenue", "1", "2", "", ""));
     expect(rowsKey("a", "", "", "", "")).not.toBe(rowsKey("", "a", "", "", ""));
+  });
+
+  it("rejects both stale and aborted responses", () => {
+    const live = new AbortController();
+    expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(true);
+    expect(isCurrentRowsRequest(3, 4, live.signal)).toBe(false);
+
+    live.abort();
+    expect(isCurrentRowsRequest(4, 4, live.signal)).toBe(false);
   });
 });

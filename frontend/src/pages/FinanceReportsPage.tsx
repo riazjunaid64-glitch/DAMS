@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
+import { useProjects } from "../contexts/projectsContextValue";
 import {
   applyTrialFilters,
   calendarMonthStart,
@@ -24,7 +25,6 @@ import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/fina
 import Modal from "../lib/Modal.tsx";
 
 type Tab = "pnl" | "trial" | "balance";
-type Project = { id: number; projectName: string };
 type PnlLine = { categoryId: number | null; name: string; amount: number; priorAmount: number | null; transactionCount: number };
 type Pnl = { periodStart: string; periodEnd: string; periodLabel: string; projectName: string | null; incomeLines: PnlLine[]; totalIncome: number; expenseLines: PnlLine[]; totalExpenses: number; netProfit: number; priorTotalIncome: number; priorTotalExpenses: number; priorNetProfit: number };
 type BsLine = { accountId: number; ledgerCode: string | null; name: string; amount: number };
@@ -36,8 +36,8 @@ const money = (value: number) => `Rs ${value.toLocaleString("en-PK", { maximumFr
 
 export default function FinanceReportsPage({ user }: { user: User | null }) {
   const navigate = useNavigate();
+  const { projects } = useProjects();
   const [tab, setTab] = useState<Tab>("pnl");
-  const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -54,16 +54,11 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const reportRequestId = useRef(0);
+  const reportController = useRef<AbortController | null>(null);
+  const reportDebounceTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (user?.role !== "Admin") { navigate("/"); return; }
-    void Promise.all([
-      api("/api/Project", undefined, false).then(async (response) => {
-        if (!response.ok) return;
-        const rows = await response.json() as Project[];
-        setProjects(Array.isArray(rows) ? rows : []);
-      }),
-    ]);
   }, [user, navigate]);
 
   const query = useCallback((includePeriod: boolean) => {
@@ -88,13 +83,18 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
 
   const load = useCallback(async () => {
     if (user?.role !== "Admin") return;
+    reportController.current?.abort();
+    const controller = new AbortController();
+    reportController.current = controller;
     const requestId = ++reportRequestId.current;
     setLoading(true); setError(null);
     try {
       if (tab === "pnl") {
-        const response = await api(`/api/Finance/profit-and-loss?${query(true)}`);
+        const response = await api(`/api/Finance/profit-and-loss?${query(true)}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Profit and loss could not be loaded.");
-        setPnl(await response.json());
+        const report = await response.json() as Pnl;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
+        setPnl(report);
       } else if (tab === "trial") {
         setTrial(null);
         const draft = currentTrialFilters();
@@ -102,25 +102,57 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         if (filterError) throw new Error(filterError);
         const applied = applyTrialFilters(draft);
         const params = trialSummaryParams(applied);
-        const response = await api(`/api/Finance/trial-balance?${params}`);
+        const response = await api(`/api/Finance/trial-balance?${params}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Trial balance could not be loaded.");
         const report = await response.json() as TrialBalanceReport;
-        if (requestId !== reportRequestId.current) return;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
         setTrial({ report, filters: applied });
       } else {
-        const response = await api(`/api/Finance/balance-sheet?${query(false)}`);
+        const response = await api(`/api/Finance/balance-sheet?${query(false)}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Balance sheet could not be loaded.");
-        setBalance(await response.json());
+        const report = await response.json() as BalanceSheet;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
+        setBalance(report);
       }
     } catch (caught) {
-      if (requestId !== reportRequestId.current) return;
+      if (controller.signal.aborted || requestId !== reportRequestId.current) return;
       setError(caught instanceof Error ? caught.message : "The report could not be loaded.");
     } finally {
       if (requestId === reportRequestId.current) setLoading(false);
+      if (reportController.current === controller) reportController.current = null;
     }
   }, [tab, query, currentTrialFilters, user]);
 
-  useEffect(() => { void load(); }, [load]);
+  // Report filters can be expensive. Coalesce quick edits and cancel the previous SQL request as
+  // soon as a newer filter/tab supersedes it; the request id remains a second correctness guard.
+  useEffect(() => {
+    if (user?.role !== "Admin") return;
+    // Invalidate immediately rather than waiting for the debounce timer, so an abort that settles
+    // during those 250 ms cannot clear the loading state or paint the previous filter's report.
+    reportController.current?.abort();
+    reportController.current = null;
+    reportRequestId.current += 1;
+    setLoading(true);
+    setError(null);
+    const timer = window.setTimeout(() => {
+      if (reportDebounceTimer.current === timer) reportDebounceTimer.current = null;
+      void load();
+    }, 250);
+    reportDebounceTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (reportDebounceTimer.current === timer) reportDebounceTimer.current = null;
+      reportController.current?.abort();
+    };
+  }, [load, user]);
+
+  const refreshReport = () => {
+    if (reportDebounceTimer.current !== null) {
+      window.clearTimeout(reportDebounceTimer.current);
+      reportDebounceTimer.current = null;
+    }
+    void load();
+  };
 
   const applyYearPreset = (preset: "year" | "lastYear") => {
     const range = buildPeriodRange(preset, startMonth);
@@ -178,7 +210,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
           ? <DateField label="As at" value={asAt} onChange={setAsAt} required/>
           : <><DateField label="From" value={trialFrom} onChange={setTrialFrom} required/><DateField label="To" value={trialTo} onChange={setTrialTo} required/></>}
       </> : <DateField label="As at" value={asAt} onChange={setAsAt}/>}
-      <Button disabled={tab === "trial" && currentTrialError !== null} onClick={() => void load()}>Refresh</Button>
+      <Button disabled={tab === "trial" && currentTrialError !== null} onClick={refreshReport}>Refresh</Button>
       {tab === "trial" && currentTrialError && <p role="alert" className="w-full text-xs text-amber-300">{currentTrialError}</p>}
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}

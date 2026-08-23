@@ -82,7 +82,7 @@ export default function ExpenseWhtFields({
         date: date || undefined,
         excludeExpenseId,
         excludeAssetPurchaseId,
-      })
+      }, controller.signal)
         .then((result) => {
           if (controller.signal.aborted) return;
           setPreview(result);

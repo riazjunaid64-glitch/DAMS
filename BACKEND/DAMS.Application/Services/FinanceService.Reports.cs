@@ -145,12 +145,14 @@ namespace DAMS.Application.Services
                     .Select(offset => MonthEnd(monthEnd.AddMonths(offset - monthsBack))).ToList();
             }
             var openingDate = await OpeningDateAsync(cancellationToken);
+            var columns = await LoadTrialBalanceColumnsAsync(projectId, dates, openingDate, cancellationToken);
             var builders = new Dictionary<string, TrialRowBuilder>(StringComparer.Ordinal);
 
             foreach (var columnDate in dates)
             {
                 var values = new Dictionary<string, TrialValue>(StringComparer.Ordinal);
-                var snapshots = await AccountSnapshotsAsync(projectId, columnDate, openingDate, cancellationToken);
+                var column = columns[columnDate];
+                var snapshots = column.Accounts;
                 foreach (var account in snapshots)
                 {
                     var debitNormal = AccountBalanceDirection.IsDebitNormal(account.Type);
@@ -163,10 +165,9 @@ namespace DAMS.Application.Services
                     values[$"A:{account.Id}"] = new TrialValue(account.Id, account.LedgerCode, account.Name, account.Type, debit, credit);
                 }
 
-                var start = openingDate.HasValue && openingDate.Value <= columnDate ? openingDate.Value : SqlStart;
                 // Ledger-only, for the same reason the Balance Sheet is: every line here is asserted
                 // to have a debit and a credit, and the fixed-asset charge has only one.
-                var pnl = await BuildPnlPeriodAsync(projectId, start, columnDate.AddDays(1), false, cancellationToken);
+                var pnl = column.Pnl;
                 // Income is credit-normal and expense is debit-normal, but a contra line (e.g.
                 // Customer Refunds) carries a negative amount — that negative amount must flip to
                 // the opposite column, not sit as a negative balance in its normal column. A
@@ -180,14 +181,9 @@ namespace DAMS.Application.Services
                         line.Amount < 0m ? 0m : line.Amount, line.Amount < 0m ? -line.Amount : 0m);
                 if (!projectId.HasValue)
                 {
-                    var allocations = await _context.CapitalTransactions.AsNoTracking()
-                        .Where(t => t.Date < columnDate.AddDays(1) && (t.Type == CapitalTransactionType.ProfitShare || t.Type == CapitalTransactionType.LossShare))
-                        .GroupBy(t => t.Type).Select(g => new { g.Key, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken);
-                    var profit = allocations.Where(x => x.Key == CapitalTransactionType.ProfitShare).Sum(x => x.Amount);
-                    var loss = allocations.Where(x => x.Key == CapitalTransactionType.LossShare).Sum(x => x.Amount);
-                    if (profit != 0m || loss != 0m)
+                    var netAllocation = Money(column.NetAllocation);
+                    if (column.HasAllocation)
                     {
-                        var netAllocation = Money(profit - loss);
                         values["EQ:allocated"] = new TrialValue(
                             VirtualId("EQ:allocated"), null, "Allocated profit / loss",
                             FinanceAccountType.Capital,
@@ -717,29 +713,53 @@ namespace DAMS.Application.Services
                     CategoryId = g.Key.CategoryId, Name = g.Key.Category, Order = g.Key.Order,
                     Amount = g.Sum(e => e.Amount), Count = g.Count()
                 }).ToListAsync(cancellationToken);
-            var commission = (await CommissionPayoutQuery(projectId, from, toExclusive, null, false).SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
-                - (await CommissionReversalQuery(projectId, from, toExclusive, null, false).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var commissionCount = await CommissionPayoutQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
-                + await CommissionReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
-            if (commission != 0m) expenses.Add(new ReportLine { Key = "commission-payouts", Name = "Commission Payouts", Order = int.MaxValue - 1, Amount = commission, Count = commissionCount });
-            var rebate = (await CashRebateQuery(projectId, from, toExclusive, null, false).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-                - (await CashRebateReversalQuery(projectId, from, toExclusive, null, false).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var rebateCount = await CashRebateQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken)
-                + await CashRebateReversalQuery(projectId, from, toExclusive, null, false).CountAsync(cancellationToken);
-            if (rebate != 0m) expenses.Add(new ReportLine { Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue, Amount = rebate, Count = rebateCount });
+            // A payout and its reversal used to be read four times: two SUMs and two COUNTs. Fold
+            // the signed rows first, then let SQL return both figures in one command. The same
+            // pattern below removes nine round trips from each P&L period without changing which
+            // records or dates participate in the statement.
+            var commission = await CommissionPayoutQuery(projectId, from, toExclusive, null, false)
+                .Select(p => new { Amount = p.Amount, Count = 1 })
+                .Concat(CommissionReversalQuery(projectId, from, toExclusive, null, false)
+                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
+                .GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (commission is { Amount: not 0m })
+                expenses.Add(new ReportLine
+                {
+                    Key = "commission-payouts", Name = "Commission Payouts", Order = int.MaxValue - 1,
+                    Amount = commission.Amount, Count = commission.Count
+                });
+
+            var rebate = await CashRebateQuery(projectId, from, toExclusive, null, false)
+                .Select(d => new { Amount = d.Amount, Count = 1 })
+                .Concat(CashRebateReversalQuery(projectId, from, toExclusive, null, false)
+                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
+                .GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (rebate is { Amount: not 0m })
+                expenses.Add(new ReportLine
+                {
+                    Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue,
+                    Amount = rebate.Amount, Count = rebate.Count
+                });
             // The cost of credits granted against a RECOGNISED sale. Once the full net sale value
             // is income, the slice of it the buyer will never pay has to be a cost — otherwise the
             // receivable would still be claiming money that was written off. Credits on bookings
             // that have not reached possession stay invisible here, exactly as before.
-            var nonCashCredit = (await NonCashCreditQuery(projectId, from, toExclusive).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-                - (await NonCashCreditReversalQuery(projectId, from, toExclusive).SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var nonCashCreditCount = await NonCashCreditQuery(projectId, from, toExclusive).CountAsync(cancellationToken)
-                + await NonCashCreditReversalQuery(projectId, from, toExclusive).CountAsync(cancellationToken);
-            if (nonCashCredit != 0m)
+            var nonCashCredit = await NonCashCreditQuery(projectId, from, toExclusive)
+                .Select(d => new { Amount = d.Amount, Count = 1 })
+                .Concat(NonCashCreditReversalQuery(projectId, from, toExclusive)
+                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
+                .GroupBy(_ => 1)
+                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
+                .SingleOrDefaultAsync(cancellationToken);
+            if (nonCashCredit is { Amount: not 0m })
                 expenses.Add(new ReportLine
                 {
                     Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
-                    Amount = nonCashCredit, Count = nonCashCreditCount
+                    Amount = nonCashCredit.Amount, Count = nonCashCredit.Count
                 });
             // Fixed-asset purchases, at gross cost. DAMS reports one Net Profit, and the client's
             // rule is that buying an asset spends the money — so wherever Net Profit is stated, this

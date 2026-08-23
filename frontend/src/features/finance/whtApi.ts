@@ -83,7 +83,9 @@ export const calculateWht = (body: {
   /** The asset-purchase equivalent. Both exist because expenses and purchases share one annual
    *  allowance but number their rows independently. */
   excludeAssetPurchaseId?: number | null;
-}) => apiJson<WhtCalculation>("/api/finance/wht/calculate", jsonRequest("POST", body));
+}, signal?: AbortSignal) => apiJson<WhtCalculation>(
+  "/api/finance/wht/calculate",
+  { ...jsonRequest("POST", body), signal });
 
 /** Streams the s.165 statement to a file. Uses the raw fetch wrapper because the response is
  *  CSV rather than JSON, and the blob has to be handed to the browser as a download. */

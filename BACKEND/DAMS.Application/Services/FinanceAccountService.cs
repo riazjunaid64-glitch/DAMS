@@ -30,8 +30,10 @@ namespace DAMS.Application.Services
             if (!string.IsNullOrWhiteSpace(holder)) query = query.Where(a => a.AccountHolderName == holder.Trim());
             if (isActive.HasValue) query = query.Where(a => a.IsActive == isActive.Value);
 
-            var rows = await Project(query.OrderByDescending(a => a.IsActive).ThenBy(a => a.Name))
-                .Skip(skip).Take(take + 1).ToListAsync(cancellationToken);
+            var rows = await LoadAccountsAsync(
+                query.OrderByDescending(a => a.IsActive).ThenBy(a => a.Name)
+                    .Skip(skip).Take(take + 1),
+                cancellationToken);
             return new PagedResult<FinanceAccountResponseDto>
             {
                 Items = rows.Take(take).ToList(),
@@ -55,10 +57,14 @@ namespace DAMS.Application.Services
                     AccountHolderName = a.AccountHolderName, IsActive = a.IsActive
                 }).ToListAsync(cancellationToken);
 
-        public async Task<FinanceAccountResponseDto> GetByIdAsync(int id, CancellationToken cancellationToken = default) =>
-            await Project(_context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id))
-                .SingleOrDefaultAsync(cancellationToken)
-            ?? throw new InvalidOperationException("Finance account not found.");
+        public async Task<FinanceAccountResponseDto> GetByIdAsync(int id, CancellationToken cancellationToken = default)
+        {
+            var rows = await LoadAccountsAsync(
+                _context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id),
+                cancellationToken);
+            return rows.SingleOrDefault()
+                ?? throw new InvalidOperationException("Finance account not found.");
+        }
 
         public async Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(
             int id, int skip, int take, CancellationToken cancellationToken = default) =>
@@ -607,7 +613,7 @@ namespace DAMS.Application.Services
 
         public async Task<FinanceAccountsOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default)
         {
-            var accounts = await Project(_context.FinanceAccounts.AsNoTracking()).ToListAsync(cancellationToken);
+            var accounts = await LoadAccountsAsync(_context.FinanceAccounts.AsNoTracking(), cancellationToken);
             return new FinanceAccountsOverviewDto
             {
                 ActiveAccounts = accounts.Count(a => a.IsActive),
@@ -683,8 +689,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Deactivate the linked loan before deactivating its liability account.");
             if (!isActive && account.Type == FinanceAccountType.StaffFloat)
             {
-                var balance = await Project(_context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id))
-                    .Select(a => a.CurrentBalance).SingleAsync(cancellationToken);
+                var balance = (await LoadAccountsAsync(
+                    _context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id),
+                    cancellationToken)).Single().CurrentBalance;
                 if (balance != 0m)
                     throw new InvalidOperationException("A staff float can only be deactivated after its balance reaches zero.");
             }
@@ -833,8 +840,10 @@ namespace DAMS.Application.Services
                 }
             }
             await _context.SaveChangesAsync(cancellationToken);
-            return await Project(_context.FinanceAccounts.AsNoTracking().Where(a => names.Contains(a.Name)))
-                .OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name).ToListAsync(cancellationToken);
+            return await LoadAccountsAsync(
+                _context.FinanceAccounts.AsNoTracking().Where(a => names.Contains(a.Name))
+                    .OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name),
+                cancellationToken);
         }
 
         private static readonly string[] ClientPartnerNames =
@@ -894,183 +903,484 @@ namespace DAMS.Application.Services
         // Inflow is customer payments plus manually entered revenue. Payments are the larger of the
         // two by far, so leaving them out does not make the balance approximate — it makes it wrong
         // by the whole of what customers have paid, which is why balances used to read negative.
-        private IQueryable<FinanceAccountResponseDto> Project(IQueryable<FinanceAccount> query) =>
-            from a in query
-            let genericIn = (a.Payments.Sum(p => (decimal?)p.Amount) ?? 0m)
-                + (a.ManualRevenues.Sum(r => (decimal?)r.Amount) ?? 0m)
-            // Gross, not net. The asset is worth what it cost; the tax withheld from the supplier
-            // is a debt to FBR, not a discount on the desk.
-            let capitalisedIn = a.AssetPurchasesReceived.Sum(p => (decimal?)p.Amount) ?? 0m
-            let genericOut = (a.Expenses.Sum(e => (decimal?)(e.Amount - e.WhtAmount)) ?? 0m)
-                // Net, like expenses: only this much actually left the bank.
-                + (a.AssetPurchasesPaid.Sum(p => (decimal?)(p.Amount - p.WhtAmount)) ?? 0m)
-                + (a.CommissionPayouts.Sum(p => (decimal?)p.Amount) ?? 0m)
-                - (a.CommissionPayouts.SelectMany(p => p.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
-                + (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                    .Sum(d => (decimal?)d.Amount) ?? 0m)
-                - (a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                    .SelectMany(d => d.Reversals).Sum(r => (decimal?)r.Amount) ?? 0m)
-                + (a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m)
-                // Actual cancellation-refund cash paid out of this account.
-                + (a.CancellationRefundsPaid.Sum(r => (decimal?)r.Amount) ?? 0m)
-            let cashCapitalIn = a.CapitalCashTransactions.Where(t => t.Type == CapitalTransactionType.Contribution)
-                .Sum(t => (decimal?)t.Amount) ?? 0m
-            let cashCapitalOut = a.CapitalCashTransactions.Where(t => t.Type == CapitalTransactionType.Withdrawal)
-                .Sum(t => (decimal?)t.Amount) ?? 0m
-            let partnerIn = a.CapitalPartners.SelectMany(p => p.Transactions)
-                .Where(t => t.Type == CapitalTransactionType.OpeningBalance || t.Type == CapitalTransactionType.Contribution
-                    || t.Type == CapitalTransactionType.ProfitShare).Sum(t => (decimal?)t.Amount) ?? 0m
-            let partnerOut = a.CapitalPartners.SelectMany(p => p.Transactions)
-                .Where(t => t.Type == CapitalTransactionType.Withdrawal || t.Type == CapitalTransactionType.LossShare)
-                .Sum(t => (decimal?)t.Amount) ?? 0m
-            let loanCashIn = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Drawdown)
-                .Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
-            let loanCashOut = a.LoanCashTransactions.Where(t => t.Type == LoanTransactionType.Repayment)
-                .Sum(t => (decimal?)(t.PrincipalAmount + t.InterestAmount)) ?? 0m
-            let loanLiabilityIn = a.Loans.SelectMany(l => l.Transactions)
-                .Where(t => t.Type == LoanTransactionType.Drawdown).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
-            let loanLiabilityOut = a.Loans.SelectMany(l => l.Transactions)
-                .Where(t => t.Type == LoanTransactionType.Repayment).Sum(t => (decimal?)t.PrincipalAmount) ?? 0m
-            let staffFloatIn = a.StaffCashTransfers.Where(t => t.Type == StaffCashMovementType.FundsGiven)
-                .Sum(t => (decimal?)t.Amount) ?? 0m
-            let staffFloatOut = a.StaffCashTransfers.Where(t => t.Type == StaffCashMovementType.FundsReturned)
-                .Sum(t => (decimal?)t.Amount) ?? 0m
-            let staffCounterpartyIn = a.StaffCashCounterpartyTransfers
-                .Where(t => t.Type == StaffCashMovementType.FundsReturned).Sum(t => (decimal?)t.Amount) ?? 0m
-            let staffCounterpartyOut = a.StaffCashCounterpartyTransfers
-                .Where(t => t.Type == StaffCashMovementType.FundsGiven).Sum(t => (decimal?)t.Amount) ?? 0m
-            let isTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable
-            // Tax withheld from asset suppliers is owed to FBR on identical terms, so the payable
-            // counts it too — otherwise the liability is short by whatever capital suppliers lost.
-            let taxPayableIn = isTaxPayable
-                ? (_context.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
-                    + (_context.AssetPurchases.Sum(p => (decimal?)p.WhtAmount) ?? 0m)
-                : 0m
-            let taxPayableOut = isTaxPayable ? (_context.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m) : 0m
-            let isRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable
-            // The liability side of a cancellation settlement: created when the Admin decides to
-            // refund, cleared when the cash actually goes out. Queried directly like the tax
-            // payable above, not via a.CancellationSettlementsPayable, so the "in" side of a
-            // PayNow settlement and its immediate refund are counted from the same source of
-            // truth as the PayLater case.
-            let refundPayableIn = isRefundPayable
-                ? (_context.BookingCancellationSettlements.Where(s => s.RefundPayableAccountId == a.Id)
-                    .Sum(s => (decimal?)s.RefundAmount) ?? 0m)
-                : 0m
-            let refundPayableOut = isRefundPayable
-                ? (_context.BookingCancellationRefunds.Where(r => r.Settlement.RefundPayableAccountId == a.Id)
-                    .Sum(r => (decimal?)r.Amount) ?? 0m)
-                : 0m
-            // Customer Deposits: money taken before the sale is recognised. It rises with every
-            // payment received while the booking is still unrecognised, and falls when possession
-            // turns that cash into revenue, or when a cancellation turns it into a refund
-            // obligation plus retained income. Derived from the payments themselves rather than
-            // from a stored snapshot, so what went in and what came out can never disagree.
-            let isCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits
-            let depositIn = isCustomerDeposits
-                ? (_context.Payments.Where(p => p.Booking.SaleRecognition == null
-                        || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
-                    .Sum(p => (decimal?)p.Amount) ?? 0m)
-                : 0m
-            let depositOut = isCustomerDeposits
-                ? (_context.Payments.Where(p => p.Booking.CancellationSettlement != null
-                        || (p.Booking.SaleRecognition != null
-                            && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
-                    .Sum(p => (decimal?)p.Amount) ?? 0m)
-                : 0m
-            // Customer Receivables: what buyers still owe on sales that HAVE been recognised.
-            // Raised in full at recognition, then cleared by every payment on that booking (the
-            // pre-possession ones having already cleared the deposit) and by valid non-cash
-            // credits. Nothing here exists for an unrecognised booking.
-            let isCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables
-            let receivableIn = isCustomerReceivables
-                ? (_context.BookingSaleRecognitions.Sum(r => (decimal?)r.NetSaleValue) ?? 0m)
-                    + (_context.RebateDisbursementReversals
-                        .Where(r => r.Disbursement.Rebate.Booking.SaleRecognition != null
-                            && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                                || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
-                                || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
-                        .Sum(r => (decimal?)r.Amount) ?? 0m)
-                : 0m
-            let receivableOut = isCustomerReceivables
-                ? (_context.Payments.Where(p => p.Booking.SaleRecognition != null)
-                        .Sum(p => (decimal?)p.Amount) ?? 0m)
-                    + (_context.RebateDisbursements
+        private async Task<List<FinanceAccountResponseDto>> LoadAccountsAsync(
+            IQueryable<FinanceAccount> query,
+            CancellationToken cancellationToken)
+        {
+            // Page the small account rows first. The old projection put dozens of correlated
+            // SUM/COUNT subqueries on every row, which made a 30-account chart repeatedly scan
+            // every finance table. The movement query below reads each source once and groups it
+            // for only the accounts that are actually being returned.
+            var accounts = await query.Select(a => new FinanceAccountResponseDto
+            {
+                Id = a.Id,
+                Name = a.Name,
+                Type = a.Type,
+                AccountHolderName = a.AccountHolderName,
+                OpeningBalance = a.OpeningBalance,
+                LedgerCode = a.LedgerCode,
+                DisplayOrder = a.DisplayOrder,
+                SystemRole = a.SystemRole,
+                BankOrWalletName = a.BankOrWalletName,
+                Description = a.Description,
+                IsActive = a.IsActive,
+                CreatedAt = a.CreatedAt,
+                UpdatedAt = a.UpdatedAt,
+                ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
+            }).ToListAsync(cancellationToken);
+
+            if (accounts.Count == 0) return accounts;
+
+            var accountIds = accounts.Select(a => a.Id).ToArray();
+            var movements = _context.Payments.AsNoTracking()
+                .Where(p => p.FinanceAccountId.HasValue && accountIds.Contains(p.FinanceAccountId.Value))
+                .Select(p => new AccountMovementRow
+                {
+                    AccountId = p.FinanceAccountId!.Value,
+                    Kind = AccountMovementKind.NormalIn,
+                    Amount = p.Amount,
+                    WhtWithheld = 0m,
+                    WhtDeposited = 0m,
+                    TransactionCount = 1
+                })
+                .Concat(_context.ManualRevenues.AsNoTracking()
+                    .Where(r => r.FinanceAccountId.HasValue && accountIds.Contains(r.FinanceAccountId.Value))
+                    .Select(r => new AccountMovementRow
+                    {
+                        AccountId = r.FinanceAccountId!.Value,
+                        Kind = AccountMovementKind.NormalIn,
+                        Amount = r.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.Expenses.AsNoTracking()
+                    .Where(e => e.FinanceAccountId.HasValue && accountIds.Contains(e.FinanceAccountId.Value))
+                    .Select(e => new AccountMovementRow
+                    {
+                        AccountId = e.FinanceAccountId!.Value,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = e.Amount - e.WhtAmount,
+                        WhtWithheld = e.WhtAmount,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.AssetPurchases.AsNoTracking()
+                    .Where(p => accountIds.Contains(p.FinanceAccountId))
+                    .Select(p => new AccountMovementRow
+                    {
+                        AccountId = p.FinanceAccountId,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = p.Amount - p.WhtAmount,
+                        WhtWithheld = p.WhtAmount,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.AssetPurchases.AsNoTracking()
+                    .Where(p => accountIds.Contains(p.AssetAccountId))
+                    .Select(p => new AccountMovementRow
+                    {
+                        AccountId = p.AssetAccountId,
+                        Kind = AccountMovementKind.NormalIn,
+                        Amount = p.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.CommissionPayouts.AsNoTracking()
+                    .Where(p => accountIds.Contains(p.FinanceAccountId))
+                    .Select(p => new AccountMovementRow
+                    {
+                        AccountId = p.FinanceAccountId,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = p.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.CommissionPayoutReversals.AsNoTracking()
+                    .Where(r => accountIds.Contains(r.Payout.FinanceAccountId))
+                    .Select(r => new AccountMovementRow
+                    {
+                        AccountId = r.Payout.FinanceAccountId,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = -r.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.RebateDisbursements.AsNoTracking()
+                    .Where(d => d.FinanceAccountId.HasValue
+                        && accountIds.Contains(d.FinanceAccountId.Value)
+                        && d.Method == CustomerRebateMethod.CashOrBankPayment)
+                    .Select(d => new AccountMovementRow
+                    {
+                        AccountId = d.FinanceAccountId!.Value,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = d.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.RebateDisbursementReversals.AsNoTracking()
+                    .Where(r => r.Disbursement.FinanceAccountId.HasValue
+                        && accountIds.Contains(r.Disbursement.FinanceAccountId.Value)
+                        && r.Disbursement.Method == CustomerRebateMethod.CashOrBankPayment)
+                    .Select(r => new AccountMovementRow
+                    {
+                        AccountId = r.Disbursement.FinanceAccountId!.Value,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = -r.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.WhtDeposits.AsNoTracking()
+                    .Where(d => accountIds.Contains(d.FinanceAccountId))
+                    .Select(d => new AccountMovementRow
+                    {
+                        AccountId = d.FinanceAccountId,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = d.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = d.Amount,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.BookingCancellationRefunds.AsNoTracking()
+                    .Where(r => accountIds.Contains(r.FinanceAccountId))
+                    .Select(r => new AccountMovementRow
+                    {
+                        AccountId = r.FinanceAccountId,
+                        Kind = AccountMovementKind.NormalOut,
+                        Amount = r.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.CapitalTransactions.AsNoTracking()
+                    .Where(t => t.FinanceAccountId.HasValue && accountIds.Contains(t.FinanceAccountId.Value))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.FinanceAccountId!.Value,
+                        Kind = t.Type == CapitalTransactionType.Withdrawal
+                            ? AccountMovementKind.NormalOut
+                            : AccountMovementKind.NormalIn,
+                        Amount = t.Type == CapitalTransactionType.Contribution
+                            || t.Type == CapitalTransactionType.Withdrawal ? t.Amount : 0m,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.CapitalTransactions.AsNoTracking()
+                    .Where(t => t.CapitalPartner.FinanceAccountId.HasValue
+                        && accountIds.Contains(t.CapitalPartner.FinanceAccountId.Value))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.CapitalPartner.FinanceAccountId!.Value,
+                        Kind = t.Type == CapitalTransactionType.Withdrawal
+                            || t.Type == CapitalTransactionType.LossShare
+                                ? AccountMovementKind.PartnerOut
+                                : AccountMovementKind.PartnerIn,
+                        Amount = t.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.LoanTransactions.AsNoTracking()
+                    .Where(t => accountIds.Contains(t.FinanceAccountId))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.FinanceAccountId,
+                        Kind = t.Type == LoanTransactionType.Drawdown
+                            ? AccountMovementKind.NormalIn
+                            : AccountMovementKind.NormalOut,
+                        Amount = t.Type == LoanTransactionType.Drawdown
+                            ? t.PrincipalAmount
+                            : t.PrincipalAmount + t.InterestAmount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.LoanTransactions.AsNoTracking()
+                    .Where(t => accountIds.Contains(t.Loan.FinanceAccountId))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.Loan.FinanceAccountId,
+                        Kind = t.Type == LoanTransactionType.Drawdown
+                            ? AccountMovementKind.NormalIn
+                            : AccountMovementKind.NormalOut,
+                        Amount = t.PrincipalAmount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = t.PrincipalAmount != 0m ? 1 : 0
+                    }))
+                .Concat(_context.StaffCashTransfers.AsNoTracking()
+                    .Where(t => accountIds.Contains(t.StaffFinanceAccountId))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.StaffFinanceAccountId,
+                        Kind = t.Type == StaffCashMovementType.FundsGiven
+                            ? AccountMovementKind.NormalIn
+                            : AccountMovementKind.NormalOut,
+                        Amount = t.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }))
+                .Concat(_context.StaffCashTransfers.AsNoTracking()
+                    .Where(t => accountIds.Contains(t.CounterpartyFinanceAccountId))
+                    .Select(t => new AccountMovementRow
+                    {
+                        AccountId = t.CounterpartyFinanceAccountId,
+                        Kind = t.Type == StaffCashMovementType.FundsReturned
+                            ? AccountMovementKind.NormalIn
+                            : AccountMovementKind.NormalOut,
+                        Amount = t.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = 0m,
+                        TransactionCount = 1
+                    }));
+
+            var taxPayableId = accounts.Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                .Select(a => (int?)a.Id).SingleOrDefault();
+            if (taxPayableId.HasValue)
+            {
+                var id = taxPayableId.Value;
+                movements = movements
+                    .Concat(_context.Expenses.AsNoTracking().Select(e => new AccountMovementRow
+                    {
+                        AccountId = id,
+                        Kind = AccountMovementKind.SystemIn,
+                        Amount = e.WhtAmount,
+                        WhtWithheld = e.WhtAmount,
+                        WhtDeposited = 0m,
+                        TransactionCount = e.WhtAmount != 0m ? 1 : 0
+                    }))
+                    .Concat(_context.AssetPurchases.AsNoTracking().Select(p => new AccountMovementRow
+                    {
+                        AccountId = id,
+                        Kind = AccountMovementKind.SystemIn,
+                        Amount = p.WhtAmount,
+                        WhtWithheld = p.WhtAmount,
+                        WhtDeposited = 0m,
+                        TransactionCount = p.WhtAmount != 0m ? 1 : 0
+                    }))
+                    .Concat(_context.WhtDeposits.AsNoTracking().Select(d => new AccountMovementRow
+                    {
+                        AccountId = id,
+                        Kind = AccountMovementKind.SystemOut,
+                        Amount = d.Amount,
+                        WhtWithheld = 0m,
+                        WhtDeposited = d.Amount,
+                        TransactionCount = 1
+                    }));
+            }
+
+            var refundPayableId = accounts
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
+                .Select(a => (int?)a.Id).SingleOrDefault();
+            if (refundPayableId.HasValue)
+            {
+                var id = refundPayableId.Value;
+                movements = movements
+                    .Concat(_context.BookingCancellationSettlements.AsNoTracking()
+                        .Where(s => s.RefundPayableAccountId == id)
+                        .Select(s => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemIn,
+                            Amount = s.RefundAmount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.BookingCancellationRefunds.AsNoTracking()
+                        .Where(r => r.Settlement.RefundPayableAccountId == id)
+                        .Select(r => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemOut,
+                            Amount = r.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }));
+            }
+
+            var customerDepositsId = accounts
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
+                .Select(a => (int?)a.Id).SingleOrDefault();
+            if (customerDepositsId.HasValue)
+            {
+                var id = customerDepositsId.Value;
+                movements = movements
+                    .Concat(_context.Payments.AsNoTracking()
+                        .Where(p => p.Booking.SaleRecognition == null
+                            || p.PaidAt < p.Booking.SaleRecognition.RecognitionDate
+                            || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)
+                                && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))
+                        .Select(p => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemIn,
+                            Amount = p.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.Payments.AsNoTracking()
+                        .Where(p => p.Booking.CancellationSettlement != null
+                            || (p.Booking.SaleRecognition != null
+                                && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate
+                                    || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1)
+                                        && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
+                        .Select(p => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemOut,
+                            Amount = p.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }));
+            }
+
+            var customerReceivablesId = accounts
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
+                .Select(a => (int?)a.Id).SingleOrDefault();
+            if (customerReceivablesId.HasValue)
+            {
+                var id = customerReceivablesId.Value;
+                movements = movements
+                    .Concat(_context.BookingSaleRecognitions.AsNoTracking()
+                        .Select(r => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemIn,
+                            Amount = r.NetSaleValue,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.Payments.AsNoTracking()
+                        .Where(p => p.Booking.SaleRecognition != null)
+                        .Select(p => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemOut,
+                            Amount = p.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.RebateDisbursements.AsNoTracking()
                         .Where(d => d.Rebate.Booking.SaleRecognition != null
                             && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
                                 || d.Method == CustomerRebateMethod.InstallmentAdjustment
                                 || d.Method == CustomerRebateMethod.CreditNote))
-                        .Sum(d => (decimal?)d.Amount) ?? 0m)
-                : 0m
-            let debitMovement = genericIn + capitalisedIn + cashCapitalIn + loanCashIn
-                + staffFloatIn + staffCounterpartyIn
-                - genericOut - cashCapitalOut - loanCashOut - staffFloatOut - staffCounterpartyOut
-            let movement = a.Type == FinanceAccountType.Capital
-                ? partnerIn - partnerOut
-                : (isTaxPayable ? taxPayableIn - taxPayableOut
-                    : isRefundPayable ? refundPayableIn - refundPayableOut
-                    : isCustomerDeposits ? depositIn - depositOut
-                    : isCustomerReceivables ? receivableIn - receivableOut
-                    : debitMovement + loanLiabilityIn - loanLiabilityOut)
-            select new FinanceAccountResponseDto
+                        .Select(d => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemOut,
+                            Amount = d.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.RebateDisbursementReversals.AsNoTracking()
+                        .Where(r => r.Disbursement.Rebate.Booking.SaleRecognition != null
+                            && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                                || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                                || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
+                        .Select(r => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemIn,
+                            Amount = r.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }));
+            }
+
+            var totals = await movements.GroupBy(row => row.AccountId)
+                .Select(group => new AccountMovementTotal
+                {
+                    AccountId = group.Key,
+                    NormalIn = group.Sum(row => row.Kind == AccountMovementKind.NormalIn ? row.Amount : 0m),
+                    NormalOut = group.Sum(row => row.Kind == AccountMovementKind.NormalOut ? row.Amount : 0m),
+                    PartnerIn = group.Sum(row => row.Kind == AccountMovementKind.PartnerIn ? row.Amount : 0m),
+                    PartnerOut = group.Sum(row => row.Kind == AccountMovementKind.PartnerOut ? row.Amount : 0m),
+                    SystemIn = group.Sum(row => row.Kind == AccountMovementKind.SystemIn ? row.Amount : 0m),
+                    SystemOut = group.Sum(row => row.Kind == AccountMovementKind.SystemOut ? row.Amount : 0m),
+                    WhtWithheld = group.Sum(row => row.WhtWithheld),
+                    WhtDeposited = group.Sum(row => row.WhtDeposited),
+                    TransactionCount = group.Sum(row => row.TransactionCount)
+                }).ToDictionaryAsync(row => row.AccountId, cancellationToken);
+
+            foreach (var account in accounts)
             {
-                Id = a.Id, Name = a.Name, Type = a.Type, AccountHolderName = a.AccountHolderName,
-                OpeningBalance = a.OpeningBalance, LedgerCode = a.LedgerCode, DisplayOrder = a.DisplayOrder,
-                SystemRole = a.SystemRole,
-                BankOrWalletName = a.BankOrWalletName, Description = a.Description, IsActive = a.IsActive,
-                RevenueReceived = a.Type == FinanceAccountType.Capital ? partnerIn : (isTaxPayable ? taxPayableIn : isRefundPayable ? refundPayableIn : isCustomerDeposits ? depositIn : isCustomerReceivables ? receivableIn : genericIn + capitalisedIn + cashCapitalIn + loanCashIn + loanLiabilityIn + staffFloatIn + staffCounterpartyIn),
-                ExpensesPaid = a.Type == FinanceAccountType.Capital ? partnerOut : (isTaxPayable ? taxPayableOut : isRefundPayable ? refundPayableOut : isCustomerDeposits ? depositOut : isCustomerReceivables ? receivableOut : genericOut + cashCapitalOut + loanCashOut + loanLiabilityOut + staffFloatOut + staffCounterpartyOut),
-                WhtWithheld = isTaxPayable
-                    ? taxPayableIn
-                    : (a.Expenses.Sum(e => (decimal?)e.WhtAmount) ?? 0m)
-                        + (a.AssetPurchasesPaid.Sum(p => (decimal?)p.WhtAmount) ?? 0m),
-                WhtDeposited = isTaxPayable ? taxPayableOut : a.WhtDeposits.Sum(d => (decimal?)d.Amount) ?? 0m,
-                NetMovement = movement,
-                CurrentBalance = a.OpeningBalance + movement,
-                TransactionCount = a.Payments.Count + a.ManualRevenues.Count + a.Expenses.Count
-                    + a.AssetPurchasesPaid.Count + a.AssetPurchasesReceived.Count + a.CommissionPayouts.Count
-                    + a.CommissionPayouts.SelectMany(p => p.Reversals).Count()
-                    + a.RebateDisbursements.Count(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                    + a.RebateDisbursements.Where(d => d.Method == CustomerRebateMethod.CashOrBankPayment)
-                        .SelectMany(d => d.Reversals).Count()
-                    + a.WhtDeposits.Count + a.CapitalCashTransactions.Count
-                    + a.CapitalPartners.SelectMany(p => p.Transactions).Count()
-                    + a.LoanCashTransactions.Count
-                    + a.Loans.SelectMany(l => l.Transactions).Count(t => t.PrincipalAmount != 0m)
-                    + a.StaffCashTransfers.Count + a.StaffCashCounterpartyTransfers.Count
-                    + a.CancellationRefundsPaid.Count
-                    + (isTaxPayable
-                        ? _context.Expenses.Count(e => e.WhtAmount != 0m)
-                            + _context.AssetPurchases.Count(p => p.WhtAmount != 0m)
-                            + _context.WhtDeposits.Count()
-                        : 0)
-                    + (isRefundPayable
-                        ? _context.BookingCancellationSettlements.Count(s => s.RefundPayableAccountId == a.Id)
-                            + _context.BookingCancellationRefunds.Count(r => r.Settlement.RefundPayableAccountId == a.Id)
-                        : 0)
-                    // Deposits: one line per payment in, one per payment cleared out.
-                    + (isCustomerDeposits
-                        ? _context.Payments.Count(p => p.Booking.SaleRecognition == null
-                                || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
-                            + _context.Payments.Count(p => p.Booking.CancellationSettlement != null
-                                || (p.Booking.SaleRecognition != null
-                                    && (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt))))
-                        : 0)
-                    + (isCustomerReceivables
-                        ? _context.BookingSaleRecognitions.Count()
-                            + _context.Payments.Count(p => p.Booking.SaleRecognition != null)
-                            + _context.RebateDisbursements.Count(d => d.Rebate.Booking.SaleRecognition != null
-                                && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                                    || d.Method == CustomerRebateMethod.InstallmentAdjustment
-                                    || d.Method == CustomerRebateMethod.CreditNote))
-                            + _context.RebateDisbursementReversals.Count(r => r.Disbursement.Rebate.Booking.SaleRecognition != null
-                                && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
-                                    || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
-                                    || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
-                        : 0),
-                CreatedAt = a.CreatedAt, UpdatedAt = a.UpdatedAt,
-                ConcurrencyToken = Convert.ToBase64String(a.RowVersion)
-            };
+                totals.TryGetValue(account.Id, out var total);
+                total ??= new AccountMovementTotal();
+
+                var usePartnerBalance = account.Type == FinanceAccountType.Capital;
+                var useSystemBalance = account.SystemRole != FinanceSystemAccountRole.None;
+                var inflow = usePartnerBalance
+                    ? total.PartnerIn
+                    : useSystemBalance ? total.SystemIn : total.NormalIn;
+                var outflow = usePartnerBalance
+                    ? total.PartnerOut
+                    : useSystemBalance ? total.SystemOut : total.NormalOut;
+
+                account.RevenueReceived = inflow;
+                account.ExpensesPaid = outflow;
+                account.WhtWithheld = account.SystemRole == FinanceSystemAccountRole.TaxPayable
+                    ? total.SystemIn
+                    : total.WhtWithheld;
+                account.WhtDeposited = account.SystemRole == FinanceSystemAccountRole.TaxPayable
+                    ? total.SystemOut
+                    : total.WhtDeposited;
+                account.NetMovement = inflow - outflow;
+                account.CurrentBalance = account.OpeningBalance + account.NetMovement;
+                account.TransactionCount = total.TransactionCount;
+            }
+
+            return accounts;
+        }
+
+        private enum AccountMovementKind
+        {
+            NormalIn,
+            NormalOut,
+            PartnerIn,
+            PartnerOut,
+            SystemIn,
+            SystemOut
+        }
+
+        private sealed class AccountMovementRow
+        {
+            public int AccountId { get; set; }
+            public AccountMovementKind Kind { get; set; }
+            public decimal Amount { get; set; }
+            public decimal WhtWithheld { get; set; }
+            public decimal WhtDeposited { get; set; }
+            public int TransactionCount { get; set; }
+        }
+
+        private sealed class AccountMovementTotal
+        {
+            public int AccountId { get; set; }
+            public decimal NormalIn { get; set; }
+            public decimal NormalOut { get; set; }
+            public decimal PartnerIn { get; set; }
+            public decimal PartnerOut { get; set; }
+            public decimal SystemIn { get; set; }
+            public decimal SystemOut { get; set; }
+            public decimal WhtWithheld { get; set; }
+            public decimal WhtDeposited { get; set; }
+            public int TransactionCount { get; set; }
+        }
 
         private async Task EnsureUniqueName(string name, int? excludingId, CancellationToken cancellationToken)
         {

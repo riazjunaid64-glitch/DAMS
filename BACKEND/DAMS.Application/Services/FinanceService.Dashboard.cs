@@ -1,4 +1,5 @@
 using DAMS.Application.DTOs.FinanceDtos;
+using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Application.Services
@@ -71,6 +72,37 @@ namespace DAMS.Application.Services
         /// <summary>One (date, project) group of one financial source.</summary>
         private readonly record struct Slice(DateTime Date, int? ProjectId, decimal Amount);
 
+        private enum PeriodAggregateSource
+        {
+            RecognisedSale,
+            RetainedCancellation,
+            ManualRevenue,
+            OrdinaryExpense,
+            CommissionPayout,
+            CommissionReversal,
+            CashRebate,
+            CashRebateReversal,
+            NonCashCredit,
+            NonCashCreditReversal,
+            LoanInterest,
+            FixedAssetPurchase
+        }
+
+        /// <summary>
+        /// Common SQL projection used to UNION every dashboard source before grouping. Keeping the
+        /// discriminator in the row lets SQL Server answer the whole period in one command while the
+        /// result is still separated into the exact source lists used by the existing accounting
+        /// arithmetic below.
+        /// </summary>
+        private sealed class PeriodAggregateRow
+        {
+            public PeriodAggregateSource Source { get; init; }
+            public DateTime Date { get; init; }
+            public int? ProjectId { get; init; }
+            public decimal Amount { get; init; }
+            public decimal Wht { get; init; }
+        }
+
         /// <summary>
         /// Every source the dashboard cards, chart and pie are built from, read once each. Reversals
         /// are kept as their own positive-amount lists rather than pre-netted, because the cards
@@ -133,125 +165,175 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// How many database round trips <see cref="LoadPeriodAggregatesAsync"/> makes: twelve
-        /// financial sources plus the asset-purchase withholding total. A constant, named here so the
-        /// SQL Server command-count test asserts against the contract rather than against a number
-        /// somebody has to remember to update.
+        /// How many database round trips <see cref="LoadPeriodAggregatesAsync"/> makes. Every source
+        /// is a branch of one UNION ALL query and SQL groups that shared stream by source, date and
+        /// project. A constant, named here so the SQL Server command-count test asserts against the
+        /// contract rather than against a number somebody has to remember to update.
         /// </summary>
-        internal const int PeriodAggregateQueryCount = 13;
+        internal const int PeriodAggregateQueryCount = 1;
 
         private async Task<PeriodAggregates> LoadPeriodAggregatesAsync(
             int? projectId, DateTime? fromValue, DateTime? toExclusive, int? accountId, bool unassigned,
             CancellationToken cancellationToken)
         {
-            // Revenue DAMS recognises by itself. Deliberately NOT "customer receipts minus refunds":
-            // cash taken before possession is a deposit the company owes back, so it was never
-            // income. What the business earned is the sale, recognised once at possession, plus
-            // whatever it keeps when a booking is cancelled.
-            var recognisedSales = await SaleRecognitionQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(r => new { Date = r.RecognitionDate, ProjectId = (int?)r.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(r => r.NetSaleValue) })
-                .ToListAsync(cancellationToken);
-            var retainedCancellations = await RetainedCancellationQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(s => new { Date = s.CancellationDate, ProjectId = (int?)s.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(s => s.RetainedAmount) })
-                .ToListAsync(cancellationToken);
-            var manualRevenue = await ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(r => new { r.Date, r.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(r => r.Amount) })
-                .ToListAsync(cancellationToken);
-
-            // GROSS. The full invoice is the business cost, whatever was withheld from the payment,
-            // so the expense and profit figures are unaffected by withholding. The withheld amount
-            // rides along in the same grouped read rather than costing a second one.
-            var expenses = await ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(e => new { e.Date, e.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(e => e.Amount), Wht = g.Sum(e => e.WhtAmount) })
-                .ToListAsync(cancellationToken);
-            // ALL purchases, not only the fixed-asset ones: withholding on a work-in-progress
-            // purchase is owed to FBR just the same, and the Tax Payable account and the WHT screen
-            // both count it. Its own query for exactly that reason — it is a wider row set than the
-            // charge to profit below, and merging the two would understate one of them.
-            var purchaseWht = await AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
-                .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m;
-
-            var commissionPayouts = await CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(p => new { Date = p.PaymentDate, ProjectId = (int?)p.Commission.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(p => p.Amount) })
-                .ToListAsync(cancellationToken);
-            var commissionReversals = await CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(r => new { Date = r.ReversedAt, ProjectId = (int?)r.Payout.Commission.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(r => r.Amount) })
-                .ToListAsync(cancellationToken);
-            var cashRebates = await CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(d => new { Date = d.AppliedAt, ProjectId = (int?)d.Rebate.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(d => d.Amount) })
-                .ToListAsync(cancellationToken);
-            var cashRebateReversals = await CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(r => new { Date = r.ReversedAt, ProjectId = (int?)r.Disbursement.Rebate.Booking.Unit.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(r => r.Amount) })
-                .ToListAsync(cancellationToken);
-
-            // Credits granted against an already-recognised sale: the slice of recognised revenue the
-            // buyer will never pay. Dated at the later of the credit and the recognition it reduces —
-            // a credit is not a cost before the sale it writes down is income — which makes the
-            // grouping key a CASE expression. That is what the SQL Server test for this exists for:
-            // the in-memory provider will evaluate a key SQL Server might refuse to translate.
-            var nonCashCredits = await NonCashCreditQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(d => new
+            // Each branch below is the same filtered source used before. UNION ALL changes only the
+            // transport: instead of waiting for thirteen commands in series, SQL Server groups one
+            // combined stream and returns the same source/date/project slices in one response.
+            var recognisedSales = SaleRecognitionQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new PeriodAggregateRow
                 {
+                    Source = PeriodAggregateSource.RecognisedSale,
+                    Date = r.RecognitionDate,
+                    ProjectId = r.Booking.Unit.ProjectId,
+                    Amount = r.NetSaleValue,
+                    Wht = 0m
+                });
+            var retainedCancellations = RetainedCancellationQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(s => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.RetainedCancellation,
+                    Date = s.CancellationDate,
+                    ProjectId = s.Booking.Unit.ProjectId,
+                    Amount = s.RetainedAmount,
+                    Wht = 0m
+                });
+            var manualRevenue = ManualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.ManualRevenue,
+                    Date = r.Date,
+                    ProjectId = r.ProjectId,
+                    Amount = r.Amount,
+                    Wht = 0m
+                });
+            // Gross expense, plus the withholding that rides on the same row.
+            var expenses = ExpenseQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(e => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.OrdinaryExpense,
+                    Date = e.Date,
+                    ProjectId = e.ProjectId,
+                    Amount = e.Amount,
+                    Wht = e.WhtAmount
+                });
+            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(p => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.CommissionPayout,
+                    Date = p.PaymentDate,
+                    ProjectId = p.Commission.Booking.Unit.ProjectId,
+                    Amount = p.Amount,
+                    Wht = 0m
+                });
+            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.CommissionReversal,
+                    Date = r.ReversedAt,
+                    ProjectId = r.Payout.Commission.Booking.Unit.ProjectId,
+                    Amount = r.Amount,
+                    Wht = 0m
+                });
+            var cashRebates = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(d => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.CashRebate,
+                    Date = d.AppliedAt,
+                    ProjectId = d.Rebate.Booking.Unit.ProjectId,
+                    Amount = d.Amount,
+                    Wht = 0m
+                });
+            var cashRebateReversals = CashRebateReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.CashRebateReversal,
+                    Date = r.ReversedAt,
+                    ProjectId = r.Disbursement.Rebate.Booking.Unit.ProjectId,
+                    Amount = r.Amount,
+                    Wht = 0m
+                });
+            // A credit is effective no earlier than the recognised sale it reduces.
+            var nonCashCredits = NonCashCreditQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(d => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.NonCashCredit,
                     Date = d.AppliedAt < d.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? d.Rebate.Booking.SaleRecognition!.RecognitionDate : d.AppliedAt,
-                    ProjectId = (int?)d.Rebate.Booking.Unit.ProjectId
-                })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(d => d.Amount) })
-                .ToListAsync(cancellationToken);
-            var nonCashCreditReversals = await NonCashCreditReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(r => new
+                    ProjectId = d.Rebate.Booking.Unit.ProjectId,
+                    Amount = d.Amount,
+                    Wht = 0m
+                });
+            var nonCashCreditReversals = NonCashCreditReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(r => new PeriodAggregateRow
                 {
+                    Source = PeriodAggregateSource.NonCashCreditReversal,
                     Date = r.ReversedAt < r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate.AddDays(1)
                         ? r.Disbursement.Rebate.Booking.SaleRecognition!.RecognitionDate : r.ReversedAt,
-                    ProjectId = (int?)r.Disbursement.Rebate.Booking.Unit.ProjectId
+                    ProjectId = r.Disbursement.Rebate.Booking.Unit.ProjectId,
+                    Amount = r.Amount,
+                    Wht = 0m
+                });
+            // Loans are company-wide until project attribution is designed.
+            var loanInterest = LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(t => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.LoanInterest,
+                    Date = t.Date,
+                    ProjectId = null,
+                    Amount = t.InterestAmount,
+                    Wht = 0m
+                });
+            // Every purchase contributes withholding. Only fixed-asset destinations contribute the
+            // client's profit charge; inherited work-in-progress rows keep Amount at zero and are
+            // removed from the slice list after their WHT has been counted.
+            var assetPurchases = AssetPurchaseQuery(projectId, fromValue, toExclusive, null, accountId, unassigned)
+                .Select(p => new PeriodAggregateRow
+                {
+                    Source = PeriodAggregateSource.FixedAssetPurchase,
+                    Date = p.Date,
+                    ProjectId = p.ProjectId,
+                    Amount = p.AssetAccount!.Type == FinanceAccountType.FixedAsset ? p.Amount : 0m,
+                    Wht = p.WhtAmount
+                });
+
+            var rows = await recognisedSales.Concat(retainedCancellations).Concat(manualRevenue)
+                .Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
+                .Concat(cashRebates).Concat(cashRebateReversals)
+                .Concat(nonCashCredits).Concat(nonCashCreditReversals)
+                .Concat(loanInterest).Concat(assetPurchases)
+                .GroupBy(row => new { row.Source, row.Date, row.ProjectId })
+                .Select(g => new PeriodAggregateRow
+                {
+                    Source = g.Key.Source,
+                    Date = g.Key.Date,
+                    ProjectId = g.Key.ProjectId,
+                    Amount = g.Sum(x => x.Amount),
+                    Wht = g.Sum(x => x.Wht)
                 })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(r => r.Amount) })
-                .ToListAsync(cancellationToken);
-
-            // Loans are company-wide until project attribution is designed, so the slice carries no
-            // project — it belongs to no pie slice, and the query returns nothing at all once a
-            // project is selected.
-            var loanInterest = await LoanInterestQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(t => t.Date)
-                .Select(g => new { Date = g.Key, Amount = g.Sum(t => t.InterestAmount) })
-                .ToListAsync(cancellationToken);
-
-            // Fixed assets bought in the period, at gross cost, INSIDE the expense total. Buying an
-            // asset spends the money, and the client's confirmed rule is that the period bears that
-            // spending — so the cost reaches Net Profit by the ordinary route rather than being held
-            // outside it as a second figure to reconcile. The formal P&L applies the same rule to the
-            // same rows. The asset itself is untouched: it stays on the Balance Sheet at cost, which
-            // is why that statement cannot carry this charge and discloses it instead.
-            var fixedAssets = await FixedAssetChargeQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .GroupBy(p => new { p.Date, p.ProjectId })
-                .Select(g => new { g.Key.Date, g.Key.ProjectId, Amount = g.Sum(p => p.Amount) })
                 .ToListAsync(cancellationToken);
 
             return new PeriodAggregates
             {
-                RecognisedSales = recognisedSales.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                RetainedCancellations = retainedCancellations.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                ManualRevenue = manualRevenue.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                OrdinaryExpenses = expenses.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                WhtWithheld = expenses.Sum(x => x.Wht) + purchaseWht,
-                CommissionPayouts = commissionPayouts.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                CommissionReversals = commissionReversals.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                CashRebates = cashRebates.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                CashRebateReversals = cashRebateReversals.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                NonCashCredits = nonCashCredits.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                NonCashCreditReversals = nonCashCreditReversals.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList(),
-                LoanInterest = loanInterest.Select(x => new Slice(x.Date, null, x.Amount)).ToList(),
-                FixedAssetPurchases = fixedAssets.Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList()
+                RecognisedSales = Slices(rows, PeriodAggregateSource.RecognisedSale),
+                RetainedCancellations = Slices(rows, PeriodAggregateSource.RetainedCancellation),
+                ManualRevenue = Slices(rows, PeriodAggregateSource.ManualRevenue),
+                OrdinaryExpenses = Slices(rows, PeriodAggregateSource.OrdinaryExpense),
+                WhtWithheld = rows.Sum(x => x.Wht),
+                CommissionPayouts = Slices(rows, PeriodAggregateSource.CommissionPayout),
+                CommissionReversals = Slices(rows, PeriodAggregateSource.CommissionReversal),
+                CashRebates = Slices(rows, PeriodAggregateSource.CashRebate),
+                CashRebateReversals = Slices(rows, PeriodAggregateSource.CashRebateReversal),
+                NonCashCredits = Slices(rows, PeriodAggregateSource.NonCashCredit),
+                NonCashCreditReversals = Slices(rows, PeriodAggregateSource.NonCashCreditReversal),
+                LoanInterest = Slices(rows, PeriodAggregateSource.LoanInterest),
+                FixedAssetPurchases = Slices(rows, PeriodAggregateSource.FixedAssetPurchase, omitZero: true)
             };
         }
+
+        private static List<Slice> Slices(
+            IEnumerable<PeriodAggregateRow> rows, PeriodAggregateSource source, bool omitZero = false) =>
+            rows.Where(x => x.Source == source && (!omitZero || x.Amount != 0m))
+                .Select(x => new Slice(x.Date, x.ProjectId, x.Amount)).ToList();
 
         // ── Trend ────────────────────────────────────────────────────────────────────
 

@@ -56,6 +56,15 @@ export function visibleRows<T>(loaded: Loaded<T>, key: string): Loaded<T> {
     : { key, rows: NO_ROWS, hasMore: false, loading: true, error: null };
 }
 
+/** A response may update the table only while it is both the newest request and still wanted. */
+export function isCurrentRowsRequest(
+  requestId: number,
+  currentRequestId: number,
+  signal: AbortSignal,
+): boolean {
+  return requestId === currentRequestId && !signal.aborted;
+}
+
 /**
  * Infinite-scroll data source for a finance view. Fetches the first 100 rows, then
  * appends 100-row chunks on demand, and ignores stale responses from superseded requests.
@@ -88,20 +97,32 @@ export function usePaginatedRows<T>(
   const skipRef = useRef(0);
   const reqIdRef = useRef(0);
   const inFlightRef = useRef(false);
+  const requestControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (reset: boolean) => {
       if (inFlightRef.current && !reset) return;
+      // A reset makes every older page request useless. Abort it so changing a filter does not
+      // leave the browser and server finishing work whose result is guaranteed to be discarded.
+      if (reset) requestControllerRef.current?.abort();
       const reqId = ++reqIdRef.current;
       const requestKey = rowsKey(view, projectId, fromDate, toDate, account);
       if (!enabled) {
+        requestControllerRef.current = null;
+        inFlightRef.current = false;
         skipRef.current = 0;
+        setLoadingMore(false);
         setLoaded({ key: requestKey, rows: NO_ROWS, hasMore: false, loading: false, error: null });
         return;
       }
+      const controller = new AbortController();
+      requestControllerRef.current = controller;
       inFlightRef.current = true;
       const skip = reset ? 0 : skipRef.current;
-      if (reset) setLoaded((prev) => prev.key === requestKey ? { ...prev, loading: true } : prev);
+      if (reset) {
+        setLoadingMore(false);
+        setLoaded((prev) => prev.key === requestKey ? { ...prev, loading: true } : prev);
+      }
       else setLoadingMore(true);
 
       try {
@@ -111,10 +132,10 @@ export function usePaginatedRows<T>(
         if (toDate) params.set("to", toDate);
         if (account) params.set("account", account);
 
-        const res = await api(`/api/Finance/rows?${params.toString()}`);
+        const res = await api(`/api/Finance/rows?${params.toString()}`, { signal: controller.signal });
         if (!res.ok) throw new Error("request failed");
         const json: PagedResponse<T> = await res.json();
-        if (reqId !== reqIdRef.current) return; // superseded by a newer request
+        if (!isCurrentRowsRequest(reqId, reqIdRef.current, controller.signal)) return;
 
         skipRef.current = skip + json.items.length;
         setLoaded((prev) => ({
@@ -126,14 +147,19 @@ export function usePaginatedRows<T>(
           error: null,
         }));
       } catch {
-        if (reqId !== reqIdRef.current) return;
+        if (!isCurrentRowsRequest(reqId, reqIdRef.current, controller.signal)) return;
         setLoaded((prev) => prev.key === requestKey && !reset
           // A failed "load more" keeps what is already on screen.
           ? { ...prev, loading: false, error: "Unable to load rows." }
           : { key: requestKey, rows: NO_ROWS, hasMore: false, loading: false, error: "Unable to load rows." });
       } finally {
-        if (reqId === reqIdRef.current) setLoadingMore(false);
-        inFlightRef.current = false;
+        // A superseded request must not mark the newer request as idle. That used to open a small
+        // window where infinite scroll could launch another page while the reset was still running.
+        if (reqId === reqIdRef.current) {
+          setLoadingMore(false);
+          inFlightRef.current = false;
+          if (requestControllerRef.current === controller) requestControllerRef.current = null;
+        }
       }
     },
     [view, projectId, fromDate, toDate, account, enabled]
@@ -142,6 +168,7 @@ export function usePaginatedRows<T>(
   // Reset + fetch first page whenever the view or filters change.
   useEffect(() => {
     void load(true);
+    return () => requestControllerRef.current?.abort();
   }, [load]);
 
   // Rows from a superseded key are never handed out; the caller sees an empty, loading table

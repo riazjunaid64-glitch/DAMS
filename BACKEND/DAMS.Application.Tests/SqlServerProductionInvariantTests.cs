@@ -1898,13 +1898,12 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(eightProjects.Commands, threeYears.Commands);
 
         // And a hard ceiling, so a future edit that adds a read per source is caught even if it
-        // happens to be flat in projects and buckets. Thirteen source reads plus the deposit
+        // happens to be flat in projects and buckets. One UNION ALL source read plus the deposit
         // balance (3), outstanding, overdue and the project-name lookup.
         Assert.True(eightProjects.Commands <= FinanceService.PeriodAggregateQueryCount + 8,
             $"dashboard issued {eightProjects.Commands} commands; the bound is "
             + $"{FinanceService.PeriodAggregateQueryCount + 8}");
-        // Lower bound too: a count that collapsed far below this would mean sources stopped being
-        // read at all, which the reconciliation assertions below would then have to catch.
+        // Lower bound too: the combined financial-source command itself must still run.
         Assert.True(eightProjects.Commands >= FinanceService.PeriodAggregateQueryCount,
             $"dashboard issued only {eightProjects.Commands} commands");
 
@@ -1922,6 +1921,139 @@ public sealed class SqlServerProductionInvariantTests
         // a handful of grouped queries, so seconds-per-refresh would mean something is wrong.
         Assert.True(sixteenProjects.Elapsed < TimeSpan.FromSeconds(15),
             $"dashboard took {sixteenProjects.Elapsed.TotalSeconds:0.00}s at 16 projects");
+    }
+
+    /// <summary>
+    /// Account cards used to attach every balance aggregate as a correlated subquery to every
+    /// account row. The command count looked harmless (one command), but SQL Server repeatedly
+    /// scanned the finance tables for each account. The replacement must keep the base-page and
+    /// grouped-movement reads flat while preserving the exact account math.
+    /// </summary>
+    [SqlServerFact]
+    public async Task FinanceAccounts_AggregateInOneSetBasedCommand_WhateverTheAccountVolume()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var counter = new CommandCounter();
+        var options = OptionsWith(database.ConnectionString, counter);
+        await using var db = new AppDbContext(options);
+        await db.Database.MigrateAsync();
+
+        var accounts = new FinanceAccountService(db);
+        // This also exercises all four system-role branches against the real provider.
+        await accounts.SetupClientChartAsync();
+        await SeedDashboardVolumeAsync(db, firstProject: 1, projects: 8);
+
+        await accounts.GetPageAsync(null, null, null, null, 0, 200);
+        var eightProjects = await MeasureAsync(counter,
+            () => accounts.GetPageAsync(null, null, null, null, 0, 200));
+
+        await SeedDashboardVolumeAsync(db, firstProject: 9, projects: 8);
+        var sixteenProjects = await MeasureAsync(counter,
+            () => accounts.GetPageAsync(null, null, null, null, 0, 200));
+        var overview = await MeasureAsync(counter, () => accounts.GetOverviewAsync());
+
+        Assert.Equal(2, eightProjects.Commands);       // base account page + grouped movements
+        Assert.Equal(2, sixteenProjects.Commands);     // volume must not add database commands
+        Assert.Equal(2, overview.Commands);
+
+        var bank = Assert.Single(sixteenProjects.Result.Items, a => a.Name == "Bank 1");
+        Assert.Equal(0m, bank.RevenueReceived);
+        Assert.Equal(1_000_000m, bank.ExpensesPaid);   // 12 expenses + 4 asset purchases
+        Assert.Equal(-1_000_000m, bank.CurrentBalance);
+        Assert.Equal(16, bank.TransactionCount);
+
+        var equipment = Assert.Single(sixteenProjects.Result.Items, a => a.Name == "Equipment 1");
+        Assert.Equal(400_000m, equipment.RevenueReceived);
+        Assert.Equal(0m, equipment.ExpensesPaid);
+        Assert.Equal(400_000m, equipment.CurrentBalance);
+        Assert.Equal(4, equipment.TransactionCount);
+
+        Assert.Equal(-16_000_000m, overview.Result.TotalBalance);
+        Assert.True(sixteenProjects.Elapsed < TimeSpan.FromSeconds(10),
+            $"finance accounts took {sixteenProjects.Elapsed.TotalSeconds:0.00}s at 16 projects");
+    }
+
+    /// <summary>
+    /// Historical Trial Balance columns used to rerun the complete account snapshot, P&amp;L and
+    /// allocation query set once per month. Sixty prior months therefore multiplied roughly three
+    /// dozen SQL commands by sixty-one. The batched implementation reads dated source aggregates
+    /// once and folds them across cut-offs, so the command count must be independent of column count
+    /// on both global and project paths.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TrialBalance_CommandCountIsFlat_AndBatchMatchesSingleColumns_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var counter = new CommandCounter();
+        var options = OptionsWith(database.ConnectionString, counter);
+        await using var db = new AppDbContext(options);
+        // Creating every historical schema on developer SQL Express can exceed the ordinary
+        // request timeout under load; the report measurements below restore the production limit.
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+        await db.Database.MigrateAsync();
+        db.Database.SetCommandTimeout(TimeSpan.FromSeconds(30));
+
+        var accounts = new FinanceAccountService(db);
+        await accounts.SetupClientChartAsync();
+        await SeedDashboardVolumeAsync(db, firstProject: 1, projects: 2);
+        var projectId = await db.Projects.OrderBy(project => project.Id)
+            .Select(project => project.Id).FirstAsync();
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        var asAt = new DateTime(2026, 12, 31);
+
+        // Warm both query shapes so model/query compilation is outside the measured commands.
+        await finance.GetTrialBalanceAsync(null, asAt, 1);
+        await finance.GetTrialBalanceAsync(projectId, asAt, 1);
+
+        var global0 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(null, asAt, 0));
+        var global12 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(null, asAt, 12));
+        var global60 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(null, asAt, 60));
+        Assert.Equal(global0.Commands, global12.Commands);
+        Assert.Equal(global0.Commands, global60.Commands);
+        Assert.True(global60.Commands <= 32,
+            $"61-column global trial balance issued {global60.Commands} commands");
+        AssertTrialLatestEquivalent(global0.Result, global12.Result);
+        AssertTrialLatestEquivalent(global0.Result, global60.Result);
+
+        var project0 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(projectId, asAt, 0));
+        var project1 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(projectId, asAt, 1));
+        var project60 = await MeasureAsync(counter, () => finance.GetTrialBalanceAsync(projectId, asAt, 60));
+        Assert.Equal(project0.Commands, project1.Commands);
+        Assert.Equal(project0.Commands, project60.Commands);
+        Assert.True(project60.Commands <= 26,
+            $"61-column project trial balance issued {project60.Commands} commands");
+        AssertTrialLatestEquivalent(project0.Result, project60.Result);
+    }
+
+    private static void AssertTrialLatestEquivalent(TrialBalanceDto single, TrialBalanceDto batch)
+    {
+        Assert.Single(single.ColumnDates);
+        Assert.Equal(single.AsAt, batch.AsAt);
+        Assert.Equal(single.TotalDebit, batch.TotalDebit);
+        Assert.Equal(single.TotalCredit, batch.TotalCredit);
+        Assert.Equal(single.IsBalanced, batch.IsBalanced);
+
+        foreach (var expected in single.Rows)
+        {
+            var actual = Assert.Single(batch.Rows, row => row.AccountKey == expected.AccountKey);
+            Assert.Equal(expected.AccountId, actual.AccountId);
+            Assert.Equal(expected.LedgerCode, actual.LedgerCode);
+            Assert.Equal(expected.AccountName, actual.AccountName);
+            Assert.Equal(expected.Type, actual.Type);
+            Assert.Equal(expected.Debit, actual.Debit);
+            Assert.Equal(expected.Credit, actual.Credit);
+        }
+
+        // A historical virtual row legitimately remains in a multi-column report after it returns
+        // to zero. Such a row is absent from the standalone final column, but its final cells must
+        // still be exactly zero.
+        var singleKeys = single.Rows.Select(row => row.AccountKey).ToHashSet(StringComparer.Ordinal);
+        Assert.All(batch.Rows.Where(row => !singleKeys.Contains(row.AccountKey)), row =>
+        {
+            Assert.Equal(0m, row.Debit);
+            Assert.Equal(0m, row.Credit);
+        });
     }
 
     private sealed record Measured<T>(T Result, int Commands, TimeSpan Elapsed);
@@ -2867,14 +2999,20 @@ public sealed class SqlServerProductionInvariantTests
     {
         private readonly string _masterConnection;
         private readonly string _databaseName;
+        private readonly int _commandTimeoutSeconds;
         public string ConnectionString { get; }
 
-        private SqlTestDatabase(string masterConnection, string databaseName, string connectionString)
+        private SqlTestDatabase(
+            string masterConnection, string databaseName, string connectionString,
+            int commandTimeoutSeconds)
         {
-            _masterConnection = masterConnection; _databaseName = databaseName; ConnectionString = connectionString;
+            _masterConnection = masterConnection;
+            _databaseName = databaseName;
+            _commandTimeoutSeconds = commandTimeoutSeconds;
+            ConnectionString = connectionString;
         }
 
-        public static async Task<SqlTestDatabase> CreateAsync()
+        public static async Task<SqlTestDatabase> CreateAsync(int commandTimeoutSeconds = 30)
         {
             var configured = Environment.GetEnvironmentVariable("DAMS_SQLSERVER_TEST_CONNECTION")
                 ?? throw new InvalidOperationException("DAMS_SQLSERVER_TEST_CONNECTION is required.");
@@ -2884,8 +3022,10 @@ public sealed class SqlServerProductionInvariantTests
             await using var connection = new SqlConnection(master.ConnectionString);
             await connection.OpenAsync();
             await using var command = new SqlCommand($"CREATE DATABASE [{databaseName}]", connection);
+            command.CommandTimeout = commandTimeoutSeconds;
             await command.ExecuteNonQueryAsync();
-            return new SqlTestDatabase(master.ConnectionString, databaseName, test.ConnectionString);
+            return new SqlTestDatabase(
+                master.ConnectionString, databaseName, test.ConnectionString, commandTimeoutSeconds);
         }
 
         public async ValueTask DisposeAsync()
@@ -2899,6 +3039,7 @@ public sealed class SqlServerProductionInvariantTests
             await using var command = new SqlCommand(
                 $"ALTER DATABASE [{_databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{_databaseName}];",
                 connection);
+            command.CommandTimeout = _commandTimeoutSeconds;
             await command.ExecuteNonQueryAsync();
         }
     }
