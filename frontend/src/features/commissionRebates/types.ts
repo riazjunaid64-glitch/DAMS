@@ -1,9 +1,8 @@
 export type CalculationType = "Percentage" | "FixedAmount";
 export type CalculationBasis = "AgreedSalePrice" | "NetSalePriceAfterDiscount" | "BookingAmountReceived" | "AmountActuallyCollected" | "ManuallyApprovedAmount";
-export type CommissionStatus = "Draft" | "PendingApproval" | "Approved" | "Earned" | "Payable" | "PartiallyPaid" | "Paid" | "Rejected" | "Cancelled" | "ReversalRequired" | "Reversed";
-export type RebateStatus = "Draft" | "PendingApproval" | "Approved" | "PartiallyApplied" | "Applied" | "Paid" | "Rejected" | "Cancelled" | "Reversed" | "ReversalRequired";
+export type CommissionStatus = "Pending" | "Paid" | "Cancelled" | "ReversalRequired" | "Reversed";
+export type RebateStatus = "Pending" | "Applied" | "Paid" | "Cancelled" | "ReversalRequired" | "Reversed";
 export type RebateMethod = "OutstandingBalanceReduction" | "InstallmentAdjustment" | "CashOrBankPayment" | "CreditNote" | "Other";
-export type EarningCondition = "ManualMilestone" | "BookingAmountFullyReceived" | "MinimumCollectionPercentage" | "FirstInstallmentReceived" | "SaleCompleted";
 
 export interface PagedResult<T> { items:T[]; hasMore:boolean; }
 
@@ -31,8 +30,7 @@ export interface CommissionRule {
   partnerId:number|null; partnerName:string|null; partnerType:string|null; projectId:number|null; projectName:string|null;
   unitCategory:string|null; bookingSource:string|null; bookingId:number|null; calculationType:CalculationType;
   percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis; minimumCommission:number|null;
-  maximumCommission:number|null; eligibilityCondition:string|null; earningCondition:EarningCondition;
-  minimumCollectionPercent:number|null; priority:number; requiresApproval:boolean; notes:string|null; concurrencyToken:string;
+  maximumCommission:number|null; priority:number; notes:string|null; concurrencyToken:string;
   currentRevisionNumber:number;
 }
 
@@ -56,20 +54,17 @@ export interface Commission {
   allocationPercent:number;
   calculationType:CalculationType; percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis;
   basisAmount:number; calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number;
-  approvedAmount:number|null; paidAmount:number; outstandingAmount:number; recoveryRequiredAmount:number; earningCondition:EarningCondition;
-  minimumCollectionPercent:number|null; status:CommissionStatus; createdAt:string; submittedByName:string|null;
-  submittedAt:string|null; decisionByName:string|null; decisionAt:string|null; decisionReason:string|null;
-  earnedAt:string|null; payableAt:string|null; cancellationOrReversalReason:string|null; payouts:MoneyMovement[];
+  paidAmount:number; outstandingAmount:number; recoveryRequiredAmount:number;
+  status:CommissionStatus; createdAt:string; cancellationOrReversalReason:string|null; payouts:MoneyMovement[];
   evidence:Evidence[]; concurrencyToken:string;
 }
 
 export interface Rebate {
   id:number; bookingId:number; bookingReference:string; customerId:number; customerName:string; calculationType:CalculationType;
   percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis; basisAmount:number;
-  calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number; approvedAmount:number|null;
+  calculatedAmount:number; adjustmentAmount:number; adjustmentReason:string|null; finalAmount:number;
   appliedOrPaidAmount:number; outstandingAmount:number; recoveryRequiredAmount:number; reason:string; method:RebateMethod; status:RebateStatus;
-  notes:string|null; createdAt:string; submittedByName:string|null; submittedAt:string|null; decisionByName:string|null;
-  decisionAt:string|null; decisionReason:string|null; cancellationOrReversalReason:string|null;
+  notes:string|null; createdAt:string; cancellationOrReversalReason:string|null;
   disbursements:MoneyMovement[]; evidence:Evidence[]; concurrencyToken:string;
 }
 

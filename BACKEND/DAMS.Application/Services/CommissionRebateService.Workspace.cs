@@ -5,7 +5,6 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-
 namespace DAMS.Application.Services
 {
     public sealed partial class CommissionRebateService
@@ -58,9 +57,7 @@ namespace DAMS.Application.Services
                 Audit = audit, HasMoreAudit = hasMoreAudit
             };
         }
-
         private const int AuditPreviewSize = 100;
-
         private static readonly System.Linq.Expressions.Expression<Func<FinancialWorkflowAuditEntry, FinancialAuditDto>> AuditProjection =
             a => new FinancialAuditDto
             {
@@ -69,7 +66,6 @@ namespace DAMS.Application.Services
                 NewRebateStatus = a.NewRebateStatus, PreviousAmount = a.PreviousAmount, NewAmount = a.NewAmount,
                 Reason = a.Reason, PerformedByName = a.PerformedByName, OccurredAt = a.OccurredAt
             };
-
         // Keyset (cursor) pagination on the monotonic Id: the caller passes the Id of the last row it
         // has seen and receives strictly older rows. Unlike skip/take, this stays stable when new
         // audit rows are appended between page loads — offset paging would repeat or skip rows.
@@ -90,7 +86,6 @@ namespace DAMS.Application.Services
                 HasMore = rows.Count > take
             };
         }
-
         public async Task<FinancialEvidenceDto> UploadEvidenceAsync(FinancialEvidenceOwnerType ownerType, int ownerId,
             FinancialEvidenceUpload upload, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
         {
@@ -133,7 +128,6 @@ namespace DAMS.Application.Services
                 throw;
             }
         }
-
         public async Task<FinancialEvidenceDownload> DownloadEvidenceAsync(int evidenceId, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default)
         {
@@ -157,15 +151,14 @@ namespace DAMS.Application.Services
             }
             catch { await stream.DisposeAsync(); throw; }
         }
-
         public async Task HandleBookingCancelledAsync(int bookingId, string reason, FinancialWorkflowActor actor,
             CancellationToken cancellationToken = default)
         {
             var cleanReason = Required(reason, "Cancellation reason", 2000);
             var commissions = await _context.BookingCommissions.Include(c => c.Payouts).ThenInclude(p => p.Reversals)
                 .Where(c => c.BookingId == bookingId).ToListAsync(cancellationToken);
-            foreach (var commission in commissions.Where(c => c.Status is not (BookingCommissionStatus.Rejected
-                         or BookingCommissionStatus.Cancelled or BookingCommissionStatus.Reversed)))
+            foreach (var commission in commissions.Where(c => c.Status is not (BookingCommissionStatus.Cancelled
+                         or BookingCommissionStatus.Reversed)))
             {
                 var previous = commission.Status;
                 commission.Status = NetPaid(commission) > 0m ? BookingCommissionStatus.ReversalRequired : BookingCommissionStatus.Cancelled;
@@ -177,8 +170,8 @@ namespace DAMS.Application.Services
             }
             var rebates = await _context.CustomerRebates.Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
                 .Where(r => r.BookingId == bookingId).ToListAsync(cancellationToken);
-            foreach (var rebate in rebates.Where(r => r.Status is not (CustomerRebateStatus.Rejected
-                         or CustomerRebateStatus.Cancelled or CustomerRebateStatus.Reversed)))
+            foreach (var rebate in rebates.Where(r => r.Status is not (CustomerRebateStatus.Cancelled
+                         or CustomerRebateStatus.Reversed)))
             {
                 var previous = rebate.Status;
                 rebate.Status = NetDisbursed(rebate) > 0m ? CustomerRebateStatus.ReversalRequired : CustomerRebateStatus.Cancelled;
@@ -190,7 +183,6 @@ namespace DAMS.Application.Services
             }
             // The booking service persists these lifecycle changes in the same transaction as cancellation.
         }
-
         private async Task<EvidenceOwnership> ResolveEvidenceOwnerAsync(FinancialEvidenceOwnerType type, int id,
             CancellationToken cancellationToken)
         {
@@ -215,7 +207,6 @@ namespace DAMS.Application.Services
                 _ => throw new InvalidOperationException("Evidence owner type is invalid.")
             };
         }
-
         private static ThirdPartyAttributionDto MapAttribution(ThirdPartyAttribution a) => new()
         {
             Id = a.Id, PartnerId = a.PartnerId, PartnerName = a.Partner.Name, LeadId = a.LeadId,
@@ -224,10 +215,9 @@ namespace DAMS.Application.Services
             IsPrimary = a.IsPrimary, AllocationPercent = a.AllocationPercent, AssignedAt = a.AssignedAt,
             ConcurrencyToken = Token(a.RowVersion)
         };
-
         private static BookingCommissionDto MapCommission(BookingCommission c, string? bookingReference = null)
         {
-            var paid = NetPaid(c); var approved = c.ApprovedAmount ?? c.FinalAmount;
+            var paid = NetPaid(c);
             return new BookingCommissionDto
             {
                 Id = c.Id, BookingId = c.BookingId, BookingReference = bookingReference ?? c.Booking.BookingReference,
@@ -239,12 +229,9 @@ namespace DAMS.Application.Services
                 CalculationType = c.CalculationType, PercentageRate = c.PercentageRate, FixedAmount = c.FixedAmount,
                 CalculationBasis = c.CalculationBasis, BasisAmount = c.BasisAmount, CalculatedAmount = c.CalculatedAmount,
                 AdjustmentAmount = c.AdjustmentAmount, AdjustmentReason = c.AdjustmentReason, FinalAmount = c.FinalAmount,
-                ApprovedAmount = c.ApprovedAmount, PaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(approved - paid)),
+                PaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(c.FinalAmount - paid)),
                 RecoveryRequiredAmount = c.Status == BookingCommissionStatus.ReversalRequired ? paid : 0m,
-                EarningCondition = c.EarningCondition, MinimumCollectionPercent = c.MinimumCollectionPercent,
-                Status = c.Status, CreatedAt = c.CreatedAt, SubmittedByName = c.SubmittedByName,
-                SubmittedAt = c.SubmittedAt, DecisionByName = c.DecisionByName, DecisionAt = c.DecisionAt,
-                DecisionReason = c.DecisionReason, EarnedAt = c.EarnedAt, PayableAt = c.PayableAt,
+                Status = c.Status, CreatedAt = c.CreatedAt,
                 CancellationOrReversalReason = c.CancellationOrReversalReason,
                 ConcurrencyToken = Token(c.RowVersion),
                 Payouts = c.Payouts.OrderByDescending(p => p.PaymentDate).Select(p => new MoneyMovementDto
@@ -257,23 +244,20 @@ namespace DAMS.Application.Services
                 }).ToList(), Evidence = c.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()
             };
         }
-
         private static CustomerRebateDto MapRebate(CustomerRebate r, string? bookingReference = null)
         {
-            var paid = NetDisbursed(r); var approved = r.ApprovedAmount ?? r.FinalAmount;
+            var paid = NetDisbursed(r);
             return new CustomerRebateDto
             {
                 Id = r.Id, BookingId = r.BookingId, BookingReference = bookingReference ?? r.Booking.BookingReference,
                 CustomerId = r.CustomerId, CustomerName = r.Customer.FullName, CalculationType = r.CalculationType,
                 PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount, CalculationBasis = r.CalculationBasis,
                 BasisAmount = r.BasisAmount, CalculatedAmount = r.CalculatedAmount, AdjustmentAmount = r.AdjustmentAmount,
-                AdjustmentReason = r.AdjustmentReason, FinalAmount = r.FinalAmount, ApprovedAmount = r.ApprovedAmount,
-                AppliedOrPaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(approved - paid)),
+                AdjustmentReason = r.AdjustmentReason, FinalAmount = r.FinalAmount,
+                AppliedOrPaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(r.FinalAmount - paid)),
                 RecoveryRequiredAmount = r.Status == CustomerRebateStatus.ReversalRequired ? paid : 0m,
                 Reason = r.Reason, Method = r.Method, Status = r.Status, Notes = r.Notes, CreatedAt = r.CreatedAt,
-                SubmittedByName = r.SubmittedByName, SubmittedAt = r.SubmittedAt,
-                DecisionByName = r.DecisionByName, DecisionAt = r.DecisionAt,
-                DecisionReason = r.DecisionReason, CancellationOrReversalReason = r.CancellationOrReversalReason,
+                CancellationOrReversalReason = r.CancellationOrReversalReason,
                 ConcurrencyToken = Token(r.RowVersion), Disbursements = r.Disbursements.OrderByDescending(d => d.AppliedAt)
                     .Select(d => new MoneyMovementDto
                     {
@@ -286,13 +270,11 @@ namespace DAMS.Application.Services
                     }).ToList(), Evidence = r.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()
             };
         }
-
         private static FinancialEvidenceDto MapEvidence(FinancialEvidence e) => new()
         {
             Id = e.Id, OriginalFileName = e.OriginalFileName, ContentType = e.ContentType,
             FileSize = e.FileSize, UploadedByName = e.UploadedByName, UploadedAt = e.UploadedAt
         };
-
         private sealed record EvidenceOwnership(int? PartnerId, int? CustomerId, int BookingId,
             int? CommissionId, int? PayoutId, int? RebateId, int? DisbursementId);
     }

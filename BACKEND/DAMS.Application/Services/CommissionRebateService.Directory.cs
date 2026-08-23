@@ -187,9 +187,8 @@ namespace DAMS.Application.Services
                 UnitCategory = r.UnitCategory, BookingSource = r.BookingSource, BookingId = r.BookingId,
                 CalculationType = r.CalculationType, PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount,
                 CalculationBasis = r.CalculationBasis, MinimumCommission = r.MinimumCommission,
-                MaximumCommission = r.MaximumCommission, EligibilityCondition = r.EligibilityCondition,
-                EarningCondition = r.EarningCondition, MinimumCollectionPercent = r.MinimumCollectionPercent,
-                Priority = r.Priority, RequiresApproval = r.RequiresApproval, Notes = r.Notes,
+                MaximumCommission = r.MaximumCommission,
+                Priority = r.Priority, Notes = r.Notes,
                 ConcurrencyToken = Convert.ToBase64String(r.RowVersion),
                 CurrentRevisionNumber = r.Revisions.Select(x => (int?)x.RevisionNumber).Max() ?? 0
             });
@@ -335,8 +334,8 @@ namespace DAMS.Application.Services
         {
             Required(dto.Name, "Rule name", 200);
             if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis)
-                || !Enum.IsDefined(dto.EarningCondition) || (dto.BookingSource.HasValue && !Enum.IsDefined(dto.BookingSource.Value)))
-                throw new InvalidOperationException("Select valid rule calculation, basis, earning, and source values.");
+                || (dto.BookingSource.HasValue && !Enum.IsDefined(dto.BookingSource.Value)))
+                throw new InvalidOperationException("Select valid rule calculation, basis, and source values.");
             if (dto.CalculationBasis == FinancialCalculationBasis.ManuallyApprovedAmount)
                 throw new InvalidOperationException("A manually approved basis is available only for a documented manual commission.");
             if (!string.IsNullOrWhiteSpace(dto.PartnerType) && !PartnerTypes.Contains(dto.PartnerType.Trim()))
@@ -353,9 +352,6 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Fixed rules require one positive fixed amount and no percentage rate.");
             if (dto.MinimumCommission < 0m || dto.MaximumCommission < 0m || dto.MinimumCommission > dto.MaximumCommission)
                 throw new InvalidOperationException("Commission minimum and maximum are invalid.");
-            if (dto.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
-                && dto.MinimumCollectionPercent is not (> 0m and <= 100m))
-                throw new InvalidOperationException("A minimum collection percentage between 0 and 100 is required.");
         }
 
         private static readonly (string Label, Func<CommissionRule, string?> Value)[] RuleFields =
@@ -377,11 +373,7 @@ namespace DAMS.Application.Services
             ("CalculationBasis", r => r.CalculationBasis.ToString()),
             ("MinimumCommission", r => r.MinimumCommission?.ToString()),
             ("MaximumCommission", r => r.MaximumCommission?.ToString()),
-            ("EligibilityCondition", r => r.EligibilityCondition),
-            ("EarningCondition", r => r.EarningCondition.ToString()),
-            ("MinimumCollectionPercent", r => r.MinimumCollectionPercent?.ToString()),
             ("Priority", r => r.Priority.ToString()),
-            ("RequiresApproval", r => r.RequiresApproval.ToString()),
             ("Notes", r => r.Notes),
         };
 
@@ -423,11 +415,7 @@ namespace DAMS.Application.Services
             r.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
             r.CalculationBasis = dto.CalculationBasis; r.MinimumCommission = dto.MinimumCommission.HasValue ? Money(dto.MinimumCommission.Value) : null;
             r.MaximumCommission = dto.MaximumCommission.HasValue ? Money(dto.MaximumCommission.Value) : null;
-            r.EligibilityCondition = Limited(dto.EligibilityCondition, "Eligibility condition", 1000);
-            r.EarningCondition = dto.EarningCondition;
-            r.MinimumCollectionPercent = dto.EarningCondition == CommissionEarningCondition.MinimumCollectionPercentage
-                ? Money(dto.MinimumCollectionPercent!.Value) : null;
-            r.Priority = dto.Priority; r.RequiresApproval = dto.RequiresApproval; r.Notes = Limited(dto.Notes, "Notes", 2000);
+            r.Priority = dto.Priority; r.Notes = Limited(dto.Notes, "Notes", 2000);
         }
     }
 }

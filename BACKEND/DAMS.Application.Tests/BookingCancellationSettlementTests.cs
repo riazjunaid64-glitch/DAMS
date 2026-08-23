@@ -513,7 +513,7 @@ public sealed class BookingCancellationSettlementTests
         {
             BookingId = h.BookingId, PartnerId = partner.Id, CalculationType = FinancialCalculationType.Percentage,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount, BasisAmount = 1000m, CalculatedAmount = 100m,
-            FinalAmount = 100m, ApprovedAmount = 100m, Status = BookingCommissionStatus.Payable
+            FinalAmount = 100m, Status = BookingCommissionStatus.Pending
         };
         h.Context.BookingCommissions.Add(commission);
         await h.Context.SaveChangesAsync();

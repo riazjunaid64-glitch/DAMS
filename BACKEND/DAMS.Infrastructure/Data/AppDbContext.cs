@@ -1223,13 +1223,10 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(r => r.BookingSource).HasConversion<int?>();
                 entity.Property(r => r.CalculationType).HasConversion<int>();
                 entity.Property(r => r.CalculationBasis).HasConversion<int>();
-                entity.Property(r => r.EarningCondition).HasConversion<int>();
                 entity.Property(r => r.PercentageRate).HasColumnType("decimal(9,6)");
                 entity.Property(r => r.FixedAmount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.MinimumCommission).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.MaximumCommission).HasColumnType("decimal(18,2)");
-                entity.Property(r => r.MinimumCollectionPercent).HasColumnType("decimal(5,2)");
-                entity.Property(r => r.EligibilityCondition).HasMaxLength(1000);
                 entity.Property(r => r.Notes).HasMaxLength(2000);
                 entity.Property(r => r.CreatedByName).HasMaxLength(200);
                 entity.Property(r => r.RowVersion).IsRowVersion();
@@ -1254,11 +1251,9 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.RuleNameSnapshot).HasMaxLength(200);
                 entity.Property(c => c.MinimumCommissionSnapshot).HasColumnType("decimal(18,2)");
                 entity.Property(c => c.MaximumCommissionSnapshot).HasColumnType("decimal(18,2)");
-                entity.Property(c => c.EligibilityConditionSnapshot).HasMaxLength(1000);
                 entity.Property(c => c.ManualReason).HasMaxLength(2000);
                 entity.Property(c => c.CalculationType).HasConversion<int>();
                 entity.Property(c => c.CalculationBasis).HasConversion<int>();
-                entity.Property(c => c.EarningCondition).HasConversion<int>();
                 entity.Property(c => c.Status).HasConversion<int>();
                 entity.Property(c => c.PercentageRate).HasColumnType("decimal(9,6)");
                 entity.Property(c => c.FixedAmount).HasColumnType("decimal(18,2)");
@@ -1266,25 +1261,19 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.CalculatedAmount).HasColumnType("decimal(18,2)");
                 entity.Property(c => c.AdjustmentAmount).HasColumnType("decimal(18,2)");
                 entity.Property(c => c.FinalAmount).HasColumnType("decimal(18,2)");
-                entity.Property(c => c.ApprovedAmount).HasColumnType("decimal(18,2)");
-                entity.Property(c => c.MinimumCollectionPercent).HasColumnType("decimal(5,2)");
                 entity.Property(c => c.AdjustmentReason).HasMaxLength(2000);
-                entity.Property(c => c.DecisionReason).HasMaxLength(2000);
                 entity.Property(c => c.CancellationOrReversalReason).HasMaxLength(2000);
                 entity.Property(c => c.CreatedByName).HasMaxLength(200);
-                entity.Property(c => c.SubmittedByName).HasMaxLength(200);
-                entity.Property(c => c.DecisionByName).HasMaxLength(200);
                 entity.Property(c => c.RowVersion).IsRowVersion();
                 entity.ToTable(t => t.HasCheckConstraint("CK_BookingCommissions_Amounts",
-                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0) AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100"));
+                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND [AllocationPercentSnapshot] > 0 AND [AllocationPercentSnapshot] <= 100"));
                 // Uniqueness is enforced only on the live commission for a (booking, partner):
-                // a rejected, cancelled, or reversed row is closed history and must be allowed to
-                // coexist with a corrected replacement. Without the filter, superseding a rejected
-                // commission would violate the unique index at insert time.
+                // a cancelled or reversed row is closed history and must be allowed to coexist with
+                // a corrected replacement. Without the filter, superseding a cancelled commission
+                // would violate the unique index at insert time.
                 entity.HasIndex(c => new { c.BookingId, c.PartnerId })
                       .IsUnique()
-                      .HasFilter($"[Status] <> {(int)BookingCommissionStatus.Rejected} " +
-                                 $"AND [Status] <> {(int)BookingCommissionStatus.Cancelled} " +
+                      .HasFilter($"[Status] <> {(int)BookingCommissionStatus.Cancelled} " +
                                  $"AND [Status] <> {(int)BookingCommissionStatus.Reversed}");
                 entity.HasIndex(c => new { c.Status, c.CreatedAt });
                 entity.HasIndex(c => c.RuleId);
@@ -1353,26 +1342,21 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(r => r.CalculatedAmount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.AdjustmentAmount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.FinalAmount).HasColumnType("decimal(18,2)");
-                entity.Property(r => r.ApprovedAmount).HasColumnType("decimal(18,2)");
                 entity.Property(r => r.Reason).IsRequired().HasMaxLength(2000);
                 entity.Property(r => r.AdjustmentReason).HasMaxLength(2000);
                 entity.Property(r => r.Notes).HasMaxLength(2000);
-                entity.Property(r => r.DecisionReason).HasMaxLength(2000);
                 entity.Property(r => r.CancellationOrReversalReason).HasMaxLength(2000);
                 entity.Property(r => r.CreatedByName).HasMaxLength(200);
-                entity.Property(r => r.SubmittedByName).HasMaxLength(200);
-                entity.Property(r => r.DecisionByName).HasMaxLength(200);
                 entity.Property(r => r.RowVersion).IsRowVersion();
                 entity.ToTable(t => t.HasCheckConstraint("CK_CustomerRebates_Amounts",
-                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0 AND ([ApprovedAmount] IS NULL OR [ApprovedAmount] >= 0)"));
-                // Uniqueness is enforced only on the live rebate for a booking: a rejected,
-                // cancelled, or reversed row is closed history and must be allowed to coexist with a
-                // corrected replacement. Without the filter, superseding a returned/rejected rebate
-                // would violate the unique index at insert time.
+                    "[BasisAmount] > 0 AND [CalculatedAmount] >= 0 AND [FinalAmount] >= 0"));
+                // Uniqueness is enforced only on the live rebate for a booking: a cancelled or
+                // reversed row is closed history and must be allowed to coexist with a corrected
+                // replacement. Without the filter, superseding a cancelled rebate would violate the
+                // unique index at insert time.
                 entity.HasIndex(r => r.BookingId)
                       .IsUnique()
-                      .HasFilter($"[Status] <> {(int)CustomerRebateStatus.Rejected} " +
-                                 $"AND [Status] <> {(int)CustomerRebateStatus.Cancelled} " +
+                      .HasFilter($"[Status] <> {(int)CustomerRebateStatus.Cancelled} " +
                                  $"AND [Status] <> {(int)CustomerRebateStatus.Reversed}");
                 entity.HasIndex(r => new { r.Status, r.CreatedAt });
                 entity.HasIndex(r => r.CustomerId);

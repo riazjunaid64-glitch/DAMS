@@ -3,7 +3,7 @@ import { api } from "../../api/api";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
-import { commissionActions, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, statusLabel, trapDialogKeys } from "./state";
+import { commissionActions, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, trapDialogKeys } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -18,7 +18,9 @@ const basisNames:Record<string,string>={AgreedSalePrice:"Sale Price",NetSalePric
 const calculationTypes=[{v:"FixedAmount",n:"Fixed Amount"},{v:"Percentage",n:"Percentage"}];
 const rebateMethods:RebateMethod[]=["OutstandingBalanceReduction","InstallmentAdjustment","CashOrBankPayment","CreditNote","Other"];
 const paymentMethods=["Cash","BankTransfer","Cheque","Online"].map(v=>({v,n:prettyEnum(v)}));
-const closedCommission=["Rejected","Cancelled","Reversed"];
+// A cancelled or reversed record is closed history: it no longer holds the booking's one live
+// rebate, nor its partner's one live commission.
+const closedStatuses=["Cancelled","Reversed"];
 
 export default function BookingCommissionRebatePanel({bookingId}:{bookingId:number}){
   const [workspace,setWorkspace]=useState<BookingWorkspace|null>(null),[partners,setPartners]=useState<Partner[]>([]),[accounts,setAccounts]=useState<FinanceAccountOption[]>([]),[installments,setInstallments]=useState<InstallmentOption[]>([]);
@@ -59,10 +61,10 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   // A partner can hold one live commission per booking, so anyone already on the booking drops out
   // of the picker — the booking itself can carry as many partners as it needs.
   const partnerOptions=useMemo(()=>{
-    const taken=new Set((workspace?.commissions??[]).filter(c=>!closedCommission.includes(c.status)).map(c=>c.partnerId));
+    const taken=new Set((workspace?.commissions??[]).filter(c=>!closedStatuses.includes(c.status)).map(c=>c.partnerId));
     return partners.filter(p=>String(p.id)===commission.partnerId||!taken.has(p.id));
   },[partners,workspace?.commissions,commission.partnerId]);
-  const liveRebate=workspace?.rebates.some(r=>!["Rejected","Cancelled","Reversed"].includes(r.status))??false;
+  const liveRebate=workspace?.rebates.some(r=>!closedStatuses.includes(r.status))??false;
 
   const execute=async(operation:()=>Promise<BookingWorkspace>)=>{setBusy(true);setError(null);try{setWorkspace(await operation());return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
 
@@ -312,7 +314,7 @@ function EvidenceList({items,onError}:{items:{id:number;originalFileName:string;
 function MovementEvidence({id,items,busy,upload,onError}:{id:number;items:{id:number;originalFileName:string;fileSize:number}[];busy:boolean;upload:(id:number,file:File|null)=>void;onError:(message:string)=>void}){return <div><label title="PDF, image, Word, or Excel; maximum 15 MB" className="cursor-pointer text-xs text-[var(--accent)] underline">Attach proof<input className="sr-only" type="file" accept={evidenceAccept} disabled={busy} onChange={e=>upload(id,e.target.files?.[0]??null)}/></label><EvidenceList items={items} onError={onError}/></div>}
 
 function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploadMovement,onEvidenceError}:{value:Commission;index:number;busy:boolean;cancel:()=>void;edit:()=>void;pay:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
-  const a=commissionActions(c.status);
+  const a=commissionActions(c.status,c.paidAmount);
   // Correcting the agreed figures is only honest while none of it has been paid; after that the
   // payout has to be reversed first, which is the same rule the server enforces.
   const untouched=c.payouts.length===0;
@@ -325,11 +327,10 @@ function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploa
           {c.allocationPercent!==100&&` · ${c.allocationPercent}% allocation`} · calculated {money(c.calculatedAmount)}
         </p>
         {c.manualReason&&<p className="mt-1 text-xs text-[var(--text-muted)]">{c.manualReason}</p>}
-        {c.decisionAt&&<p className="mt-1 text-xs text-[var(--text-muted)]">Decision by {c.decisionByName??"Admin"} on {new Date(c.decisionAt).toLocaleString()}{c.decisionReason?` · ${c.decisionReason}`:""}</p>}
         {c.cancellationOrReversalReason&&<p className="mt-1 text-xs text-rose-300">{c.cancellationOrReversalReason}</p>}
       </div>
       <div className="flex items-start gap-4">
-        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Commission" value={c.approvedAmount??c.finalAmount}/><Amount label="Paid" value={c.paidAmount}/><Amount label="Remaining" value={c.outstandingAmount}/>{c.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={c.recoveryRequiredAmount}/>}</div>
+        <div className="grid grid-cols-2 gap-4 text-right text-sm sm:grid-cols-4"><Amount label="Commission" value={c.finalAmount}/><Amount label="Paid" value={c.paidAmount}/><Amount label="Remaining" value={c.outstandingAmount}/>{c.recoveryRequiredAmount>0&&<Amount label="Recovery due" value={c.recoveryRequiredAmount}/>}</div>
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">#{index}</span>
       </div>
     </div>
@@ -340,8 +341,8 @@ function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploa
 }
 
 function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,reverse,upload,uploadMovement,onEvidenceError}:{value:Rebate;index:number;netSalePrice:number;busy:boolean;cancel:()=>void;edit:()=>void;disburse:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
-  const a=rebateActions(r.status);
-  const settled=r.approvedAmount??r.finalAmount;
+  const a=rebateActions(r.status,r.appliedOrPaidAmount);
+  const settled=r.finalAmount;
   const untouched=r.disbursements.length===0;
   return <article className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
     <div className="flex flex-wrap justify-between gap-3">
@@ -351,7 +352,6 @@ function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,revers
           {describe(r.calculationType,r.percentageRate,r.fixedAmount,r.calculationBasis)} · net sale price after rebate {money(Math.max(0,netSalePrice-settled))}
         </p>
         <p className="mt-1 text-xs text-[var(--text-muted)]">{r.reason} · {r.disbursements.length>0?prettyEnum(r.method):"Method chosen when applied"}</p>
-        {r.decisionAt&&<p className="mt-1 text-xs text-[var(--text-muted)]">Decision by {r.decisionByName??"Admin"} on {new Date(r.decisionAt).toLocaleString()}{r.decisionReason?` · ${r.decisionReason}`:""}</p>}
         {r.cancellationOrReversalReason&&<p className="mt-1 text-xs text-rose-300">{r.cancellationOrReversalReason}</p>}
       </div>
       <div className="flex items-start gap-4">
@@ -368,7 +368,7 @@ function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,revers
 function Action({text,...props}:{text:string}&ButtonHTMLAttributes<HTMLButtonElement>){return <button type="button" {...props} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-semibold text-[var(--accent)] disabled:opacity-40">{text}</button>}
 function Amount({label,value}:{label:string;value:number}){return <span><small className="block text-[var(--text-muted)]">{label}</small><strong>{money(value)}</strong></span>}
 function Status({value}:{value:string}){
-  const tone=value.includes("Reversal")||value==="Rejected"||value==="Cancelled"?"border-rose-500/30 text-rose-300"
+  const tone=value.includes("Reversal")||value==="Cancelled"?"border-rose-500/30 text-rose-300"
     :isPendingStatus(value)?"border-amber-500/30 text-amber-300":"border-emerald-500/30 text-emerald-300";
-  return <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] ${tone}`}>{statusLabel(value)}</span>;
+  return <span className={`ml-2 rounded-full border px-2 py-0.5 text-[10px] ${tone}`}>{prettyEnum(value)}</span>;
 }

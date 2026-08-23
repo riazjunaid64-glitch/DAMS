@@ -169,26 +169,24 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
-    public async Task NewCommission_IsPendingPaymentImmediately_WhateverTheRuleAsksFor()
+    public async Task NewCommission_IsPendingPaymentImmediately()
     {
         await using var harness = await Harness.Create();
-        // The rule still carries RequiresApproval, but there is no approval step left to gate: a
-        // commission is owed from the moment it is agreed, and the only question left is payment.
-        var rule = Rule("Approval requested", 10, rate: 2m);
-        rule.RequiresApproval = true;
-        harness.Context.CommissionRules.Add(rule);
+        // A rule decides the amount and nothing else — there is no approval or earning step left for
+        // one to gate. It is owed from the moment it is agreed, and payment is all that remains.
+        harness.Context.CommissionRules.Add(Rule("Standard", 10, rate: 2m));
         await harness.Context.SaveChangesAsync();
 
         var commission = await harness.Service.CreateCommissionAsync(harness.BookingId,
             new CreateBookingCommissionDto { PartnerId = harness.PartnerId, AttributionId = harness.AttributionId }, Actor);
         var created = Assert.Single(commission.Commissions);
 
-        Assert.Equal(BookingCommissionStatus.Payable, created.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, created.Status);
         Assert.Equal(created.FinalAmount, created.OutstandingAmount);
         Assert.Equal(0m, created.PaidAmount);
         Assert.Contains(harness.Context.FinancialWorkflowAuditEntries,
             a => a.Action == FinancialWorkflowAction.CommissionCreated
-                && a.NewCommissionStatus == BookingCommissionStatus.Payable);
+                && a.NewCommissionStatus == BookingCommissionStatus.Pending);
         Assert.DoesNotContain(harness.Context.FinancialWorkflowAuditEntries,
             a => a.Action == FinancialWorkflowAction.CommissionApproved);
     }
@@ -213,20 +211,29 @@ public sealed class CommissionRebateTests
     {
         await using var harness = await Harness.Create();
         var commission = await harness.CreateRuleCommission();
-        Assert.Equal(BookingCommissionStatus.Payable, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
 
-        // Paid is reached by paying, never by declaring it — and the retired ladder statuses are
-        // gone for good, so nothing can be pushed back into an approval queue.
-        foreach (var target in new[] { BookingCommissionStatus.Paid, BookingCommissionStatus.PendingApproval,
-                     BookingCommissionStatus.Approved, BookingCommissionStatus.Earned, BookingCommissionStatus.Rejected })
+        // Paid is reached by paying, never by declaring it. Cancelling is the one status a person
+        // still sets, and it needs a reason.
+        foreach (var target in new[] { BookingCommissionStatus.Paid, BookingCommissionStatus.Reversed,
+                     BookingCommissionStatus.ReversalRequired })
         {
             var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.ChangeCommissionStatusAsync(
                 harness.BookingId, commission.Id, Change(commission, target), Actor));
             Assert.Contains("cannot move", refused.Message);
         }
 
+        // Half of it goes out: still Pending, with the paid and remaining halves both readable.
+        var half = Math.Round(commission.FinalAmount / 2m, 2, MidpointRounding.AwayFromZero);
         var workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id,
-            Payout(harness.AccountId, commission.FinalAmount, commission.ConcurrencyToken), Actor);
+            Payout(harness.AccountId, half, commission.ConcurrencyToken, "half"), Actor);
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
+        Assert.Equal(half, commission.PaidAmount);
+        Assert.Equal(commission.FinalAmount - half, commission.OutstandingAmount);
+
+        workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id,
+            Payout(harness.AccountId, commission.OutstandingAmount, commission.ConcurrencyToken, "rest"), Actor);
         commission = Assert.Single(workspace.Commissions);
         Assert.Equal(BookingCommissionStatus.Paid, commission.Status);
         Assert.Equal(0m, commission.OutstandingAmount);
@@ -248,7 +255,7 @@ public sealed class CommissionRebateTests
         };
         var workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, request, Actor);
         commission = Assert.Single(workspace.Commissions);
-        Assert.Equal(BookingCommissionStatus.PartiallyPaid, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
         Assert.Equal(100m, commission.PaidAmount);
         await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, request, Actor);
         Assert.Single(harness.Context.CommissionPayouts);
@@ -317,7 +324,7 @@ public sealed class CommissionRebateTests
         workspace = await harness.Service.ReversePayoutAsync(harness.BookingId, commission.Id, payout.Id,
             new ReverseMoneyMovementDto { Amount = full, Reason = "Mis-keyed entry", IdempotencyKey = "reverse-full" }, Actor);
         commission = Assert.Single(workspace.Commissions);
-        Assert.Equal(BookingCommissionStatus.Payable, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
 
         // The genuine bank reference can now be re-recorded correctly.
         workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id, new RecordCommissionPayoutDto
@@ -342,14 +349,11 @@ public sealed class CommissionRebateTests
                 PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
                 ManualReason = "Documented exception", ManualCalculationType = FinancialCalculationType.Percentage,
                 ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-                ManualPercentageRate = 2.3456789m,
-                ManualEarningCondition = CommissionEarningCondition.MinimumCollectionPercentage,
-                MinimumCollectionPercent = 12.345m, AdjustmentAmount = 10m,
+                ManualPercentageRate = 2.3456789m, AdjustmentAmount = 10m,
                 AdjustmentReason = "Approved administrative adjustment"
             }, Actor);
         var commission = Assert.Single(workspace.Commissions);
         Assert.Equal(2.345679m, commission.PercentageRate);
-        Assert.Equal(12.35m, commission.MinimumCollectionPercent);
         Assert.Equal(Math.Round(harness.NetPrice * 2.345679m / 100m, 2, MidpointRounding.AwayFromZero),
             commission.CalculatedAmount);
         Assert.Contains(harness.Context.FinancialWorkflowAuditEntries,
@@ -382,7 +386,6 @@ public sealed class CommissionRebateTests
                 EffectiveFrom = DateTime.UtcNow.Date,
                 CalculationType = FinancialCalculationType.FixedAmount, FixedAmount = 100m,
                 CalculationBasis = FinancialCalculationBasis.ManuallyApprovedAmount,
-                EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
             }, Actor));
         Assert.Contains("manual commission", invalidRule.Message);
 
@@ -532,7 +535,6 @@ public sealed class CommissionRebateTests
             Name = "Base Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
             CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
         }, Actor);
 
         await harness.Service.UpdateRuleAsync(created.Id, new SaveCommissionRuleDto
@@ -540,7 +542,7 @@ public sealed class CommissionRebateTests
             Name = "Base Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 5,
             CalculationType = FinancialCalculationType.Percentage, PercentageRate = 3m,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived,
+            
             ConcurrencyToken = created.ConcurrencyToken,
             ChangeReason = "Increase payout rate for the new partner agreement."
         }, Actor);
@@ -572,12 +574,12 @@ public sealed class CommissionRebateTests
                 PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
                 ManualReason = "Agreed correction", ManualCalculationType = FinancialCalculationType.FixedAmount,
                 ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-                ManualFixedAmount = 2_500m, ManualEarningCondition = CommissionEarningCondition.ManualMilestone,
+                ManualFixedAmount = 2_500m,
                 ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Corrected after finance review."
             }, Actor);
         commission = Assert.Single(workspace.Commissions);
         // Correcting leaves it exactly where it was: pending, for the corrected amount.
-        Assert.Equal(BookingCommissionStatus.Payable, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
         Assert.True(commission.IsManual);
         Assert.Equal(2_500m, commission.FinalAmount);
         Assert.Equal(2_500m, commission.OutstandingAmount);
@@ -589,13 +591,13 @@ public sealed class CommissionRebateTests
         workspace = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id,
             Payout(harness.AccountId, 500m, commission.ConcurrencyToken), Actor);
         commission = Assert.Single(workspace.Commissions);
-        Assert.Equal(BookingCommissionStatus.PartiallyPaid, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
         var locked = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.UpdateCommissionAsync(
             harness.BookingId, commission.Id, new UpdateBookingCommissionDto
             {
                 PartnerId = harness.PartnerId, IsManual = true, ManualCalculationType = FinancialCalculationType.FixedAmount,
                 ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount, ManualFixedAmount = 100m,
-                ManualEarningCondition = CommissionEarningCondition.ManualMilestone,
+                
                 ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Too late"
             }, Actor));
         Assert.Contains("payout history", locked.Message);
@@ -612,7 +614,7 @@ public sealed class CommissionRebateTests
             FixedAmount = 500m, Reason = "Initial proposal", Method = CustomerRebateMethod.OutstandingBalanceReduction
         }, Actor);
         var rebate = Assert.Single(workspace.Rebates);
-        Assert.Equal(CustomerRebateStatus.Approved, rebate.Status);
+        Assert.Equal(CustomerRebateStatus.Pending, rebate.Status);
         await harness.UploadPdf(FinancialEvidenceOwnerType.Rebate, rebate.Id);
 
         workspace = await harness.Service.UpdateRebateAsync(harness.BookingId, rebate.Id,
@@ -625,7 +627,7 @@ public sealed class CommissionRebateTests
                 ChangeReason = "Corrected after commercial review."
             }, Actor);
         rebate = Assert.Single(workspace.Rebates);
-        Assert.Equal(CustomerRebateStatus.Approved, rebate.Status);
+        Assert.Equal(CustomerRebateStatus.Pending, rebate.Status);
         Assert.Equal(750m, rebate.FinalAmount);
         Assert.Equal(750m, rebate.OutstandingAmount);
         Assert.Contains(await harness.Context.FinancialWorkflowAuditEntries.ToListAsync(), entry =>
@@ -639,7 +641,7 @@ public sealed class CommissionRebateTests
                 IdempotencyKey = "partial-apply", RebateConcurrencyToken = rebate.ConcurrencyToken
             }, Actor);
         rebate = Assert.Single(workspace.Rebates);
-        Assert.Equal(CustomerRebateStatus.PartiallyApplied, rebate.Status);
+        Assert.Equal(CustomerRebateStatus.Pending, rebate.Status);
         var locked = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Service.UpdateRebateAsync(
             harness.BookingId, rebate.Id, new UpdateCustomerRebateDto
             {
@@ -684,7 +686,7 @@ public sealed class CommissionRebateTests
             FixedAmount = 600m, Reason = "Corrected", Method = CustomerRebateMethod.OutstandingBalanceReduction
         }, Actor);
         Assert.Equal(2, workspace.Rebates.Count);
-        Assert.Single(workspace.Rebates, r => r.Status == CustomerRebateStatus.Approved);
+        Assert.Single(workspace.Rebates, r => r.Status == CustomerRebateStatus.Pending);
         Assert.Single(workspace.Rebates, r => r.Status == CustomerRebateStatus.Cancelled);
     }
 
@@ -698,7 +700,6 @@ public sealed class CommissionRebateTests
                 Name = $"Rule {i}", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = i,
                 CalculationType = FinancialCalculationType.Percentage, PercentageRate = 1m,
                 CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-                EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
             }, Actor);
 
         var page1 = await harness.Service.GetRulesAsync(null, null, 0, 2);
@@ -738,7 +739,6 @@ public sealed class CommissionRebateTests
             PartnerId = harness.PartnerId, Priority = 500,
             CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
         }, Actor);
 
         var workspace = await harness.Service.CreateCommissionAsync(harness.BookingId,
@@ -937,7 +937,6 @@ public sealed class CommissionRebateTests
             Name = "Detailed Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
             CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
         }, Actor);
 
         // Every long text field changes at once, so the machine-generated diff exceeds the old
@@ -947,8 +946,7 @@ public sealed class CommissionRebateTests
             Name = "Detailed Rule", IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = 1,
             CalculationType = FinancialCalculationType.Percentage, PercentageRate = 2m,
             CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-            EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived,
-            Description = new string('a', 1000), EligibilityCondition = new string('c', 1000),
+            Description = new string('a', 1000),
             Notes = new string('b', 2000), ConcurrencyToken = created.ConcurrencyToken,
             ChangeReason = new string('r', 2000)
         }, Actor);
@@ -1114,7 +1112,7 @@ public sealed class CommissionRebateTests
         var commission = Assert.Single(created.Commissions);
         Assert.True(commission.IsManual);
         Assert.Empty(commission.Evidence);
-        Assert.Equal(BookingCommissionStatus.Payable, commission.Status);
+        Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
 
         var paid = await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id,
             Payout(harness.AccountId, commission.FinalAmount, commission.ConcurrencyToken, "straight-to-paid"), Actor);
@@ -1127,7 +1125,7 @@ public sealed class CommissionRebateTests
         }, Actor);
         var rebate = Assert.Single(rebateWorkspace.Rebates);
         Assert.Empty(rebate.Evidence);
-        Assert.Equal(CustomerRebateStatus.Approved, rebate.Status);
+        Assert.Equal(CustomerRebateStatus.Pending, rebate.Status);
 
         rebateWorkspace = await harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
             new RecordRebateDisbursementDto
@@ -1163,7 +1161,6 @@ public sealed class CommissionRebateTests
         ManualCalculationType = rate.HasValue ? FinancialCalculationType.Percentage : FinancialCalculationType.FixedAmount,
         ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
         ManualPercentageRate = rate, ManualFixedAmount = fixedAmount,
-        ManualEarningCondition = CommissionEarningCondition.ManualMilestone
     };
 
     private sealed class NoopAttachmentStorage : IFinanceAttachmentStorage
@@ -1176,7 +1173,7 @@ public sealed class CommissionRebateTests
     private static CommissionStatusChangeDto Change(BookingCommissionDto commission, BookingCommissionStatus status,
         string? reason = null, decimal? approved = null) => new()
     {
-        TargetStatus = status, Reason = reason, ApprovedAmount = approved, ConcurrencyToken = commission.ConcurrencyToken
+        TargetStatus = status, Reason = reason, ConcurrencyToken = commission.ConcurrencyToken
     };
 
     private static RecordCommissionPayoutDto Payout(int accountId, decimal amount, string concurrencyToken,
@@ -1189,7 +1186,7 @@ public sealed class CommissionRebateTests
     private static RebateStatusChangeDto RebateChange(CustomerRebateDto rebate, CustomerRebateStatus status,
         decimal? approved = null, string? reason = null) => new()
     {
-        TargetStatus = status, ApprovedAmount = approved, Reason = reason, ConcurrencyToken = rebate.ConcurrencyToken
+        TargetStatus = status, Reason = reason, ConcurrencyToken = rebate.ConcurrencyToken
     };
 
     private static CommissionRule Rule(string name, int priority, decimal? rate = null, decimal? fixedAmount = null,
@@ -1198,7 +1195,6 @@ public sealed class CommissionRebateTests
         Name = name, IsActive = true, EffectiveFrom = DateTime.UtcNow.AddDays(-1), Priority = priority,
         PartnerId = partnerId, CalculationType = rate.HasValue ? FinancialCalculationType.Percentage : FinancialCalculationType.FixedAmount,
         PercentageRate = rate, FixedAmount = fixedAmount, CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-        EarningCondition = CommissionEarningCondition.BookingAmountFullyReceived
     };
 
     private static AppDbContext Context() => new(new DbContextOptionsBuilder<AppDbContext>()
