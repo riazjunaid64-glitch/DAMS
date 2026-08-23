@@ -1625,7 +1625,10 @@ export default function FinanceDashboardPage({ user }: Props) {
       <div className="fin-page py-8">
         {/* Actions. No heading: the selected card above already names what the table is showing,
             and a title repeating it was a line of furniture rather than information. */}
-        <div className="mb-5 flex flex-wrap gap-2.5 sm:justify-end">
+        {/* Centred rather than flush right: justify-content applies to each wrapped line on its own,
+            so the short second row sits under the middle of the long first one instead of hanging
+            off its right edge. */}
+        <div className="mb-5 flex flex-wrap justify-center gap-2.5">
           <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
           <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
           <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
