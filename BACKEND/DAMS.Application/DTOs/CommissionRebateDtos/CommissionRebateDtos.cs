@@ -8,11 +8,11 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal PayableCommission { get; set; }
         public decimal CommissionPaid { get; set; }
         public decimal CommissionReversalRequired { get; set; }
-        public decimal ApprovedRebates { get; set; }
+        public decimal RebatesGranted { get; set; }
         public decimal RebatesAppliedOrPaid { get; set; }
         public decimal RebateReversalRequired { get; set; }
         public int ActivePartners { get; set; }
-        public int PendingApprovals { get; set; }
+        public int PendingRecords { get; set; }
     }
 
     public sealed class ThirdPartyPartnerDto
@@ -123,11 +123,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public FinancialCalculationBasis CalculationBasis { get; set; }
         public decimal? MinimumCommission { get; set; }
         public decimal? MaximumCommission { get; set; }
-        public string? EligibilityCondition { get; set; }
-        public CommissionEarningCondition EarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
         public int Priority { get; set; }
-        public bool RequiresApproval { get; set; }
         public string? Notes { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
         public int CurrentRevisionNumber { get; set; }
@@ -152,11 +148,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public FinancialCalculationBasis CalculationBasis { get; set; }
         public decimal? MinimumCommission { get; set; }
         public decimal? MaximumCommission { get; set; }
-        public string? EligibilityCondition { get; set; }
-        public CommissionEarningCondition EarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
         public int Priority { get; set; }
-        public bool RequiresApproval { get; set; } = true;
         public string? Notes { get; set; }
         public string? ConcurrencyToken { get; set; }
         public string? ChangeReason { get; set; }
@@ -174,8 +166,6 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal? ManualPercentageRate { get; set; }
         public decimal? ManualFixedAmount { get; set; }
         public decimal? ManualBasisAmount { get; set; }
-        public CommissionEarningCondition? ManualEarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
     }
@@ -189,7 +179,6 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
     public sealed class CommissionStatusChangeDto
     {
         public BookingCommissionStatus TargetStatus { get; set; }
-        public decimal? ApprovedAmount { get; set; }
         public string? Reason { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
     }
@@ -236,7 +225,6 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
     public sealed class RebateStatusChangeDto
     {
         public CustomerRebateStatus TargetStatus { get; set; }
-        public decimal? ApprovedAmount { get; set; }
         public string? Reason { get; set; }
         public string ConcurrencyToken { get; set; } = string.Empty;
     }
@@ -322,21 +310,11 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
         public decimal FinalAmount { get; set; }
-        public decimal? ApprovedAmount { get; set; }
         public decimal PaidAmount { get; set; }
         public decimal OutstandingAmount { get; set; }
         public decimal RecoveryRequiredAmount { get; set; }
-        public CommissionEarningCondition EarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
         public BookingCommissionStatus Status { get; set; }
         public DateTime CreatedAt { get; set; }
-        public string? SubmittedByName { get; set; }
-        public DateTime? SubmittedAt { get; set; }
-        public string? DecisionByName { get; set; }
-        public DateTime? DecisionAt { get; set; }
-        public string? DecisionReason { get; set; }
-        public DateTime? EarnedAt { get; set; }
-        public DateTime? PayableAt { get; set; }
         public string? CancellationOrReversalReason { get; set; }
         public List<MoneyMovementDto> Payouts { get; set; } = [];
         public List<FinancialEvidenceDto> Evidence { get; set; } = [];
@@ -359,7 +337,6 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
         public decimal FinalAmount { get; set; }
-        public decimal? ApprovedAmount { get; set; }
         public decimal AppliedOrPaidAmount { get; set; }
         public decimal OutstandingAmount { get; set; }
         public decimal RecoveryRequiredAmount { get; set; }
@@ -368,11 +345,6 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public CustomerRebateStatus Status { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
-        public string? SubmittedByName { get; set; }
-        public DateTime? SubmittedAt { get; set; }
-        public string? DecisionByName { get; set; }
-        public DateTime? DecisionAt { get; set; }
-        public string? DecisionReason { get; set; }
         public string? CancellationOrReversalReason { get; set; }
         public List<MoneyMovementDto> Disbursements { get; set; } = [];
         public List<FinancialEvidenceDto> Evidence { get; set; } = [];

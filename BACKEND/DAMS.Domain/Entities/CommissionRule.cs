@@ -22,11 +22,7 @@ namespace DAMS.Domain.Entities
         public FinancialCalculationBasis CalculationBasis { get; set; }
         public decimal? MinimumCommission { get; set; }
         public decimal? MaximumCommission { get; set; }
-        public string? EligibilityCondition { get; set; }
-        public CommissionEarningCondition EarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
         public int Priority { get; set; }
-        public bool RequiresApproval { get; set; } = true;
         public string? Notes { get; set; }
         public int? CreatedByUserId { get; set; }
         public string? CreatedByName { get; set; }

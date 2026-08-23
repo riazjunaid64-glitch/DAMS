@@ -1,29 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { commissionActions, idempotencyKey, money, prettyEnum, rebateActions } from "./state";
+import { commissionActions, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions } from "./state";
 
 describe("commission and rebate UI state", () => {
-  it("shows only lifecycle-valid commission actions", () => {
-    expect(commissionActions("Draft").canSubmit).toBe(true);
-    expect(commissionActions("Draft").canCancel).toBe(true);
-    expect(commissionActions("Draft").canPay).toBe(false);
-    expect(commissionActions("PendingApproval").canApprove).toBe(true);
-    expect(commissionActions("Approved").canEarn).toBe(true);
-    expect(commissionActions("Earned").canMakePayable).toBe(true);
-    expect(commissionActions("Payable").canPay).toBe(true);
-    expect(commissionActions("PartiallyPaid").canPay).toBe(true);
-    expect(commissionActions("PartiallyPaid").canCancel).toBe(false);
+  it("keeps a commission pending until it is fully paid", () => {
+    expect(commissionActions("Pending").canPay).toBe(true);
+    expect(commissionActions("Pending", 500).canPay).toBe(true);
+    expect(commissionActions("Paid").canPay).toBe(false);
     expect(commissionActions("Reversed").canPay).toBe(false);
+    expect(commissionActions("Cancelled").canPay).toBe(false);
   });
 
-  it("keeps rebate application separate from approval", () => {
-    expect(rebateActions("Draft").canSubmit).toBe(true);
-    expect(rebateActions("PendingApproval").canApprove).toBe(true);
-    expect(rebateActions("Approved").canDisburse).toBe(true);
-    expect(rebateActions("Approved").canCancel).toBe(true);
-    expect(rebateActions("PartiallyApplied").canDisburse).toBe(true);
+  it("stops correcting and cancelling a commission once any of it has been paid", () => {
+    expect(commissionActions("Pending").canEdit).toBe(true);
+    expect(commissionActions("Pending").canCancel).toBe(true);
+    expect(commissionActions("Pending").canReverse).toBe(false);
+    // Part paid: the agreement is now history, and reversing is the way back.
+    expect(commissionActions("Pending", 500).canEdit).toBe(false);
+    expect(commissionActions("Pending", 500).canCancel).toBe(false);
+    expect(commissionActions("Pending", 500).canReverse).toBe(true);
+    expect(commissionActions("Paid", 1000).canReverse).toBe(true);
+    expect(commissionActions("ReversalRequired").canReverse).toBe(true);
+  });
+
+  it("keeps a rebate pending until it has all reached the customer", () => {
+    expect(rebateActions("Pending").canDisburse).toBe(true);
+    expect(rebateActions("Pending", 250).canDisburse).toBe(true);
+    expect(rebateActions("Applied").canDisburse).toBe(false);
     expect(rebateActions("Paid").canDisburse).toBe(false);
-    expect(rebateActions("Paid").canCancel).toBe(false);
+    expect(rebateActions("Pending").canCancel).toBe(true);
+    expect(rebateActions("Pending", 250).canCancel).toBe(false);
+    expect(rebateActions("Pending", 250).canReverse).toBe(true);
     expect(rebateActions("ReversalRequired").canReverse).toBe(true);
+  });
+
+  it("reads every status back as a plain label", () => {
+    expect(isPendingStatus("Pending")).toBe(true);
+    expect(isPendingStatus("Paid")).toBe(false);
+    expect(prettyEnum("Pending")).toBe("Pending");
+    expect(prettyEnum("ReversalRequired")).toBe("Reversal Required");
   });
 
   it("generates distinct retry keys and readable financial labels", () => {

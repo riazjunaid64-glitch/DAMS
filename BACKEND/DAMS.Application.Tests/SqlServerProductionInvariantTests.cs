@@ -92,10 +92,10 @@ public sealed class SqlServerProductionInvariantTests
 
             db.BookingCommissions.AddRange(
                 Commission(bookingId, partnerId, BookingCommissionStatus.Cancelled, 10m),
-                Commission(bookingId, partnerId, BookingCommissionStatus.Rejected, 20m));
+                Commission(bookingId, partnerId, BookingCommissionStatus.Cancelled, 20m));
             db.CustomerRebates.AddRange(
                 Rebate(bookingId, customer.Id, CustomerRebateStatus.Cancelled, 10m),
-                Rebate(bookingId, customer.Id, CustomerRebateStatus.Rejected, 20m));
+                Rebate(bookingId, customer.Id, CustomerRebateStatus.Cancelled, 20m));
             await db.SaveChangesAsync();
         }
 
@@ -133,7 +133,7 @@ public sealed class SqlServerProductionInvariantTests
             Assert.False(await verify.CustomerDocumentRequirements.AnyAsync(r => r.Category != null
                 && r.Category.Code == "atomic_sql"));
 
-            verify.BookingCommissions.Add(Commission(bookingId, partnerId, BookingCommissionStatus.Payable, 100m));
+            verify.BookingCommissions.Add(Commission(bookingId, partnerId, BookingCommissionStatus.Pending, 100m));
             await verify.SaveChangesAsync();
         }
 
@@ -142,7 +142,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             var commission = await db.BookingCommissions.SingleAsync(c => c.BookingId == bookingId
-                && c.Status == BookingCommissionStatus.Payable);
+                && c.Status == BookingCommissionStatus.Pending);
             commissionId = commission.Id;
             token = Convert.ToBase64String(commission.RowVersion);
         }
@@ -172,7 +172,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             Assert.Equal(75m, await db.CommissionPayouts.Where(p => p.CommissionId == commissionId)
                 .SumAsync(p => p.Amount));
-            Assert.Equal(BookingCommissionStatus.PartiallyPaid,
+            Assert.Equal(BookingCommissionStatus.Pending,
                 (await db.BookingCommissions.FindAsync(commissionId))!.Status);
         }
     }
@@ -381,7 +381,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             BookingId = booking.Id, CustomerId = customer.Id, BasisAmount = 5_000_000m,
             CalculatedAmount = 100_000m, FinalAmount = 100_000m, Reason = "Goodwill",
-            Method = CustomerRebateMethod.CreditNote, Status = CustomerRebateStatus.Approved
+            Method = CustomerRebateMethod.CreditNote, Status = CustomerRebateStatus.Pending
         };
         db.Add(rebate);
         await db.SaveChangesAsync();
@@ -768,8 +768,8 @@ public sealed class SqlServerProductionInvariantTests
         AllocationPercentSnapshot = 100m, IsManual = true, ManualReason = "SQL invariant seed",
         CalculationType = FinancialCalculationType.FixedAmount, FixedAmount = amount,
         CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount, BasisAmount = 1_000_000m,
-        CalculatedAmount = amount, FinalAmount = amount, ApprovedAmount = amount,
-        EarningCondition = CommissionEarningCondition.ManualMilestone, Status = status,
+        CalculatedAmount = amount, FinalAmount = amount,
+        Status = status,
         CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
 
@@ -778,7 +778,7 @@ public sealed class SqlServerProductionInvariantTests
     {
         BookingId = bookingId, CustomerId = customerId, CalculationType = FinancialCalculationType.FixedAmount,
         FixedAmount = amount, CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
-        BasisAmount = 1_000_000m, CalculatedAmount = amount, FinalAmount = amount, ApprovedAmount = amount,
+        BasisAmount = 1_000_000m, CalculatedAmount = amount, FinalAmount = amount,
         Reason = "SQL invariant seed", Method = CustomerRebateMethod.OutstandingBalanceReduction,
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };

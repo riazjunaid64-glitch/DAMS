@@ -30,31 +30,34 @@ namespace DAMS.Application.Services
 
         public async Task<CommissionRebateSummaryDto> GetSummaryAsync(CancellationToken cancellationToken = default)
         {
-            var payableStatuses = new[] { BookingCommissionStatus.Payable, BookingCommissionStatus.PartiallyPaid };
-
+            // Everything a partner is owed, whether or not it has been paid yet. Cancelled and
+            // reversed rows are excluded: the company no longer owes those.
             var accruedCommission = await _context.BookingCommissions.AsNoTracking()
-                .Where(c => c.Status == BookingCommissionStatus.Approved || c.Status == BookingCommissionStatus.Earned
-                    || c.Status == BookingCommissionStatus.Payable || c.Status == BookingCommissionStatus.PartiallyPaid
-                    || c.Status == BookingCommissionStatus.Paid)
-                .SumAsync(c => (decimal?)(c.ApprovedAmount ?? c.FinalAmount), cancellationToken) ?? 0m;
+                .Where(c => c.Status == BookingCommissionStatus.Pending || c.Status == BookingCommissionStatus.Paid)
+                .SumAsync(c => (decimal?)c.FinalAmount, cancellationToken) ?? 0m;
             var commissionPaid = (await _context.CommissionPayouts.AsNoTracking()
                     .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
                 - (await _context.CommissionPayoutReversals.AsNoTracking()
                     .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
+            // Still owed to partners: the pending commissions, less whatever has already gone out
+            // against them and plus anything since reversed.
             var payableBase = await _context.BookingCommissions.AsNoTracking()
-                .Where(c => payableStatuses.Contains(c.Status))
-                .SumAsync(c => (decimal?)(c.ApprovedAmount ?? c.FinalAmount), cancellationToken) ?? 0m;
+                .Where(c => c.Status == BookingCommissionStatus.Pending)
+                .SumAsync(c => (decimal?)c.FinalAmount, cancellationToken) ?? 0m;
             var payablePayouts = await _context.CommissionPayouts.AsNoTracking()
-                .Where(p => payableStatuses.Contains(p.Commission.Status))
+                .Where(p => p.Commission.Status == BookingCommissionStatus.Pending)
                 .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
             var payableReversals = await _context.CommissionPayoutReversals.AsNoTracking()
-                .Where(r => payableStatuses.Contains(r.Payout.Commission.Status))
+                .Where(r => r.Payout.Commission.Status == BookingCommissionStatus.Pending)
                 .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
             var payableCommission = Math.Max(0m, payableBase - payablePayouts + payableReversals);
-            var approvedRebates = await _context.CustomerRebates.AsNoTracking()
-                .Where(r => r.Status == CustomerRebateStatus.Approved || r.Status == CustomerRebateStatus.PartiallyApplied
-                    || r.Status == CustomerRebateStatus.Applied || r.Status == CustomerRebateStatus.Paid)
-                .SumAsync(r => (decimal?)(r.ApprovedAmount ?? r.FinalAmount), cancellationToken) ?? 0m;
+            // Everything promised to customers that is still standing — cancelled and reversed
+            // rebates are the only ones left out. A rebate is granted the moment it is entered;
+            // there is no approval between the two.
+            var rebatesGranted = await _context.CustomerRebates.AsNoTracking()
+                .Where(r => r.Status == CustomerRebateStatus.Pending || r.Status == CustomerRebateStatus.Applied
+                    || r.Status == CustomerRebateStatus.Paid)
+                .SumAsync(r => (decimal?)r.FinalAmount, cancellationToken) ?? 0m;
             var rebatePaid = (await _context.RebateDisbursements.AsNoTracking()
                     .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
                 - (await _context.RebateDisbursementReversals.AsNoTracking()
@@ -77,14 +80,42 @@ namespace DAMS.Application.Services
                 PayableCommission = payableCommission,
                 CommissionPaid = commissionPaid,
                 CommissionReversalRequired = commissionRecovery,
-                ApprovedRebates = approvedRebates,
+                RebatesGranted = rebatesGranted,
                 RebatesAppliedOrPaid = rebatePaid,
                 RebateReversalRequired = rebateRecovery,
                 ActivePartners = await _context.ThirdPartyPartners.CountAsync(p => p.IsActive, cancellationToken),
-                PendingApprovals = await _context.BookingCommissions.CountAsync(c => c.Status == BookingCommissionStatus.PendingApproval, cancellationToken)
-                    + await _context.CustomerRebates.CountAsync(r => r.Status == CustomerRebateStatus.PendingApproval, cancellationToken)
+                // How many commissions and rebates are still owed.
+                PendingRecords = await _context.BookingCommissions.CountAsync(c => c.Status == BookingCommissionStatus.Pending, cancellationToken)
+                    + await _context.CustomerRebates.CountAsync(r => r.Status == CustomerRebateStatus.Pending, cancellationToken)
             };
         }
+
+        // A commission or rebate entered straight on the booking screen carries no rule name and needs
+        // no typed justification, but the audit log still has to say what was agreed. These render the
+        // entry itself ("2% of net sale price") so an untitled record is never anonymous in the log.
+        private static string BasisLabel(FinancialCalculationBasis basis) => basis switch
+        {
+            FinancialCalculationBasis.AgreedSalePrice => "sale price",
+            FinancialCalculationBasis.NetSalePriceAfterDiscount => "net sale price",
+            FinancialCalculationBasis.BookingAmountReceived => "booking amount received",
+            FinancialCalculationBasis.AmountActuallyCollected => "amount collected",
+            _ => "manually approved amount"
+        };
+
+        private static string DescribeCalculation(FinancialCalculationType type, decimal? rate,
+            decimal? fixedAmount, FinancialCalculationBasis basis) =>
+            type == FinancialCalculationType.Percentage
+                ? $"{rate ?? 0m:0.######}% of {BasisLabel(basis)}"
+                : $"Fixed amount of {fixedAmount ?? 0m:0.00}";
+
+        private static string MethodLabel(CustomerRebateMethod method) => method switch
+        {
+            CustomerRebateMethod.OutstandingBalanceReduction => "a reduction of the outstanding balance",
+            CustomerRebateMethod.InstallmentAdjustment => "an installment adjustment",
+            CustomerRebateMethod.CashOrBankPayment => "a cash or bank payment",
+            CustomerRebateMethod.CreditNote => "a credit note",
+            _ => "another method"
+        };
 
         private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
         private static decimal Rate(decimal value) => Math.Round(value, 6, MidpointRounding.AwayFromZero);

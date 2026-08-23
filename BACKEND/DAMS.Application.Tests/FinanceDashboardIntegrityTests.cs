@@ -510,7 +510,7 @@ public sealed class FinanceDashboardIntegrityTests
         {
             BookingId = booking.Id, CustomerId = customer.Id, BasisAmount = 5_000_000m,
             CalculatedAmount = 140_000m, FinalAmount = 140_000m, Reason = "Goodwill",
-            Method = CustomerRebateMethod.CashOrBankPayment, Status = CustomerRebateStatus.Approved
+            Method = CustomerRebateMethod.CashOrBankPayment, Status = CustomerRebateStatus.Pending
         };
         var loan = new Loan { Name = "Working capital", FinanceAccountId = loanAccount.Id };
         context.AddRange(commission, rebate, loan);

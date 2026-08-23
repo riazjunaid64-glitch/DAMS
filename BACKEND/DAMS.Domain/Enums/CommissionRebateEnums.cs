@@ -15,42 +15,33 @@ namespace DAMS.Domain.Enums
         ManuallyApprovedAmount = 4
     }
 
-    public enum CommissionEarningCondition
-    {
-        ManualMilestone = 0,
-        BookingAmountFullyReceived = 1,
-        MinimumCollectionPercentage = 2,
-        FirstInstallmentReceived = 3,
-        SaleCompleted = 4
-    }
-
+    /// <summary>
+    /// A commission is owed from the moment it is agreed and is Pending until it is fully paid,
+    /// whether or not part of it has already gone out — how much is paid and how much is left comes
+    /// from the payout rows, not from the status. Cancelled voids one that was never paid; the
+    /// reversal pair is only reached when a booking is cancelled after money has already left.
+    /// </summary>
     public enum BookingCommissionStatus
     {
-        Draft = 0,
-        PendingApproval = 1,
-        Approved = 2,
-        Earned = 3,
-        Payable = 4,
-        PartiallyPaid = 5,
-        Paid = 6,
-        Rejected = 7,
-        Cancelled = 8,
-        ReversalRequired = 9,
-        Reversed = 10
+        Pending = 0,
+        Paid = 1,
+        Cancelled = 2,
+        ReversalRequired = 3,
+        Reversed = 4
     }
 
+    /// <summary>
+    /// The rebate mirror of <see cref="BookingCommissionStatus"/>. It ends in Applied when it was
+    /// given as a credit against what the customer owes, and in Paid when it was actually paid out.
+    /// </summary>
     public enum CustomerRebateStatus
     {
-        Draft = 0,
-        PendingApproval = 1,
-        Approved = 2,
-        PartiallyApplied = 3,
-        Applied = 4,
-        Paid = 5,
-        Rejected = 6,
-        Cancelled = 7,
-        Reversed = 8,
-        ReversalRequired = 9
+        Pending = 0,
+        Applied = 1,
+        Paid = 2,
+        Cancelled = 3,
+        ReversalRequired = 4,
+        Reversed = 5
     }
 
     public enum CustomerRebateMethod

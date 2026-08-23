@@ -16,21 +16,13 @@ namespace DAMS.Domain.Entities
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
         public decimal FinalAmount { get; set; }
-        public decimal? ApprovedAmount { get; set; }
         public string Reason { get; set; } = string.Empty;
         public CustomerRebateMethod Method { get; set; }
-        public CustomerRebateStatus Status { get; set; } = CustomerRebateStatus.Draft;
+        public CustomerRebateStatus Status { get; set; } = CustomerRebateStatus.Pending;
         public string? Notes { get; set; }
         public int? CreatedByUserId { get; set; }
         public string? CreatedByName { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-        public int? SubmittedByUserId { get; set; }
-        public string? SubmittedByName { get; set; }
-        public DateTime? SubmittedAt { get; set; }
-        public int? DecisionByUserId { get; set; }
-        public string? DecisionByName { get; set; }
-        public DateTime? DecisionAt { get; set; }
-        public string? DecisionReason { get; set; }
         public string? CancellationOrReversalReason { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public byte[] RowVersion { get; set; } = [];

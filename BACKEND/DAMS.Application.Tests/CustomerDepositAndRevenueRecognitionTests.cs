@@ -886,9 +886,9 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
         {
             BookingId = world.BookingId, CustomerId = world.CustomerId,
             CalculationType = FinancialCalculationType.FixedAmount, FixedAmount = amount,
-            BasisAmount = amount, CalculatedAmount = amount, FinalAmount = amount, ApprovedAmount = amount,
+            BasisAmount = amount, CalculatedAmount = amount, FinalAmount = amount,
             Method = CustomerRebateMethod.OutstandingBalanceReduction, Reason = "Goodwill",
-            Status = CustomerRebateStatus.Approved, CreatedByUserId = 1, CreatedByName = "Admin"
+            Status = CustomerRebateStatus.Pending, CreatedByUserId = 1, CreatedByName = "Admin"
         };
         context.CustomerRebates.Add(rebate);
         await context.SaveChangesAsync();

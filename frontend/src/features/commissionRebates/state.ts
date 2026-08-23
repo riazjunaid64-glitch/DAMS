@@ -1,22 +1,26 @@
 import type { KeyboardEvent } from "react";
 import type { CommissionStatus, RebateStatus } from "./types";
 
-export const commissionActions = (status:CommissionStatus) => ({
-  canSubmit: status === "Draft", canApprove: status === "PendingApproval", canReject: status === "PendingApproval",
-  canReturn: status === "PendingApproval", canEarn: status === "Approved", canMakePayable: status === "Earned",
-  canPay: status === "Payable" || status === "PartiallyPaid",
-  canCancel: ["Draft","Approved","Earned","Payable","Rejected"].includes(status),
-  canReverse: status === "Paid" || status === "PartiallyPaid" || status === "ReversalRequired",
+// A commission or rebate is Pending from entry until the money is fully paid or applied, whether or
+// not part of it has already gone out — how much is paid and how much is left comes from the payment
+// rows, so the caller passes those in. Reversing is what unwinds anything already sent.
+export const commissionActions = (status:CommissionStatus, paidAmount = 0) => ({
+  canPay: status === "Pending",
+  // Correcting or cancelling is only about the agreement, so both stop once any money has moved.
+  canEdit: status === "Pending" && paidAmount === 0,
+  canCancel: status === "Pending" && paidAmount === 0,
+  canReverse: paidAmount > 0 || status === "Paid" || status === "ReversalRequired",
 });
 
-export const rebateActions = (status:RebateStatus) => ({
-  canSubmit: status === "Draft", canApprove: status === "PendingApproval", canReject: status === "PendingApproval",
-  canReturn: status === "PendingApproval", canDisburse: status === "Approved" || status === "PartiallyApplied",
-  canCancel: ["Draft","Approved","Rejected"].includes(status),
-  canReverse: status === "Applied" || status === "Paid" || status === "PartiallyApplied" || status === "ReversalRequired",
+export const rebateActions = (status:RebateStatus, givenAmount = 0) => ({
+  canDisburse: status === "Pending",
+  canEdit: status === "Pending" && givenAmount === 0,
+  canCancel: status === "Pending" && givenAmount === 0,
+  canReverse: givenAmount > 0 || status === "Applied" || status === "Paid" || status === "ReversalRequired",
 });
 
 export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 $2");
+export const isPendingStatus = (status:string) => status === "Pending";
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
 // One implementation, in lib/idempotency, because every screen that records money needs it — not

@@ -22,8 +22,6 @@ namespace DAMS.Domain.Entities
         public int? RulePrioritySnapshot { get; set; }
         public decimal? MinimumCommissionSnapshot { get; set; }
         public decimal? MaximumCommissionSnapshot { get; set; }
-        public string? EligibilityConditionSnapshot { get; set; }
-        public bool RequiresApprovalSnapshot { get; set; } = true;
         public FinancialCalculationType CalculationType { get; set; }
         public decimal? PercentageRate { get; set; }
         public decimal? FixedAmount { get; set; }
@@ -33,23 +31,11 @@ namespace DAMS.Domain.Entities
         public decimal AdjustmentAmount { get; set; }
         public string? AdjustmentReason { get; set; }
         public decimal FinalAmount { get; set; }
-        public decimal? ApprovedAmount { get; set; }
-        public CommissionEarningCondition EarningCondition { get; set; }
-        public decimal? MinimumCollectionPercent { get; set; }
 
-        public BookingCommissionStatus Status { get; set; } = BookingCommissionStatus.Draft;
+        public BookingCommissionStatus Status { get; set; } = BookingCommissionStatus.Pending;
         public int? CreatedByUserId { get; set; }
         public string? CreatedByName { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-        public int? SubmittedByUserId { get; set; }
-        public string? SubmittedByName { get; set; }
-        public DateTime? SubmittedAt { get; set; }
-        public int? DecisionByUserId { get; set; }
-        public string? DecisionByName { get; set; }
-        public DateTime? DecisionAt { get; set; }
-        public string? DecisionReason { get; set; }
-        public DateTime? EarnedAt { get; set; }
-        public DateTime? PayableAt { get; set; }
         public string? CancellationOrReversalReason { get; set; }
         public DateTime? UpdatedAt { get; set; }
         public byte[] RowVersion { get; set; } = [];
