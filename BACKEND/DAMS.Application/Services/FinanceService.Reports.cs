@@ -15,7 +15,16 @@ namespace DAMS.Application.Services
         public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
             int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
         {
-            await EnsureProjectExistsAsync(projectId, cancellationToken);
+            string? projectName = null;
+            if (projectId.HasValue)
+            {
+                var project = await _context.Projects.AsNoTracking()
+                    .Where(p => p.Id == projectId.Value)
+                    .Select(p => new { p.ProjectName })
+                    .SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Selected project does not exist.");
+                projectName = project.ProjectName;
+            }
             var (start, end, label) = await ResolveReportPeriodAsync(from, to, cancellationToken);
             var priorStart = start.AddYears(-1);
             var priorEnd = end.AddYears(-1);
@@ -25,9 +34,6 @@ namespace DAMS.Application.Services
             // BuildPnlPeriodAsync for why those two cannot carry it and what they disclose instead.
             var current = await BuildPnlPeriodAsync(projectId, start, end.AddDays(1), true, cancellationToken);
             var prior = await BuildPnlPeriodAsync(projectId, priorStart, priorEnd.AddDays(1), true, cancellationToken);
-            var projectName = projectId.HasValue
-                ? await _context.Projects.AsNoTracking().Where(p => p.Id == projectId).Select(p => p.ProjectName).SingleAsync(cancellationToken)
-                : null;
             var netProfit = Money(current.Income.Sum(l => l.Amount) - current.Expenses.Sum(l => l.Amount));
             var priorNetProfit = Money(prior.Income.Sum(l => l.Amount) - prior.Expenses.Sum(l => l.Amount));
             return new ProfitAndLossDto
@@ -672,133 +678,195 @@ namespace DAMS.Application.Services
         private async Task<PnlPeriod> BuildPnlPeriodAsync(int? projectId, DateTime from, DateTime toExclusive,
             bool includeFixedAssetCharge, CancellationToken cancellationToken)
         {
-            var income = await ManualQuery(projectId, from, toExclusive).GroupBy(r => new
+            // Every source has the same flat transport shape, so SQL Server can UNION ALL and
+            // aggregate them in one command. The previous implementation waited for nine commands
+            // per period; a comparison P&L paid that cost twice.
+            IQueryable<PnlAggregateRow> rows = ManualQuery(projectId, from, toExclusive)
+                .Select(r => new PnlAggregateRow
                 {
-                    RevenueCategoryId = r.RevenueCategoryId == null || r.RevenueCategory!.Code.StartsWith("legacy_")
+                    Source = PnlAggregateSource.ManualRevenue,
+                    CategoryId = r.RevenueCategoryId == null || r.RevenueCategory!.Code.StartsWith("legacy_")
                         ? null : r.RevenueCategoryId,
                     Name = r.RevenueCategoryId == null || r.RevenueCategory!.Code.StartsWith("legacy_")
                         ? "Unclassified" : r.RevenueTypeName,
                     Order = r.RevenueCategory == null || r.RevenueCategory.Code.StartsWith("legacy_")
-                        ? int.MaxValue : r.RevenueCategory.DisplayOrder
-                }).Select(g => new ReportLine
-                {
-                    Key = (g.Key.RevenueCategoryId == null ? "U" : g.Key.RevenueCategoryId.ToString()) + ":" + g.Key.Name,
-                    CategoryId = g.Key.RevenueCategoryId, Name = g.Key.Name, Order = g.Key.Order,
-                    Amount = g.Sum(r => r.Amount), Count = g.Count()
-                }).ToListAsync(cancellationToken);
-            // Unit sales, recognised at possession — NOT customer receipts. Money taken before
-            // possession is a deposit the company owes back, so counting it as income overstated
-            // revenue by every unfinished sale and understated the liability by the same amount.
-            // The full net sale value lands here once, on its recognition date; what the buyer
-            // still owes becomes a receivable rather than future revenue.
-            var recognisedSales = await SaleRecognitionQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(r => r.NetSaleValue), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (recognisedSales is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "unit-sales", Name = "Unit Sales", Order = -1, Amount = recognisedSales.Amount, Count = recognisedSales.Count });
-            // What the company keeps when a booking is cancelled. Recognised once, on the
-            // cancellation date. The refund itself is NOT contra-revenue: the customer's money was
-            // never income, so refunding it cannot reduce income — it converts one liability
-            // (deposit) into another (refund payable).
-            var retained = await RetainedCancellationQuery(projectId, from, toExclusive).GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(s => s.RetainedAmount), Count = g.Count() }).SingleOrDefaultAsync(cancellationToken);
-            if (retained is { Amount: not 0m })
-                income.Add(new ReportLine { Key = "cancellation-retained", Name = "Cancellation Income (Retained)", Order = 0, Amount = retained.Amount, Count = retained.Count });
-
-            var expenses = await ExpenseQuery(projectId, from, toExclusive).GroupBy(e => new
-                {
-                    e.CategoryId, e.Category, Order = e.ExpenseCategory == null ? int.MaxValue : e.ExpenseCategory.DisplayOrder
-                }).Select(g => new ReportLine
-                {
-                    Key = (g.Key.CategoryId == null ? "U" : g.Key.CategoryId.ToString()) + ":" + g.Key.Category,
-                    CategoryId = g.Key.CategoryId, Name = g.Key.Category, Order = g.Key.Order,
-                    Amount = g.Sum(e => e.Amount), Count = g.Count()
-                }).ToListAsync(cancellationToken);
-            // A payout and its reversal used to be read four times: two SUMs and two COUNTs. Fold
-            // the signed rows first, then let SQL return both figures in one command. The same
-            // pattern below removes nine round trips from each P&L period without changing which
-            // records or dates participate in the statement.
-            var commission = await CommissionPayoutQuery(projectId, from, toExclusive, null, false)
-                .Select(p => new { Amount = p.Amount, Count = 1 })
+                        ? int.MaxValue : r.RevenueCategory.DisplayOrder,
+                    Amount = r.Amount,
+                    Count = 1
+                })
+                .Concat(SaleRecognitionQuery(projectId, from, toExclusive)
+                    .Select(r => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.RecognisedSale,
+                        CategoryId = null,
+                        Name = "Unit Sales",
+                        Order = -1,
+                        Amount = r.NetSaleValue,
+                        Count = 1
+                    }))
+                .Concat(RetainedCancellationQuery(projectId, from, toExclusive)
+                    .Select(s => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.RetainedCancellation,
+                        CategoryId = null,
+                        Name = "Cancellation Income (Retained)",
+                        Order = 0,
+                        Amount = s.RetainedAmount,
+                        Count = 1
+                    }))
+                .Concat(ExpenseQuery(projectId, from, toExclusive)
+                    .Select(e => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.OrdinaryExpense,
+                        CategoryId = e.CategoryId,
+                        Name = e.Category,
+                        Order = e.ExpenseCategory == null ? int.MaxValue : e.ExpenseCategory.DisplayOrder,
+                        Amount = e.Amount,
+                        Count = 1
+                    }))
+                .Concat(CommissionPayoutQuery(projectId, from, toExclusive, null, false)
+                    .Select(p => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.Commission,
+                        CategoryId = null,
+                        Name = "Commission Payouts",
+                        Order = int.MaxValue - 1,
+                        Amount = p.Amount,
+                        Count = 1
+                    }))
                 .Concat(CommissionReversalQuery(projectId, from, toExclusive, null, false)
-                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
-                .GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
-                .SingleOrDefaultAsync(cancellationToken);
-            if (commission is { Amount: not 0m })
-                expenses.Add(new ReportLine
-                {
-                    Key = "commission-payouts", Name = "Commission Payouts", Order = int.MaxValue - 1,
-                    Amount = commission.Amount, Count = commission.Count
-                });
-
-            var rebate = await CashRebateQuery(projectId, from, toExclusive, null, false)
-                .Select(d => new { Amount = d.Amount, Count = 1 })
+                    .Select(r => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.Commission,
+                        CategoryId = null,
+                        Name = "Commission Payouts",
+                        Order = int.MaxValue - 1,
+                        Amount = -r.Amount,
+                        Count = 1
+                    }))
+                .Concat(CashRebateQuery(projectId, from, toExclusive, null, false)
+                    .Select(d => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.CashRebate,
+                        CategoryId = null,
+                        Name = "Cash Rebates",
+                        Order = int.MaxValue,
+                        Amount = d.Amount,
+                        Count = 1
+                    }))
                 .Concat(CashRebateReversalQuery(projectId, from, toExclusive, null, false)
-                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
-                .GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
-                .SingleOrDefaultAsync(cancellationToken);
-            if (rebate is { Amount: not 0m })
-                expenses.Add(new ReportLine
-                {
-                    Key = "cash-rebates", Name = "Cash Rebates", Order = int.MaxValue,
-                    Amount = rebate.Amount, Count = rebate.Count
-                });
-            // The cost of credits granted against a RECOGNISED sale. Once the full net sale value
-            // is income, the slice of it the buyer will never pay has to be a cost — otherwise the
-            // receivable would still be claiming money that was written off. Credits on bookings
-            // that have not reached possession stay invisible here, exactly as before.
-            var nonCashCredit = await NonCashCreditQuery(projectId, from, toExclusive)
-                .Select(d => new { Amount = d.Amount, Count = 1 })
+                    .Select(r => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.CashRebate,
+                        CategoryId = null,
+                        Name = "Cash Rebates",
+                        Order = int.MaxValue,
+                        Amount = -r.Amount,
+                        Count = 1
+                    }))
+                .Concat(NonCashCreditQuery(projectId, from, toExclusive)
+                    .Select(d => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.NonCashCredit,
+                        CategoryId = null,
+                        Name = "Customer Credits (non-cash)",
+                        Order = int.MaxValue,
+                        Amount = d.Amount,
+                        Count = 1
+                    }))
                 .Concat(NonCashCreditReversalQuery(projectId, from, toExclusive)
-                    .Select(r => new { Amount = -r.Amount, Count = 1 }))
-                .GroupBy(_ => 1)
-                .Select(g => new { Amount = g.Sum(x => x.Amount), Count = g.Sum(x => x.Count) })
-                .SingleOrDefaultAsync(cancellationToken);
-            if (nonCashCredit is { Amount: not 0m })
-                expenses.Add(new ReportLine
-                {
-                    Key = "non-cash-credits", Name = "Customer Credits (non-cash)", Order = int.MaxValue,
-                    Amount = nonCashCredit.Amount, Count = nonCashCredit.Count
-                });
-            // Fixed-asset purchases, at gross cost. DAMS reports one Net Profit, and the client's
-            // rule is that buying an asset spends the money — so wherever Net Profit is stated, this
-            // is inside it: the dashboard card, the P&L, its export and the Net Profit drill-down.
-            //
-            // The flag exists because two of this method's three consumers state something else.
-            // The Trial Balance and the Balance Sheet's retained profit are double-entry positions:
-            // every line in them is an assertion that the books hold a debit and a matching credit.
-            // A purchase holds only Dr Fixed Asset / Cr Bank. Charging its cost to profit as well
-            // needs a credit, the asset is still carried at full cost, and no account has been
-            // approved to take that credit — so putting the line there would not make those two
-            // statements righter, it would put them out of balance by exactly this amount on the
-            // strength of an entry nobody authorised. They omit it and DISCLOSE it instead
-            // (BalanceSheetDto.UnpostedFixedAssetCharge), which is the only honest description of
-            // where the question stands.
+                    .Select(r => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.NonCashCredit,
+                        CategoryId = null,
+                        Name = "Customer Credits (non-cash)",
+                        Order = int.MaxValue,
+                        Amount = -r.Amount,
+                        Count = 1
+                    }))
+                .Concat(LoanInterestQuery(projectId, from, toExclusive, null, false)
+                    .Select(t => new PnlAggregateRow
+                    {
+                        Source = PnlAggregateSource.LoanInterest,
+                        CategoryId = null,
+                        Name = "Loan Interest",
+                        Order = int.MaxValue - 2,
+                        Amount = t.InterestAmount,
+                        Count = 1
+                    }));
+
+            // Fixed-asset spending is part of the P&L's Net Profit, but not ledger-only retained
+            // profit on the Balance Sheet. A conditional branch keeps that rule in the same query.
             if (includeFixedAssetCharge)
             {
-                var fixedAssets = await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
-                    .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(p => p.Amount), Count = g.Count() })
-                    .SingleOrDefaultAsync(cancellationToken);
-                if (fixedAssets is { Amount: not 0m })
-                    expenses.Add(new ReportLine
+                rows = rows.Concat(FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
+                    .Select(p => new PnlAggregateRow
                     {
-                        Key = "fixed-asset-purchases", Name = "Fixed Asset Purchases", Order = int.MaxValue - 3,
-                        Amount = fixedAssets.Amount, Count = fixedAssets.Count
-                    });
+                        Source = PnlAggregateSource.FixedAssetPurchase,
+                        CategoryId = null,
+                        Name = "Fixed Asset Purchases",
+                        Order = int.MaxValue - 3,
+                        Amount = p.Amount,
+                        Count = 1
+                    }));
             }
-            var loanInterest = await LoanInterestQuery(projectId, from, toExclusive, null, false)
-                .GroupBy(_ => 1).Select(g => new { Amount = g.Sum(t => t.InterestAmount), Count = g.Count() })
-                .SingleOrDefaultAsync(cancellationToken);
-            if (loanInterest is { Amount: not 0m })
-                expenses.Add(new ReportLine
+
+            var totals = await rows.GroupBy(row => new
                 {
-                    Key = "loan-interest", Name = "Loan Interest", Order = int.MaxValue - 2,
-                    Amount = loanInterest.Amount, Count = loanInterest.Count
-                });
-            return new PnlPeriod(income.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList(),
-                expenses.Where(l => Money(l.Amount) != 0m).OrderBy(l => l.Order).ThenBy(l => l.Name).ToList());
+                    row.Source,
+                    row.CategoryId,
+                    row.Name,
+                    row.Order
+                })
+                .Select(group => new PnlAggregateRow
+                {
+                    Source = group.Key.Source,
+                    CategoryId = group.Key.CategoryId,
+                    Name = group.Key.Name,
+                    Order = group.Key.Order,
+                    Amount = group.Sum(row => row.Amount),
+                    Count = group.Sum(row => row.Count)
+                })
+                .ToListAsync(cancellationToken);
+
+            var income = new List<ReportLine>();
+            var expenses = new List<ReportLine>();
+            foreach (var total in totals)
+            {
+                if (Money(total.Amount) == 0m) continue;
+                var line = new ReportLine
+                {
+                    Key = PnlKey(total),
+                    CategoryId = total.CategoryId,
+                    Name = total.Name,
+                    Order = total.Order,
+                    Amount = total.Amount,
+                    Count = total.Count
+                };
+                if (total.Source is PnlAggregateSource.ManualRevenue
+                    or PnlAggregateSource.RecognisedSale
+                    or PnlAggregateSource.RetainedCancellation)
+                    income.Add(line);
+                else
+                    expenses.Add(line);
+            }
+
+            return new PnlPeriod(
+                income.OrderBy(line => line.Order).ThenBy(line => line.Name).ToList(),
+                expenses.OrderBy(line => line.Order).ThenBy(line => line.Name).ToList());
         }
+
+        private static string PnlKey(PnlAggregateRow row) => row.Source switch
+        {
+            PnlAggregateSource.RecognisedSale => "unit-sales",
+            PnlAggregateSource.RetainedCancellation => "cancellation-retained",
+            PnlAggregateSource.Commission => "commission-payouts",
+            PnlAggregateSource.CashRebate => "cash-rebates",
+            PnlAggregateSource.NonCashCredit => "non-cash-credits",
+            PnlAggregateSource.FixedAssetPurchase => "fixed-asset-purchases",
+            PnlAggregateSource.LoanInterest => "loan-interest",
+            _ => (row.CategoryId.HasValue ? row.CategoryId.Value.ToString() : "U") + ":" + row.Name
+        };
 
         private async Task<List<AccountSnapshot>> AccountSnapshotsAsync(int? projectId, DateTime asAt, DateTime? openingDate, CancellationToken cancellationToken)
         {
@@ -808,78 +876,99 @@ namespace DAMS.Application.Services
                     SystemRole = a.SystemRole,
                     DisplayOrder = a.DisplayOrder, Balance = !projectId.HasValue && (!openingDate.HasValue || openingDate <= asAt) ? a.OpeningBalance : 0m })
                 .ToListAsync(cancellationToken);
-            var payments = await SumByAccount(PaymentsQuery(projectId, null, end).Where(p => p.FinanceAccountId != null)
-                .GroupBy(p => p.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
-            var manual = await SumByAccount(ManualQuery(projectId, null, end).Where(r => r.FinanceAccountId != null)
-                .GroupBy(r => r.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
-            var expense = await SumByAccount(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
-                .GroupBy(e => e.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(e => e.Amount - e.WhtAmount))), cancellationToken);
+            // Every ordinary account movement is emitted with its final sign, then SQL Server reads
+            // and groups the sources in one UNION ALL command. The previous implementation issued a
+            // separate command for each table even though the application only needed one number per
+            // account from all of them.
+            var movementRows = PaymentsQuery(projectId, null, end).Where(p => p.FinanceAccountId != null)
+                .Select(p => new AccountMovementRow { Id = p.FinanceAccountId!.Value, Amount = p.Amount })
+                .Concat(ManualQuery(projectId, null, end).Where(r => r.FinanceAccountId != null)
+                    .Select(r => new AccountMovementRow { Id = r.FinanceAccountId!.Value, Amount = r.Amount }))
+                .Concat(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
+                    .Select(e => new AccountMovementRow { Id = e.FinanceAccountId!.Value, Amount = -(e.Amount - e.WhtAmount) }));
             // A purchase moves two accounts: cash falls by the net paid, the asset account rises by
             // the gross, and the gap between them is the withheld tax, which lands on the payable
             // below. That is what balances the CASH side. The charge the same purchase makes against
             // profit has no counter-entry anywhere — the asset account itself is never written down.
-            var assetPaid = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
-                .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount - p.WhtAmount))), cancellationToken);
-            var assetCapitalised = await SumByAccount(AssetPurchaseQuery(projectId, null, end, null, null, false)
-                .GroupBy(p => p.AssetAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
-            var commission = await SumByAccount(CommissionPayoutQuery(projectId, null, end, null, false)
-                .GroupBy(p => p.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(p => p.Amount))), cancellationToken);
-            var commissionReversal = await SumByAccount(CommissionReversalQuery(projectId, null, end, null, false)
-                .GroupBy(r => r.Payout.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
-            var rebate = await SumByAccount(CashRebateQuery(projectId, null, end, null, false).Where(d => d.FinanceAccountId != null)
-                .GroupBy(d => d.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(d => d.Amount))), cancellationToken);
-            var rebateReversal = await SumByAccount(CashRebateReversalQuery(projectId, null, end, null, false).Where(r => r.Disbursement.FinanceAccountId != null)
-                .GroupBy(r => r.Disbursement.FinanceAccountId!.Value).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
-            var deposits = !projectId.HasValue
-                ? await SumByAccount(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
-                    .GroupBy(d => d.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(d => d.Amount))), cancellationToken)
-                : [];
-            var capitalCash = !projectId.HasValue
-                ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.FinanceAccountId != null
-                    && (t.Type == CapitalTransactionType.Contribution || t.Type == CapitalTransactionType.Withdrawal))
-                    .GroupBy(t => new { Id = t.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
-                : [];
+            movementRows = movementRows
+                .Concat(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .Select(p => new AccountMovementRow { Id = p.FinanceAccountId, Amount = -(p.Amount - p.WhtAmount) }))
+                .Concat(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                    .Select(p => new AccountMovementRow { Id = p.AssetAccountId, Amount = p.Amount }))
+                .Concat(CommissionPayoutQuery(projectId, null, end, null, false)
+                    .Select(p => new AccountMovementRow { Id = p.FinanceAccountId, Amount = -p.Amount }))
+                .Concat(CommissionReversalQuery(projectId, null, end, null, false)
+                    .Select(r => new AccountMovementRow { Id = r.Payout.FinanceAccountId, Amount = r.Amount }))
+                .Concat(CashRebateQuery(projectId, null, end, null, false).Where(d => d.FinanceAccountId != null)
+                    .Select(d => new AccountMovementRow { Id = d.FinanceAccountId!.Value, Amount = -d.Amount }))
+                .Concat(CashRebateReversalQuery(projectId, null, end, null, false).Where(r => r.Disbursement.FinanceAccountId != null)
+                    .Select(r => new AccountMovementRow { Id = r.Disbursement.FinanceAccountId!.Value, Amount = r.Amount }))
+                .Concat(_context.BookingCancellationRefunds.AsNoTracking()
+                    .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
+                    .Select(r => new AccountMovementRow { Id = r.FinanceAccountId, Amount = -r.Amount }));
+
+            if (!projectId.HasValue)
+            {
+                movementRows = movementRows
+                    .Concat(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
+                        .Select(d => new AccountMovementRow { Id = d.FinanceAccountId, Amount = -d.Amount }))
+                    .Concat(_context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.FinanceAccountId != null
+                        && (t.Type == CapitalTransactionType.Contribution || t.Type == CapitalTransactionType.Withdrawal))
+                        .Select(t => new AccountMovementRow
+                        {
+                            Id = t.FinanceAccountId!.Value,
+                            Amount = t.Type == CapitalTransactionType.Contribution ? t.Amount : -t.Amount
+                        }))
+                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                        .Select(t => new AccountMovementRow
+                        {
+                            Id = t.FinanceAccountId,
+                            Amount = t.Type == LoanTransactionType.Drawdown
+                                ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount)
+                        }))
+                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                        .Select(t => new AccountMovementRow
+                        {
+                            Id = t.Loan.FinanceAccountId,
+                            Amount = t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount
+                        }))
+                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                        .Select(t => new AccountMovementRow
+                        {
+                            Id = t.StaffFinanceAccountId,
+                            Amount = t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount
+                        }))
+                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                        .Select(t => new AccountMovementRow
+                        {
+                            Id = t.CounterpartyFinanceAccountId,
+                            Amount = t.Type == StaffCashMovementType.FundsReturned ? t.Amount : -t.Amount
+                        }));
+            }
+
+            var movements = await SumByAccount(movementRows.GroupBy(row => row.Id)
+                .Select(group => new AccountAmount(group.Key, group.Sum(row => row.Amount))), cancellationToken);
             var capitalPartner = !projectId.HasValue
                 ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.CapitalPartner.FinanceAccountId != null)
                     .GroupBy(t => new { Id = t.CapitalPartner.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
                 : [];
-            var loanCash = !projectId.HasValue
-                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
-                    .GroupBy(t => t.FinanceAccountId)
-                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
-                        ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount))))
-                    .ToListAsync(cancellationToken)
-                : [];
-            var loanLiability = !projectId.HasValue
-                ? await _context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
-                    .GroupBy(t => t.Loan.FinanceAccountId)
-                    .Select(g => new AccountAmount(g.Key, g.Sum(t => t.Type == LoanTransactionType.Drawdown
-                        ? t.PrincipalAmount : -t.PrincipalAmount)))
-                    .ToListAsync(cancellationToken)
-                : [];
-            var staffTransfers = !projectId.HasValue
-                ? await _context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
-                    .Select(t => new
-                    {
-                        StaffId = t.StaffFinanceAccountId,
-                        CounterpartyId = t.CounterpartyFinanceAccountId,
-                        t.Type,
-                        t.Amount
-                    }).ToListAsync(cancellationToken)
-                : [];
-            var wht = (await ExpenseQuery(projectId, null, end).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
-                + (await AssetPurchaseQuery(projectId, null, end, null, null, false)
-                    .SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
-            var deposited = deposits.Sum(d => d.Amount);
+            var whtRows = ExpenseQuery(projectId, null, end).Select(e => e.WhtAmount)
+                .Concat(AssetPurchaseQuery(projectId, null, end, null, null, false).Select(p => p.WhtAmount));
+            if (!projectId.HasValue)
+            {
+                whtRows = whtRows.Concat(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
+                    .Select(d => -d.Amount));
+            }
+            var whtPayable = Money(await whtRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
             // Customer Refunds Payable: created out of the customer deposit at cancellation,
             // cleared when the cash is actually paid out. Both sides are booking-scoped, so —
             // unlike WHT deposits — they can be filtered by project.
-            var cancellationRefundsCash = await SumByAccount(_context.BookingCancellationRefunds.AsNoTracking()
-                .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
-                .GroupBy(r => r.FinanceAccountId).Select(g => new AccountAmount(g.Key, g.Sum(r => r.Amount))), cancellationToken);
-            var refundPayableCreated = await CancellationSettlementQuery(projectId, null, end)
-                .SumAsync(s => (decimal?)s.RefundAmount, cancellationToken) ?? 0m;
-            var refundPayablePaid = cancellationRefundsCash.Sum(x => x.Amount);
+            var refundPayableRows = CancellationSettlementQuery(projectId, null, end)
+                .Select(s => s.RefundAmount)
+                .Concat(_context.BookingCancellationRefunds.AsNoTracking()
+                    .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
+                    .Select(r => -r.Amount));
+            var refundPayable = Money(await refundPayableRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
             var (customerDeposits, customerReceivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
 
             foreach (var account in accounts)
@@ -890,25 +979,15 @@ namespace DAMS.Application.Services
                         x.Type is CapitalTransactionType.Withdrawal or CapitalTransactionType.LossShare ? -x.Amount : x.Amount);
                     continue;
                 }
-                var debitMovement = Amount(payments, account.Id) + Amount(manual, account.Id) - Amount(expense, account.Id)
-                    - Amount(assetPaid, account.Id) + Amount(assetCapitalised, account.Id)
-                    - Amount(commission, account.Id) + Amount(commissionReversal, account.Id)
-                    - Amount(rebate, account.Id) + Amount(rebateReversal, account.Id) - Amount(deposits, account.Id)
-                    - Amount(cancellationRefundsCash, account.Id)
-                    + capitalCash.Where(x => x.Id == account.Id).Sum(x => x.Type == CapitalTransactionType.Contribution ? x.Amount : -x.Amount)
-                    + Amount(loanCash, account.Id)
-                    + staffTransfers.Where(t => t.StaffId == account.Id).Sum(t =>
-                        t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount)
-                    + staffTransfers.Where(t => t.CounterpartyId == account.Id).Sum(t =>
-                        t.Type == StaffCashMovementType.FundsReturned ? t.Amount : -t.Amount);
+                var debitMovement = Amount(movements, account.Id);
                 // These sources are expressed as business increases minus decreases, not raw
                 // journal debits. The normal-balance direction is applied later when the trial
                 // balance places the positive amount in a Debit or Credit column.
-                account.Balance += debitMovement + Amount(loanLiability, account.Id);
+                account.Balance += debitMovement;
                 if (account.SystemRole == FinanceSystemAccountRole.TaxPayable)
-                    account.Balance += Money(wht - deposited);
+                    account.Balance += whtPayable;
                 if (account.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
-                    account.Balance += Money(refundPayableCreated - refundPayablePaid);
+                    account.Balance += refundPayable;
                 if (account.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
                     account.Balance += customerDeposits;
                 if (account.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
@@ -955,25 +1034,25 @@ namespace DAMS.Application.Services
 
             var deposits = await CustomerDepositBalanceAsync(projectId, end, cancellationToken);
 
-            var receivablesRaised = await recognisedByCutOff.SumAsync(r => (decimal?)r.NetSaleValue, cancellationToken) ?? 0m;
-            var receivablesCollected = await collectedOnRecognisedSales.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
-            var creditsApplied = await NonCashCreditQuery(projectId, null, end)
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
-            var creditsReversed = await NonCashCreditReversalQuery(projectId, null, end)
-                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+            // Keep every source as a signed row until SQL Server has combined and summed it. This
+            // preserves the accounting equation while replacing four independent round trips with
+            // one UNION ALL aggregate.
+            var receivables = recognisedByCutOff.Select(r => r.NetSaleValue)
+                .Concat(collectedOnRecognisedSales.Select(p => -p.Amount))
+                .Concat(NonCashCreditQuery(projectId, null, end).Select(d => -d.Amount))
+                .Concat(NonCashCreditReversalQuery(projectId, null, end).Select(r => r.Amount));
 
             return (deposits,
-                Money(receivablesRaised - receivablesCollected - creditsApplied + creditsReversed));
+                Money(await receivables.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m));
         }
 
         /// <summary>
         /// The deposit half of <see cref="CustomerBalancesAsync"/> on its own: customer money held
         /// but not yet earned, as at <paramref name="end"/> (exclusive).
         /// <para>
-        /// Split out for the dashboard card, which wants only this. Asking for both halves cost
-        /// seven queries where three answer the question, and the dashboard is the one screen where
-        /// that difference is paid on every refresh. It is the same three queries either way — one
-        /// implementation, so the card and the Balance Sheet cannot report different deposits.
+        /// Split out for the dashboard card, which wants only this. All three accounting sources are
+        /// emitted as signed rows and summed by SQL Server in one query, so the card and the Balance
+        /// Sheet cannot report different deposits.
         /// </para>
         /// </summary>
         private async Task<decimal> CustomerDepositBalanceAsync(
@@ -992,13 +1071,15 @@ namespace DAMS.Application.Services
                     .Where(p => p.Booking.CancellationSettlement!.CancellationDate < end.Value);
             }
 
-            var depositsReceived = await PaymentsQuery(projectId, null, end)
+            var depositsReceived = PaymentsQuery(projectId, null, end)
                 .Where(p => p.Booking.SaleRecognition == null
                     || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate || (p.PaidAt < p.Booking.SaleRecognition.RecognitionDate.AddDays(1) && p.CreatedAt <= p.Booking.SaleRecognition.RecognizedAt)))
-                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
-            var depositsCleared = (await clearedByRecognition.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
-                + (await clearedByCancellation.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
-            return Money(depositsReceived - depositsCleared);
+                .Select(p => p.Amount);
+            var balance = depositsReceived
+                .Concat(clearedByRecognition.Select(p => -p.Amount))
+                .Concat(clearedByCancellation.Select(p => -p.Amount));
+
+            return Money(await balance.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
         }
 
         private static async Task<List<AccountAmount>> SumByAccount(IQueryable<AccountAmount> query, CancellationToken cancellationToken) =>
@@ -1108,6 +1189,30 @@ namespace DAMS.Application.Services
         }
 
         private sealed record PnlPeriod(List<ReportLine> Income, List<ReportLine> Expenses);
+
+        private enum PnlAggregateSource
+        {
+            ManualRevenue,
+            RecognisedSale,
+            RetainedCancellation,
+            OrdinaryExpense,
+            Commission,
+            CashRebate,
+            NonCashCredit,
+            FixedAssetPurchase,
+            LoanInterest
+        }
+
+        private sealed class PnlAggregateRow
+        {
+            public PnlAggregateSource Source { get; set; }
+            public int? CategoryId { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public int Order { get; set; }
+            public decimal Amount { get; set; }
+            public int Count { get; set; }
+        }
+
         private sealed class ReportLine
         {
             public string Key { get; set; } = string.Empty;
@@ -1126,6 +1231,11 @@ namespace DAMS.Application.Services
             public FinanceSystemAccountRole SystemRole { get; set; }
             public int DisplayOrder { get; set; }
             public decimal Balance { get; set; }
+        }
+        private sealed class AccountMovementRow
+        {
+            public int Id { get; set; }
+            public decimal Amount { get; set; }
         }
         private sealed record AccountAmount(int Id, decimal Amount);
         private sealed record TrialValue(int AccountId, string? LedgerCode, string Name, FinanceAccountType Type, decimal Debit, decimal Credit);

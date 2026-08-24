@@ -359,7 +359,8 @@ public sealed class SqlServerProductionInvariantTests
     public async Task TheDashboardAggregation_TranslatesAndReconciles_OnRealSqlServer()
     {
         await using var database = await SqlTestDatabase.CreateAsync();
-        var options = Options(database.ConnectionString);
+        var counter = new CommandCounter();
+        var options = OptionsWith(database.ConnectionString, counter);
         await using var db = new AppDbContext(options);
         await db.Database.MigrateAsync();
 
@@ -438,9 +439,20 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(3, breakdown.Items.Count);
 
         // One Net Profit: the statement agrees with the card, and the sheet names the difference.
-        var pnl = await finance.GetProfitAndLossAsync(null, from, to);
+        var measuredPnl = await MeasureAsync(counter, () => finance.GetProfitAndLossAsync(null, from, to));
+        // Finance settings plus one UNION ALL aggregate for the current period and one for prior.
+        // This used to be nineteen commands (settings + nine reads per period).
+        Assert.Equal(3, measuredPnl.Commands);
+        var pnl = measuredPnl.Result;
         Assert.Equal(dashboard.Summary.NetProfit, pnl.NetProfit);
-        var sheet = await finance.GetBalanceSheetAsync(null, to);
+        var projectPnl = await MeasureAsync(counter,
+            () => finance.GetProfitAndLossAsync(project.Id, from, to));
+        Assert.Equal(4, projectPnl.Commands); // project identity + settings + current + prior
+        var measuredSheet = await MeasureAsync(counter, () => finance.GetBalanceSheetAsync(null, to));
+        // Settings + seven snapshot commands + retained P&L + fixed-asset disclosure + allocations.
+        // The snapshot portion alone previously required twenty-two commands.
+        Assert.Equal(11, measuredSheet.Commands);
+        var sheet = measuredSheet.Result;
         Assert.True(sheet.IsBalanced);
         Assert.Equal(600_000m, sheet.UnpostedFixedAssetCharge);
         Assert.Equal(pnl.NetProfit, sheet.RetainedProfit - sheet.UnpostedFixedAssetCharge);
