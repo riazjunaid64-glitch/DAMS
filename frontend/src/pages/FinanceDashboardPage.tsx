@@ -10,6 +10,8 @@ import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceDashboard, financeRangeError, type FinanceChartData } from "../lib/financeChartData.ts";
 import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods.ts";
 import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
+import ShortAmount from "../lib/ShortAmount.tsx";
+import { exactAmount } from "../lib/financeAmounts.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
@@ -1546,8 +1548,18 @@ export default function FinanceDashboardPage({ user }: Props) {
                   )}
                   <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${
                     summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
-                    {summaryLoading ? "…" : summaryError ? "—" : formatMoney(card.value)}
+                    {summaryLoading ? "…" : summaryError ? "—" : <ShortAmount value={card.value} />}
                   </p>
+                  {/* The short figure above is rounded, and two rounded cards do not subtract to a
+                      third: read alone, Revenue minus Expenses would not equal Net Profit. So the
+                      exact amount is printed here on every card — not left to a hover, which is
+                      unreachable on a disabled card and on a phone — and the row stays
+                      reconcilable against the tables below and against Reports. */}
+                  {!summaryLoading && !summaryError && (
+                    <p className="mt-1 text-[10px] tabular-nums text-[var(--text-muted)] opacity-70">
+                      Full amount: {exactAmount(card.value)}
+                    </p>
+                  )}
                 </button>
               );
             })}
