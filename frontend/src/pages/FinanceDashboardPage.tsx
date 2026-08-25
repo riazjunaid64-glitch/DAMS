@@ -1151,7 +1151,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   if (!isAdmin) return null;
 
   const money = (n: number, cls = "text-[var(--text-secondary)]") => (
-    <span className={`font-semibold whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
+    <span className={`font-semibold tabular-nums whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
   );
 
   const attachmentCell = (
@@ -1174,23 +1174,22 @@ export default function FinanceDashboardPage({ user }: Props) {
     switch (view) {
       case "revenue":
         return {
-          minWidth: 1080,
+          minWidth: 1070,
           emptyText: "No revenue for the selected filters.",
           columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
+            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).projectName}</span> },
-            { key: "account", header: "Received In", width: "minmax(150px,1fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
+            { key: "account", header: "Received In", width: "minmax(170px,1.3fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "type", header: "Revenue Type", width: "minmax(150px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).revenueType}</span> },
-            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
-            { key: "source", header: "Source", width: "150px", render: (r) => {
+            { key: "amount", header: "Amount", width: "150px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
+            { key: "source", header: "Source", width: "140px", render: (r) => {
               const row = r as RevenueLine;
               return (
                 <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.source === "Manual Revenue" ? "text-violet-400 bg-violet-500/10 border-violet-500/20" : "text-sky-400 bg-sky-500/10 border-sky-500/20"}`}>{row.source}</span>
               );
             } },
-            { key: "reference", header: "Reference", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as RevenueLine).reference || "—"}</span> },
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+            { key: "attachment", header: "Attachment", width: "120px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
+            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
               const row = r as RevenueLine;
               return row.manualRevenueId != null ? (
                 <span className="inline-flex justify-end gap-2">
@@ -1329,28 +1328,21 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "totalExpenses":
         return {
-          minWidth: 1050,
+          minWidth: 860,
           emptyText: "No costs for the selected filters.",
           columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
+            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
-            { key: "item", header: "Cost", width: "minmax(180px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
-            // Two kinds. Cost and Reduction, and the signed amounts add up to the Total Expenses card.
-            { key: "kind", header: "Type", width: "150px", render: (r) => {
+            { key: "item", header: "Cost", width: "minmax(200px,2fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
+            { key: "amount", header: "Amount", width: "160px", align: "right", render: (r) => {
               const row = r as CostLine;
-              const style = row.kind === "cost"
-                ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{row.kind === "cost" ? "Cost" : "Reduction"}</span>;
-            } },
-            { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
-              const row = r as CostLine;
-              return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+              // Sign and colour carry what the removed Type column used to say: + is a cost, − is a reduction.
+              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
             } },
             // The receipt, in the list where the cost is actually read. "None" is only honest for
             // the two kinds that could have carried a file; the other four keep their evidence in
             // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => {
+            { key: "attachment", header: "Attachment", width: "120px", render: (r) => {
               const row = r as CostLine;
               if (row.source !== "expense" && row.source !== "assetPurchase") {
                 return <span className="text-xs text-[var(--text-muted)]">—</span>;
@@ -1360,7 +1352,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             // Edit and delete where the cost is read, so the breakdown is not a list you have to
             // leave to correct. Only the two kinds this page owns get them; stopPropagation keeps
             // the buttons from also firing the row's own open.
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
               const row = r as CostLine;
               if (row.source !== "expense" && row.source !== "assetPurchase") {
                 return <span className="text-xs text-[var(--text-muted)]">↗</span>;
@@ -1392,7 +1384,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             } },
             { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
               const row = r as NetProfitLine;
-              return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
             } },
           ],
         };
