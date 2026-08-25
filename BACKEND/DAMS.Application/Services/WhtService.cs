@@ -313,8 +313,12 @@ namespace DAMS.Application.Services
                     && (bySection ? p.WhtTaxSection == section : p.CategoryId == category.Id)
                     && (excludeAssetPurchaseId == null || p.Id != excludeAssetPurchaseId.Value));
 
-            return (await expenses.SumAsync(e => (decimal?)e.Amount, cancellationToken) ?? 0m)
-                + (await purchases.SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
+            // Both mapped sources use the same money shape. UNION ALL lets SQL calculate the
+            // supplier's shared annual allowance in one command, which matters because this path
+            // is called repeatedly while the expense form previews withholding.
+            return await expenses.Select(e => e.Amount)
+                .Concat(purchases.Select(p => p.Amount))
+                .SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m;
         }
 
         private static string? BuildNotice(
@@ -449,7 +453,16 @@ namespace DAMS.Application.Services
             var totalDepositedAllTime = await DepositQuery(null, null)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
             var openingPayable = await OpeningPayableAsync(cancellationToken);
-            var outstanding = await OutstandingPayableAsync(null, cancellationToken);
+            // These three all-time values are exactly what OutstandingPayableAsync would query
+            // again. Reusing them removes four duplicate commands from every WHT summary while
+            // keeping the deposit-validation helper authoritative for mutation paths.
+            var outstanding = Math.Round(
+                openingPayable + totalWithheldAllTime - totalDepositedAllTime,
+                2,
+                MidpointRounding.AwayFromZero);
+            var depositedInPeriod = !from.HasValue && !to.HasValue
+                ? totalDepositedAllTime
+                : await DepositQuery(from, to).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
 
             // Distinct across both kinds, so a supplier who was paid for a desk and for cement is
             // one vendor on the statement, not two.
@@ -460,11 +473,11 @@ namespace DAMS.Application.Services
             return new WhtPayableSummaryDto
             {
                 WithheldInPeriod = bySection.Sum(s => s.WhtAmount),
-                DepositedInPeriod = await DepositQuery(from, to).SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m,
+                DepositedInPeriod = depositedInPeriod,
                 // A liability is a balance, so it is deliberately not date-filtered: what is still
                 // owed to FBR does not change because the user picked a narrower period. It goes
-                // through the same helper the deposit screen validates against, so the number this
-                // summary shows is the number a deposit is allowed to clear — to the paisa.
+                // through the same opening + withheld - deposited formula used by deposit validation. The
+                // result shown here is exactly the balance a deposit is allowed to clear, to the paisa.
                 OutstandingPayable = outstanding,
                 OpeningPayable = openingPayable,
                 TotalWithheldAllTime = totalWithheldAllTime,

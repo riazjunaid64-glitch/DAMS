@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
+import { useProjects } from "../contexts/projectsContextValue";
 import {
   applyTrialFilters,
   calendarMonthStart,
@@ -24,7 +25,6 @@ import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/fina
 import Modal from "../lib/Modal.tsx";
 
 type Tab = "pnl" | "trial" | "balance";
-type Project = { id: number; projectName: string };
 type PnlLine = { categoryId: number | null; name: string; amount: number; priorAmount: number | null; transactionCount: number };
 type Pnl = { periodStart: string; periodEnd: string; periodLabel: string; projectName: string | null; incomeLines: PnlLine[]; totalIncome: number; expenseLines: PnlLine[]; totalExpenses: number; netProfit: number; priorTotalIncome: number; priorTotalExpenses: number; priorNetProfit: number };
 type BsLine = { accountId: number; ledgerCode: string | null; name: string; amount: number };
@@ -36,8 +36,8 @@ const money = (value: number) => `Rs ${value.toLocaleString("en-PK", { maximumFr
 
 export default function FinanceReportsPage({ user }: { user: User | null }) {
   const navigate = useNavigate();
+  const { projects } = useProjects();
   const [tab, setTab] = useState<Tab>("pnl");
-  const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -54,16 +54,11 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const reportRequestId = useRef(0);
+  const reportController = useRef<AbortController | null>(null);
+  const reportDebounceTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (user?.role !== "Admin") { navigate("/"); return; }
-    void Promise.all([
-      api("/api/Project", undefined, false).then(async (response) => {
-        if (!response.ok) return;
-        const rows = await response.json() as Project[];
-        setProjects(Array.isArray(rows) ? rows : []);
-      }),
-    ]);
   }, [user, navigate]);
 
   const query = useCallback((includePeriod: boolean) => {
@@ -88,13 +83,18 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
 
   const load = useCallback(async () => {
     if (user?.role !== "Admin") return;
+    reportController.current?.abort();
+    const controller = new AbortController();
+    reportController.current = controller;
     const requestId = ++reportRequestId.current;
     setLoading(true); setError(null);
     try {
       if (tab === "pnl") {
-        const response = await api(`/api/Finance/profit-and-loss?${query(true)}`);
+        const response = await api(`/api/Finance/profit-and-loss?${query(true)}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Profit and loss could not be loaded.");
-        setPnl(await response.json());
+        const report = await response.json() as Pnl;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
+        setPnl(report);
       } else if (tab === "trial") {
         setTrial(null);
         const draft = currentTrialFilters();
@@ -102,25 +102,57 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
         if (filterError) throw new Error(filterError);
         const applied = applyTrialFilters(draft);
         const params = trialSummaryParams(applied);
-        const response = await api(`/api/Finance/trial-balance?${params}`);
+        const response = await api(`/api/Finance/trial-balance?${params}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Trial balance could not be loaded.");
         const report = await response.json() as TrialBalanceReport;
-        if (requestId !== reportRequestId.current) return;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
         setTrial({ report, filters: applied });
       } else {
-        const response = await api(`/api/Finance/balance-sheet?${query(false)}`);
+        const response = await api(`/api/Finance/balance-sheet?${query(false)}`, { signal: controller.signal });
         if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? "Balance sheet could not be loaded.");
-        setBalance(await response.json());
+        const report = await response.json() as BalanceSheet;
+        if (controller.signal.aborted || requestId !== reportRequestId.current) return;
+        setBalance(report);
       }
     } catch (caught) {
-      if (requestId !== reportRequestId.current) return;
+      if (controller.signal.aborted || requestId !== reportRequestId.current) return;
       setError(caught instanceof Error ? caught.message : "The report could not be loaded.");
     } finally {
       if (requestId === reportRequestId.current) setLoading(false);
+      if (reportController.current === controller) reportController.current = null;
     }
   }, [tab, query, currentTrialFilters, user]);
 
-  useEffect(() => { void load(); }, [load]);
+  // Report filters can be expensive. Coalesce quick edits and cancel the previous SQL request as
+  // soon as a newer filter/tab supersedes it; the request id remains a second correctness guard.
+  useEffect(() => {
+    if (user?.role !== "Admin") return;
+    // Invalidate immediately rather than waiting for the debounce timer, so an abort that settles
+    // during those 250 ms cannot clear the loading state or paint the previous filter's report.
+    reportController.current?.abort();
+    reportController.current = null;
+    reportRequestId.current += 1;
+    setLoading(true);
+    setError(null);
+    const timer = window.setTimeout(() => {
+      if (reportDebounceTimer.current === timer) reportDebounceTimer.current = null;
+      void load();
+    }, 250);
+    reportDebounceTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (reportDebounceTimer.current === timer) reportDebounceTimer.current = null;
+      reportController.current?.abort();
+    };
+  }, [load, user]);
+
+  const refreshReport = () => {
+    if (reportDebounceTimer.current !== null) {
+      window.clearTimeout(reportDebounceTimer.current);
+      reportDebounceTimer.current = null;
+    }
+    void load();
+  };
 
   const applyYearPreset = (preset: "year" | "lastYear") => {
     const range = buildPeriodRange(preset, startMonth);
@@ -178,7 +210,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
           ? <DateField label="As at" value={asAt} onChange={setAsAt} required/>
           : <><DateField label="From" value={trialFrom} onChange={setTrialFrom} required/><DateField label="To" value={trialTo} onChange={setTrialTo} required/></>}
       </> : <DateField label="As at" value={asAt} onChange={setAsAt}/>}
-      <Button disabled={tab === "trial" && currentTrialError !== null} onClick={() => void load()}>Refresh</Button>
+      <Button disabled={tab === "trial" && currentTrialError !== null} onClick={refreshReport}>Refresh</Button>
       {tab === "trial" && currentTrialError && <p role="alert" className="w-full text-xs text-amber-300">{currentTrialError}</p>}
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}
@@ -188,15 +220,26 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
 
 function PnlView({ report }: { report: Pnl }) {
   return <ReportCard title={`Profit & Loss · ${report.periodLabel}`}>
-    <TableHeader/><SectionRows title="Income" lines={report.incomeLines}/><TotalRow label="Total Income" current={report.totalIncome} prior={report.priorTotalIncome}/>
-    <SectionRows title="Expenses" lines={report.expenseLines}/><TotalRow label="Total Expenses" current={report.totalExpenses} prior={report.priorTotalExpenses}/>
-    <div className={`mt-4 grid grid-cols-3 rounded-xl p-4 font-bold ${report.netProfit >= 0 ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}><span>Net Profit</span><span className="text-right">{money(report.netProfit)}</span><span className="text-right">{money(report.priorNetProfit)}</span></div>
-    <p className="mt-4 text-xs text-amber-300">Unit sales are recognised in full at possession, on the possession date. Customer payments taken before possession are a deposit liability, not income, and do not appear here. Construction and site work is an expense on the day it is paid — it is not held as work in progress. Fixed assets bought in the period are deducted above at cost, exactly as the Finance dashboard deducts them — one Net Profit figure, on every screen. The assets themselves stay on the Balance Sheet at cost and are never written down, which is why that statement's retained profit is higher and says so.</p>
+    <PnlSummary report={report}/>
+    
   </ReportCard>;
 }
-function TableHeader(){return <div className="grid grid-cols-3 border-b border-[var(--border)] px-3 pb-2 text-xs font-semibold uppercase text-[var(--text-muted)]"><span>Account</span><span className="text-right">Current</span><span className="text-right">Prior year</span></div>}
-function SectionRows({title,lines}:{title:string;lines:PnlLine[]}){return <div className="mt-4"><h3 className="px-3 text-sm font-bold text-[var(--text-heading)]">{title}</h3>{lines.length ? lines.map((line)=><div key={`${line.categoryId}-${line.name}`} className="grid grid-cols-3 border-b border-[var(--border)]/60 px-3 py-2 text-sm"><span>{line.name}<small className="ml-2 text-[var(--text-muted)]">{line.transactionCount} tx</small></span><span className="text-right">{money(line.amount)}</span><span className="text-right text-[var(--text-muted)]">{money(line.priorAmount ?? 0)}</span></div>):<p className="px-3 py-4 text-sm text-[var(--text-muted)]">No {title.toLowerCase()} in this period.</p>}</div>}
-function TotalRow({label,current,prior}:{label:string;current:number;prior:number}){return <div className="grid grid-cols-3 px-3 py-3 font-semibold"><span>{label}</span><span className="text-right">{money(current)}</span><span className="text-right">{money(prior)}</span></div>}
+// The three figures the sheet exists to answer, and now the whole of it. They come straight off the
+// report the server sent — this states them, it does not compute anything. The per-head breakdown
+// and the prior-year column still come back in that response; they are simply no longer shown.
+function PnlSummary({report}:{report:Pnl}){
+  const rows = [
+    {label:"Total Revenue", value:report.totalIncome, tone:"text-emerald-400"},
+    {label:"Total Expenses", value:report.totalExpenses, tone:"text-rose-400"},
+    {label:"Net Profit", value:report.netProfit, tone:report.netProfit >= 0 ? "text-sky-400" : "text-rose-400"},
+  ];
+  return <div className="mb-6 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
+    {rows.map((row,index)=><div key={row.label} className={`flex items-center justify-between gap-4 px-5 py-4 ${index ? "border-t border-[var(--border)]" : ""}`}>
+      <span className="text-sm font-medium text-[var(--text-primary)]">{row.label}</span>
+      <span className={`text-lg font-bold tabular-nums ${row.tone}`}>{money(row.value)}</span>
+    </div>)}
+  </div>;
+}
 
 function TrialView({ report, filters }: { report: TrialBalanceReport; filters: AppliedTrialBalanceFilters }) {
   const [selected, setSelected] = useState<TrialBalanceRow | null>(null);
@@ -343,7 +386,7 @@ function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard 
   {report.assetGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}<BsTotal label="Total Assets" amount={report.totalAssets}/>
   {report.liabilityGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}
   <div className="mt-5"><h3 className="font-bold">Capital</h3>{report.capitalLines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<BsLineView line={{accountId:-1,ledgerCode:null,name:"Retained Profit (per the ledger)",amount:report.retainedProfit}}/></div>
-  <BsTotal label="Total Liabilities & Capital" amount={report.totalLiabilitiesAndCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
+  <BsTotal label="Total Capital" amount={report.totalCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
   {/* Spending Net Profit carries and this ledger position cannot, stated on the statement rather
       than left to be found. Described strictly against THIS sheet's own window: subtracting it from
       a P&L run for some other period is arithmetic on two different questions, so the panel names

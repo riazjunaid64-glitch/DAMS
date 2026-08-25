@@ -320,7 +320,7 @@ public sealed class FinanceReportingAndCapitalTests
     public async Task InactivePartner_CanBeStagedBeforeAtomicShareActivation()
     {
         await using var context = Context();
-        var service = new CapitalPartnerService(context, new FinanceAccountService(context));
+        var service = new CapitalPartnerService(context, new FinanceAccountService(context), TestAttachments.Writer());
 
         var partner = await service.CreateAsync(new SaveCapitalPartnerDto
         {
@@ -356,7 +356,7 @@ public sealed class FinanceReportingAndCapitalTests
         context.AddRange(bank, a, b);
         await context.SaveChangesAsync();
         var accounts = new FinanceAccountService(context);
-        var partners = new CapitalPartnerService(context, accounts);
+        var partners = new CapitalPartnerService(context, accounts, TestAttachments.Writer());
 
         await partners.RecordTransactionAsync(a.Id, new SaveCapitalTransactionDto
         {

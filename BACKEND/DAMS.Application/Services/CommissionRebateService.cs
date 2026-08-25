@@ -32,61 +32,105 @@ namespace DAMS.Application.Services
         {
             // Everything a partner is owed, whether or not it has been paid yet. Cancelled and
             // reversed rows are excluded: the company no longer owes those.
-            var accruedCommission = await _context.BookingCommissions.AsNoTracking()
-                .Where(c => c.Status == BookingCommissionStatus.Pending || c.Status == BookingCommissionStatus.Paid)
-                .SumAsync(c => (decimal?)c.FinalAmount, cancellationToken) ?? 0m;
-            var commissionPaid = (await _context.CommissionPayouts.AsNoTracking()
-                    .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
-                - (await _context.CommissionPayoutReversals.AsNoTracking()
-                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
+            var commissions = await _context.BookingCommissions.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Accrued = group.Sum(c =>
+                        c.Status == BookingCommissionStatus.Pending || c.Status == BookingCommissionStatus.Paid
+                            ? c.FinalAmount
+                            : 0m),
+                    PayableBase = group.Sum(c => c.Status == BookingCommissionStatus.Pending
+                        ? c.FinalAmount
+                        : 0m),
+                    PendingCount = group.Count(c => c.Status == BookingCommissionStatus.Pending)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            var payouts = await _context.CommissionPayouts.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Total = group.Sum(p => p.Amount),
+                    Pending = group.Sum(p => p.Commission.Status == BookingCommissionStatus.Pending
+                        ? p.Amount
+                        : 0m),
+                    ReversalRequired = group.Sum(p => p.Commission.Status == BookingCommissionStatus.ReversalRequired
+                        ? p.Amount
+                        : 0m)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            var payoutReversals = await _context.CommissionPayoutReversals.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Total = group.Sum(r => r.Amount),
+                    Pending = group.Sum(r => r.Payout.Commission.Status == BookingCommissionStatus.Pending
+                        ? r.Amount
+                        : 0m),
+                    ReversalRequired = group.Sum(r =>
+                        r.Payout.Commission.Status == BookingCommissionStatus.ReversalRequired
+                            ? r.Amount
+                            : 0m)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
             // Still owed to partners: the pending commissions, less whatever has already gone out
             // against them and plus anything since reversed.
-            var payableBase = await _context.BookingCommissions.AsNoTracking()
-                .Where(c => c.Status == BookingCommissionStatus.Pending)
-                .SumAsync(c => (decimal?)c.FinalAmount, cancellationToken) ?? 0m;
-            var payablePayouts = await _context.CommissionPayouts.AsNoTracking()
-                .Where(p => p.Commission.Status == BookingCommissionStatus.Pending)
-                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
-            var payableReversals = await _context.CommissionPayoutReversals.AsNoTracking()
-                .Where(r => r.Payout.Commission.Status == BookingCommissionStatus.Pending)
-                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
-            var payableCommission = Math.Max(0m, payableBase - payablePayouts + payableReversals);
+            var payableCommission = Math.Max(0m,
+                (commissions?.PayableBase ?? 0m) - (payouts?.Pending ?? 0m) + (payoutReversals?.Pending ?? 0m));
             // Everything promised to customers that is still standing — cancelled and reversed
             // rebates are the only ones left out. A rebate is granted the moment it is entered;
             // there is no approval between the two.
-            var rebatesGranted = await _context.CustomerRebates.AsNoTracking()
-                .Where(r => r.Status == CustomerRebateStatus.Pending || r.Status == CustomerRebateStatus.Applied
-                    || r.Status == CustomerRebateStatus.Paid)
-                .SumAsync(r => (decimal?)r.FinalAmount, cancellationToken) ?? 0m;
-            var rebatePaid = (await _context.RebateDisbursements.AsNoTracking()
-                    .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-                - (await _context.RebateDisbursementReversals.AsNoTracking()
-                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var commissionRecovery = (await _context.CommissionPayouts.AsNoTracking()
-                    .Where(p => p.Commission.Status == BookingCommissionStatus.ReversalRequired)
-                    .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m)
-                - (await _context.CommissionPayoutReversals.AsNoTracking()
-                    .Where(r => r.Payout.Commission.Status == BookingCommissionStatus.ReversalRequired)
-                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
-            var rebateRecovery = (await _context.RebateDisbursements.AsNoTracking()
-                    .Where(d => d.Rebate.Status == CustomerRebateStatus.ReversalRequired)
-                    .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-                - (await _context.RebateDisbursementReversals.AsNoTracking()
-                    .Where(r => r.Disbursement.Rebate.Status == CustomerRebateStatus.ReversalRequired)
-                    .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m);
+            var rebates = await _context.CustomerRebates.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Granted = group.Sum(r =>
+                        r.Status == CustomerRebateStatus.Pending || r.Status == CustomerRebateStatus.Applied
+                            || r.Status == CustomerRebateStatus.Paid
+                            ? r.FinalAmount
+                            : 0m),
+                    PendingCount = group.Count(r => r.Status == CustomerRebateStatus.Pending)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            var disbursements = await _context.RebateDisbursements.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Total = group.Sum(d => d.Amount),
+                    ReversalRequired = group.Sum(d => d.Rebate.Status == CustomerRebateStatus.ReversalRequired
+                        ? d.Amount
+                        : 0m)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            var disbursementReversals = await _context.RebateDisbursementReversals.AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    Total = group.Sum(r => r.Amount),
+                    ReversalRequired = group.Sum(r =>
+                        r.Disbursement.Rebate.Status == CustomerRebateStatus.ReversalRequired
+                            ? r.Amount
+                            : 0m)
+                })
+                .SingleOrDefaultAsync(cancellationToken);
             return new CommissionRebateSummaryDto
             {
-                AccruedCommission = accruedCommission,
+                AccruedCommission = commissions?.Accrued ?? 0m,
                 PayableCommission = payableCommission,
-                CommissionPaid = commissionPaid,
-                CommissionReversalRequired = commissionRecovery,
-                RebatesGranted = rebatesGranted,
-                RebatesAppliedOrPaid = rebatePaid,
-                RebateReversalRequired = rebateRecovery,
+                CommissionPaid = (payouts?.Total ?? 0m) - (payoutReversals?.Total ?? 0m),
+                CommissionReversalRequired = (payouts?.ReversalRequired ?? 0m)
+                    - (payoutReversals?.ReversalRequired ?? 0m),
+                RebatesGranted = rebates?.Granted ?? 0m,
+                RebatesAppliedOrPaid = (disbursements?.Total ?? 0m) - (disbursementReversals?.Total ?? 0m),
+                RebateReversalRequired = (disbursements?.ReversalRequired ?? 0m)
+                    - (disbursementReversals?.ReversalRequired ?? 0m),
                 ActivePartners = await _context.ThirdPartyPartners.CountAsync(p => p.IsActive, cancellationToken),
                 // How many commissions and rebates are still owed.
-                PendingRecords = await _context.BookingCommissions.CountAsync(c => c.Status == BookingCommissionStatus.Pending, cancellationToken)
-                    + await _context.CustomerRebates.CountAsync(r => r.Status == CustomerRebateStatus.Pending, cancellationToken)
+                PendingRecords = (commissions?.PendingCount ?? 0) + (rebates?.PendingCount ?? 0)
             };
         }
 

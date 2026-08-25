@@ -249,7 +249,7 @@ public sealed class LoanAccountingTests
         FinanceAccountId = accountId, Reference = "BANK-STMT"
     };
 
-    private static LoanService Loans(AppDbContext context) => new(context, new FinanceAccountService(context));
+    private static LoanService Loans(AppDbContext context) => new(context, new FinanceAccountService(context), TestAttachments.Writer());
 
     private static FinanceService Finance(AppDbContext context)
     {

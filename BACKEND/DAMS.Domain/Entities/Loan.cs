@@ -51,5 +51,12 @@ namespace DAMS.Domain.Entities
 
         public Loan Loan { get; set; } = null!;
         public FinanceAccount FinanceAccount { get; set; } = null!;
+
+        /// <summary>
+        /// The bank slip, cheque image or lender statement behind the movement. Cash leaving or
+        /// arriving on a loan is evidence-bearing in exactly the way an expense is, and a figure
+        /// nobody can check against a document is not auditable.
+        /// </summary>
+        public FinanceAttachment? Attachment { get; set; }
     }
 }

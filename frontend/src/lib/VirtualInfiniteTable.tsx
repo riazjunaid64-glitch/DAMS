@@ -28,6 +28,13 @@ interface Props<T> {
   height?: number;
   /** Changing this resets the scroll back to the top (e.g. when the view/filters change). */
   resetKey?: string;
+  /**
+   * Opens a row. Return null from `rowAction` for rows that do nothing — a row that looks
+   * clickable and isn't is worse than one that never offered.
+   */
+  onRowClick?: (row: T) => void;
+  /** Per-row: the label announced to screen readers, or null when the row is not activatable. */
+  rowAction?: (row: T) => string | null;
 }
 
 const ROW_HEIGHT = 52;
@@ -44,6 +51,8 @@ export default function VirtualInfiniteTable<T>({
   minWidth = 720,
   height = 560,
   resetKey,
+  onRowClick,
+  rowAction,
 }: Props<T>) {
   "use no memo";
 
@@ -106,10 +115,22 @@ export default function VirtualInfiniteTable<T>({
             <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
               {virtualItems.map((vi) => {
                 const row = rows[vi.index];
+                // Keyboard as well as mouse: a virtualised row is a plain div, so the button
+                // semantics it needs to be reachable by tab and Enter have to be spelled out.
+                const action = onRowClick && rowAction ? rowAction(row) : null;
                 return (
                   <div
                     key={rowKey(row, vi.index)}
-                    className={`vtable-row ${vi.index % 2 ? "vtable-row--alt" : ""} absolute left-0 top-0 grid w-full items-center border-b border-[var(--border)]`}
+                    role={action ? "button" : undefined}
+                    tabIndex={action ? 0 : undefined}
+                    aria-label={action ?? undefined}
+                    onClick={action ? () => onRowClick!(row) : undefined}
+                    onKeyDown={action ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick!(row); }
+                    } : undefined}
+                    className={`vtable-row ${vi.index % 2 ? "vtable-row--alt" : ""} absolute left-0 top-0 grid w-full items-center border-b border-[var(--border)] ${
+                      action ? "cursor-pointer hover:bg-[var(--bg-hover,rgba(255,255,255,0.04))] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]" : ""
+                    }`}
                     style={{
                       height: ROW_HEIGHT,
                       transform: `translateY(${vi.start}px)`,

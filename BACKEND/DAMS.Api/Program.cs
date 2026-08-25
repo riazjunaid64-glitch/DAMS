@@ -324,6 +324,7 @@ builder.Services.AddScoped<IFileStorageService>(sp =>
 builder.Services.AddScoped<IFinanceAttachmentStorage>(sp =>
     new PrivateFinanceAttachmentStorage(ResolvePrivateStoragePath(
         sp, "FinanceAttachments:StoragePath", Path.Combine("App_Data", "finance-attachments"))));
+builder.Services.AddScoped<IFinanceAttachmentWriter, FinanceAttachmentWriter>();
 builder.Services.AddScoped<ICustomerDocumentStorage>(sp =>
     new PrivateCustomerDocumentStorage(ResolvePrivateStoragePath(
         sp, "CustomerDocuments:StoragePath", Path.Combine("App_Data", "customer-documents"))));

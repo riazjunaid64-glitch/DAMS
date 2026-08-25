@@ -10,9 +10,12 @@ import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
 import { fetchFinanceDashboard, financeRangeError, type FinanceChartData } from "../lib/financeChartData.ts";
 import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods.ts";
 import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency.ts";
+import ShortAmount from "../lib/ShortAmount.tsx";
+import { exactAmount } from "../lib/financeAmounts.ts";
 import FinanceCharts from "../components/FinanceCharts.tsx";
 import FinanceAttachmentField from "../components/FinanceAttachmentField.tsx";
 import ExpenseWhtFields from "../components/ExpenseWhtFields.tsx";
+import { useProjects } from "../contexts/projectsContextValue.ts";
 import { listCategories, vendorOptions } from "../features/finance/whtApi.ts";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth.ts";
 import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes.ts";
@@ -24,11 +27,6 @@ import {
 } from "../api/financeAttachments.ts";
 
 type Props = { user: User | null };
-
-interface ProjectOption {
-  id: number;
-  projectName: string;
-}
 
 interface FinanceAccountOption {
   id: number;
@@ -219,7 +217,29 @@ interface CostLine {
   amount: number;
   /** Present only on ordinary expense rows — the ones that can be opened and corrected. */
   expenseId: number | null;
+  /** Which record drew this row, and which one. Six different things share this list. */
+  source: CostSource;
+  sourceId: number;
+  /** The receipt behind the cost. Only expenses and asset purchases can carry one. */
+  attachment: FinanceAttachmentInfo | null;
 }
+
+type CostSource = "expense" | "assetPurchase" | "commission" | "rebate" | "customerCredit" | "loanInterest";
+
+/**
+ * What clicking a breakdown row does. Expenses and asset purchases are ours to edit here; the
+ * other four are recorded by another workflow, and the honest thing is to hand the reader over to
+ * it rather than offer half an editor. Anything unrecognised stays inert — a row that looks
+ * clickable and does nothing is worse than one that never offered.
+ */
+const COST_ROW_ACTIONS: Record<CostSource, string> = {
+  expense: "Edit this expense",
+  assetPurchase: "Edit this fixed asset purchase",
+  commission: "Open in Commissions & Rebates",
+  rebate: "Open in Commissions & Rebates",
+  customerCredit: "Open in Commissions & Rebates",
+  loanInterest: "Open in Loans",
+};
 
 type AnyRow = RevenueLine | ExpenseLine | AssetPurchaseLine | CustomerDepositLine | OutstandingLine | OverdueLine | NetProfitLine | CostLine;
 
@@ -235,20 +255,6 @@ const VIEW_PARAM: Record<View, string> = {
   netProfit: "netProfit",
   outstanding: "outstanding",
   overdue: "overdue",
-};
-
-const VIEW_TITLES: Record<View, string> = {
-  revenue: "Revenue",
-  expense: "Expense Records",
-  // Everything inside the Total Expenses card, not just the expense table — the card also carries
-  // commissions, rebates, customer credits, loan interest and fixed assets.
-  totalExpenses: "Total Expenses Breakdown",
-  // Things the company keeps — and still a cost of the period the client's rule charges to profit.
-  assetPurchase: "Fixed Asset Purchases",
-  customerDeposits: "Customer Deposits",
-  netProfit: "Net Profit Breakdown",
-  outstanding: "Outstanding Balances",
-  overdue: "Overdue Installments",
 };
 
 // Ancillary developer revenue (charges NOT auto-captured by booking/installment/possession
@@ -292,6 +298,18 @@ function formatDate(date: string) {
 // Every form on this page — revenue, expense and asset purchase — defaults its date from here,
 // and the server judges all three against the Pakistani calendar. See pakistanToday.
 const todayInput = pakistanToday;
+
+// `note` is the small qualifier printed under a card label — the one thing about a figure the
+// number itself cannot say: which period it belongs to. Only the cards that are NOT plain period
+// totals carry one.
+type SummaryCard = {
+  label: string;
+  note?: string;
+  value: number;
+  valueColor: string;
+  underline: string;
+  view: View | null;
+};
 
 type Period = "today" | "month" | "year" | "lastYear" | "all" | "custom";
 
@@ -431,13 +449,16 @@ const emptyExpenseForm = (): ExpenseFormState => ({
 export default function FinanceDashboardPage({ user }: Props) {
   const navigate = useNavigate();
   const isAdmin = user?.role === "Admin";
+  const { projects } = useProjects();
 
-  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);
   const [assetAccounts, setAssetAccounts] = useState<FinanceAccountOption[]>([]);
   const [revenueCategories, setRevenueCategories] = useState<RevenueCategory[]>([]);
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
   const [vendors, setVendors] = useState<VendorOption[]>([]);
+  const [assetAccountsLoading, setAssetAccountsLoading] = useState(false);
+  const [revenueCategoriesLoading, setRevenueCategoriesLoading] = useState(false);
+  const [whtLookupsLoading, setWhtLookupsLoading] = useState(false);
   const [projectId, setProjectId] = useState<string>("");
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
@@ -460,37 +481,27 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
   const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
-    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter, !rangeError);
+    usePaginatedRows<AnyRow>(VIEW_PARAM[view], projectId, fromDate, toDate, accountFilter, isAdmin && !rangeError);
 
   const [revenueForm, setRevenueForm] = useState<RevenueFormState | null>(null);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
   const [assetForm, setAssetForm] = useState<AssetPurchaseFormState | null>(null);
+  // Failures from opening or deleting a breakdown row. Separate from the list's own `error`,
+  // which belongs to the fetch that drew the rows and must not be overwritten by an action taken
+  // on one of them — the table is still perfectly valid when a single row fails to open.
+  const [rowError, setRowError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   // savingRef stops a double click; this stops the retry after a lost response — the one the
   // operator cannot tell from a genuine failure. See lib/idempotency.
   const idempotency = useIdempotencyKeys();
   const [formError, setFormError] = useState<string | null>(null);
-
-  const loadProjects = useCallback(async () => {
-    try {
-      const res = await api("/api/Project", undefined, false);
-      if (!res.ok) return;
-      const raw: unknown = await res.json();
-      if (Array.isArray(raw)) {
-        setProjects(
-          raw
-            .map((p) => {
-              const obj = p as Record<string, unknown>;
-              return { id: Number(obj.id), projectName: String(obj.projectName ?? "") };
-            })
-            .filter((p) => Number.isFinite(p.id) && p.projectName)
-        );
-      }
-    } catch {
-      /* dropdown is non-critical */
-    }
-  }, []);
+  const assetAccountsLoaded = useRef(false);
+  const assetAccountsRequest = useRef<Promise<void> | null>(null);
+  const whtLookupsLoaded = useRef(false);
+  const whtLookupsRequest = useRef<Promise<void> | null>(null);
+  const revenueCategoriesLoaded = useRef(false);
+  const revenueCategoriesRequest = useRef<Promise<void> | null>(null);
 
   const loadFinanceAccounts = useCallback(async () => {
     try {
@@ -516,34 +527,71 @@ export default function FinanceDashboardPage({ user }: Props) {
   // a cost on the day it is paid, so it belongs on the Expense form under its construction head;
   // the server refuses a work-in-progress destination and this list simply agrees with it. The WIP
   // accounts still exist and still carry their inherited ERP balances.
-  const loadAssetAccounts = useCallback(async () => {
-    try {
-      const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
-      if (response.ok) setAssetAccounts(await response.json() as FinanceAccountOption[]);
-    } catch {
-      /* The purchase form shows its validation message if these cannot be loaded. */
-    }
+  const loadAssetAccounts = useCallback((): Promise<void> => {
+    if (assetAccountsLoaded.current) return Promise.resolve();
+    if (assetAccountsRequest.current) return assetAccountsRequest.current;
+    setAssetAccountsLoading(true);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/accounts/options?includeInactive=true&type=7");
+        if (response.ok) {
+          setAssetAccounts(await response.json() as FinanceAccountOption[]);
+          assetAccountsLoaded.current = true;
+        }
+      } catch {
+        /* The purchase form shows its validation message if these cannot be loaded. */
+      } finally {
+        assetAccountsRequest.current = null;
+        setAssetAccountsLoading(false);
+      }
+    })();
+    assetAccountsRequest.current = request;
+    return request;
   }, []);
 
   // Inactive entries are included so editing an old expense still shows the head or payee it was
   // booked against, rather than silently blanking it.
-  const loadWhtLookups = useCallback(async () => {
-    try {
-      const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
-      setExpenseCategories(categories);
-      setVendors(vendorRows);
-    } catch {
-      /* The expense form falls back to free-text entry if these cannot be loaded. */
-    }
+  const loadWhtLookups = useCallback((): Promise<void> => {
+    if (whtLookupsLoaded.current) return Promise.resolve();
+    if (whtLookupsRequest.current) return whtLookupsRequest.current;
+    setWhtLookupsLoading(true);
+    const request = (async () => {
+      try {
+        const [categories, vendorRows] = await Promise.all([listCategories(true), vendorOptions(true)]);
+        setExpenseCategories(categories);
+        setVendors(vendorRows);
+        whtLookupsLoaded.current = true;
+      } catch {
+        /* The expense form falls back to free-text entry if these cannot be loaded. */
+      } finally {
+        whtLookupsRequest.current = null;
+        setWhtLookupsLoading(false);
+      }
+    })();
+    whtLookupsRequest.current = request;
+    return request;
   }, []);
 
-  const loadRevenueCategories = useCallback(async () => {
-    try {
-      const response = await api("/api/finance/revenue-categories?includeInactive=true");
-      if (response.ok) setRevenueCategories(await response.json());
-    } catch {
-      /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
-    }
+  const loadRevenueCategories = useCallback((): Promise<void> => {
+    if (revenueCategoriesLoaded.current) return Promise.resolve();
+    if (revenueCategoriesRequest.current) return revenueCategoriesRequest.current;
+    setRevenueCategoriesLoading(true);
+    const request = (async () => {
+      try {
+        const response = await api("/api/finance/revenue-categories?includeInactive=true");
+        if (response.ok) {
+          setRevenueCategories(await response.json());
+          revenueCategoriesLoaded.current = true;
+        }
+      } catch {
+        /* The revenue form shows an empty managed list and cannot save an unclassified entry. */
+      } finally {
+        revenueCategoriesRequest.current = null;
+        setRevenueCategoriesLoading(false);
+      }
+    })();
+    revenueCategoriesRequest.current = request;
+    return request;
   }, []);
 
   // The signal matters as much as the request. These seven cards are Revenue, Expenses, Net Profit,
@@ -587,8 +635,9 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // After a create/edit/delete, refresh the totals, the charts and the visible rows.
   const refreshAll = useCallback(async () => {
-    await loadSummary();
+    const summaryRefresh = loadSummary();
     reload();
+    await summaryRefresh;
   }, [loadSummary, reload]);
 
   useEffect(() => {
@@ -596,12 +645,23 @@ export default function FinanceDashboardPage({ user }: Props) {
       navigate("/");
       return;
     }
-    loadProjects();
-    loadFinanceAccounts();
-    void loadAssetAccounts();
-    void loadWhtLookups();
-    void loadRevenueCategories();
-  }, [isAdmin, navigate, loadProjects, loadFinanceAccounts, loadAssetAccounts, loadWhtLookups, loadRevenueCategories]);
+    void loadFinanceAccounts();
+  }, [isAdmin, navigate, loadFinanceAccounts]);
+
+  // These lists are used only inside their respective forms. Deferring them keeps the dashboard's
+  // normal read path lean; the in-flight refs above also prevent a quick close/reopen duplicating it.
+  const revenueFormOpen = revenueForm !== null;
+  const assetFormOpen = assetForm !== null;
+  const whtFormOpen = expenseForm !== null || assetFormOpen;
+  useEffect(() => {
+    if (isAdmin && revenueFormOpen) void loadRevenueCategories();
+  }, [isAdmin, revenueFormOpen, loadRevenueCategories]);
+  useEffect(() => {
+    if (isAdmin && assetFormOpen) void loadAssetAccounts();
+  }, [isAdmin, assetFormOpen, loadAssetAccounts]);
+  useEffect(() => {
+    if (isAdmin && whtFormOpen) void loadWhtLookups();
+  }, [isAdmin, whtFormOpen, loadWhtLookups]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -641,9 +701,9 @@ export default function FinanceDashboardPage({ user }: Props) {
       || current === "outstanding" || current === "overdue") ? "revenue" : current);
   }, [accountSelected]);
 
-  const summaryCards = useMemo(() => {
+  const summaryCards = useMemo<SummaryCard[]>(() => {
     const s = summary;
-    const periodCards = [
+    const periodCards: SummaryCard[] = [
       {
         label: accountSelected ? "Revenue on This Account" : "Total Revenue",
         value: s?.totalRevenue ?? 0, valueColor: "text-[var(--app-text)]", underline: "#34d399", view: "revenue" as View,
@@ -662,14 +722,14 @@ export default function FinanceDashboardPage({ user }: Props) {
     // A balance as at the END of the selected period, not a period total, and deliberately next to
     // Revenue: this is money customers have handed over that the company has NOT yet earned. It
     // belongs to a booking rather than to an account, so an account filter suppresses it.
-    const depositCard = {
-      label: "Customer Deposits (at period end)",
+    const depositCard: SummaryCard = {
+      label: "Customer Deposits", note: "at period end",
       value: s?.customerDepositsBalance ?? 0, valueColor: "text-[var(--app-text)]", underline: "#a78bfa", view: "customerDeposits" as View,
     };
     // One profit figure, and the same one every other screen reports — but only when the question
     // is one an answer exists for. With an account selected the screen shows what that account can
     // actually say about itself: how much cash moved through it.
-    const profitCard = accountSelected
+    const profitCard: SummaryCard = accountSelected
       ? {
         label: "Account Net Movement",
         value: s?.accountNetMovement ?? 0,
@@ -681,13 +741,14 @@ export default function FinanceDashboardPage({ user }: Props) {
         valueColor: (s?.netProfit ?? 0) >= 0 ? "text-[var(--gold-bright)]" : "text-rose-400",
         underline: "#cba95c", view: "netProfit" as View,
       };
-    // Named "Current" because they are, and because the cards beside them are not: these two are
-    // balances as they stand today and ignore the date filter entirely. Under a January range the
-    // row otherwise read as "January revenue, January profit, January overdue", and only the last
-    // of those was false.
-    const snapshotCards = [
-      { label: "Current Outstanding", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
-      { label: "Current Overdue", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
+    // Named "Current" and stamped "as of today" because they are, and because the cards beside them
+    // are not: these two are balances as they stand today and ignore the date filter entirely. Under
+    // a January range the row otherwise read as "January revenue, January profit, January overdue",
+    // and only the last of those was false. The stamp says it on the card, where the number is read,
+    // instead of in a paragraph underneath that has to be matched back to the right cards.
+    const snapshotCards: SummaryCard[] = [
+      { label: "Current Outstanding", note: "as of today", value: s?.outstandingAmount ?? 0, valueColor: "text-[var(--app-text)]", underline: "#60a5fa", view: "outstanding" as View },
+      { label: "Current Overdue", note: "as of today", value: s?.overdueAmount ?? 0, valueColor: "text-[var(--app-text-muted)]", underline: "#6b7280", view: "overdue" as View },
     ];
     return accountSelected
       ? [...periodCards, profitCard]
@@ -971,6 +1032,59 @@ export default function FinanceDashboardPage({ user }: Props) {
     });
   };
 
+  /**
+   * The breakdown carries an id, not a record — it cannot: it is a union of six tables. Editing
+   * one means fetching it first, above all for its concurrency token, without which the save would
+   * overwrite whatever anyone else did to the row in the meantime.
+   */
+  const loadCostRecord = async (row: CostLine): Promise<ExpenseLine | AssetPurchaseLine | null> => {
+    const path = row.source === "expense"
+      ? `/api/Finance/expenses/${row.sourceId}`
+      : `/api/Finance/asset-purchases/${row.sourceId}`;
+    setRowError(null);
+    try {
+      const res = await api(path);
+      if (!res.ok) {
+        setRowError(await financeApiError(res, "This record could not be opened. Refresh and try again."));
+        return null;
+      }
+      return (await res.json()) as ExpenseLine | AssetPurchaseLine;
+    } catch {
+      setRowError("This record could not be opened. Check your connection and try again.");
+      return null;
+    }
+  };
+
+  const openCostRow = async (row: CostLine) => {
+    switch (row.source) {
+      case "commission":
+      case "rebate":
+      case "customerCredit":
+        navigate("/finance/commissions-rebates");
+        return;
+      case "loanInterest":
+        navigate("/finance/loans");
+        return;
+      case "expense": {
+        const record = await loadCostRecord(row);
+        if (record) editExpense(record as ExpenseLine);
+        return;
+      }
+      case "assetPurchase": {
+        const record = await loadCostRecord(row);
+        if (record) editAssetPurchase(record as AssetPurchaseLine);
+        return;
+      }
+    }
+  };
+
+  const deleteCostRow = async (row: CostLine) => {
+    const record = await loadCostRecord(row);
+    if (!record) return;
+    if (row.source === "expense") await deleteExpense(record as ExpenseLine);
+    else await deleteAssetPurchase(record as AssetPurchaseLine);
+  };
+
   const editRevenue = (row: RevenueLine) => {
     if (row.manualRevenueId == null) return;
     setExpenseForm(null);
@@ -1039,7 +1153,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   if (!isAdmin) return null;
 
   const money = (n: number, cls = "text-[var(--text-secondary)]") => (
-    <span className={`font-semibold whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
+    <span className={`font-semibold tabular-nums whitespace-nowrap ${cls}`}>{formatMoney(n)}</span>
   );
 
   const attachmentCell = (
@@ -1048,8 +1162,8 @@ export default function FinanceDashboardPage({ user }: Props) {
     attachment: FinanceAttachmentInfo | null,
   ) => attachment && id != null ? (
     <span className="inline-flex items-center gap-2 whitespace-nowrap">
-      <button type="button" onClick={() => void accessAttachment(kind, id, attachment, false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
-      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={() => void accessAttachment(kind, id, attachment, true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
+      <button type="button" onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, false); }} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button>
+      <button type="button" aria-label={`Download ${attachment.fileName}`} title={`Download ${attachment.fileName}`} onClick={(e) => { e.stopPropagation(); void accessAttachment(kind, id, attachment, true); }} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button>
     </span>
   ) : <span className="text-xs text-[var(--text-muted)]">None</span>;
 
@@ -1062,23 +1176,22 @@ export default function FinanceDashboardPage({ user }: Props) {
     switch (view) {
       case "revenue":
         return {
-          minWidth: 1080,
+          minWidth: 1070,
           emptyText: "No revenue for the selected filters.",
           columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
+            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as RevenueLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).projectName}</span> },
-            { key: "account", header: "Received In", width: "minmax(150px,1fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
+            { key: "account", header: "Received In", width: "minmax(170px,1.3fr)", render: (r) => { const x=r as RevenueLine; return <span>{x.financeAccountName ?? "Unassigned"}<small className="block text-[var(--text-muted)]">{x.accountHolderName}</small></span>; } },
             { key: "type", header: "Revenue Type", width: "minmax(150px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as RevenueLine).revenueType}</span> },
-            { key: "amount", header: "Amount", width: "120px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
-            { key: "source", header: "Source", width: "150px", render: (r) => {
+            { key: "amount", header: "Amount", width: "150px", align: "right", render: (r) => money((r as RevenueLine).amount, "text-emerald-400") },
+            { key: "source", header: "Source", width: "140px", render: (r) => {
               const row = r as RevenueLine;
               return (
                 <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${row.source === "Manual Revenue" ? "text-violet-400 bg-violet-500/10 border-violet-500/20" : "text-sky-400 bg-sky-500/10 border-sky-500/20"}`}>{row.source}</span>
               );
             } },
-            { key: "reference", header: "Reference", width: "minmax(160px,1fr)", render: (r) => <span className="text-[var(--text-secondary)]">{(r as RevenueLine).reference || "—"}</span> },
-            { key: "attachment", header: "Attachment", width: "130px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
-            { key: "actions", header: "", width: "120px", align: "right", render: (r) => {
+            { key: "attachment", header: "Attachment", width: "120px", render: (r) => { const row = r as RevenueLine; return attachmentCell("revenue", row.manualRevenueId, row.attachment); } },
+            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
               const row = r as RevenueLine;
               return row.manualRevenueId != null ? (
                 <span className="inline-flex justify-end gap-2">
@@ -1217,23 +1330,41 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "totalExpenses":
         return {
-          minWidth: 800,
+          minWidth: 860,
           emptyText: "No costs for the selected filters.",
           columns: [
-            { key: "date", header: "Date", width: "130px", render: (r) => <span className="text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
+            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
             { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
-            { key: "item", header: "Cost", width: "minmax(180px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
-            // Two kinds. Cost and Reduction, and the signed amounts add up to the Total Expenses card.
-            { key: "kind", header: "Type", width: "150px", render: (r) => {
+            { key: "item", header: "Cost", width: "minmax(200px,2fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
+            { key: "amount", header: "Amount", width: "160px", align: "right", render: (r) => {
               const row = r as CostLine;
-              const style = row.kind === "cost"
-                ? "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
-              return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${style}`}>{row.kind === "cost" ? "Cost" : "Reduction"}</span>;
+              // Sign and colour carry what the removed Type column used to say: + is a cost, − is a reduction.
+              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
             } },
-            { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
+            // The receipt, in the list where the cost is actually read. "None" is only honest for
+            // the two kinds that could have carried a file; the other four keep their evidence in
+            // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
+            { key: "attachment", header: "Attachment", width: "120px", render: (r) => {
               const row = r as CostLine;
-              return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+              if (row.source !== "expense" && row.source !== "assetPurchase") {
+                return <span className="text-xs text-[var(--text-muted)]">—</span>;
+              }
+              return attachmentCell(row.source, row.sourceId, row.attachment);
+            } },
+            // Edit and delete where the cost is read, so the breakdown is not a list you have to
+            // leave to correct. Only the two kinds this page owns get them; stopPropagation keeps
+            // the buttons from also firing the row's own open.
+            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
+              const row = r as CostLine;
+              if (row.source !== "expense" && row.source !== "assetPurchase") {
+                return <span className="text-xs text-[var(--text-muted)]">↗</span>;
+              }
+              return (
+                <span className="inline-flex justify-end gap-2">
+                  <button type="button" onClick={(e) => { e.stopPropagation(); void openCostRow(row); }} className="fin-act" aria-label="Edit" title="Edit"><IconPencil /></button>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); void deleteCostRow(row); }} className="fin-act fin-act--del" aria-label="Delete" title="Delete"><IconTrash /></button>
+                </span>
+              );
             } },
           ],
         };
@@ -1255,7 +1386,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             } },
             { key: "amount", header: "Amount", width: "140px", align: "right", render: (r) => {
               const row = r as NetProfitLine;
-              return <span className={`font-semibold whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
+              return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
             } },
           ],
         };
@@ -1351,8 +1482,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             </div>
             {financialYearFailed && (
               <p role="alert" className="w-full text-xs text-amber-300">
-                The financial year setting could not be loaded, so the year filters are unavailable.
-                Everything else still works, and a custom From/To range is unaffected.
+                Financial year setting unavailable — use a custom From/To range.
               </p>
             )}
 
@@ -1388,7 +1518,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 charts, so the screen answered two questions at once without saying so. */}
             {rangeError && (
               <p role="alert" className="mt-3 text-xs text-amber-300">
-                {rangeError} Nothing below is filtered until both dates are set.
+                {rangeError}
               </p>
             )}
           </div>
@@ -1413,10 +1543,23 @@ export default function FinanceDashboardPage({ user }: Props) {
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     {card.label}
                   </p>
+                  {card.note && (
+                    <p className="mt-0.5 text-[10px] text-[var(--text-muted)] opacity-60">{card.note}</p>
+                  )}
                   <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${
                     summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
-                    {summaryLoading ? "…" : summaryError ? "—" : formatMoney(card.value)}
+                    {summaryLoading ? "…" : summaryError ? "—" : <ShortAmount value={card.value} />}
                   </p>
+                  {/* The short figure above is rounded, and two rounded cards do not subtract to a
+                      third: read alone, Revenue minus Expenses would not equal Net Profit. So the
+                      exact amount is printed here on every card — not left to a hover, which is
+                      unreachable on a disabled card and on a phone — and the row stays
+                      reconcilable against the tables below and against Reports. */}
+                  {!summaryLoading && !summaryError && (
+                    <p className="mt-1 text-[10px] tabular-nums text-[var(--text-muted)] opacity-70">
+                      Full amount: {exactAmount(card.value)}
+                    </p>
+                  )}
                 </button>
               );
             })}
@@ -1429,38 +1572,17 @@ export default function FinanceDashboardPage({ user }: Props) {
             </div>
           )}
 
-          {summary && !accountSelected && (
-            <p className="mt-3 text-xs text-[var(--text-muted)]">
-              Revenue breakdown: {formatMoney(summary.automaticRevenue)} recognised sales &amp; retained cancellations
-              {" + "}
-              {formatMoney(summary.manualRevenue)} manual.
-              {" "}
-              Customer payments before possession are deposits, not revenue.
-            </p>
-          )}
-
           {/* The whole reason the cards above are renamed. Selecting a bank does not narrow the
               business to that bank: a sale is recognised at possession and moves no cash, so it
               belongs to no account and simply is not here. Saying so is the difference between a
               filtered list and a wrong total. */}
           {summary && accountSelected && (
             <p className="mt-3 text-xs text-amber-300/90">
-              These are the entries recorded against the selected account — not the period's revenue,
-              cost or profit. Sales recognised at possession move no cash, so they belong to no
-              account and are not counted here, and Net Profit is therefore not reported while an
-              account is selected. Clear the account filter to see the period's profitability.
-            </p>
-          )}
-
-          {/* Said plainly rather than left to be inferred from the card names. Three different
-              questions sit in one row of cards, and a reader who assumes they all answer the same
-              one misreads four of the seven. */}
-          {summary && !accountSelected && (
-            <p className="mt-2 text-xs text-[var(--text-muted)]">
-              Revenue, Expenses, Fixed Assets and Net Profit are totals for the selected period.
-              Customer Deposits is a balance as it stood at the end of that period. Current
-              Outstanding and Current Overdue are balances as they stand today — the From/To filter
-              does not apply to them.
+              Entries on this account only — not the period's revenue, cost or profit. Sales move no
+              cash, so they sit on no account and Net Profit is not reported here.{" "}
+              <button type="button" className="underline hover:text-amber-200" onClick={() => setAccountFilter("")}>
+                Clear the account filter
+              </button>
             </p>
           )}
 
@@ -1468,18 +1590,16 @@ export default function FinanceDashboardPage({ user }: Props) {
               reader who assumes those are separate totals will double-count the period's spending. */}
           {summary && !accountSelected && summary.totalAssetPurchases > 0 && (
             <p className="mt-2 text-xs text-sky-300/90">
-              Total Expenses and Net Profit already include {formatMoney(summary.totalAssetPurchases)} of
-              fixed assets bought in this period, at cost — buying an asset spends the money. The
-              Profit &amp; Loss statement deducts the same amount, so the two agree. The assets
-              themselves stay on the Balance Sheet at cost.{" "}
+              Total Expenses already includes the {formatMoney(summary.totalAssetPurchases)} of fixed
+              assets — don't add them on top.{" "}
               <Link to="/finance/reports" className="underline hover:text-sky-200">See Reports</Link>
             </p>
           )}
 
           {summary && summary.whtWithheld > 0 && (
             <p className="mt-2 text-xs text-amber-300/90">
-              Expenses are shown gross. {formatMoney(summary.whtWithheld)} of that was withheld as tax
-              and has not left the bank — it is owed to FBR.{" "}
+              Expenses are gross: {formatMoney(summary.whtWithheld)} was withheld, still in the bank
+              and owed to FBR.{" "}
               <Link to="/finance/settings" className="underline hover:text-amber-200">View WHT payable</Link>
             </p>
           )}
@@ -1507,61 +1627,33 @@ export default function FinanceDashboardPage({ user }: Props) {
 
       {/* Content */}
       <div className="fin-page py-8">
-        {/* View title + actions */}
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-xl font-bold text-[var(--text-heading)]">Transactions</h2>
-            <p className="text-xs text-[var(--text-muted)]">{VIEW_TITLES[view]} — select a card above to switch views.</p>
-            {/* The Total Expenses card is more than the expense table, so its drill-down is more
-                than the expense table. The editable records are one click away rather than
-                unreachable, and the relationship between the two lists is stated. */}
-            {view === "totalExpenses" && (
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Every cost inside the card: expenses, commissions, rebates, customer credits, loan
-                interest and fixed assets, each net of its reversals. Added up, these rows are the
-                card.{" "}
-                <button type="button" className="underline hover:text-[var(--text-primary)]" onClick={() => setView("expense")}>
-                  Open the expense records to edit them
-                </button>
-              </p>
-            )}
-            {view === "expense" && (
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Expense records only — this is part of Total Expenses, not all of it.{" "}
-                <button type="button" className="underline hover:text-[var(--text-primary)]" onClick={() => setView("totalExpenses")}>
-                  Show everything in that card
-                </button>
-              </p>
-            )}
-            {(view === "outstanding" || view === "overdue") && (
-              <p className="mt-1 text-xs text-amber-300/90">
-                A current balance, as it stands today. The From/To filter does not apply to it.
-              </p>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-2.5">
-            <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
-            <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
-            <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
-            <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
-            <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
-            <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
-            <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
-            <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
-              + Add Revenue
-            </Button>
-            <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
-              ◆ Add Fixed Asset
-            </Button>
-            <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
-              − Add Expense
-            </Button>
-          </div>
+        {/* Actions. No heading: the selected card above already names what the table is showing,
+            and a title repeating it was a line of furniture rather than information. */}
+        {/* Centred rather than flush right: justify-content applies to each wrapped line on its own,
+            so the short second row sits under the middle of the long first one instead of hanging
+            off its right edge. */}
+        <div className="mb-5 flex flex-wrap justify-center gap-2.5">
+          <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
+          <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
+          <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
+          <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
+          <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
+          <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
+          <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
+          <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
+            + Add Revenue
+          </Button>
+          <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
+            ◆ Add Fixed Asset
+          </Button>
+          <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
+            − Add Expense
+          </Button>
         </div>
 
-        {error && (
+        {(error ?? rowError) && (
           <div className="mb-4 rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] px-5 py-4 text-sm text-rose-300">
-            {error}
+            {error ?? rowError}
           </div>
         )}
 
@@ -1576,6 +1668,8 @@ export default function FinanceDashboardPage({ user }: Props) {
           emptyText={emptyText}
           minWidth={minWidth}
           resetKey={`${view}|${projectId}|${fromDate}|${toDate}`}
+          onRowClick={view === "totalExpenses" ? (r) => void openCostRow(r as CostLine) : undefined}
+          rowAction={view === "totalExpenses" ? (r) => COST_ROW_ACTIONS[(r as CostLine).source] ?? null : undefined}
         />
 
         {/* Charts — driven by the same filters as everything above */}
@@ -1583,15 +1677,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             day of the range falls inside one of them. They are aggregated when the range is long,
             never sampled — a chart that drew every third quarter under a card covering all of them
             was showing roughly a third of the money and saying nothing about it. */}
-        {chartData && chartData.series.length > 0 && (
-          <p className="mt-6 text-xs text-[var(--text-muted)]">
-            {chartData.series.length} period{chartData.series.length === 1 ? "" : "s"}, covering
-            {" "}{formatDate(chartData.series[0].from)} – {formatDate(chartData.series[chartData.series.length - 1].to)}
-            {" "}with no gaps.
-            {/* The bars are the cards over narrower windows, so an account filter narrows them the
-                same way — including dropping the recognised sales that belong to no account. The
-                cards say so above; the chart has to say so too, or it reads as the whole business. */}
-            {accountSelected && " Scoped to the selected account, exactly as the figures above are."}
+        {/* The bars are the cards over narrower windows, so an account filter narrows them the same
+            way — including dropping the recognised sales that belong to no account. Unlabelled, the
+            chart reads as the whole business. Without that filter the axis already states the range
+            it covers, so the caption only earns its place when it says something the chart cannot. */}
+        {chartData && chartData.series.length > 0 && accountSelected && (
+          <p className="mt-6 text-xs text-amber-300/90">
+            Scoped to the selected account, exactly as the figures above are.
           </p>
         )}
         <FinanceCharts data={chartData} loading={summaryLoading} formatMoney={formatMoney} />
@@ -1625,7 +1717,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   setRevenueForm({ ...revenueForm, revenueCategoryId: v, revenueType: category?.name ?? revenueForm.revenueType });
                 }}
               >
-                <option value="">Select a category</option>
+                <option value="">{revenueCategoriesLoading ? "Loading categories…" : "Select a category"}</option>
                 {revenueCategories.filter((item) => item.isActive || String(item.id) === revenueForm.revenueCategoryId)
                   .map((item) => <option key={item.id} value={item.id}>{item.name}{item.isActive ? "" : " (Retired)"}</option>)}
               </FormSelect>
@@ -1692,7 +1784,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   not in the list — an old work-in-progress purchase must stay correctable in place
                   rather than being pushed onto the wrong account by a blank select. */}
               <FormSelect label="Asset Account" value={assetForm.assetAccountId} onChange={(v) => setAssetForm({ ...assetForm, assetAccountId: v })}>
-                <option value="">Select a fixed asset account</option>
+                <option value="">{assetAccountsLoading ? "Loading asset accounts…" : "Select a fixed asset account"}</option>
                 {assetAccounts.filter((a) => a.isActive || String(a.id) === assetForm.assetAccountId).map((a) => (
                   <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>
                 ))}
@@ -1722,7 +1814,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   wht: v ? assetForm.wht : emptyWht(),
                 })}
               >
-                <option value="">Select a category</option>
+                <option value="">{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
                 {expenseCategories
                   .filter((c) => c.isActive || String(c.id) === assetForm.categoryId)
                   .map((c) => (
@@ -1741,7 +1833,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
                 })}
               >
-                <option value={CUSTOM_TYPE}>One-off supplier (enter manually)…</option>
+                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading suppliers…" : "One-off supplier (enter manually)…"}</option>
                 {vendors
                   .filter((v) => v.isActive || String(v.id) === assetForm.vendorId)
                   .map((v) => (
@@ -1840,7 +1932,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 {expenseForm.legacyCategory ? (
                   <option value={CUSTOM_TYPE}>Keep the original text — “{expenseForm.category}”</option>
                 ) : (
-                  <option value={CUSTOM_TYPE}>Select a category</option>
+                  <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading categories…" : "Select a category"}</option>
                 )}
                 {expenseCategories
                   .filter((c) => c.isActive || String(c.id) === expenseForm.categoryId)
@@ -1867,7 +1959,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                   vendor: v === CUSTOM_TYPE ? "" : (vendors.find((x) => String(x.id) === v)?.name ?? ""),
                 })}
               >
-                <option value={CUSTOM_TYPE}>One-off payee (enter manually)…</option>
+                <option value={CUSTOM_TYPE}>{whtLookupsLoading ? "Loading vendors…" : "One-off payee (enter manually)…"}</option>
                 {vendors
                   .filter((v) => v.isActive || String(v.id) === expenseForm.vendorId)
                   .map((v) => (

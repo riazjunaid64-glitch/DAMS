@@ -30,12 +30,25 @@ export async function openFinanceAttachment(
   fileName: string,
   download: boolean,
 ): Promise<void> {
+  return openAttachmentAt(`/api/Finance/${ATTACHMENT_RESOURCE[kind]}/${recordId}/attachment`, fileName, download);
+}
+
+/**
+ * Same viewer, for records the one-id route above cannot address — a loan movement hangs off both
+ * its loan and its own id. Everything after fetching the bytes is identical, and duplicating it
+ * per record type is how one copy quietly loses the popup-blocker handling or the revoke.
+ */
+export async function openAttachmentAt(
+  path: string,
+  fileName: string,
+  download: boolean,
+): Promise<void> {
   // Opening the placeholder synchronously avoids mobile popup blockers while the
   // authenticated request is in flight. Downloads do not need a new window.
   const previewWindow = download ? null : window.open("", "_blank");
   if (previewWindow) previewWindow.opener = null;
   try {
-    const response = await api(`/api/Finance/${ATTACHMENT_RESOURCE[kind]}/${recordId}/attachment?download=${download}`);
+    const response = await api(`${path}?download=${download}`);
     if (!response.ok) {
       previewWindow?.close();
       throw new Error(await responseMessage(response, "The attachment could not be opened."));

@@ -24,5 +24,12 @@ namespace DAMS.Domain.Entities
 
         public FinanceAccount StaffFinanceAccount { get; set; } = null!;
         public FinanceAccount CounterpartyFinanceAccount { get; set; } = null!;
+
+        /// <summary>
+        /// The signed slip for money handed to, or handed back by, this person. Cash physically
+        /// changing hands is the movement in this system with the least of its own paper trail, so
+        /// it is the one that most needs somewhere to keep the receipt.
+        /// </summary>
+        public FinanceAttachment? Attachment { get; set; }
     }
 }

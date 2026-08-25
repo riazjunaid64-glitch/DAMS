@@ -4,6 +4,8 @@ import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
+import FinanceAttachmentField from "../components/FinanceAttachmentField";
+import { financeApiError, openAttachmentAt, type FinanceAttachmentInfo } from "../api/financeAttachments";
 import { pakistanToday } from "../lib/financePeriods";
 import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency";
 
@@ -18,19 +20,22 @@ type LoanTransaction = {
   id:number; loanId:number; type:"Drawdown"|"Repayment"; principalAmount:number; interestAmount:number;
   totalCashMovement:number; date:string; financeAccountId:number; financeAccountName:string;
   reference:string|null; note:string|null; runningBalance:number; createdAt:string; updatedAt:string; concurrencyToken:string;
+  attachment:FinanceAttachmentInfo|null;
 };
 type Statement = { loan:Loan; items:LoanTransaction[]; hasMore:boolean };
 type LoanForm = { id:number|null; name:string; lenderName:string; financeAccountId:string; isActive:boolean; concurrencyToken:string };
 type TransactionForm = {
   id:number|null; type:"Drawdown"|"Repayment"; principalAmount:string; interestAmount:string;
   date:string; financeAccountId:string; reference:string; note:string; concurrencyToken:string;
+  attachment:FinanceAttachmentInfo|null; selectedAttachment:File|null; removeAttachment:boolean;
 };
 
 const money = (value:number) => `Rs ${value.toLocaleString("en-PK", { minimumFractionDigits:2, maximumFractionDigits:2 })}`;
 const today = pakistanToday;
 const emptyLoan = ():LoanForm => ({id:null,name:"",lenderName:"",financeAccountId:"",isActive:true,concurrencyToken:""});
 const emptyTransaction = (type:"Drawdown"|"Repayment"):TransactionForm => ({
-  id:null,type,principalAmount:"",interestAmount:"",date:today(),financeAccountId:"",reference:"",note:"",concurrencyToken:""
+  id:null,type,principalAmount:"",interestAmount:"",date:today(),financeAccountId:"",reference:"",note:"",concurrencyToken:"",
+  attachment:null,selectedAttachment:null,removeAttachment:false
 });
 
 export default function FinanceLoansPage({user}:{user:User|null}) {
@@ -131,15 +136,22 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
     if(!transactionForm.financeAccountId){setError("Select the cash or bank account used.");return;}
     setSaving(true);setError(null);
     try {
+      // Always the multipart route, with or without a file: one path means the evidence is saved in
+      // the same request as the figures it supports, and there is no second step to half-fail.
       const path=transactionForm.id
-        ?`/api/finance/loans/${selected.id}/transactions/${transactionForm.id}`
-        :`/api/finance/loans/${selected.id}/transactions`;
-      const body=JSON.stringify({
-        type:transactionForm.type,principalAmount:principal,
-        interestAmount:transactionForm.type==="Drawdown"?0:interest,date:transactionForm.date,
-        financeAccountId:Number(transactionForm.financeAccountId),reference:transactionForm.reference.trim()||null,
-        note:transactionForm.note.trim()||null,concurrencyToken:transactionForm.concurrencyToken
-      });
+        ?`/api/finance/loans/${selected.id}/transactions/${transactionForm.id}/form`
+        :`/api/finance/loans/${selected.id}/transactions/form`;
+      const body=new FormData();
+      body.append("type",transactionForm.type);
+      body.append("principalAmount",String(principal));
+      body.append("interestAmount",String(transactionForm.type==="Drawdown"?0:interest));
+      body.append("date",transactionForm.date);
+      body.append("financeAccountId",transactionForm.financeAccountId);
+      if(transactionForm.reference.trim())body.append("reference",transactionForm.reference.trim());
+      if(transactionForm.note.trim())body.append("note",transactionForm.note.trim());
+      body.append("concurrencyToken",transactionForm.concurrencyToken);
+      if(transactionForm.selectedAttachment)body.append("attachment",transactionForm.selectedAttachment);
+      if(transactionForm.removeAttachment)body.append("removeAttachment","true");
       // New movements only: an edit already carries a row version, and it is the insert that can be
       // duplicated by a retry the operator cannot see the result of.
       const signature=`loan:${selected.id}:${transactionForm.type}:${principal}:${interest}:${transactionForm.date}`;
@@ -147,7 +159,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
         ?{method:"PUT",body}
         :moneyRequest(idempotency.key(signature,"loan-movement"),{method:"POST",body});
       const response=await api(path,request);
-      if(!response.ok)throw new Error((await response.json().catch(()=>null))?.message??"Loan movement could not be saved.");
+      if(!response.ok)throw new Error(await financeApiError(response,"Loan movement could not be saved."));
       if(!transactionForm.id)idempotency.release(signature);
       setTransactionForm(null);await loadLoans();await loadStatement(selected.id);
     } catch(caught) { setError(caught instanceof Error?caught.message:"Loan movement could not be saved."); }
@@ -165,8 +177,18 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
   const editTransaction=(row:LoanTransaction)=>setTransactionForm({
     id:row.id,type:row.type,principalAmount:String(row.principalAmount),interestAmount:String(row.interestAmount),
     date:row.date.slice(0,10),financeAccountId:String(row.financeAccountId),reference:row.reference??"",
-    note:row.note??"",concurrencyToken:row.concurrencyToken
+    note:row.note??"",concurrencyToken:row.concurrencyToken,
+    attachment:row.attachment,selectedAttachment:null,removeAttachment:false
   });
+
+  // Failures here belong to one row, not to the statement, so they are shown in the page banner
+  // rather than replacing the movement history with an error.
+  const viewAttachment=async(row:LoanTransaction,download:boolean)=>{
+    if(!selected||!row.attachment)return;
+    try {
+      await openAttachmentAt(`/api/finance/loans/${selected.id}/transactions/${row.id}/attachment`,row.attachment.fileName,download);
+    } catch(caught) { setError(caught instanceof Error?caught.message:"The attachment could not be opened."); }
+  };
 
   if(user?.role!=="Admin")return null;
   return <Container className="py-8">
@@ -193,7 +215,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
           </section>
           <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
             <div className="border-b border-[var(--border)] p-4"><h3 className="font-semibold text-[var(--text-heading)]">Movement history</h3><p className="text-xs text-[var(--text-muted)]">Running balance is principal still owed after each movement. Interest never changes it.</p></div>
-            <div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement","Principal","Interest","Bank movement","Running balance","Actions"].map(label=><th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement?.items.map(row=><tr key={row.id} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className={`font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-[var(--text-heading)]"}`}>{row.type==="Drawdown"?"Money received":"Repayment"}</p><p className="text-xs text-[var(--text-muted)]">{new Date(row.date).toLocaleDateString("en-GB")} · {row.financeAccountName}</p>{row.reference&&<p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.note&&<p className="mt-1 max-w-sm text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3">{money(row.principalAmount)}<p className="text-xs text-[var(--text-muted)]">{row.type==="Drawdown"?"owed ↑":"owed ↓"}</p></td><td className="p-3">{row.interestAmount?money(row.interestAmount):"—"}{row.interestAmount>0&&<p className="text-xs text-amber-300">P&L cost</p>}</td><td className={`p-3 font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-rose-300"}`}>{row.type==="Drawdown"?"+":"−"}{money(row.totalCashMovement)}</td><td className="p-3 font-bold">{money(row.runningBalance)}</td><td className="p-3"><div className="flex gap-3"><button className="text-[var(--accent)]" onClick={()=>editTransaction(row)}>Correct</button><button className="text-rose-300" onClick={()=>void removeTransaction(row)}>Delete</button></div></td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[980px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement","Principal","Interest","Bank movement","Running balance","Attachment","Actions"].map(label=><th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement?.items.map(row=><tr key={row.id} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className={`font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-[var(--text-heading)]"}`}>{row.type==="Drawdown"?"Money received":"Repayment"}</p><p className="text-xs text-[var(--text-muted)]">{new Date(row.date).toLocaleDateString("en-GB")} · {row.financeAccountName}</p>{row.reference&&<p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.note&&<p className="mt-1 max-w-sm text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3">{money(row.principalAmount)}<p className="text-xs text-[var(--text-muted)]">{row.type==="Drawdown"?"owed ↑":"owed ↓"}</p></td><td className="p-3">{row.interestAmount?money(row.interestAmount):"—"}{row.interestAmount>0&&<p className="text-xs text-amber-300">P&L cost</p>}</td><td className={`p-3 font-semibold ${row.type==="Drawdown"?"text-emerald-300":"text-rose-300"}`}>{row.type==="Drawdown"?"+":"−"}{money(row.totalCashMovement)}</td><td className="p-3 font-bold">{money(row.runningBalance)}</td><td className="p-3">{row.attachment?<span className="inline-flex items-center gap-2 whitespace-nowrap"><button type="button" onClick={()=>void viewAttachment(row,false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button><button type="button" aria-label={`Download ${row.attachment.fileName}`} title={`Download ${row.attachment.fileName}`} onClick={()=>void viewAttachment(row,true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button></span>:<span className="text-xs text-[var(--text-muted)]">None</span>}</td><td className="p-3"><div className="flex gap-3"><button className="text-[var(--accent)]" onClick={()=>editTransaction(row)}>Correct</button><button className="text-rose-300" onClick={()=>void removeTransaction(row)}>Delete</button></div></td></tr>)}</tbody></table></div>
             {loadingStatement&&<p className="p-6 text-center text-sm text-[var(--text-muted)]">Loading statement…</p>}
             {!loadingStatement&&!shownStatement?.items.length&&<p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements recorded for this loan.</p>}
             {shownStatement?.hasMore&&<div className="p-4 text-center"><Button variant="outline" disabled={loadingStatement} onClick={()=>void loadStatement(selected.id,shownStatement.items.length)}>Load older movements</Button></div>}
@@ -202,7 +224,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
       </main>
     </div>
     {loanForm&&<Modal title={loanForm.id?"Edit loan":"Add loan"} close={()=>!saving&&setLoanForm(null)}><div className="space-y-4"><Field label="Loan name" value={loanForm.name} set={value=>setLoanForm({...loanForm,name:value})}/><Field label="Lender name (optional)" value={loanForm.lenderName} set={value=>setLoanForm({...loanForm,lenderName:value})}/><Select label="Loan liability account" value={loanForm.financeAccountId} set={value=>setLoanForm({...loanForm,financeAccountId:value})}><option value="">Select existing Liability account</option>{loanAccounts.filter(account=>(account.isActive||String(account.id)===loanForm.financeAccountId)&&(!account.linkedLoanId||account.linkedLoanId===loanForm.id)).map(account=><option key={account.id} value={account.id}>{account.name} · {account.accountHolderName}{account.isActive?"":" (Inactive)"}</option>)}</Select><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={loanForm.isActive} onChange={event=>setLoanForm({...loanForm,isActive:event.target.checked})}/> Active — allow new movements</label><p className="rounded-xl bg-[var(--surface-glass)] p-3 text-xs text-[var(--text-muted)]">The selected account carries principal owed on the Balance Sheet. Any opening balance already on it is treated as principal brought forward.</p><div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={()=>setLoanForm(null)}>Cancel</Button><Button disabled={saving} onClick={()=>void saveLoan()}>{saving?"Saving…":"Save loan"}</Button></div></div></Modal>}
-    {transactionForm&&selected&&<Modal title={`${transactionForm.id?"Correct":"Record"} ${transactionForm.type.toLowerCase()} · ${selected.name}`} close={()=>!saving&&setTransactionForm(null)}><div className="space-y-4"><Select label="Movement" value={transactionForm.type} set={value=>setTransactionForm({...transactionForm,type:value as "Drawdown"|"Repayment",interestAmount:value==="Drawdown"?"":transactionForm.interestAmount})}><option value="Drawdown">Money received (drawdown)</option><option value="Repayment">Repayment</option></Select><div className={`grid gap-3 ${transactionForm.type==="Repayment"?"sm:grid-cols-2":""}`}><Field label={transactionForm.type==="Drawdown"?"Principal received":"Principal portion"} type="number" value={transactionForm.principalAmount} set={value=>setTransactionForm({...transactionForm,principalAmount:value})}/>{transactionForm.type==="Repayment"&&<Field label="Interest portion" type="number" value={transactionForm.interestAmount} set={value=>setTransactionForm({...transactionForm,interestAmount:value})}/>}</div>{transactionForm.type==="Repayment"&&<div className="flex items-center justify-between rounded-xl border border-amber-500/25 bg-amber-500/[0.07] p-4"><div><p className="text-sm font-semibold text-amber-200">Total leaving the bank</p><p className="text-xs text-[var(--text-muted)]">Principal + interest</p></div><strong className="text-xl">{money(totalLeaving)}</strong></div>}<Field label="Date" type="date" value={transactionForm.date} set={value=>setTransactionForm({...transactionForm,date:value})}/><Select label={transactionForm.type==="Drawdown"?"Received in account":"Paid from account"} value={transactionForm.financeAccountId} set={value=>setTransactionForm({...transactionForm,financeAccountId:value})}><option value="">Select cash or bank account</option>{cashAccounts.filter(account=>account.isActive||String(account.id)===transactionForm.financeAccountId).map(account=><option key={account.id} value={account.id}>{account.name} · {account.accountHolderName}{account.isActive?"":" (Inactive)"}</option>)}</Select><Field label="Reference (optional)" value={transactionForm.reference} set={value=>setTransactionForm({...transactionForm,reference:value})}/><label className="block text-sm text-[var(--text-muted)]">Note (optional)<textarea className="mt-1 min-h-24 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" value={transactionForm.note} onChange={event=>setTransactionForm({...transactionForm,note:event.target.value})}/></label><div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={()=>setTransactionForm(null)}>Cancel</Button><Button disabled={saving} onClick={()=>void saveTransaction()}>{saving?"Saving…":transactionForm.id?"Save correction":"Record movement"}</Button></div></div></Modal>}
+    {transactionForm&&selected&&<Modal title={`${transactionForm.id?"Correct":"Record"} ${transactionForm.type.toLowerCase()} · ${selected.name}`} close={()=>!saving&&setTransactionForm(null)}><div className="space-y-4"><Select label="Movement" value={transactionForm.type} set={value=>setTransactionForm({...transactionForm,type:value as "Drawdown"|"Repayment",interestAmount:value==="Drawdown"?"":transactionForm.interestAmount})}><option value="Drawdown">Money received (drawdown)</option><option value="Repayment">Repayment</option></Select><div className={`grid gap-3 ${transactionForm.type==="Repayment"?"sm:grid-cols-2":""}`}><Field label={transactionForm.type==="Drawdown"?"Principal received":"Principal portion"} type="number" value={transactionForm.principalAmount} set={value=>setTransactionForm({...transactionForm,principalAmount:value})}/>{transactionForm.type==="Repayment"&&<Field label="Interest portion" type="number" value={transactionForm.interestAmount} set={value=>setTransactionForm({...transactionForm,interestAmount:value})}/>}</div>{transactionForm.type==="Repayment"&&<div className="flex items-center justify-between rounded-xl border border-amber-500/25 bg-amber-500/[0.07] p-4"><div><p className="text-sm font-semibold text-amber-200">Total leaving the bank</p><p className="text-xs text-[var(--text-muted)]">Principal + interest</p></div><strong className="text-xl">{money(totalLeaving)}</strong></div>}<Field label="Date" type="date" value={transactionForm.date} set={value=>setTransactionForm({...transactionForm,date:value})}/><Select label={transactionForm.type==="Drawdown"?"Received in account":"Paid from account"} value={transactionForm.financeAccountId} set={value=>setTransactionForm({...transactionForm,financeAccountId:value})}><option value="">Select cash or bank account</option>{cashAccounts.filter(account=>account.isActive||String(account.id)===transactionForm.financeAccountId).map(account=><option key={account.id} value={account.id}>{account.name} · {account.accountHolderName}{account.isActive?"":" (Inactive)"}</option>)}</Select><Field label="Reference (optional)" value={transactionForm.reference} set={value=>setTransactionForm({...transactionForm,reference:value})}/><label className="block text-sm text-[var(--text-muted)]">Note (optional)<textarea className="mt-1 min-h-24 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" value={transactionForm.note} onChange={event=>setTransactionForm({...transactionForm,note:event.target.value})}/></label><FinanceAttachmentField existing={transactionForm.attachment} selected={transactionForm.selectedAttachment} removeExisting={transactionForm.removeAttachment} disabled={saving} onSelected={file=>setTransactionForm(current=>current?{...current,selectedAttachment:file}:current)} onRemoveExisting={remove=>setTransactionForm(current=>current?{...current,removeAttachment:remove}:current)} onViewExisting={()=>{const row=shownStatement?.items.find(item=>item.id===transactionForm.id);if(row)void viewAttachment(row,false);}} onDownloadExisting={()=>{const row=shownStatement?.items.find(item=>item.id===transactionForm.id);if(row)void viewAttachment(row,true);}}/><div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={()=>setTransactionForm(null)}>Cancel</Button><Button disabled={saving} onClick={()=>void saveTransaction()}>{saving?"Saving…":transactionForm.id?"Save correction":"Record movement"}</Button></div></div></Modal>}
   </Container>;
 }
 

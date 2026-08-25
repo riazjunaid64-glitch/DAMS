@@ -12,18 +12,20 @@ namespace DAMS.Application.Services
         private const decimal ShareTolerance = 0.01m;
         private readonly AppDbContext _context;
         private readonly IFinanceAccountService _accounts;
-        public CapitalPartnerService(AppDbContext context, IFinanceAccountService accounts)
+        private readonly IFinanceAttachmentWriter _attachments;
+        public CapitalPartnerService(AppDbContext context, IFinanceAccountService accounts, IFinanceAttachmentWriter attachments)
         {
             _context = context;
             _accounts = accounts;
+            _attachments = attachments;
         }
 
         public async Task<List<CapitalPartnerDto>> GetAllAsync(bool includeInactive, CancellationToken cancellationToken = default)
         {
-            var partners = await _context.CapitalPartners.AsNoTracking().Include(p => p.FinanceAccount)
-                .Include(p => p.Transactions).Where(p => includeInactive || p.IsActive)
-                .OrderByDescending(p => p.IsActive).ThenBy(p => p.Name).ToListAsync(cancellationToken);
-            return partners.Select(Map).ToList();
+            return await LoadPartnersAsync(
+                _context.CapitalPartners.AsNoTracking().Where(p => includeInactive || p.IsActive)
+                    .OrderByDescending(p => p.IsActive).ThenBy(p => p.Name),
+                cancellationToken);
         }
 
         public async Task<CapitalPartnerDto> CreateAsync(SaveCapitalPartnerDto dto, CancellationToken cancellationToken = default)
@@ -94,17 +96,23 @@ namespace DAMS.Application.Services
             var fromDate = from?.Date;
             var toExclusive = to?.Date.AddDays(1);
             var query = _context.CapitalTransactions.AsNoTracking().Where(t => t.CapitalPartnerId == id);
-            var before = fromDate.HasValue ? await query.Where(t => t.Date < fromDate.Value).ToListAsync(cancellationToken) : [];
+            // Only the signed total is needed before the selected range. Let SQL return one scalar
+            // instead of materialising a partner's entire historical statement.
+            var before = fromDate.HasValue
+                ? await query.Where(t => t.Date < fromDate.Value)
+                    .SumAsync(t => (decimal?)(t.Type == CapitalTransactionType.Withdrawal
+                        || t.Type == CapitalTransactionType.LossShare ? -t.Amount : t.Amount), cancellationToken) ?? 0m
+                : 0m;
             if (fromDate.HasValue) query = query.Where(t => t.Date >= fromDate.Value);
             if (toExclusive.HasValue) query = query.Where(t => t.Date < toExclusive.Value);
-            var rows = await query.OrderBy(t => t.Date).ThenBy(t => t.Id).ToListAsync(cancellationToken);
+            var rows = await query.Include(t => t.Attachment).OrderBy(t => t.Date).ThenBy(t => t.Id).ToListAsync(cancellationToken);
             var transactions = rows.Select(MapTransaction).ToList();
             var baseline = partner.FinanceAccount?.OpeningBalance ?? 0m;
             var baselineDate = await _context.OpeningBalanceSets.AsNoTracking().Where(s => s.CommittedAt != null)
                 .Select(s => (DateTime?)s.AsAtDate).SingleOrDefaultAsync(cancellationToken);
             var baselineWithinEnd = !baselineDate.HasValue || !toExclusive.HasValue || baselineDate.Value < toExclusive.Value;
             var baselineBeforeRange = !baselineDate.HasValue || !fromDate.HasValue || baselineDate.Value < fromDate.Value;
-            var opening = before.Sum(Signed);
+            var opening = before;
             if (baselineWithinEnd && baselineBeforeRange) opening += baseline;
             else if (baselineWithinEnd && baseline != 0m)
             {
@@ -123,7 +131,8 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId, CancellationToken cancellationToken = default)
+        public async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
         {
             if (!Enum.IsDefined(dto.Type)) throw new InvalidOperationException("Capital transaction type is invalid.");
             if (dto.Amount <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
@@ -163,45 +172,169 @@ namespace DAMS.Application.Services
                 ProfitSharePercentSnapshot = dto.Type == CapitalTransactionType.ProfitShare ? partner.ProfitSharePercent : null,
                 RecordedByUserId = userId, CreatedAt = DateTime.UtcNow
             };
+            // Stored after every validation above and before the save, so a rejected amount or date
+            // never leaves a file on disk, and a save that fails takes its upload with it.
+            if (attachment != null)
+            {
+                var stored = await _attachments.StoreAsync(attachment, cancellationToken);
+                transaction.Attachment = new FinanceAttachment();
+                stored.ApplyTo(transaction.Attachment);
+                _context.CapitalTransactions.Add(transaction);
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+                catch
+                {
+                    await _attachments.DiscardAsync(stored.StoredFileName);
+                    throw;
+                }
+                return MapTransaction(transaction);
+            }
             _context.CapitalTransactions.Add(transaction);
             await _context.SaveChangesAsync(cancellationToken);
             return MapTransaction(transaction);
         }
 
-        private async Task<CapitalPartnerDto> GetAsync(int id, CancellationToken cancellationToken)
+        public async Task<FinanceAttachmentDownload> GetTransactionAttachmentAsync(
+            int partnerId, int transactionId, CancellationToken cancellationToken = default)
         {
-            var partner = await _context.CapitalPartners.AsNoTracking().Include(p => p.FinanceAccount).Include(p => p.Transactions)
-                .SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
-                ?? throw new InvalidOperationException("Capital partner not found.");
-            return Map(partner);
+            var attachment = await _context.CapitalTransactions.AsNoTracking()
+                .Where(t => t.Id == transactionId && t.CapitalPartnerId == partnerId && t.Attachment != null)
+                .Select(t => t.Attachment!)
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new FileNotFoundException("This capital movement does not have an attachment.");
+            var content = await _attachments.OpenAsync(attachment.StoredFileName, cancellationToken)
+                ?? throw new FileNotFoundException("The attachment file is missing from storage. Please attach it again.");
+            return new FinanceAttachmentDownload
+            {
+                Content = content,
+                FileName = attachment.OriginalFileName,
+                ContentType = attachment.ContentType
+            };
         }
 
-        private static CapitalPartnerDto Map(CapitalPartner partner)
+        public async Task RemoveTransactionAttachmentAsync(
+            int partnerId, int transactionId, CancellationToken cancellationToken = default)
         {
-            var openingTransactions = partner.Transactions.Where(t => t.Type == CapitalTransactionType.OpeningBalance).Sum(t => t.Amount);
-            var contributions = partner.Transactions.Where(t => t.Type == CapitalTransactionType.Contribution).Sum(t => t.Amount);
-            var withdrawals = partner.Transactions.Where(t => t.Type == CapitalTransactionType.Withdrawal).Sum(t => t.Amount);
-            var profits = partner.Transactions.Where(t => t.Type == CapitalTransactionType.ProfitShare).Sum(t => t.Amount);
-            var losses = partner.Transactions.Where(t => t.Type == CapitalTransactionType.LossShare).Sum(t => t.Amount);
-            var opening = (partner.FinanceAccount?.OpeningBalance ?? 0m) + openingTransactions;
-            return new CapitalPartnerDto
+            var transaction = await _context.CapitalTransactions.Include(t => t.Attachment)
+                .SingleOrDefaultAsync(t => t.Id == transactionId && t.CapitalPartnerId == partnerId, cancellationToken)
+                ?? throw new InvalidOperationException("Capital transaction not found.");
+            if (transaction.Attachment == null) return;
+            var storedFileName = transaction.Attachment.StoredFileName;
+            _context.FinanceAttachments.Remove(transaction.Attachment);
+            await _context.SaveChangesAsync(cancellationToken);
+            await _attachments.ForgetAsync(storedFileName);
+        }
+
+        private async Task<CapitalPartnerDto> GetAsync(int id, CancellationToken cancellationToken)
+        {
+            var partners = await LoadPartnersAsync(
+                _context.CapitalPartners.AsNoTracking().Where(p => p.Id == id),
+                cancellationToken);
+            return partners.SingleOrDefault()
+                ?? throw new InvalidOperationException("Capital partner not found.");
+        }
+
+        private async Task<List<CapitalPartnerDto>> LoadPartnersAsync(
+            IQueryable<CapitalPartner> query,
+            CancellationToken cancellationToken)
+        {
+            // Read the partner rows first, then one conditional aggregate per partner. The old
+            // Include loaded every transaction ever recorded just to calculate five totals.
+            var partners = await query.Select(partner => new CapitalPartnerRow
             {
                 Id = partner.Id, Name = partner.Name, Cnic = partner.Cnic, Ntn = partner.Ntn,
                 ProfitSharePercent = partner.ProfitSharePercent, FinanceAccountId = partner.FinanceAccountId,
-                FinanceAccountName = partner.FinanceAccount?.Name, IsActive = partner.IsActive,
+                FinanceAccountName = partner.FinanceAccount == null ? null : partner.FinanceAccount.Name,
+                IsActive = partner.IsActive,
                 JoinedDate = partner.JoinedDate, ExitedDate = partner.ExitedDate, CreatedAt = partner.CreatedAt,
-                OpeningBalance = Money(opening), Contributions = Money(contributions), Withdrawals = Money(withdrawals),
-                ProfitShare = Money(profits), LossShare = Money(losses),
-                ClosingBalance = Money(opening + contributions + profits - withdrawals - losses),
-                ConcurrencyToken = Convert.ToBase64String(partner.RowVersion)
-            };
+                AccountOpeningBalance = partner.FinanceAccount == null ? 0m : partner.FinanceAccount.OpeningBalance,
+                RowVersion = partner.RowVersion
+            }).ToListAsync(cancellationToken);
+
+            if (partners.Count == 0) return [];
+
+            var partnerIds = partners.Select(partner => partner.Id).ToArray();
+            var totals = await _context.CapitalTransactions.AsNoTracking()
+                .Where(transaction => partnerIds.Contains(transaction.CapitalPartnerId))
+                .GroupBy(transaction => transaction.CapitalPartnerId)
+                .Select(group => new CapitalPartnerTotals
+                {
+                    PartnerId = group.Key,
+                    Opening = group.Sum(transaction => transaction.Type == CapitalTransactionType.OpeningBalance
+                        ? transaction.Amount : 0m),
+                    Contributions = group.Sum(transaction => transaction.Type == CapitalTransactionType.Contribution
+                        ? transaction.Amount : 0m),
+                    Withdrawals = group.Sum(transaction => transaction.Type == CapitalTransactionType.Withdrawal
+                        ? transaction.Amount : 0m),
+                    ProfitShare = group.Sum(transaction => transaction.Type == CapitalTransactionType.ProfitShare
+                        ? transaction.Amount : 0m),
+                    LossShare = group.Sum(transaction => transaction.Type == CapitalTransactionType.LossShare
+                        ? transaction.Amount : 0m)
+                })
+                .ToDictionaryAsync(total => total.PartnerId, cancellationToken);
+
+            return partners.Select(partner =>
+            {
+                totals.TryGetValue(partner.Id, out var total);
+                total ??= new CapitalPartnerTotals();
+                var opening = partner.AccountOpeningBalance + total.Opening;
+                return new CapitalPartnerDto
+                {
+                    Id = partner.Id, Name = partner.Name, Cnic = partner.Cnic, Ntn = partner.Ntn,
+                    ProfitSharePercent = partner.ProfitSharePercent, FinanceAccountId = partner.FinanceAccountId,
+                    FinanceAccountName = partner.FinanceAccountName, IsActive = partner.IsActive,
+                    JoinedDate = partner.JoinedDate, ExitedDate = partner.ExitedDate, CreatedAt = partner.CreatedAt,
+                    OpeningBalance = Money(opening), Contributions = Money(total.Contributions),
+                    Withdrawals = Money(total.Withdrawals), ProfitShare = Money(total.ProfitShare),
+                    LossShare = Money(total.LossShare),
+                    ClosingBalance = Money(opening + total.Contributions + total.ProfitShare
+                        - total.Withdrawals - total.LossShare),
+                    ConcurrencyToken = Convert.ToBase64String(partner.RowVersion)
+                };
+            }).ToList();
+        }
+
+        private sealed class CapitalPartnerRow
+        {
+            public int Id { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public string? Cnic { get; set; }
+            public string? Ntn { get; set; }
+            public decimal ProfitSharePercent { get; set; }
+            public int? FinanceAccountId { get; set; }
+            public string? FinanceAccountName { get; set; }
+            public bool IsActive { get; set; }
+            public DateTime? JoinedDate { get; set; }
+            public DateTime? ExitedDate { get; set; }
+            public DateTime CreatedAt { get; set; }
+            public decimal AccountOpeningBalance { get; set; }
+            public byte[] RowVersion { get; set; } = [];
+        }
+
+        private sealed class CapitalPartnerTotals
+        {
+            public int PartnerId { get; set; }
+            public decimal Opening { get; set; }
+            public decimal Contributions { get; set; }
+            public decimal Withdrawals { get; set; }
+            public decimal ProfitShare { get; set; }
+            public decimal LossShare { get; set; }
         }
 
         private static CapitalTransactionDto MapTransaction(CapitalTransaction transaction) => new()
         {
             Id = transaction.Id, Type = transaction.Type, Amount = transaction.Amount, Date = transaction.Date,
             FinanceAccountId = transaction.FinanceAccountId, Reference = transaction.Reference, Note = transaction.Note,
-            ProfitSharePercentSnapshot = transaction.ProfitSharePercentSnapshot, CreatedAt = transaction.CreatedAt
+            ProfitSharePercentSnapshot = transaction.ProfitSharePercentSnapshot, CreatedAt = transaction.CreatedAt,
+            Attachment = transaction.Attachment == null ? null : new FinanceAttachmentDto
+            {
+                FileName = transaction.Attachment.OriginalFileName,
+                ContentType = transaction.Attachment.ContentType,
+                FileSize = transaction.Attachment.FileSize,
+                UploadedAt = transaction.Attachment.UploadedAt
+            }
         };
 
         private async Task ValidateCapitalAccount(int? accountId, int? partnerId, CancellationToken cancellationToken)

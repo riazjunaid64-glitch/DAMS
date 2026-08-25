@@ -27,6 +27,8 @@ namespace DAMS.Application.Interfaces
         Task<CapitalPartnerDto> UpdateAsync(int id, SaveCapitalPartnerDto dto, CancellationToken cancellationToken = default);
         Task<List<CapitalPartnerDto>> UpdateSharesAsync(SaveCapitalPartnerSharesDto dto, CancellationToken cancellationToken = default);
         Task<CapitalPartnerStatementDto> GetStatementAsync(int id, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
-        Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId, CancellationToken cancellationToken = default);
+        Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default);
+        Task<FinanceAttachmentDownload> GetTransactionAttachmentAsync(int partnerId, int transactionId, CancellationToken cancellationToken = default);
+        Task RemoveTransactionAttachmentAsync(int partnerId, int transactionId, CancellationToken cancellationToken = default);
     }
 }
