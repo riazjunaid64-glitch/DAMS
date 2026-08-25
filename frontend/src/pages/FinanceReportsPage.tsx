@@ -220,15 +220,26 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
 
 function PnlView({ report }: { report: Pnl }) {
   return <ReportCard title={`Profit & Loss · ${report.periodLabel}`}>
-    <TableHeader/><SectionRows title="Income" lines={report.incomeLines}/><TotalRow label="Total Income" current={report.totalIncome} prior={report.priorTotalIncome}/>
-    <SectionRows title="Expenses" lines={report.expenseLines}/><TotalRow label="Total Expenses" current={report.totalExpenses} prior={report.priorTotalExpenses}/>
-    <div className={`mt-4 grid grid-cols-3 rounded-xl p-4 font-bold ${report.netProfit >= 0 ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}><span>Net Profit</span><span className="text-right">{money(report.netProfit)}</span><span className="text-right">{money(report.priorNetProfit)}</span></div>
-    <p className="mt-4 text-xs text-amber-300">Unit sales are recognised in full at possession, on the possession date. Customer payments taken before possession are a deposit liability, not income, and do not appear here. Construction and site work is an expense on the day it is paid — it is not held as work in progress. Fixed assets bought in the period are deducted above at cost, exactly as the Finance dashboard deducts them — one Net Profit figure, on every screen. The assets themselves stay on the Balance Sheet at cost and are never written down, which is why that statement's retained profit is higher and says so.</p>
+    <PnlSummary report={report}/>
+    
   </ReportCard>;
 }
-function TableHeader(){return <div className="grid grid-cols-3 border-b border-[var(--border)] px-3 pb-2 text-xs font-semibold uppercase text-[var(--text-muted)]"><span>Account</span><span className="text-right">Current</span><span className="text-right">Prior year</span></div>}
-function SectionRows({title,lines}:{title:string;lines:PnlLine[]}){return <div className="mt-4"><h3 className="px-3 text-sm font-bold text-[var(--text-heading)]">{title}</h3>{lines.length ? lines.map((line)=><div key={`${line.categoryId}-${line.name}`} className="grid grid-cols-3 border-b border-[var(--border)]/60 px-3 py-2 text-sm"><span>{line.name}<small className="ml-2 text-[var(--text-muted)]">{line.transactionCount} tx</small></span><span className="text-right">{money(line.amount)}</span><span className="text-right text-[var(--text-muted)]">{money(line.priorAmount ?? 0)}</span></div>):<p className="px-3 py-4 text-sm text-[var(--text-muted)]">No {title.toLowerCase()} in this period.</p>}</div>}
-function TotalRow({label,current,prior}:{label:string;current:number;prior:number}){return <div className="grid grid-cols-3 px-3 py-3 font-semibold"><span>{label}</span><span className="text-right">{money(current)}</span><span className="text-right">{money(prior)}</span></div>}
+// The three figures the sheet exists to answer, and now the whole of it. They come straight off the
+// report the server sent — this states them, it does not compute anything. The per-head breakdown
+// and the prior-year column still come back in that response; they are simply no longer shown.
+function PnlSummary({report}:{report:Pnl}){
+  const rows = [
+    {label:"Total Revenue", value:report.totalIncome, tone:"text-emerald-400"},
+    {label:"Total Expenses", value:report.totalExpenses, tone:"text-rose-400"},
+    {label:"Net Profit", value:report.netProfit, tone:report.netProfit >= 0 ? "text-sky-400" : "text-rose-400"},
+  ];
+  return <div className="mb-6 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
+    {rows.map((row,index)=><div key={row.label} className={`flex items-center justify-between gap-4 px-5 py-4 ${index ? "border-t border-[var(--border)]" : ""}`}>
+      <span className="text-sm font-medium text-[var(--text-primary)]">{row.label}</span>
+      <span className={`text-lg font-bold tabular-nums ${row.tone}`}>{money(row.value)}</span>
+    </div>)}
+  </div>;
+}
 
 function TrialView({ report, filters }: { report: TrialBalanceReport; filters: AppliedTrialBalanceFilters }) {
   const [selected, setSelected] = useState<TrialBalanceRow | null>(null);
