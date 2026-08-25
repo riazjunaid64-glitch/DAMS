@@ -386,7 +386,7 @@ function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard 
   {report.assetGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}<BsTotal label="Total Assets" amount={report.totalAssets}/>
   {report.liabilityGroups.map((group)=><BsGroupView key={group.name} group={group}/>)}
   <div className="mt-5"><h3 className="font-bold">Capital</h3>{report.capitalLines.map((line)=><BsLineView key={line.accountId} line={line}/>)}<BsLineView line={{accountId:-1,ledgerCode:null,name:"Retained Profit (per the ledger)",amount:report.retainedProfit}}/></div>
-  <BsTotal label="Total Liabilities & Capital" amount={report.totalLiabilitiesAndCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
+  <BsTotal label="Total Capital" amount={report.totalCapital}/><p className={`mt-4 rounded-xl p-3 text-center font-semibold ${report.isBalanced ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"}`}>{report.isBalanced ? "Balanced" : "Action required"}</p>
   {/* Spending Net Profit carries and this ledger position cannot, stated on the statement rather
       than left to be found. Described strictly against THIS sheet's own window: subtracting it from
       a P&L run for some other period is arithmetic on two different questions, so the panel names

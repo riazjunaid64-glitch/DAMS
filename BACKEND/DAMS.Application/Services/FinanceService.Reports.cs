@@ -625,9 +625,12 @@ namespace DAMS.Application.Services
             {
                 rows.Add(new object?[] { group.Name, null });
                 rows.AddRange(group.Lines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
+                rows.Add(new object?[] { "Total " + group.Name, group.Total });
             }
+            rows.Add(new object?[] { "Capital", null });
             rows.AddRange(report.CapitalLines.Select(l => (IReadOnlyList<object?>)new object?[] { l.Name, l.Amount }));
             rows.Add(new object?[] { "Retained Profit (per the ledger)", report.RetainedProfit });
+            rows.Add(new object?[] { "Total Capital", report.TotalCapital });
             rows.Add(new object?[] { "Total Liabilities & Capital", report.TotalLiabilitiesAndCapital });
             rows.Add(new object?[] { "Balanced", report.IsBalanced ? "Yes" : "No" });
             // This workbook is what reaches the accountant who has to decide where the balancing
