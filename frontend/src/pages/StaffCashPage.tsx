@@ -9,6 +9,10 @@ import FinanceAttachmentField from "../components/FinanceAttachmentField";
 import { financeApiError, openAttachmentAt, openFinanceAttachment, type FinanceAttachmentInfo } from "../api/financeAttachments";
 import { pakistanToday } from "../lib/financePeriods";
 import { moneyRequest, useIdempotencyKeys } from "../lib/idempotency";
+import { useProjects } from "../contexts/projectsContextValue";
+import { listCategories, vendorOptions } from "../features/finance/whtApi";
+import { emptyWht, type ExpenseCategory, type VendorOption, type WhtFormValue } from "../features/finance/whtTypes";
+import ExpenseWhtFields from "../components/ExpenseWhtFields";
 
 type Props = { user: User | null };
 
@@ -57,6 +61,27 @@ type HistoryItem = {
 };
 
 type Statement = { holder: Holder; items: HistoryItem[]; hasMore: boolean; nextCursor: string | null };
+
+// Money the person has already spent out of the float. It is an ordinary company expense — the
+// only thing fixed about it is which account paid, which is this float.
+//
+// It carries the vendor's identity and the withholding block for a reason. The rate depends on
+// the supplier's filer status, and a free-text payee resolves to Unknown, which is withheld at
+// the non-filer rate — so a form without the vendor list quietly over-deducts from every filer
+// it pays. Same picker and same shared tax component as the dashboard's expense form, so the
+// figure does not depend on which screen the expense was entered from.
+type ExpenseForm = {
+  amount: string;
+  date: string;
+  categoryId: string;
+  projectId: string;
+  /** The registered supplier, when it is one. Empty for a one-off payee. */
+  vendorId: string;
+  vendor: string;
+  description: string;
+  attachment: File | null;
+  wht: WhtFormValue;
+};
 type AccountOption = { id: number; name: string; accountHolderName: string; isActive: boolean };
 type TransferForm = {
   id: number | null;
@@ -82,6 +107,14 @@ const money = (value: number) => {
 const date = (value: string | null) => value
   ? new Date(value).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
   : "—";
+// Distinct from a real vendor id, and from the empty string a cleared select would give.
+const CUSTOM_PAYEE = "__one_off__";
+
+const emptyExpense = (): ExpenseForm => ({
+  amount: "", date: today(), categoryId: "", projectId: "", vendorId: "", vendor: "",
+  description: "", attachment: null, wht: emptyWht(),
+});
+
 const emptyTransfer = (type: TransferForm["type"], amount = ""): TransferForm => ({
   id: null, type, amount, date: today(), counterpartyFinanceAccountId: "",
   reference: "", note: "", concurrencyToken: "",
@@ -99,6 +132,10 @@ export default function StaffCashPage({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [holderName, setHolderName] = useState<string | null>(null);
   const [transfer, setTransfer] = useState<TransferForm | null>(null);
+  const [expense, setExpense] = useState<ExpenseForm | null>(null);
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [vendors, setVendors] = useState<VendorOption[]>([]);
+  const { projects } = useProjects();
   const [saving, setSaving] = useState(false);
   const idempotency = useIdempotencyKeys();
 
@@ -144,6 +181,10 @@ export default function StaffCashPage({ user }: Props) {
       const nextOverview = await overviewResponse.json() as Overview;
       setOverview(nextOverview);
       if (accountsResponse.ok) setAccounts(await accountsResponse.json());
+      // Heads are only needed by the expense form; a failure to read them must not take the
+      // whole page down, so it is deliberately not awaited into the throwing path above.
+      void listCategories().then(setCategories).catch(() => setCategories([]));
+      void vendorOptions().then(setVendors).catch(() => setVendors([]));
       // Read through a ref rather than a dependency: naming selectedId as one would rebuild this
       // callback on every selection and re-run the mount effect below, refetching the whole
       // overview each time somebody clicked a name.
@@ -243,6 +284,59 @@ export default function StaffCashPage({ user }: Props) {
     } finally { setSaving(false); }
   };
 
+  // Recorded here, but it is not a staff-cash record: it posts to the ordinary expense endpoint
+  // with this float as the paying account. That is the whole double entry — the expense hits the
+  // P&L, and the credit side lands on the float, which is why the row comes back in this person's
+  // history AND in Finance ▸ Expenses without either screen being told about the other.
+  const saveExpense = async () => {
+    if (!expense || !selectedId || saving) return;
+    const amount = Number(expense.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("Enter an amount greater than zero.");
+      return;
+    }
+    // Not merely preferred: a new expense with no managed head is refused server-side, because
+    // a free-text head has no rate table behind it and would be a way to pay a taxable supplier
+    // with nothing withheld.
+    if (!expense.categoryId) {
+      setError("Choose an expense head. Heads are managed under Finance ▸ Settings ▸ Expense heads & rates.");
+      return;
+    }
+    setSaving(true); setError(null);
+    try {
+      const body = new FormData();
+      body.append("financeAccountId", String(selectedId));
+      body.append("amount", String(amount));
+      body.append("date", expense.date);
+      // The head carries the withholding rate. Sending the id and no WHT figures is what asks the
+      // server to work the tax out itself, exactly as the dashboard form does for a managed head.
+      if (expense.categoryId) body.append("categoryId", expense.categoryId);
+      if (expense.projectId) body.append("projectId", expense.projectId);
+      // The id is what carries filer status into the rate; the text is still sent so a one-off
+      // payee is still named on the record.
+      if (expense.vendorId) body.append("vendorId", expense.vendorId);
+      if (expense.vendor.trim()) body.append("vendor", expense.vendor.trim());
+      // Only what the operator confirmed on screen. The server recomputes and rejects a figure
+      // that does not belong to the head, so a stale value cannot slip through.
+      if (expense.wht.rate !== "") body.append("whtRate", expense.wht.rate);
+      if (expense.wht.amount !== "") body.append("whtAmount", expense.wht.amount);
+      if (expense.wht.overrideReason.trim()) body.append("whtOverrideReason", expense.wht.overrideReason.trim());
+      if (expense.description.trim()) body.append("description", expense.description.trim());
+      if (expense.attachment) body.append("attachment", expense.attachment);
+      const signature = `staff-expense:${selectedId}:${amount}:${expense.date}:${expense.categoryId}`;
+      const response = await api(
+        "/api/Finance/expenses/form",
+        moneyRequest(idempotency.key(signature, "expense"), { method: "POST", body }),
+      );
+      if (!response.ok) throw new Error(await financeApiError(response, "Could not record this expense."));
+      idempotency.release(signature);
+      setExpense(null);
+      await load();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not record this expense.");
+    } finally { setSaving(false); }
+  };
+
   const editTransfer = (row: HistoryItem) => setTransfer({
     id: row.recordId, type: row.movementType ?? "FundsGiven", amount: String(row.grossAmount),
     date: row.date.slice(0, 10), counterpartyFinanceAccountId: String(row.counterpartyFinanceAccountId ?? ""),
@@ -333,9 +427,9 @@ export default function StaffCashPage({ user }: Props) {
             <div className="mt-4 flex flex-wrap gap-2">
               <Button variant="outline" disabled={!selected.isActive} onClick={() => setTransfer(emptyTransfer("FundsGiven", selected.currentBalance < 0 ? String(Math.abs(selected.currentBalance)) : ""))}>{selected.currentBalance < 0 ? "Settle amount owed" : "Give / reimburse money"}</Button>
               <Button variant="outline" disabled={!selected.isActive || selected.currentBalance <= 0} onClick={() => setTransfer(emptyTransfer("FundsReturned", String(Math.max(0, selected.currentBalance))))}>Record cash returned</Button>
-              <Link to="/finance"><Button>Record an expense</Button></Link>
+              <Button disabled={!selected.isActive} onClick={() => setExpense(emptyExpense())}>Record an expense</Button>
             </div>
-            <p className="mt-2 text-xs text-[var(--text-muted)]">On the expense form, choose “{selected.accountName}” under Paid From Account.</p>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">An expense recorded here is paid from “{selected.accountName}” — it reduces this float and appears in Finance ▸ Expenses.</p>
           </div>
           <div className="overflow-x-auto"><table className="w-full min-w-[950px] text-sm"><thead><tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">{["Date / movement", "Account / project", "Amount", "Running balance", "Attachment", "Actions"].map((label) => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{shownStatement.items.map((row) => <tr key={`${row.recordType}-${row.recordId}`} className="border-b border-[var(--border)] align-top"><td className="p-3"><p className="font-semibold text-[var(--text-heading)]">{row.kind}</p><p className="text-xs text-[var(--text-muted)]">{date(row.date)}</p>{row.description && <p className="mt-1 text-xs text-[var(--text-muted)]">{row.description}</p>}{row.note && <p className="mt-1 max-w-xs text-xs text-[var(--text-muted)]">{row.note}</p>}</td><td className="p-3"><p>{row.counterpartyFinanceAccountName ?? row.projectName ?? "General"}</p>{row.reference && <p className="text-xs text-[var(--text-muted)]">Ref: {row.reference}</p>}{row.recordType === "Expense" && row.whtAmount > 0 && <p className="text-xs text-amber-300">Gross {money(row.grossAmount)} · WHT {money(row.whtAmount)}</p>}</td><td className={`p-3 font-bold ${row.amount >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{row.amount >= 0 ? "+" : "−"}{money(Math.abs(row.amount))}</td><td className={`p-3 font-bold ${row.runningBalance < 0 ? "text-rose-300" : "text-[var(--text-heading)]"}`}>{money(row.runningBalance)}</td><td className="p-3">{row.attachment ? <span className="inline-flex items-center gap-2 whitespace-nowrap"><button type="button" onClick={() => void viewAttachment(row, false)} className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold text-indigo-300 hover:bg-indigo-500/20">Attached</button><button type="button" aria-label={`Download ${row.attachment.fileName}`} title={`Download ${row.attachment.fileName}`} onClick={() => void viewAttachment(row, true)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">↓</button></span> : <span className="text-xs text-[var(--text-muted)]">None</span>}</td><td className="p-3">{row.recordType === "Transfer" ? <div className="flex gap-3"><button className="text-[var(--accent)]" onClick={() => editTransfer(row)}>Correct</button><button className="text-rose-300" onClick={() => void deleteTransfer(row)}>Delete</button></div> : <Link to="/finance" className="text-[var(--accent)]">View expenses</Link>}</td></tr>)}</tbody></table></div>
           {!shownStatement.items.length && !loadingStatement && <p className="p-8 text-center text-sm text-[var(--text-muted)]">No movements yet. Record money given to begin this float.</p>}
@@ -362,6 +456,34 @@ export default function StaffCashPage({ user }: Props) {
       <p className="rounded-xl border border-indigo-500/20 bg-indigo-500/[0.06] p-3 text-xs text-[var(--text-muted)]">This movement only relocates company cash. It does not change profit.</p>
       <div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={() => setTransfer(null)}>Cancel</Button><Button disabled={saving} onClick={() => void saveTransfer()}>{saving ? "Saving…" : "Record movement"}</Button></div>
     </div></Modal>}
+
+  {expense && selected && <Modal title={`Record an expense · ${selected.personName}`} close={() => !saving && setExpense(null)}><div className="space-y-4">
+    <label className="block text-sm text-[var(--text-muted)]">Expense head<select value={expense.categoryId} onChange={(event) => setExpense({ ...expense, categoryId: event.target.value })} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]"><option value="">Select a head</option>{categories.filter((category) => category.isActive).map((category) => <option key={category.id} value={category.id}>{category.name}{category.isWhtApplicable ? " · WHT" : ""}</option>)}</select></label>
+    <div className="grid gap-3 sm:grid-cols-2"><Field label="Amount (Rs)" type="number" value={expense.amount} set={(value) => setExpense({ ...expense, amount: value })} /><Field label="Date" type="date" value={expense.date} set={(value) => setExpense({ ...expense, date: value })} /></div>
+    <label className="block text-sm text-[var(--text-muted)]">Project (optional)<select value={expense.projectId} onChange={(event) => setExpense({ ...expense, projectId: event.target.value })} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]"><option value="">General — no project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label>
+    <label className="block text-sm text-[var(--text-muted)]">Paid to<select value={expense.vendorId || CUSTOM_PAYEE} onChange={(event) => { const picked = event.target.value; setExpense({ ...expense, vendorId: picked === CUSTOM_PAYEE ? "" : picked, vendor: picked === CUSTOM_PAYEE ? "" : (vendors.find((vendor) => String(vendor.id) === picked)?.name ?? ""), wht: emptyWht() }); }} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]"><option value={CUSTOM_PAYEE}>One-off payee (enter below)…</option>{vendors.filter((vendor) => vendor.isActive || String(vendor.id) === expense.vendorId).map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.name} — {vendor.filerStatus === "NonFiler" ? "Non-filer" : vendor.filerStatus}</option>)}</select></label>
+    {/* Shown only for a payee who is not on the list, because a registered one is already named
+        by the picker — and its filer status, not this text, is what sets the rate. */}
+    {!expense.vendorId && <Field label="Payee name (optional)" value={expense.vendor} set={(value) => setExpense({ ...expense, vendor: value })} />}
+    <label className="block text-sm text-[var(--text-muted)]">What it was for<textarea value={expense.description} onChange={(event) => setExpense({ ...expense, description: event.target.value })} className="mt-1 min-h-20 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)]" /></label>
+    {/* The same component the dashboard expense form uses, so the rate table, the filer status
+        and the shared annual allowance produce one figure regardless of which screen was used. */}
+    <ExpenseWhtFields
+      categoryId={expense.categoryId}
+      vendorId={expense.vendorId}
+      grossAmount={expense.amount}
+      date={expense.date}
+      excludeExpenseId={null}
+      value={expense.wht}
+      disabled={saving}
+      onChange={(wht) => setExpense((current) => current ? { ...current, wht } : current)}
+    />
+    <FinanceAttachmentField existing={null} selected={expense.attachment} removeExisting={false} disabled={saving} onSelected={(file) => setExpense((current) => current ? { ...current, attachment: file } : current)} onRemoveExisting={() => {}} onViewExisting={() => {}} onDownloadExisting={() => {}} />
+    {/* Said on the form, because this is the one button on the page that spends money rather than
+        moving it, and the difference is the whole point of tracking a float. */}
+    <p className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs text-amber-200/90">This spends the money: it reduces {selected.personName}’s float and is a cost in the Profit &amp; Loss. The float is charged the gross amount; any tax withheld stays in the company and is owed to FBR.</p>
+    <div className="flex justify-end gap-2"><Button variant="ghost" disabled={saving} onClick={() => setExpense(null)}>Cancel</Button><Button disabled={saving} onClick={() => void saveExpense()}>{saving ? "Saving…" : "Record expense"}</Button></div>
+  </div></Modal>}
   </Container>;
 }
 

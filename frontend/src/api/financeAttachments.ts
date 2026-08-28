@@ -15,13 +15,44 @@ export interface FinanceAttachmentInfo {
   uploadedAt: string;
 }
 
+type ApiErrorBody = {
+  message?: string;
+  title?: string;
+  detail?: string;
+  errors?: Record<string, string[] | string>;
+};
+
+/**
+ * The reason the server gave, in whichever shape it gave it.
+ *
+ * Controllers answer with `{ message }`, and that stays the preferred reading. But two failures
+ * never reach a controller: a request the model binder rejects, and an exception the controller
+ * does not catch. ASP.NET answers both with ProblemDetails — `title`, `detail`, `errors` — and
+ * reading only `message` turned every one of them into a bare "could not do this", which tells the
+ * operator nothing and cannot be diagnosed afterwards from a screenshot.
+ *
+ * When there is genuinely no reason to read, the status goes on the end. "(HTTP 500)" is not
+ * pretty, but it separates a server fault from a rejected entry at a glance, and a message that
+ * admits it knows nothing beats one that quietly implies the entry was at fault.
+ */
 async function responseMessage(response: Response, fallback: string): Promise<string> {
+  const stamped = `${fallback} (HTTP ${response.status})`;
+  let body: ApiErrorBody | null = null;
   try {
-    const body = (await response.json()) as { message?: string };
-    return body.message || fallback;
+    body = (await response.json()) as ApiErrorBody;
   } catch {
-    return fallback;
+    return stamped;
   }
+  if (!body || typeof body !== "object") return stamped;
+  if (body.message) return body.message;
+
+  // Validation failures carry the useful text per field, not at the top level.
+  const fieldErrors = Object.values(body.errors ?? {})
+    .flatMap((entry) => (Array.isArray(entry) ? entry : [entry]))
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+  if (fieldErrors.length) return fieldErrors.join(" ");
+
+  return body.detail || body.title || stamped;
 }
 
 export async function openFinanceAttachment(

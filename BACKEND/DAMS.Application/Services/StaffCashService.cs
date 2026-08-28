@@ -738,7 +738,7 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Note cannot exceed 1000 characters.");
         }
 
-        private void ApplyToken(StaffCashTransfer transfer, string token)
+        private void ApplyToken(StaffCashTransfer transfer, string? token)
         {
             if (string.IsNullOrWhiteSpace(token))
             {

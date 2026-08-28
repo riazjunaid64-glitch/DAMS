@@ -15,7 +15,18 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public int CounterpartyFinanceAccountId { get; set; }
         public string? Reference { get; set; }
         public string? Note { get; set; }
-        public string ConcurrencyToken { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The row version of the movement being corrected, and absent when one is being recorded.
+        /// </summary>
+        /// <remarks>
+        /// Nullable deliberately. A non-nullable string is implicitly required, so the model binder
+        /// rejected every NEW movement before it reached the service — "The ConcurrencyToken field
+        /// is required." — because a create legitimately has no version to send. Presence was never
+        /// the check that matters: <c>ApplyToken</c> compares the token against the stored row
+        /// version and refuses a blank one for a row that has one, which is the guard that counts.
+        /// </remarks>
+        public string? ConcurrencyToken { get; set; }
     }
 
     public sealed class StaffCashOverviewDto
