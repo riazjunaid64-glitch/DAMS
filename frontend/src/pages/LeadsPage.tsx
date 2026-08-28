@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
@@ -17,6 +17,7 @@ import {
 import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
 import {
   formatDateTime,
+  isClosedStage,
   leadStages,
   stageLabel,
   type ClosureReason,
@@ -50,7 +51,6 @@ function LeadsWorkspace({ user }: { user: User }) {
   const [data, setData] = useState<LeadList | null>(null);
   const [dashboard, setDashboard] = useState<Record<string, unknown> | null>(null);
   const [lookups, setLookups] = useState<Lookups>(EMPTY_LOOKUPS);
-  const [filterUnits, setFilterUnits] = useState<UnitLookup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -64,6 +64,9 @@ function LeadsWorkspace({ user }: { user: User }) {
     setParams(next);
   };
 
+  // The bar exposes search, stage, source and project. The rest stay honoured because the URL is
+  // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
+  // exactly as it did, and the server contract is unchanged.
   const query = useMemo(() => {
     const allowed = ["search", "stage", "qualification", "sourceId", "employeeId", "teamId", "projectId", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
     const q = new URLSearchParams();
@@ -100,11 +103,6 @@ function LeadsWorkspace({ user }: { user: User }) {
   }, [query, user.role]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    const projectId = Number(params.get("projectId"));
-    if (!projectId) { setFilterUnits([]); return; }
-    void loadUnits(projectId).then(setFilterUnits).catch(() => setFilterUnits([]));
-  }, [params]);
 
   const metrics = dashboardMetrics(user.role, dashboard);
 
@@ -117,7 +115,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         actions={
           <>
             {user.role === "Admin" && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
-            <Button onClick={() => setCreateOpen(true)}>+ New lead</Button>
+            <Button onClick={() => setCreateOpen(true)}><IconPlus className="h-4 w-4" />New lead</Button>
           </>
         }
       />
@@ -125,57 +123,47 @@ function LeadsWorkspace({ user }: { user: User }) {
       <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
 
-        <section aria-label="Attention areas" className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-6">
-          {metrics.map((metric) => (
-            <MetricCard
-              key={metric.label}
-              label={metric.label}
-              value={metric.value}
-              onClick={metric.filter ? () => updateParam(metric.filter!.key, metric.filter!.value) : undefined}
-            />
-          ))}
+        <section aria-label="Lead summary" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {metrics.map((metric) => {
+            // A card that switches a filter on has to switch it off again. Stage lands in a
+            // dropdown the operator can see and reset, but "unassigned" and "overdue" have no
+            // control of their own on this bar — so pressing the card again is the way back, and
+            // the card shows it is pressed rather than leaving the list quietly filtered.
+            const applied = !!metric.filter && params.get(metric.filter.key) === metric.filter.value;
+            return (
+              <MetricCard
+                key={metric.label}
+                label={metric.label}
+                value={metric.value}
+                icon={METRIC_ICONS[metric.id]}
+                active={applied}
+                onClick={metric.filter ? () => updateParam(metric.filter!.key, applied ? "" : metric.filter!.value) : undefined}
+              />
+            );
+          })}
         </section>
-        {dashboard && <DashboardInsights role={user.role} dashboard={dashboard} />}
 
         <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <span className="pointer-events-none absolute left-3 top-2.5 text-[var(--text-muted)]">⌕</span>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="relative w-full lg:max-w-md">
+              <span aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconSearch className="h-4 w-4" /></span>
               <input
-                className={`${inputClass} pl-9`}
+                className={`${inputClass} pl-10`}
                 value={params.get("search") ?? ""}
                 onChange={(event) => updateParam("search", event.target.value)}
-                placeholder="Search name, phone, email, reference, campaign…"
+                placeholder="Search name, phone, email, campaign…"
                 aria-label="Search leads"
               />
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "list" ? "bg-[var(--accent)] text-[#1c1810]" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "list")}>List</button>
-              <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${view === "pipeline" ? "bg-[var(--accent)] text-[#1c1810]" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`} onClick={() => updateParam("view", "pipeline")}>Pipeline</button>
+            <div className="flex flex-wrap items-center gap-3">
+              <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />
+              <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
+              <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
+              <div className="inline-flex shrink-0 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-1" role="group" aria-label="Lead view">
+                <ViewButton active={view === "list"} onClick={() => updateParam("view", "list")}>List</ViewButton>
+                <ViewButton active={view === "pipeline"} onClick={() => updateParam("view", "pipeline")}>Pipeline</ViewButton>
+              </div>
             </div>
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
-            <FilterSelect label="Stage" value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />
-            <FilterSelect label="Qualification" value={params.get("qualification") ?? ""} onChange={(v) => updateParam("qualification", v)} options={["Unqualified", "Cold", "Warm", "Hot"].map((v) => [v, v])} />
-            <FilterSelect label="Source" value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
-            <FilterSelect label="Owner" value={params.get("employeeId") ?? ""} onChange={(v) => updateParam("employeeId", v)} options={lookups.staff.filter((v) => v.canOwnLeads).map((v) => [String(v.employeeId), v.fullName])} />
-            <FilterSelect label="Team" value={params.get("teamId") ?? ""} onChange={(v) => updateParam("teamId", v)} options={lookups.teams.map((v) => [String(v.id), v.name])} />
-            <FilterSelect label="Project" value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
-            <FilterSelect label="Unit" value={params.get("unitId") ?? ""} onChange={(v) => updateParam("unitId", v)} options={filterUnits.map((v) => [String(v.id), v.number])} />
-            <input aria-label="Campaign filter" className={inputClass} value={params.get("campaign") ?? ""} onChange={(e) => updateParam("campaign", e.target.value)} placeholder="Campaign: All" />
-            <FilterSelect label="Sort" value={params.get("sortBy") ?? "createdat"} onChange={(v) => updateParam("sortBy", v)} options={[["createdat", "Created date"], ["lastactivity", "Last activity"], ["nextaction", "Next action"], ["stage", "Stage"]]} />
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <QuickFilter active={params.get("unassigned") === "true"} onClick={() => updateParam("unassigned", params.get("unassigned") === "true" ? "" : "true")}>Unassigned</QuickFilter>
-            <QuickFilter active={params.get("overdue") === "true"} onClick={() => updateParam("overdue", params.get("overdue") === "true" ? "" : "true")}>Overdue next action</QuickFilter>
-            <QuickFilter active={params.get("inactive") === "true"} onClick={() => updateParam("inactive", params.get("inactive") === "true" ? "" : "true")}>Inactive</QuickFilter>
-            <QuickFilter active={params.get("sortDesc") !== "false"} onClick={() => updateParam("sortDesc", params.get("sortDesc") === "false" ? "true" : "false")}>{params.get("sortDesc") === "false" ? "Ascending" : "Descending"}</QuickFilter>
-            <label className="text-xs text-[var(--text-muted)]">From <input type="date" className="ml-1 rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1.5" value={params.get("createdFrom") ?? ""} onChange={(e) => updateParam("createdFrom", e.target.value)} /></label>
-            <label className="text-xs text-[var(--text-muted)]">To <input type="date" className="ml-1 rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1.5" value={params.get("createdTo") ?? ""} onChange={(e) => updateParam("createdTo", e.target.value)} /></label>
-            {Array.from(params.keys()).some((key) => key !== "view") && (
-              <button type="button" className="ml-auto text-xs font-semibold text-[var(--accent)] hover:underline" onClick={() => setParams(view === "pipeline" ? { view: "pipeline" } : {})}>Clear filters</button>
-            )}
           </div>
         </section>
 
@@ -212,84 +200,47 @@ function LeadsWorkspace({ user }: { user: User }) {
   );
 }
 
-function DashboardInsights({ role, dashboard }: { role: string; dashboard: Record<string, unknown> }) {
-  const rows = (key: string) => Array.isArray(dashboard[key]) ? dashboard[key] as Record<string, unknown>[] : [];
-  const byStage = rows("byStage");
-  const performance = rows("byEmployee");
-  const bySource = rows("bySource");
-  const byCampaign = rows("byCampaign");
-  const lossReasons = rows("lossReasons");
-  const byTeam = rows("byTeam");
-  const maxStage = Math.max(1, ...byStage.map((row) => Number(row.count ?? 0)));
-  if (!byStage.length && !performance.length && !bySource.length) return null;
-  return (
-    <section className="grid gap-3 lg:grid-cols-3" aria-label="CRM reporting">
-      <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-        <h2 className="text-sm font-semibold text-[var(--text-heading)]">Pipeline health</h2>
-        <div className="mt-4 space-y-3">{byStage.map((row) => <div key={String(row.stage)}><div className="mb-1 flex justify-between text-xs"><span className="text-[var(--text-secondary)]">{stageLabel(String(row.stage))}</span><span className="text-[var(--text-muted)]">{Number(row.count ?? 0)} · {Number(row.averageAgeDays ?? 0).toFixed(1)}d avg</span></div><div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-glass)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.max(3, Number(row.count ?? 0) / maxStage * 100)}%` }} /></div></div>)}</div>
-      </div>
-      {(role === "Admin" ? bySource : performance).length > 0 && (
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 lg:col-span-2">
-          <h2 className="text-sm font-semibold text-[var(--text-heading)]">{role === "Admin" ? "Source performance" : role === "Manager" ? "Team performance" : "Personal pipeline"}</h2>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[520px] text-left text-xs">
-              <thead className="uppercase tracking-wider text-[var(--text-muted)]"><tr>{role === "Admin" ? <><th className="py-2">Source</th><th>Total</th><th>Qualified</th><th>Won</th><th>Conversion</th></> : <><th className="py-2">Employee</th><th>Active</th><th>Won</th><th>Overdue</th><th>Conversion</th></>}</tr></thead>
-              <tbody>{(role === "Admin" ? bySource : performance).slice(0, 8).map((row, index) => <tr className="border-t border-[var(--border)]" key={index}>{role === "Admin" ? <><td className="py-3 font-medium text-[var(--text-heading)]">{String(row.sourceName ?? "Unknown")}</td><td>{Number(row.totalLeads ?? 0)}</td><td>{Number(row.qualifiedLeads ?? 0)}</td><td>{Number(row.wonLeads ?? 0)}</td><td>{Number(row.sourceToBookingPercent ?? 0).toFixed(1)}%</td></> : <><td className="py-3 font-medium text-[var(--text-heading)]">{String(row.employeeName ?? "Unassigned")}</td><td>{Number(row.activeLeads ?? 0)}</td><td>{Number(row.wonLeads ?? 0)}</td><td>{Number(row.overdueFollowUps ?? 0)}</td><td>{Number(row.conversionRatePercent ?? 0).toFixed(1)}%</td></>}</tr>)}</tbody>
-            </table>
-          </div>
-        </div>
-      )}
-      {role === "Admin" && (
-        <div className="grid gap-3 lg:col-span-3 md:grid-cols-3">
-          <ReportList title="Campaign attribution" rows={byCampaign.slice(0, 6).map((row) => [String(row.campaignName ?? "Unattributed"), `${Number(row.totalLeads ?? 0)} leads · ${Number(row.conversionRatePercent ?? 0).toFixed(1)}%`])} />
-          <ReportList title="Lost reasons" rows={lossReasons.slice(0, 6).map((row) => [String(row.reasonName ?? "Other"), String(Number(row.count ?? 0))])} />
-          <ReportList title="Team conversion" rows={byTeam.slice(0, 6).map((row) => [String(row.teamName ?? "Unassigned"), `${Number(row.wonLeads ?? 0)}/${Number(row.totalLeads ?? 0)} · ${Number(row.conversionRatePercent ?? 0).toFixed(1)}%`])} />
-        </div>
-      )}
-    </section>
-  );
-}
-
-function ReportList({ title, rows }: { title: string; rows: string[][] }) {
-  return <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4"><h2 className="text-sm font-semibold text-[var(--text-heading)]">{title}</h2>{rows.length ? <div className="mt-3 space-y-2">{rows.map(([label, value]) => <div key={label} className="flex items-center justify-between gap-3 border-t border-[var(--border)] pt-2 text-xs"><span className="truncate text-[var(--text-secondary)]">{label}</span><span className="shrink-0 text-[var(--text-muted)]">{value}</span></div>)}</div> : <p className="mt-4 text-xs text-[var(--text-muted)]">No data in this period.</p>}</div>;
-}
-
 function LeadTable({ leads }: { leads: Lead[] }) {
   return (
     <>
-      <div className="hidden overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] md:block">
-        <table className="w-full min-w-[1120px] text-left">
-          <thead className="border-b border-[var(--border)] bg-[var(--surface-glass)] text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-            <tr>{["Lead", "Interest", "Stage", "Qualification", "Owner / Team", "Last activity", "Next action", "Created"].map((h) => <th className="px-4 py-3" key={h}>{h}</th>)}</tr>
-          </thead>
-          <tbody>
-            {leads.map((lead) => {
-              const overdue = lead.nextActionAt && new Date(lead.nextActionAt) < new Date() && !["Won", "Lost", "Dormant"].includes(lead.stage);
-              return (
-                <tr key={lead.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface-glass-hover)]">
-                  <td className="px-4 py-4">
-                    <Link className="font-semibold text-[var(--accent)] hover:underline" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone ?? lead.whatsappNumber ?? lead.email ?? "No contact details"}</p>
-                    <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
-                  </td>
-                  <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
-                  <td className="px-4 py-4"><StageBadge stage={lead.stage} /></td>
-                  <td className="px-4 py-4"><QualificationBadge value={lead.qualification} /></td>
-                  <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>
-                  <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}<p className="text-xs text-[var(--text-muted)]">{formatDateTime(lead.lastActivityAt)}</p></td>
-                  <td className={`max-w-[190px] px-4 py-4 text-sm ${overdue ? "font-semibold text-rose-400" : "text-[var(--text-secondary)]"}`}>{lead.nextActionSummary ?? "Not scheduled"}<p className="text-xs">{formatDateTime(lead.nextActionAt)}</p></td>
-                  <td className="px-4 py-4 text-xs text-[var(--text-muted)]">{formatDateTime(lead.createdAt)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="hidden overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] md:block">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] text-left">
+            <thead className="border-b border-[var(--border)] bg-[var(--surface-glass)] text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]">
+              <tr>{["Lead", "Interest", "Stage", "Qualification", "Owner / Team", "Last activity", "Next action", "Created"].map((h) => <th className="px-4 py-4 align-bottom" key={h}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {leads.map((lead) => {
+                const closed = isClosedStage(lead.stage);
+                const overdue = lead.nextActionAt && new Date(lead.nextActionAt) < new Date() && !closed;
+                return (
+                  <tr key={lead.id} className="border-b border-[var(--border)] align-top transition last:border-0 hover:bg-[var(--surface-glass-hover)]">
+                    <td className="px-4 py-4">
+                      <Link className="font-semibold text-[var(--text-heading)] transition hover:text-[var(--accent)]" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference}{(lead.phone ?? lead.whatsappNumber ?? lead.email) && ` · ${lead.phone ?? lead.whatsappNumber ?? lead.email}`}</p>
+                      <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
+                    </td>
+                    <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="mt-1 text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
+                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={lead.stage} /></td>
+                    <td className="whitespace-nowrap px-4 py-4"><QualificationBadge value={lead.qualification} /></td>
+                    <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="mt-1 text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>
+                    <td className="max-w-[220px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}<p className="mt-1 text-xs text-[var(--text-muted)]">{formatDateTime(lead.lastActivityAt)}</p></td>
+                    {/* A closed lead has nothing scheduled by design, so it says so rather than
+                        reading as an omission next to leads that really are missing a next step. */}
+                    <td className={`max-w-[190px] px-4 py-4 text-sm ${overdue ? "font-semibold text-rose-400" : "text-[var(--text-secondary)]"}`}>{lead.nextActionSummary ?? "—"}<p className={`mt-1 text-xs ${overdue ? "" : "text-[var(--text-muted)]"}`}>{closed ? "Completed" : lead.nextActionAt ? formatDateTime(lead.nextActionAt) : "Not scheduled"}</p></td>
+                    <td className="px-4 py-4 text-xs text-[var(--text-muted)]">{formatDateTime(lead.createdAt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
       <div className="grid gap-3 md:hidden">
         {leads.map((lead) => (
           <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
             <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone ?? lead.whatsappNumber ?? lead.email ?? "No contact details"}</p></div><StageBadge stage={lead.stage} /></div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]"><div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div><div><p className="uppercase">Next action</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{formatDateTime(lead.nextActionAt)}</p></div></div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]"><div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div><div><p className="uppercase">Next action</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{isClosedStage(lead.stage) ? "Completed" : formatDateTime(lead.nextActionAt)}</p></div></div>
           </Link>
         ))}
       </div>
@@ -298,7 +249,7 @@ function LeadTable({ leads }: { leads: Lead[] }) {
 }
 
 function Pipeline({ leads }: { leads: Lead[] }) {
-  const activeStages = leadStages.filter((stage) => !["Won", "Lost", "Dormant"].includes(stage));
+  const activeStages = leadStages.filter((stage) => !isClosedStage(stage));
   return (
     <div className="flex snap-x gap-3 overflow-x-auto pb-3" aria-label="Lead pipeline">
       {activeStages.map((stage) => {
@@ -418,41 +369,81 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   );
 }
 
+/**
+ * Four figures, one per card, in the shape the design asks for: how many, how many closed each way,
+ * and the rate that falls out of the two. Each role gets the four that decide what it does next.
+ */
 function dashboardMetrics(role: string, dashboard: Record<string, unknown> | null) {
   const d = dashboard ?? {};
   const n = (key: string) => Number(d[key] ?? 0);
   if (role === "Admin") return [
-    { label: "All leads", value: n("totalLeads") },
-    { label: "Open pipeline", value: n("openLeads") },
-    { label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
-    { label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
-    { label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
-    { label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
+    { id: "total", label: "All leads", value: n("totalLeads") },
+    { id: "won", label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
+    { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
+    { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
   ];
   if (role === "Manager") return [
-    { label: "Team leads", value: n("teamLeads") },
-    { label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
-    { label: "First contacts overdue", value: n("overdueFirstContacts") },
-    { label: "Follow-ups overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
-    { label: "Inactive", value: n("inactiveLeads"), filter: { key: "inactive", value: "true" } },
-    { label: "Site visits", value: n("upcomingSiteVisits") },
+    { id: "total", label: "Team leads", value: n("teamLeads") },
+    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
+    { id: "overdue", label: "Follow-ups overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
+    { id: "visits", label: "Site visits", value: n("upcomingSiteVisits") },
   ];
   return [
-    { label: "Newly assigned", value: n("newLeads"), filter: { key: "stage", value: "New" } },
-    { label: "Active leads", value: n("activeLeads") },
-    { label: "Due today", value: n("followUpsDueToday") },
-    { label: "Overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
-    { label: "Upcoming visits", value: n("upcomingSiteVisits") },
-    { label: "Inactive", value: n("leadsWithoutRecentActivity"), filter: { key: "inactive", value: "true" } },
+    { id: "total", label: "Active leads", value: n("activeLeads") },
+    { id: "due", label: "Due today", value: n("followUpsDueToday") },
+    { id: "overdue", label: "Overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
+    { id: "visits", label: "Upcoming visits", value: n("upcomingSiteVisits") },
   ];
 }
 
-function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: string[][] }) {
-  return <select aria-label={label} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}><option value="">{label}: All</option>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
+const METRIC_ICONS: Record<string, ReactNode> = {
+  total: <IconUsers className="h-5 w-5" />,
+  won: <IconTrophy className="h-5 w-5" />,
+  lost: <IconCircleX className="h-5 w-5" />,
+  rate: <IconTrendingUp className="h-5 w-5" />,
+  unassigned: <IconUserQuestion className="h-5 w-5" />,
+  overdue: <IconClock className="h-5 w-5" />,
+  due: <IconClock className="h-5 w-5" />,
+  visits: <IconCalendar className="h-5 w-5" />,
+};
+
+/**
+ * A native select wearing the mock's chip: the platform's own dropdown on every device — keyboard,
+ * screen reader and mobile picker included — with only the arrow replaced so the chip keeps a fixed
+ * width instead of growing to its longest option.
+ */
+function BarSelect({ label, icon, value, onChange, options }: { label: string; icon: ReactNode; value: string; onChange: (value: string) => void; options: readonly (readonly string[])[] }) {
+  return (
+    <div className="relative shrink-0">
+      <span aria-hidden="true" className="pointer-events-none absolute -top-2 left-2.5 z-10 rounded bg-[var(--bg-card)] px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
+      <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-[var(--accent)]">{icon}</span>
+      <select
+        aria-label={label}
+        className="w-[124px] cursor-pointer appearance-none rounded-xl border border-[var(--border)] bg-[var(--input-bg)] py-2.5 pl-9 pr-8 text-sm font-medium text-[var(--text-primary)] outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">All</option>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconChevronDown className="h-3.5 w-3.5" /></span>
+    </div>
+  );
 }
-function QuickFilter({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
-  return <button type="button" aria-pressed={active} onClick={onClick} className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${active ? "border-[var(--accent)] bg-[var(--accent-glow)] text-[var(--accent)]" : "border-[var(--border)] text-[var(--text-muted)]"}`}>{children}</button>;
+
+function ViewButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`cursor-pointer rounded-lg px-4 py-1.5 text-sm font-semibold transition ${active ? "bg-[var(--accent)] text-[#1c1810]" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
+    >
+      {children}
+    </button>
+  );
 }
+
 function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
   return <fieldset><legend className="mb-3 text-sm font-semibold text-[var(--text-heading)]">{title}</legend><div className="grid gap-3 sm:grid-cols-2">{children}</div></fieldset>;
 }
@@ -462,3 +453,25 @@ function TextField({ label, value, onChange, required, wide, type = "text", inpu
 function SelectField({ label, value, onChange, options, required }: { label: string; value: string; onChange: (value: string) => void; options: string[][]; required?: boolean }) {
   return <div><Label required={required}>{label}</Label><select required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Select…</option>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>;
 }
+
+/* Icons are inline SVG on purpose: nothing to install, version or ship, no runtime cost beyond the
+   markup, and each glyph travels inside this page's own chunk. One 24px stroked grid throughout. */
+const ico = (className?: string) => ({
+  className: className ?? "h-4 w-4", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+  strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true,
+});
+type IconProps = { className?: string };
+
+function IconPlus({ className }: IconProps) { return <svg {...ico(className)} strokeWidth={2.2}><path d="M12 5v14" /><path d="M5 12h14" /></svg>; }
+function IconSearch({ className }: IconProps) { return <svg {...ico(className)}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></svg>; }
+function IconChevronDown({ className }: IconProps) { return <svg {...ico(className)} strokeWidth={2.4}><path d="m6 9 6 6 6-6" /></svg>; }
+function IconLayers({ className }: IconProps) { return <svg {...ico(className)}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 14 9 5 9-5" /></svg>; }
+function IconMegaphone({ className }: IconProps) { return <svg {...ico(className)}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 9a4 4 0 0 1 0 6" /><path d="M19 6a8 8 0 0 1 0 12" /></svg>; }
+function IconBuilding({ className }: IconProps) { return <svg {...ico(className)}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1" /><path d="M10 21v-3h4v3" /></svg>; }
+function IconUsers({ className }: IconProps) { return <svg {...ico(className)}><circle cx="9" cy="8" r="3.2" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16.5 5.5a3.2 3.2 0 0 1 0 5.6" /><path d="M18 14.6A6 6 0 0 1 21 20" /></svg>; }
+function IconTrophy({ className }: IconProps) { return <svg {...ico(className)}><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" /><path d="M7 6H4v1a3 3 0 0 0 3 3" /><path d="M17 6h3v1a3 3 0 0 1-3 3" /><path d="M12 14v3" /><path d="M8.5 20h7" /><path d="M10 17h4l.5 3h-5l.5-3Z" /></svg>; }
+function IconCircleX({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></svg>; }
+function IconTrendingUp({ className }: IconProps) { return <svg {...ico(className)}><path d="m3 17 6-6 4 4 8-8" /><path d="M15 7h6v6" /></svg>; }
+function IconUserQuestion({ className }: IconProps) { return <svg {...ico(className)}><circle cx="10" cy="8" r="3.2" /><path d="M4 20a6 6 0 0 1 12 0" /><path d="M18.5 8.5a1.6 1.6 0 1 1 2.2 1.5c-.5.3-.7.7-.7 1.2" /><path d="M20 14h.01" /></svg>; }
+function IconClock({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="M12 7v5.2l3.2 2" /></svg>; }
+function IconCalendar({ className }: IconProps) { return <svg {...ico(className)}><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18" /><path d="M8 3v4" /><path d="M16 3v4" /></svg>; }
