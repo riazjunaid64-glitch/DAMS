@@ -3,7 +3,6 @@ import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
-import Container from "../lib/Container";
 import ModalPortal from "../lib/ModalPortal";
 import FinanceAttachmentField from "../components/FinanceAttachmentField";
 import { financeApiError, openAttachmentAt, type FinanceAttachmentInfo } from "../api/financeAttachments";
@@ -261,8 +260,11 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
   ]:[];
   const rows=shownStatement?.items??[];
 
-  return <Container className="py-8">
-    <header className="border-b border-[var(--border)] pb-6">
+  // `fin-page` is the Finance section's own shell — full width with the section's side padding,
+  // the same one the Finance dashboard uses — so this page lines up with the screen it is opened
+  // from instead of sitting in a narrower centred column of its own.
+  return <>
+    <div className="fin-page fin-page--head py-6 sm:py-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <Link to="/finance" className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)] transition hover:text-[var(--accent-light)]">
@@ -276,8 +278,9 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
           <Button onClick={()=>setLoanForm(emptyLoan())}><IconPlus className="h-4 w-4"/>Add New Loan</Button>
         </div>
       </div>
-    </header>
+    </div>
 
+    <div className="fin-page pb-10">
     {error&&<p role="alert" className="mt-5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}
 
     <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)] lg:gap-0">
@@ -469,6 +472,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
         </>:<div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-[var(--text-muted)]">Select a loan to view its activity.</div>}
       </main>
     </div>
+    </div>
 
     {loanForm&&<Modal title={loanForm.id?"Edit loan":"Add new loan"} close={()=>!saving&&setLoanForm(null)}>
       <div className="space-y-4">
@@ -535,7 +539,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
         </div>
       </div>
     </Modal>}
-  </Container>;
+  </>;
 }
 
 /** A cell a spreadsheet cannot read as a formula: operator-entered text starting with =, +, - or @
