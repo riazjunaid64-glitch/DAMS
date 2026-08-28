@@ -466,7 +466,7 @@ namespace DAMS.Application.Services
             catch (FormatException) { throw new InvalidOperationException("The loan version is invalid. Refresh and try again."); }
         }
 
-        private void ApplyToken(LoanTransaction transaction, string token)
+        private void ApplyToken(LoanTransaction transaction, string? token)
         {
             if (string.IsNullOrWhiteSpace(token))
             {
