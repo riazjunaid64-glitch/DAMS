@@ -1453,8 +1453,7 @@ export default function FinanceDashboardPage({ user }: Props) {
       {/* Header */}
       <div className="fin-page fin-page--head py-6 sm:py-8">
         <div>
-          <h1 className="mb-5 text-2xl font-bold text-[var(--text-heading)]">Finance Overview</h1>
-          {/* Filters: period pills on the left, project / account / date range on the right */}
+          <h1 className="fin-dashboard-title">Finance Overview</h1>
           <div className="fin-filters">
             <div className="fin-periods">
               {PERIODS.map((preset) => {
@@ -1486,18 +1485,25 @@ export default function FinanceDashboardPage({ user }: Props) {
               </p>
             )}
 
-            <div className="fin-controls">
-              <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="fin-control" aria-label="Project">
-                <option value="">All Projects</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.projectName}</option>
-                ))}
-              </select>
-              <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
-                <option value="">All Accounts</option>
-                {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
-                <option value="unassigned">Unassigned</option>
-              </select>
+            <div className="fin-filter-panel">
+              <div className="fin-controls">
+                <div className="fin-field fin-field--wide">
+                  <span className="fin-field__label">Project</span>
+                  <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="fin-control" aria-label="Project">
+                    <option value="">All Projects</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>{p.projectName}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="fin-field fin-field--wide">
+                  <span className="fin-field__label">Account</span>
+                  <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
+                    <option value="">All Accounts</option>
+                    {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
+                    <option value="unassigned">Unassigned</option>
+                  </select>
+                </div>
               <div className="fin-field">
                 <span className="fin-field__label">From</span>
                 <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="fin-control fin-control--date" />
@@ -1506,11 +1512,16 @@ export default function FinanceDashboardPage({ user }: Props) {
                 <span className="fin-field__label">To</span>
                 <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
+              <button type="button" className="fin-apply" onClick={() => void loadSummary()} disabled={!!rangeError || summaryLoading}>
+                <IconRefresh />
+                Apply
+              </button>
               {(fromDate || toDate) && (
-                <Button variant="ghost" size="sm" onClick={() => { setFromDate(""); setToDate(""); }}>
+                <button type="button" className="fin-clear" onClick={() => { setFromDate(""); setToDate(""); }}>
                   Clear
-                </Button>
+                </button>
               )}
+              </div>
             </div>
 
             {/* A half-open or backwards range is refused rather than interpreted. It used to be
@@ -1524,7 +1535,7 @@ export default function FinanceDashboardPage({ user }: Props) {
           </div>
 
           {/* Summary cards */}
-          <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+          <div className="fin-summary-grid">
             {summaryCards.map((card) => {
               const active = card.view != null && view === card.view;
               // Account Net Movement has no drill-down of its own — it is cash movement, not a list
@@ -1536,30 +1547,31 @@ export default function FinanceDashboardPage({ user }: Props) {
                   disabled={card.view == null}
                   onClick={() => { if (card.view != null) focusView(card.view); }}
                   style={{ borderBottomColor: card.underline }}
-                  className={`group relative overflow-hidden rounded-2xl border border-[var(--border)] border-b-[3px] bg-[var(--bg-card)] px-5 pb-5 pt-4 text-left transition-all ${
+                  className={`fin-summary-card group ${
                     card.view == null ? "cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:border-[var(--border-hover)]"
                   } ${active ? "ring-2 ring-[var(--accent)]" : ""}`}
                 >
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                    {card.label}
-                  </p>
-                  {card.note && (
-                    <p className="mt-0.5 text-[10px] text-[var(--text-muted)] opacity-60">{card.note}</p>
-                  )}
-                  <p className={`mt-3 text-2xl font-bold leading-tight sm:text-[1.7rem] ${
+                  <span className={`fin-summary-icon fin-summary-icon--${card.underline.slice(1)}`} aria-hidden="true">
+                    <SummaryIcon label={card.label} />
+                  </span>
+                  <span className="fin-summary-copy">
+                    <span className="fin-summary-label">{card.label}</span>
+                    {card.note && <span className="fin-summary-note">{card.note}</span>}
+                  <span className={`fin-summary-value ${
                     summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
                     {summaryLoading ? "…" : summaryError ? "—" : <ShortAmount value={card.value} />}
-                  </p>
+                  </span>
                   {/* The short figure above is rounded, and two rounded cards do not subtract to a
                       third: read alone, Revenue minus Expenses would not equal Net Profit. So the
                       exact amount is printed here on every card — not left to a hover, which is
                       unreachable on a disabled card and on a phone — and the row stays
                       reconcilable against the tables below and against Reports. */}
                   {!summaryLoading && !summaryError && (
-                    <p className="mt-1 text-[10px] tabular-nums text-[var(--text-muted)] opacity-70">
+                    <span className="fin-summary-full">
                       Full amount: {exactAmount(card.value)}
-                    </p>
+                    </span>
                   )}
+                  </span>
                 </button>
               );
             })}
@@ -1632,23 +1644,17 @@ export default function FinanceDashboardPage({ user }: Props) {
         {/* Centred rather than flush right: justify-content applies to each wrapped line on its own,
             so the short second row sits under the middle of the long first one instead of hanging
             off its right edge. */}
-        <div className="mb-5 flex flex-wrap justify-center gap-2.5">
-          <Link to="/finance/reports"><Button variant="outline">Financial Reports</Button></Link>
-          <Link to="/finance/partners"><Button variant="outline">Capital Partners</Button></Link>
-          <Link to="/finance/loans"><Button variant="outline">Loans</Button></Link>
-          <Link to="/finance/staff-cash"><Button variant="outline">Cash with Staff</Button></Link>
-          <Link to="/finance/accounts"><Button variant="outline">⚙ Manage Accounts</Button></Link>
-          <Link to="/finance/settings"><Button variant="outline">Tax &amp; Categories</Button></Link>
-          <Link to="/finance/commissions-rebates"><Button variant="outline">Commissions &amp; Rebates</Button></Link>
-          <Button variant="outline" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}>
-            + Add Revenue
-          </Button>
-          <Button variant="outline" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}>
-            ◆ Add Fixed Asset
-          </Button>
-          <Button onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}>
-            − Add Expense
-          </Button>
+        <div className="fin-quick-actions">
+          <Link to="/finance/reports" className="fin-quick-action"><IconReport />Financial Reports</Link>
+          <Link to="/finance/partners" className="fin-quick-action"><IconPartners />Capital Partners</Link>
+          <Link to="/finance/loans" className="fin-quick-action"><IconLoan />Loans</Link>
+          <Link to="/finance/staff-cash" className="fin-quick-action"><IconCash />Cash with Staff</Link>
+          <Link to="/finance/accounts" className="fin-quick-action"><IconSettings />Manage Accounts</Link>
+          <Link to="/finance/settings" className="fin-quick-action"><IconCategories />Tax &amp; Categories</Link>
+          <Link to="/finance/commissions-rebates" className="fin-quick-action"><IconCommission />Commissions &amp; Rebates</Link>
+          <button className="fin-quick-action" onClick={() => { setExpenseForm(null); setAssetForm(null); setFormError(null); setRevenueForm(emptyRevenueForm()); }}><IconPlus />Add Revenue</button>
+          <button className="fin-quick-action" onClick={() => { setRevenueForm(null); setExpenseForm(null); setFormError(null); setAssetForm(emptyAssetPurchaseForm()); }}><IconAsset />Add Fixed Asset</button>
+          <button className="fin-quick-action fin-quick-action--primary" onClick={() => { setRevenueForm(null); setAssetForm(null); setFormError(null); setExpenseForm(emptyExpenseForm()); }}><IconMinus />Add Expense</button>
         </div>
 
         {(error ?? rowError) && (
@@ -2026,6 +2032,47 @@ function FormInput({ label, value, onChange, type = "text" }: { label: string; v
     </div>
   );
 }
+
+type FinanceIconType = "revenue" | "expense" | "asset" | "deposits" | "profit" | "outstanding" | "overdue" | "report" | "partners" | "loan" | "cash" | "settings" | "categories" | "commission" | "plus" | "minus" | "refresh";
+
+function FinanceIcon({ type }: { type: FinanceIconType }) {
+  const common = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  switch (type) {
+    case "revenue": return <svg {...common}><path d="M3 18 9 12l4 3 8-8" /><path d="M15 7h6v6" /><path d="M4 21h16" /><path d="M6 18v3M10 15v6M14 16v5M18 11v10" /></svg>;
+    case "expense": return <svg {...common}><path d="m4 5 6 6-4 4 6 6" /><path d="M20 5 14 11l4 4-6 6" /><path d="M4 5h5M20 5h-5" /></svg>;
+    case "asset": return <svg {...common}><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 5V3h8v2M8 12h8M12 9v6" /></svg>;
+    case "deposits": return <svg {...common}><path d="M3 10 12 4l9 6" /><path d="M5 10v9M19 10v9M9 10v9M15 10v9M3 20h18" /><path d="M12 4v16" /></svg>;
+    case "profit": return <svg {...common}><path d="M4 20V12M10 20V7M16 20V10M22 20H2" /><path d="m4 9 5-4 4 2 7-5" /></svg>;
+    case "outstanding": return <svg {...common}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h5M8 16h3M17 15v5M14.5 17.5H20" /></svg>;
+    case "overdue": return <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" /></svg>;
+    case "report": return <svg {...common}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 17v-5M12 17V8M16 17v-3" /></svg>;
+    case "partners": return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0M16 5.5a3 3 0 0 1 0 5.5M17 14a5 5 0 0 1 4 6" /></svg>;
+    case "loan": return <svg {...common}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h4" /><path d="M16 16h.01" /></svg>;
+    case "cash": return <svg {...common}><rect x="3" y="6" width="18" height="12" rx="2" /><circle cx="12" cy="12" r="3" /><path d="M3 9a3 3 0 0 0 3-3M21 9a3 3 0 0 1-3-3M3 15a3 3 0 0 1 3 3M21 15a3 3 0 0 0-3 3" /></svg>;
+    case "settings": return <svg {...common}><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></svg>;
+    case "categories": return <svg {...common}><path d="M4 5h16M4 12h16M4 19h16" /><circle cx="8" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="10" cy="19" r="2" /></svg>;
+    case "commission": return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="M3 12h4M17 12h4" /></svg>;
+    case "plus": return <svg {...common}><path d="M12 5v14M5 12h14" /></svg>;
+    case "minus": return <svg {...common}><path d="M5 12h14" /></svg>;
+    case "refresh": return <svg {...common}><path d="M20 11a8 8 0 0 0-14.8-3L3 10" /><path d="M3 5v5h5M4 13a8 8 0 0 0 14.8 3L21 14" /><path d="M21 19v-5h-5" /></svg>;
+  }
+}
+
+function SummaryIcon({ label }: { label: string }) {
+  const type: FinanceIconType = label.includes("Revenue") ? "revenue" : label.includes("Expenses") || label.includes("Costs") ? "expense" : label.includes("Assets") ? "asset" : label.includes("Deposits") ? "deposits" : label.includes("Profit") || label.includes("Movement") ? "profit" : label.includes("Outstanding") ? "outstanding" : "overdue";
+  return <FinanceIcon type={type} />;
+}
+function IconRefresh() { return <FinanceIcon type="refresh" />; }
+function IconReport() { return <FinanceIcon type="report" />; }
+function IconPartners() { return <FinanceIcon type="partners" />; }
+function IconLoan() { return <FinanceIcon type="loan" />; }
+function IconCash() { return <FinanceIcon type="cash" />; }
+function IconSettings() { return <FinanceIcon type="settings" />; }
+function IconCategories() { return <FinanceIcon type="categories" />; }
+function IconCommission() { return <FinanceIcon type="commission" />; }
+function IconPlus() { return <FinanceIcon type="plus" />; }
+function IconAsset() { return <FinanceIcon type="asset" />; }
+function IconMinus() { return <FinanceIcon type="minus" />; }
 
 function IconPencil() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>;
