@@ -1346,13 +1346,13 @@ export default function FinanceDashboardPage({ user }: Props) {
         };
       case "totalExpenses":
         return {
-          minWidth: 860,
+          minWidth: 1150,
           emptyText: "No costs for the selected filters.",
           columns: [
-            { key: "date", header: "Date", width: "116px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
-            { key: "project", header: "Project", width: "minmax(120px,1fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
-            { key: "item", header: "Cost", width: "minmax(200px,2fr)", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
-            { key: "amount", header: "Amount", width: "160px", align: "right", render: (r) => {
+            { key: "date", header: "Date", width: "110px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
+            { key: "project", header: "Project", width: "230px", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
+            { key: "item", header: "Cost", width: "320px", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
+            { key: "amount", header: "Amount", width: "180px", align: "right", render: (r) => {
               const row = r as CostLine;
               // Sign and colour carry what the removed Type column used to say: + is a cost, − is a reduction.
               return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
@@ -1360,7 +1360,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             // The receipt, in the list where the cost is actually read. "None" is only honest for
             // the two kinds that could have carried a file; the other four keep their evidence in
             // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
-            { key: "attachment", header: "Attachment", width: "120px", render: (r) => {
+            { key: "attachment", header: "Attachment", width: "170px", render: (r) => {
               const row = r as CostLine;
               if (row.source !== "expense" && row.source !== "assetPurchase") {
                 return <span className="text-xs text-[var(--text-muted)]">—</span>;
@@ -1370,7 +1370,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             // Edit and delete where the cost is read, so the breakdown is not a list you have to
             // leave to correct. Only the two kinds this page owns get them; stopPropagation keeps
             // the buttons from also firing the row's own open.
-            { key: "actions", header: "", width: "104px", align: "right", render: (r) => {
+            { key: "actions", header: "", width: "minmax(140px,1fr)", align: "right", render: (r) => {
               const row = r as CostLine;
               if (row.source !== "expense" && row.source !== "assetPurchase") {
                 return <span className="text-xs text-[var(--text-muted)]">↗</span>;
