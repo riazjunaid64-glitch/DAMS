@@ -8,6 +8,7 @@ export interface Column<T> {
   /** A CSS grid track, e.g. "120px" or "minmax(160px,1fr)". */
   width: string;
   align?: "left" | "right";
+  cellClassName?: string;
   render: (row: T) => ReactNode;
 }
 
@@ -97,7 +98,7 @@ export default function VirtualInfiniteTable<T>({
             {columns.map((c) => (
               <div
                 key={c.key}
-                className={`px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] ${
+                className={`px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] ${c.cellClassName ?? ""} ${
                   c.align === "right" ? "text-right" : "text-left"
                 }`}
               >
@@ -140,7 +141,7 @@ export default function VirtualInfiniteTable<T>({
                     {columns.map((c) => (
                       <div
                         key={c.key}
-                        className={`truncate px-5 text-sm ${c.align === "right" ? "text-right" : "text-left"}`}
+                        className={`truncate px-5 text-sm ${c.cellClassName ?? ""} ${c.align === "right" ? "text-right" : "text-left"}`}
                       >
                         {c.render(row)}
                       </div>

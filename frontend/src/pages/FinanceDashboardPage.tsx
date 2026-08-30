@@ -1352,7 +1352,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             { key: "date", header: "Date", width: "110px", render: (r) => <span className="whitespace-nowrap text-[var(--text-secondary)]">{formatDate((r as CostLine).date)}</span> },
             { key: "project", header: "Project", width: "230px", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).projectName}</span> },
             { key: "item", header: "Cost", width: "320px", render: (r) => <span className="text-[var(--text-primary)]">{(r as CostLine).label}</span> },
-            { key: "amount", header: "Amount", width: "180px", align: "right", render: (r) => {
+            { key: "amount", header: "Amount", width: "220px", align: "right", render: (r) => {
               const row = r as CostLine;
               // Sign and colour carry what the removed Type column used to say: + is a cost, − is a reduction.
               return <span className={`font-semibold tabular-nums whitespace-nowrap ${row.amount >= 0 ? "text-rose-400" : "text-emerald-400"}`}>{row.amount >= 0 ? "+" : "−"}{formatMoney(Math.abs(row.amount))}</span>;
@@ -1360,7 +1360,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             // The receipt, in the list where the cost is actually read. "None" is only honest for
             // the two kinds that could have carried a file; the other four keep their evidence in
             // the workflow that owns them, so a dash says "not here" rather than "nothing exists".
-            { key: "attachment", header: "Attachment", width: "170px", render: (r) => {
+            { key: "attachment", header: "Attachment", width: "170px", cellClassName: "vtable-cell--attachment-spaced", render: (r) => {
               const row = r as CostLine;
               if (row.source !== "expense" && row.source !== "assetPurchase") {
                 return <span className="text-xs text-[var(--text-muted)]">—</span>;

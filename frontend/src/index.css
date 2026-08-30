@@ -3188,6 +3188,7 @@ h1, h2, h3, h4, h5, h6 {
 .fin-quick-action--primary { border-color: var(--gold); background: linear-gradient(135deg, #e8c86e, #cba95c); color: #17140d; }
 .fin-quick-action--primary svg { color: #17140d; }
 .fin-quick-action--primary:hover { background: linear-gradient(135deg, #f1d98a, #d8b969); }
+.vtable-cell--attachment-spaced { padding-left: 2.25rem !important; }
 
 @media (max-width: 1100px) {
   .fin-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
