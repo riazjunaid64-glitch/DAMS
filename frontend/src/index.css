@@ -3202,6 +3202,7 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--app-text);
   vertical-align: middle;
 }
+.app-select.block { display: block; }
 .app-select__native {
   position: absolute !important;
   width: 1px !important;
