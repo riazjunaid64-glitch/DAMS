@@ -463,6 +463,10 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [accountFilter, setAccountFilter] = useState<string>("");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
+  const [draftProjectId, setDraftProjectId] = useState<string>("");
+  const [draftAccountFilter, setDraftAccountFilter] = useState<string>("");
+  const [draftFromDate, setDraftFromDate] = useState<string>("");
+  const [draftToDate, setDraftToDate] = useState<string>("");
   // null until the client's configured year start is read back. Nothing that depends on the
   // financial year may be stated or applied before then — see useFinancialYearStartMonth.
   const { startMonth: financialYearStartMonth, failed: financialYearFailed } =
@@ -478,6 +482,7 @@ export default function FinanceDashboardPage({ user }: Props) {
   const [chartData, setChartData] = useState<FinanceChartData | null>(null);
   // Why a custom From/To cannot be used yet. Blocks the request rather than sending half a range.
   const rangeError = financeRangeError(fromDate, toDate);
+  const draftRangeError = financeRangeError(draftFromDate, draftToDate);
 
   // Paged rows for the active view (infinite scroll). Switching view or filters resets it.
   const { rows, loading, loadingMore, hasMore, error, loadMore, reload } =
@@ -672,20 +677,31 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   // Which quick-period chip (if any) matches the current from/to selection.
   const activePeriod = useMemo<Period>(() => {
-    if (!fromDate && !toDate) return "all";
+    if (!draftFromDate && !draftToDate) return "all";
     for (const preset of PERIODS) {
       if (preset === "all") continue;
       const r = buildPeriodRange(preset, financialYearStartMonth);
-      if (r.from === fromDate && r.to === toDate) return preset;
+      if (r.from === draftFromDate && r.to === draftToDate) return preset;
     }
     return "custom";
-  }, [fromDate, toDate, financialYearStartMonth]);
+  }, [draftFromDate, draftToDate, financialYearStartMonth]);
 
   const applyPeriod = useCallback((period: Period) => {
     const r = buildPeriodRange(period, financialYearStartMonth);
+    // Preset periods are immediate actions; only the manual filter fields wait for Apply.
     setFromDate(r.from);
     setToDate(r.to);
+    setDraftFromDate(r.from);
+    setDraftToDate(r.to);
   }, [financialYearStartMonth]);
+
+  const applyFilters = () => {
+    if (draftRangeError) return;
+    setProjectId(draftProjectId);
+    setAccountFilter(draftAccountFilter);
+    setFromDate(draftFromDate);
+    setToDate(draftToDate);
+  };
 
   // An account filter changes what the money cards MEAN, so it changes what they are called. A
   // recognised sale moves no cash and belongs to no bank, so "Total Revenue" under a bank filter is
@@ -1489,7 +1505,7 @@ export default function FinanceDashboardPage({ user }: Props) {
               <div className="fin-controls">
                 <div className="fin-field fin-field--wide">
                   <span className="fin-field__label">Project</span>
-                  <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="fin-control" aria-label="Project">
+                  <select value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
                     <option value="">All Projects</option>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>{p.projectName}</option>
@@ -1498,7 +1514,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 </div>
                 <div className="fin-field fin-field--wide">
                   <span className="fin-field__label">Account</span>
-                  <select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
+                  <select value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
                     <option value="">All Accounts</option>
                     {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
                     <option value="unassigned">Unassigned</option>
@@ -1506,18 +1522,18 @@ export default function FinanceDashboardPage({ user }: Props) {
                 </div>
               <div className="fin-field">
                 <span className="fin-field__label">From</span>
-                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="fin-control fin-control--date" />
+                <input type="date" value={draftFromDate} onChange={(e) => setDraftFromDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
               <div className="fin-field">
                 <span className="fin-field__label">To</span>
-                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="fin-control fin-control--date" />
+                <input type="date" value={draftToDate} onChange={(e) => setDraftToDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
-              <button type="button" className="fin-apply" onClick={() => void loadSummary()} disabled={!!rangeError || summaryLoading}>
+              <button type="button" className="fin-apply" onClick={applyFilters} disabled={!!draftRangeError}>
                 <IconRefresh />
                 Apply
               </button>
-              {(fromDate || toDate) && (
-                <button type="button" className="fin-clear" onClick={() => { setFromDate(""); setToDate(""); }}>
+              {(draftFromDate || draftToDate || draftProjectId || draftAccountFilter) && (
+                <button type="button" className="fin-clear" onClick={() => { setDraftProjectId(""); setDraftAccountFilter(""); setDraftFromDate(""); setDraftToDate(""); }}>
                   Clear
                 </button>
               )}
@@ -1527,9 +1543,9 @@ export default function FinanceDashboardPage({ user }: Props) {
             {/* A half-open or backwards range is refused rather than interpreted. It used to be
                 accepted by the totals and re-read as "all time" (or as the financial year) by the
                 charts, so the screen answered two questions at once without saying so. */}
-            {rangeError && (
+            {draftRangeError && (
               <p role="alert" className="mt-3 text-xs text-amber-300">
-                {rangeError}
+                {draftRangeError}
               </p>
             )}
           </div>
@@ -1592,7 +1608,7 @@ export default function FinanceDashboardPage({ user }: Props) {
             <p className="mt-3 text-xs text-amber-300/90">
               Entries on this account only — not the period's revenue, cost or profit. Sales move no
               cash, so they sit on no account and Net Profit is not reported here.{" "}
-              <button type="button" className="underline hover:text-amber-200" onClick={() => setAccountFilter("")}>
+              <button type="button" className="underline hover:text-amber-200" onClick={() => { setAccountFilter(""); setDraftAccountFilter(""); }}>
                 Clear the account filter
               </button>
             </p>
