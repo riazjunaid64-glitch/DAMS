@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Button from "../../lib/Button.tsx";
 import Modal from "../../lib/Modal.tsx";
@@ -82,10 +83,10 @@ export default function CustomerDocumentsPanel({ customerId, checklist, loading,
             onClick={() => setFilter(item.id)} className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs ${filter === item.id ? "border-indigo-400 bg-indigo-500/15 text-indigo-300" : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>{item.label}</button>)}
         </div>
         <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">Sort
-          <select value={sort} onChange={(e) => setSort(e.target.value)} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--text-primary)]">
+          <AppSelect value={sort} onChange={(e) => setSort(e.target.value)} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--text-primary)]">
             <option value="required">Required first</option><option value="missing">Missing first</option>
             <option value="display">Display order</option><option value="recent">Recently updated</option>
-          </select>
+          </AppSelect>
         </label>
       </div>
 
@@ -248,10 +249,10 @@ function AddRequirementModal({ customerId, open, categories, existing, onClose, 
   return <Modal open={open} onClose={() => !saving && onClose()} align="top"><form onSubmit={(e) => void submit(e)} role="dialog" aria-modal="true" aria-labelledby="add-requirement-title" className="relative my-8 w-full max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-2xl">
     <h2 id="add-requirement-title" className="text-lg font-semibold text-[var(--text-heading)]">Add document requirement</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Choose a reusable category or create a requirement for this customer.</p>
     {error && <p role="alert" className="mt-4 rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
-    <div className="mt-5 space-y-4"><FieldLabel label="Existing category"><select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} className={inputClass}><option value="">Custom requirement</option>{available.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></FieldLabel>
+    <div className="mt-5 space-y-4"><FieldLabel label="Existing category"><AppSelect value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} className={inputClass}><option value="">Custom requirement</option>{available.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</AppSelect></FieldLabel>
       {!form.categoryId && <><FieldLabel label="Requirement name" required><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></FieldLabel><FieldLabel label="Description"><textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={inputClass} rows={3} /></FieldLabel>
         <label className="flex items-center gap-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={form.saveGlobal} onChange={(e) => setForm({ ...form, saveGlobal: e.target.checked })} />Save as a reusable global category</label>
-        {form.saveGlobal && <><FieldLabel label="Stable category code" required><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "_") })} className={inputClass} /></FieldLabel><FieldLabel label="Apply global category"><select value={form.assignment} onChange={(e) => setForm({ ...form, assignment: e.target.value as AssignmentMode })} className={inputClass}><option value="None">Do not assign automatically</option><option value="NewCustomersOnly">New customers only</option><option value="AllActiveCustomers">All existing active customers</option><option value="SelectedCustomers">This customer only</option></select></FieldLabel></>}
+        {form.saveGlobal && <><FieldLabel label="Stable category code" required><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "_") })} className={inputClass} /></FieldLabel><FieldLabel label="Apply global category"><AppSelect value={form.assignment} onChange={(e) => setForm({ ...form, assignment: e.target.value as AssignmentMode })} className={inputClass}><option value="None">Do not assign automatically</option><option value="NewCustomersOnly">New customers only</option><option value="AllActiveCustomers">All existing active customers</option><option value="SelectedCustomers">This customer only</option></AppSelect></FieldLabel></>}
       </>}
       <div className="grid gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[var(--border)] p-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} />Required for this customer</label><FieldLabel label="Due date"><input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className={inputClass} /></FieldLabel></div>
     </div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? "Adding…" : "Add requirement"}</Button></div>

@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -250,10 +251,10 @@ export default function CustomerDetailPage({ user }: Props) {
                 onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Status</span>
-                <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                <AppSelect value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
+                </AppSelect>
               </label>
               <div className="sm:col-span-2">
                 <Field label="Address" value={editForm.address}

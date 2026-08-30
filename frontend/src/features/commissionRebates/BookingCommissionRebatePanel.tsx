@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type FormEvent, type ReactNode } from "react";
 import { api } from "../../api/api";
 import Button from "../../lib/Button";
@@ -157,10 +158,10 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
             <div className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
               <span>Partner<span className="ml-0.5 text-rose-400">*</span></span>
               <div className="flex gap-2">
-                <select required value={commission.partnerId} onChange={e=>setCommission({...commission,partnerId:e.target.value})} className={input}>
+                <AppSelect required value={commission.partnerId} onChange={e=>setCommission({...commission,partnerId:e.target.value})} className={input}>
                   <option value="">Select partner</option>
                   {partnerOptions.map(p=><option key={p.id} value={String(p.id)}>{p.name} - {p.partnerType}</option>)}
-                </select>
+                </AppSelect>
                 <Button type="button" size="sm" variant="outline" className="shrink-0" disabled={busy} onClick={()=>setShowPartner(true)}>+ Add Partner</Button>
               </div>
             </div>
@@ -305,7 +306,7 @@ function Readout({label,value,tone="plain"}:{label:string;value:string;tone?:"pl
   </div>;
 }
 
-function Select({label,value,set,options,required=false,disabled=false}:{label:string;value:string;set:(v:string)=>void;options:{v:string;n:string}[];required?:boolean;disabled?:boolean}){return <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">{label}<select required={required} disabled={disabled} value={value} onChange={e=>set(e.target.value)} className={input}>{options.map(o=><option key={o.v} value={o.v}>{o.n}</option>)}</select></label>}
+function Select({label,value,set,options,required=false,disabled=false}:{label:string;value:string;set:(v:string)=>void;options:{v:string;n:string}[];required?:boolean;disabled?:boolean}){return <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">{label}<AppSelect required={required} disabled={disabled} value={value} onChange={e=>set(e.target.value)} className={input}>{options.map(o=><option key={o.v} value={o.v}>{o.n}</option>)}</AppSelect></label>}
 function Mini({label,value}:{label:string;value:string}){return <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"><p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</p><p className="mt-1 font-semibold text-[var(--text-heading)]">{value}</p></div>}
 function FormButtons({busy,cancel,submitText="Save"}:{busy:boolean;cancel:()=>void;submitText?:string}){return <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={cancel} disabled={busy}>Cancel</Button><Button type="submit" size="sm" disabled={busy}>{busy?"Saving…":submitText}</Button></div>}
 function Empty({text}:{text:string}){return <p className="rounded-xl border border-dashed border-[var(--border)] p-5 text-center text-sm text-[var(--text-muted)]">{text}</p>}

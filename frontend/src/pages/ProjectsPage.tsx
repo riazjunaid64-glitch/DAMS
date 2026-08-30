@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "../api/api.ts";
 import { uploadProjectMedia } from "../api/media.ts";
@@ -322,7 +323,7 @@ export default function ProjectsPage({ user }: Props) {
 
                 <label className="project-modal__select-label">
                   <span>Category</span>
-                  <select
+                  <AppSelect
                     className="project-modal__select"
                     value={projectForm.category}
                     onChange={(e) =>
@@ -334,7 +335,7 @@ export default function ProjectsPage({ user }: Props) {
                         {cat}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </label>
 
                 <Field
@@ -388,7 +389,7 @@ export default function ProjectsPage({ user }: Props) {
                 {editingId && (
                   <label className="project-modal__select-label">
                     <span>Status</span>
-                    <select
+                    <AppSelect
                       className="project-modal__select"
                       value={projectForm.status}
                       onChange={(e) =>
@@ -403,7 +404,7 @@ export default function ProjectsPage({ user }: Props) {
                           {label}
                         </option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </label>
                 )}
               </div>

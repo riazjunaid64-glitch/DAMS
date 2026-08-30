@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
@@ -308,23 +309,23 @@ function SettingsTab() {
       <Panel title="Email delivery">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Email enabled" hint="Turning this off stops all outgoing email immediately.">
-            <select
+            <AppSelect
               value={values["email.enabled"] ?? "false"}
               onChange={(event) => set("email.enabled", event.target.value)}
               className={inputClass}
             >
               <option value="true">On</option>
               <option value="false">Off</option>
-            </select>
+            </AppSelect>
           </Field>
           <Field label="Provider">
-            <select
+            <AppSelect
               value={values["email.provider"] ?? "smtp"}
               onChange={(event) => set("email.provider", event.target.value)}
               className={inputClass}
             >
               <option value="smtp">SMTP</option>
-            </select>
+            </AppSelect>
           </Field>
           {EMAIL_FIELDS.map((field) => (
             <Field key={field.key} label={field.label} hint={field.hint}>
@@ -346,24 +347,24 @@ function SettingsTab() {
             />
           </Field>
           <Field label="Use TLS" hint="Recommended. Port 465 uses implicit TLS; other ports require STARTTLS.">
-            <select
+            <AppSelect
               value={values["email.smtp.useSsl"] ?? "true"}
               onChange={(event) => set("email.smtp.useSsl", event.target.value)}
               className={inputClass}
             >
               <option value="true">Yes</option>
               <option value="false">No</option>
-            </select>
+            </AppSelect>
           </Field>
           <Field label="Attach receipt PDF" hint="Attaches the official receipt to payment receipt emails.">
-            <select
+            <AppSelect
               value={values["email.attachReceipt"] ?? "true"}
               onChange={(event) => set("email.attachReceipt", event.target.value)}
               className={inputClass}
             >
               <option value="true">Yes</option>
               <option value="false">No</option>
-            </select>
+            </AppSelect>
           </Field>
         </div>
 
@@ -386,14 +387,14 @@ function SettingsTab() {
       <Panel title="Browser push">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Push enabled">
-            <select
+            <AppSelect
               value={values["push.enabled"] ?? "false"}
               onChange={(event) => set("push.enabled", event.target.value)}
               className={inputClass}
             >
               <option value="true">On</option>
               <option value="false">Off</option>
-            </select>
+            </AppSelect>
           </Field>
           <Field label="Notification name" hint="Shown as the title on a device.">
             <input
@@ -1014,18 +1015,18 @@ function ComposeTab() {
               <input value={form.actionUrl} onChange={(e) => setForm({ ...form, actionUrl: e.target.value })} className={inputClass} />
             </Field>
             <Field label="Priority">
-              <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as ComposeRequest["priority"] })} className={inputClass}>
+              <AppSelect value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value as ComposeRequest["priority"] })} className={inputClass}>
                 <option value="Low">Low</option>
                 <option value="Normal">Normal</option>
                 <option value="High">High</option>
-              </select>
+              </AppSelect>
             </Field>
             <Field label="Audience">
-              <select value={form.audience} onChange={(e) => { setForm({ ...form, audience: e.target.value as AudienceType }); setPreview(null); }} className={inputClass}>
+              <AppSelect value={form.audience} onChange={(e) => { setForm({ ...form, audience: e.target.value as AudienceType }); setPreview(null); }} className={inputClass}>
                 {AUDIENCES.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
-              </select>
+              </AppSelect>
             </Field>
             {form.audience === "CustomersInProject" && (
               <Field label="Project id">
@@ -1198,12 +1199,12 @@ function HistoryTab() {
       <Panel title="Delivery history">
         <div className="mb-3 flex flex-wrap items-end gap-3">
           <Field label="Channel">
-            <select value={channel} onChange={(e) => { setChannel(e.target.value); setPage(1); }} className={inputClass}>
+            <AppSelect value={channel} onChange={(e) => { setChannel(e.target.value); setPage(1); }} className={inputClass}>
               <option value="">All</option>
               <option value="InApp">In-app</option>
               <option value="Email">Email</option>
               <option value="WebPush">Browser push</option>
-            </select>
+            </AppSelect>
           </Field>
           <Field label="Search">
             <input

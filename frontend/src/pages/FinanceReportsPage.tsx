@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
@@ -196,7 +197,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     </div>
     <div className="mb-5 flex flex-wrap gap-2" aria-label="Financial report type">{([ ["pnl", "Profit & Loss"], ["trial", "Trial Balance"], ["balance", "Balance Sheet"] ] as [Tab,string][]).map(([id,label]) => <button type="button" aria-pressed={tab === id} key={id} onClick={() => setTab(id)} className={`rounded-full px-4 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${tab === id ? "bg-[var(--accent)] text-[var(--btn-primary-text)]" : "border border-[var(--border)] bg-[var(--surface)]"}`}>{label}</button>)}</div>
     <div className="mb-5 flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-      <label className="text-xs text-[var(--text-muted)]">Project<select className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label>
+      <label className="text-xs text-[var(--text-muted)]">Project<AppSelect className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</AppSelect></label>
       {tab === "pnl" ? <>
         {/* Disabled until the configured year start is known: the button both names a range and
             applies it, so an unresolved setting would make it wrong on both counts. */}

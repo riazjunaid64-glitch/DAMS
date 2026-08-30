@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
@@ -417,7 +418,7 @@ function BarSelect({ label, icon, value, onChange, options }: { label: string; i
     <div className="relative shrink-0">
       <span aria-hidden="true" className="pointer-events-none absolute -top-2 left-2.5 z-10 rounded bg-[var(--bg-card)] px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
       <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-[var(--accent)]">{icon}</span>
-      <select
+      <AppSelect
         aria-label={label}
         className="w-[124px] cursor-pointer appearance-none rounded-xl border border-[var(--border)] bg-[var(--input-bg)] py-2.5 pl-9 pr-8 text-sm font-medium text-[var(--text-primary)] outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
         value={value}
@@ -425,7 +426,7 @@ function BarSelect({ label, icon, value, onChange, options }: { label: string; i
       >
         <option value="">All</option>
         {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-      </select>
+      </AppSelect>
       <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconChevronDown className="h-3.5 w-3.5" /></span>
     </div>
   );
@@ -451,7 +452,7 @@ function TextField({ label, value, onChange, required, wide, type = "text", inpu
   return <div className={wide ? "sm:col-span-2" : ""}><Label required={required}>{label}</Label><input required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)} type={type} inputMode={inputMode} /></div>;
 }
 function SelectField({ label, value, onChange, options, required }: { label: string; value: string; onChange: (value: string) => void; options: string[][]; required?: boolean }) {
-  return <div><Label required={required}>{label}</Label><select required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Select…</option>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></div>;
+  return <div><Label required={required}>{label}</Label><AppSelect required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Select…</option>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</AppSelect></div>;
 }
 
 /* Icons are inline SVG on purpose: nothing to install, version or ship, no runtime cost beyond the

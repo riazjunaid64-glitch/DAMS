@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
@@ -319,25 +320,25 @@ function AttendanceHistory() {
         <DateRangeFilter value={range} onChange={setRange} />
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Employee</label>
-          <select
+          <AppSelect
             value={employeeFilter}
             onChange={e => setEmployeeFilter(e.target.value)}
             className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
           >
             <option value="all">All employees</option>
             {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
+          </AppSelect>
         </div>
         <div>
           <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Status</label>
-          <select
+          <AppSelect
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value)}
             className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
           >
             <option value="all">All statuses</option>
             {ATTENDANCE_STATUSES.map(s => <option key={s.num} value={s.api}>{s.label}</option>)}
-          </select>
+          </AppSelect>
         </div>
       </div>
 

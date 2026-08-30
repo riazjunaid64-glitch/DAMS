@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { User } from "../../App.tsx";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
+import AppSelect from "../../lib/AppSelect.tsx";
 import type { LeadLookups } from "../../pages/LeadDetailPage.tsx";
 import {
   CrmModal,
@@ -420,7 +421,7 @@ function submitLabel(action: LeadAction) {
 
 type Option = string | { value: string; label: string };
 function Select({ label, value, onChange, options, required, allowEmpty, emptyLabel = "Select…" }: { label: string; value: string; onChange: (value: string) => void; options: Option[]; required?: boolean; allowEmpty?: boolean; emptyLabel?: string }) {
-  return <div><Label required={required}>{label}</Label><select required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}>{(allowEmpty || !value) && <option value="">{emptyLabel}</option>}{options.map((option) => { const o = typeof option === "string" ? { value: option, label: enumLabel(option) } : option; return <option key={o.value} value={o.value}>{o.label}</option>; })}</select></div>;
+  return <div><Label required={required}>{label}</Label><AppSelect required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}>{(allowEmpty || !value) && <option value="">{emptyLabel}</option>}{options.map((option) => { const o = typeof option === "string" ? { value: option, label: enumLabel(option) } : option; return <option key={o.value} value={o.value}>{o.label}</option>; })}</AppSelect></div>;
 }
 function Field({ label, value, onChange, required, type = "text", wide }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; wide?: boolean }) {
   return <div className={wide ? "sm:col-span-2" : ""}><Label required={required}>{label}</Label><input className={inputClass} required={required} type={type} value={value} onChange={(e) => onChange(e.target.value)} /></div>;

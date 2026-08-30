@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useState, type FormEvent } from "react";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
@@ -253,7 +254,7 @@ export default function ContactPage() {
 
                 <label className="contact-form__select-label">
                   <span>Enquiry Type</span>
-                  <select
+                  <AppSelect
                     value={form.topic}
                     onChange={(e) => setForm((prev) => ({ ...prev, topic: e.target.value }))}
                     className="contact-form__select"
@@ -263,7 +264,7 @@ export default function ContactPage() {
                         {topic}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </label>
 
                 <Field

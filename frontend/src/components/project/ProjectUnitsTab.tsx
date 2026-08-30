@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useDeferredValue, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "../../App.tsx";
@@ -282,30 +283,30 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange,
               />
             </label>
 
-            <select value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+            <AppSelect value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
               <option value="">All Types</option>
               {availableTypes.map((t) => t ? <option key={t} value={t}>{t}</option> : null)}
-            </select>
+            </AppSelect>
 
-            <select value={statusFilter} onChange={(e) => { selectStatus(e.target.value); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+            <AppSelect value={statusFilter} onChange={(e) => { selectStatus(e.target.value); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
               <option value="">All Statuses</option>
               <option value="available">Available</option>
               <option value="reserved">Reserved</option>
               <option value="sold">Sold</option>
-            </select>
+            </AppSelect>
 
-            <select value={floorFilter} onChange={(e) => { setFloorFilter(e.target.value); setPage(1); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+            <AppSelect value={floorFilter} onChange={(e) => { setFloorFilter(e.target.value); setPage(1); }} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
               <option value="">All Floors</option>
               {availableFloors.map((floor) => floor ? <option key={floor} value={floor}>Floor {floor}</option> : null)}
-            </select>
+            </AppSelect>
 
-            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+            <AppSelect value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="h-12 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
               <option value="newest">Newest First</option>
               <option value="price-high">Price High</option>
               <option value="price-low">Price Low</option>
               <option value="size-high">Largest Size</option>
               <option value="floor">Floor Number</option>
-            </select>
+            </AppSelect>
 
             <button
               type="button"

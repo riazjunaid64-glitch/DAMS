@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent, type ReactNode } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
@@ -235,18 +236,18 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
                       <>
                         <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                           <span>Refund From Account</span>
-                          <select required value={refundFinanceAccountId} onChange={(e) => setRefundFinanceAccountId(e.target.value)}
+                          <AppSelect required value={refundFinanceAccountId} onChange={(e) => setRefundFinanceAccountId(e.target.value)}
                             className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                             <option value="">Select an account…</option>
                             {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
-                          </select>
+                          </AppSelect>
                         </label>
                         <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                           <span>Payment Method</span>
-                          <select value={refundPaymentMethod} onChange={(e) => setRefundPaymentMethod(e.target.value as RefundPaymentMethod)}
+                          <AppSelect value={refundPaymentMethod} onChange={(e) => setRefundPaymentMethod(e.target.value as RefundPaymentMethod)}
                             className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                             {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                          </select>
+                          </AppSelect>
                         </label>
                         <Field label="Payment Reference" required={refundPaymentMethod !== "Cash"} value={refundPaymentReference}
                           onChange={(e) => setRefundPaymentReference(e.target.value)} />

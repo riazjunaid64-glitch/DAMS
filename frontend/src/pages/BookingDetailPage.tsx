@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -624,13 +625,13 @@ export default function BookingDetailPage({ user }: Props) {
                 onChange={(e) => setFinForm({ ...finForm, agreedSalePrice: e.target.value })} />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Booking Amount (% of sale price)</span>
-                <select value={finForm.bookingPercent}
+                <AppSelect value={finForm.bookingPercent}
                   onChange={(e) => setFinForm({ ...finForm, bookingPercent: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   {BOOKING_PERCENTS.map((p) => (
                     <option key={p} value={p}>{p === "custom" ? "Custom amount" : `${p}%`}</option>
                   ))}
-                </select>
+                </AppSelect>
                 {finForm.bookingPercent !== "custom" && (
                   <span className="text-xs text-[var(--text-muted)]">
                     = {formatMoney(Math.round((Number(finForm.agreedSalePrice) || 0) * (Number(finForm.bookingPercent) / 100) * 100) / 100)}
@@ -704,11 +705,11 @@ export default function BookingDetailPage({ user }: Props) {
               onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} />
             <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
               <span>Frequency</span>
-              <select value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}
+              <AppSelect value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}
                 disabled={planLocked}
                 className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                 {FREQUENCIES.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
+              </AppSelect>
             </label>
             <Field label="Number of Installments" type="number" min={1} max={600} required
               value={form.numberOfInstallments} disabled={planLocked}
@@ -874,18 +875,18 @@ export default function BookingDetailPage({ user }: Props) {
                 onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Payment Method</span>
-                <select value={payForm.paymentMethod} onChange={(e) => setPayForm({ ...payForm, paymentMethod: e.target.value })}
+                <AppSelect value={payForm.paymentMethod} onChange={(e) => setPayForm({ ...payForm, paymentMethod: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </select>
+                </AppSelect>
               </label>
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Received In Account</span>
-                <select required value={payForm.financeAccountId} onChange={(e) => setPayForm({ ...payForm, financeAccountId: e.target.value })}
+                <AppSelect required value={payForm.financeAccountId} onChange={(e) => setPayForm({ ...payForm, financeAccountId: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   <option value="">Select an account…</option>
                   {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
-                </select>
+                </AppSelect>
               </label>
               <Field label="Reference (optional)" value={payForm.paymentReference}
                 onChange={(e) => setPayForm({ ...payForm, paymentReference: e.target.value })} />
@@ -920,18 +921,18 @@ export default function BookingDetailPage({ user }: Props) {
                 onChange={(e) => setBookingPayForm({ ...bookingPayForm, amount: e.target.value })} />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Payment Method</span>
-                <select value={bookingPayForm.paymentMethod} onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentMethod: e.target.value })}
+                <AppSelect value={bookingPayForm.paymentMethod} onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentMethod: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                </select>
+                </AppSelect>
               </label>
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
                 <span>Received In Account</span>
-                <select required value={bookingPayForm.financeAccountId} onChange={(e) => setBookingPayForm({ ...bookingPayForm, financeAccountId: e.target.value })}
+                <AppSelect required value={bookingPayForm.financeAccountId} onChange={(e) => setBookingPayForm({ ...bookingPayForm, financeAccountId: e.target.value })}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
                   <option value="">Select an account…</option>
                   {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
-                </select>
+                </AppSelect>
               </label>
               <Field label="Reference (optional)" value={bookingPayForm.paymentReference}
                 onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentReference: e.target.value })} />

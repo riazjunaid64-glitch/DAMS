@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
+import AppSelect from "../lib/AppSelect.tsx";
 import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
 import { usePaginatedRows } from "../lib/usePaginatedRows.ts";
@@ -1505,20 +1506,20 @@ export default function FinanceDashboardPage({ user }: Props) {
               <div className="fin-controls">
                 <div className="fin-field fin-field--wide">
                   <span className="fin-field__label">Project</span>
-                  <select value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
+                  <AppSelect value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
                     <option value="">All Projects</option>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>{p.projectName}</option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </div>
                 <div className="fin-field fin-field--wide">
                   <span className="fin-field__label">Account</span>
-                  <select value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
+                  <AppSelect value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
                     <option value="">All Accounts</option>
                     {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
                     <option value="unassigned">Unassigned</option>
-                  </select>
+                  </AppSelect>
                 </div>
               <div className="fin-field">
                 <span className="fin-field__label">From</span>
@@ -2101,13 +2102,13 @@ function FormSelect({ label, value, onChange, children }: { label: string; value
   return (
     <div className="flex flex-col gap-1.5">
       <label className="text-xs font-medium text-[var(--text-secondary)]">{label}</label>
-      <select
+      <AppSelect
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
       >
         {children}
-      </select>
+      </AppSelect>
     </div>
   );
 }
