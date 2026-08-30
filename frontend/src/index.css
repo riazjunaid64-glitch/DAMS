@@ -3302,6 +3302,38 @@ h1, h2, h3, h4, h5, h6 {
 }
 .app-select__option:disabled { cursor: not-allowed; opacity: 0.4; }
 
+/* Trial balance account-details ledger */
+.account-detail-dialog { background: linear-gradient(135deg, #171713 0%, #10110f 100%); }
+.account-detail-title { margin: 0; color: var(--text-heading); font-size: clamp(1.05rem, 2vw, 1.35rem); font-weight: 800; letter-spacing: -0.02em; }
+.account-detail-ledger-code { margin: .3rem 0 0; color: var(--text-muted); font-size: .72rem; }
+.account-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 1.2rem; border: 1px solid var(--border); border-radius: .7rem; background: rgba(255,255,255,.018); }
+.account-detail-metric { display: flex; min-width: 0; align-items: center; gap: .85rem; padding: 1rem 1.1rem; }
+.account-detail-metric + .account-detail-metric { border-left: 1px solid var(--border); }
+.account-detail-metric__icon { display: inline-flex; width: 2.15rem; height: 2.15rem; flex: 0 0 2.15rem; align-items: center; justify-content: center; border: 1px solid rgba(203,169,92,.2); border-radius: .45rem; background: rgba(203,169,92,.06); color: var(--gold); }
+.account-detail-metric__icon svg { width: 1.15rem; height: 1.15rem; }
+.account-detail-metric__label { margin: 0; color: var(--text-muted); font-size: .72rem; }
+.account-detail-metric__value { margin: .25rem 0 0; color: var(--text-heading); font-size: .82rem; font-weight: 700; white-space: nowrap; }
+.account-detail-ledger { background: rgba(255,255,255,.012); }
+.account-detail-table { table-layout: fixed; }
+.account-detail-table th, .account-detail-table td { padding-top: .68rem !important; padding-bottom: .68rem !important; }
+.account-detail-table th:nth-child(1), .account-detail-table td:nth-child(1) { width: 13%; }
+.account-detail-table th:nth-child(2), .account-detail-table td:nth-child(2) { width: 27%; }
+.account-detail-table th:nth-child(3), .account-detail-table td:nth-child(3) { width: 17%; }
+.account-detail-table th:nth-child(4), .account-detail-table td:nth-child(4) { width: 14%; }
+.account-detail-table th:nth-child(5), .account-detail-table td:nth-child(5) { width: 13%; }
+.account-detail-table th:nth-child(6), .account-detail-table td:nth-child(6) { width: 16%; }
+.account-detail-table tbody td:nth-child(2), .account-detail-table tbody td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }
+.account-detail-debit { color: #eab43f !important; }
+.account-detail-credit { color: #45d49a !important; }
+.account-detail-running { color: var(--text-heading) !important; }
+.account-detail-total th, .account-detail-total td { padding-top: .8rem !important; padding-bottom: .8rem !important; }
+
+@media (max-width: 700px) {
+  .account-detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-detail-metric:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); }
+  .account-detail-metric:nth-child(4) { border-top: 1px solid var(--border); }
+}
+
 @media (max-width: 1100px) {
   .fin-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fin-apply { width: 100%; }
