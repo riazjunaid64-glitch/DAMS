@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
@@ -196,7 +197,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     </div>
     <div className="mb-5 flex flex-wrap gap-2" aria-label="Financial report type">{([ ["pnl", "Profit & Loss"], ["trial", "Trial Balance"], ["balance", "Balance Sheet"] ] as [Tab,string][]).map(([id,label]) => <button type="button" aria-pressed={tab === id} key={id} onClick={() => setTab(id)} className={`rounded-full px-4 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${tab === id ? "bg-[var(--accent)] text-[var(--btn-primary-text)]" : "border border-[var(--border)] bg-[var(--surface)]"}`}>{label}</button>)}</div>
     <div className="mb-5 flex flex-wrap items-end gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
-      <label className="text-xs text-[var(--text-muted)]">Project<select className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</select></label>
+      <label className="text-xs text-[var(--text-muted)]">Project<AppSelect className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">All projects</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.projectName}</option>)}</AppSelect></label>
       {tab === "pnl" ? <>
         {/* Disabled until the configured year start is known: the button both names a range and
             applies it, so an unresolved setting would make it wrong on both counts. */}
@@ -338,23 +339,23 @@ function TrialBalanceDetailsModal({ account, filters, onClose }: { account: Tria
   };
 
   return <Modal open onClose={onClose} align="top">
-    <section ref={dialogRef} tabIndex={-1} onKeyDown={handleKeyDown} role="dialog" aria-modal="true" aria-labelledby={headingId} className="relative my-2 flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl sm:my-6">
-      <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] p-4 sm:p-6">
-        <div><h2 id={headingId} className="text-lg font-bold text-[var(--text-heading)] sm:text-xl">{details?.accountName ?? account.accountName} — Account Details</h2>{(details?.ledgerCode ?? account.ledgerCode) && <p className="mt-1 text-xs text-[var(--text-muted)]">Ledger {(details?.ledgerCode ?? account.ledgerCode)}</p>}</div>
+    <section ref={dialogRef} tabIndex={-1} onKeyDown={handleKeyDown} role="dialog" aria-modal="true" aria-labelledby={headingId} className="account-detail-dialog relative my-2 flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] shadow-2xl sm:my-6">
+      <header className="account-detail-header flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] p-4 sm:p-6">
+        <div><h2 id={headingId} className="account-detail-title">{details?.accountName ?? account.accountName} — Account Details</h2>{(details?.ledgerCode ?? account.ledgerCode) && <p className="account-detail-ledger-code">Ledger {(details?.ledgerCode ?? account.ledgerCode)}</p>}</div>
         <button type="button" aria-label="Close account details" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xl text-[var(--text-muted)] hover:bg-[var(--surface-glass-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]">×</button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="account-detail-content min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {loading && <p role="status" className="py-16 text-center text-sm text-[var(--text-muted)]">Loading account details…</p>}
         {!loading && error && <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-200"><p>{error}</p><Button className="mt-4" variant="outline" size="sm" onClick={() => setAttempt((value) => value + 1)}>Try again</Button></div>}
         {!loading && details && <>
-          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <DetailMetric label="From" value={formatReportDate(details.from)}/>
-            <DetailMetric label="To" value={formatReportDate(details.to)}/>
-            <DetailMetric label="Opening Balance" value={formatBalance(details.openingBalance, details.openingBalanceType)}/>
-            <DetailMetric label="Closing Balance" value={formatBalance(details.closingBalance, details.closingBalanceType)}/>
+          <div className="account-detail-metrics">
+            <DetailMetric icon="calendar" label="From" value={formatReportDate(details.from)}/>
+            <DetailMetric icon="calendar" label="To" value={formatReportDate(details.to)}/>
+            <DetailMetric icon="balance" label="Opening balance" value={money(details.openingBalance)}/>
+            <DetailMetric icon="balance" label="Closing balance" value={details.closingBalance === 0 ? money(details.closingBalance) : formatBalance(details.closingBalance, details.closingBalanceType)}/>
           </div>
-          <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
-            <table className="data-table w-full min-w-[900px] text-sm">
+          <div className="account-detail-ledger overflow-x-auto rounded-xl border border-[var(--border)]">
+            <table className="data-table account-detail-table w-full min-w-[900px] text-sm">
               <caption className="sr-only">Ledger entries for {details.accountName}, {formatReportDate(details.from)} to {formatReportDate(details.to)}</caption>
               <thead><tr><th scope="col" className="p-3 text-left">Date</th><th scope="col" className="p-3 text-left">Description</th><th scope="col" className="p-3 text-left">Reference</th><th scope="col" className="p-3 text-right">Debit</th><th scope="col" className="p-3 text-right">Credit</th><th scope="col" className="p-3 text-right">Running Balance</th></tr></thead>
               <tbody>
@@ -363,13 +364,13 @@ function TrialBalanceDetailsModal({ account, filters, onClose }: { account: Tria
                   <td className="whitespace-nowrap p-3">{formatReportDate(entry.date)}</td>
                   <td className="max-w-sm whitespace-normal p-3 font-medium text-[var(--text-heading)]">{entry.description || "—"}</td>
                   <td className="max-w-xs whitespace-normal p-3 text-[var(--text-muted)]">{entry.reference || "—"}</td>
-                  <td className="p-3 text-right tabular-nums">{moneyOrDash(entry.debit)}</td>
-                  <td className="p-3 text-right tabular-nums">{moneyOrDash(entry.credit)}</td>
-                  <td className="whitespace-nowrap p-3 text-right font-semibold tabular-nums">{formatBalance(entry.runningBalance, entry.runningBalanceType)}</td>
+                  <td className={`p-3 text-right tabular-nums ${entry.debit ? "account-detail-debit" : ""}`}>{moneyOrDash(entry.debit)}</td>
+                  <td className={`p-3 text-right tabular-nums ${entry.credit ? "account-detail-credit" : ""}`}>{moneyOrDash(entry.credit)}</td>
+                  <td className="account-detail-running whitespace-nowrap p-3 text-right font-semibold tabular-nums">{formatBalance(entry.runningBalance, entry.runningBalanceType)}</td>
                 </tr>)}
                 {!details.rows.length && <tr><td colSpan={6} className="p-10 text-center text-[var(--text-muted)]">No transactions were found in this period.</td></tr>}
               </tbody>
-              <tfoot><tr className="border-t-2 border-[var(--border)] bg-[var(--surface-glass)] font-bold"><th scope="row" colSpan={3} className="p-3 text-left">Totals</th><td className="p-3 text-right tabular-nums">{money(details.totalDebit)}</td><td className="p-3 text-right tabular-nums">{money(details.totalCredit)}</td><td className="p-3"></td></tr></tfoot>
+              <tfoot><tr className="account-detail-total border-t-2 border-[var(--border)] bg-[var(--surface-glass)] font-bold"><th scope="row" colSpan={3} className="p-3 text-left">Total</th><td className="account-detail-debit p-3 text-right tabular-nums">{money(details.totalDebit)}</td><td className="account-detail-credit p-3 text-right tabular-nums">{money(details.totalCredit)}</td><td className="p-3"></td></tr></tfoot>
             </table>
           </div>
         </>}
@@ -379,7 +380,15 @@ function TrialBalanceDetailsModal({ account, filters, onClose }: { account: Tria
   </Modal>;
 }
 
-function DetailMetric({ label, value }: { label: string; value: string }) { return <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4"><p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{label}</p><p className="mt-1 font-semibold text-[var(--text-heading)]">{value}</p></div>; }
+function DetailMetric({ icon, label, value }: { icon: "calendar" | "balance"; label: string; value: string }) {
+  return <div className="account-detail-metric"><span className={`account-detail-metric__icon account-detail-metric__icon--${icon}`} aria-hidden="true"><AccountDetailIcon type={icon}/></span><div><p className="account-detail-metric__label">{label}</p><p className="account-detail-metric__value">{value}</p></div></div>;
+}
+
+function AccountDetailIcon({ type }: { type: "calendar" | "balance" }) {
+  return type === "calendar"
+    ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
+    : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h4M16 16h.01"/></svg>;
+}
 
 function BalanceView({ report }: { report: BalanceSheet }) { return <ReportCard title={`Balance Sheet · ${new Date(report.asAt).toLocaleDateString("en-GB")}`}>
   {!report.isBalanced && <div className="mb-5 rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200"><p className="font-bold">Statement is out of balance by {money(report.imbalance)}.</p><p className="mt-1">Review: {report.unbalancedAccounts.join(", ")}. No difference row has been inserted.</p></div>}

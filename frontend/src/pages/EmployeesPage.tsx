@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -260,9 +261,9 @@ export default function EmployeesPage({ user }: Props) {
               <Field label="Join Date" type="date" value={form.joinDate} onChange={e => setForm(f => ({ ...f, joinDate: e.target.value }))} required />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)] sm:col-span-2">
                 Status
-                <select className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]" value={form.status} onChange={e => setForm(f => ({ ...f, status: Number(e.target.value) }))}>
+                <AppSelect className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]" value={form.status} onChange={e => setForm(f => ({ ...f, status: Number(e.target.value) }))}>
                   {Object.entries(STATUS_CONFIG).map(([v, { label }]) => <option key={v} value={v}>{label}</option>)}
-                </select>
+                </AppSelect>
               </label>
             </div>
             {error && (
@@ -298,23 +299,23 @@ export default function EmployeesPage({ user }: Props) {
               className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] pl-10 pr-4 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
             />
           </div>
-          <select
+          <AppSelect
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value)}
             className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
           >
             <option value="all">All Statuses</option>
             {Object.entries(STATUS_CONFIG).map(([v, { label }]) => <option key={v} value={v}>{label}</option>)}
-          </select>
+          </AppSelect>
           {departments.length > 0 && (
-            <select
+            <AppSelect
               value={deptFilter}
               onChange={e => setDeptFilter(e.target.value)}
               className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
             >
               <option value="all">All Departments</option>
               {departments.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
+            </AppSelect>
           )}
         </div>
 

@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -303,19 +304,19 @@ export default function CreateBookingPage({ user }: Props) {
           <div className="grid gap-4 sm:grid-cols-2">
             <label className={labelClass}>
               <span>Project</span>
-              <select className={inputClass} value={projectId}
+              <AppSelect className={inputClass} value={projectId}
                 onChange={(e) => handleProjectChange(e.target.value)}>
                 <option value="">Select project...</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.projectName}</option>)}
-              </select>
+              </AppSelect>
             </label>
             <label className={labelClass}>
               <span>Available Unit</span>
-              <select className={inputClass} value={unitId} disabled={projectId === ""}
+              <AppSelect className={inputClass} value={unitId} disabled={projectId === ""}
                 onChange={(e) => handleUnitChange(e.target.value)}>
                 <option value="">{projectId === "" ? "Select a project first" : "Select unit..."}</option>
                 {units.map((u) => <option key={u.id} value={u.id}>{u.unitNumber} · {u.unitType}</option>)}
-              </select>
+              </AppSelect>
             </label>
           </div>
           {selectedUnit && (
@@ -353,11 +354,11 @@ export default function CreateBookingPage({ user }: Props) {
           {customerMode === "existing" ? (
             <label className={labelClass}>
               <span>Select Customer</span>
-              <select className={inputClass} value={customerId}
+              <AppSelect className={inputClass} value={customerId}
                 onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : "")}>
                 <option value="">Select customer...</option>
                 {customers.map((c) => <option key={c.id} value={c.id}>{c.fullName} · {c.phone}</option>)}
-              </select>
+              </AppSelect>
             </label>
           ) : (
             <>
@@ -402,31 +403,31 @@ export default function CreateBookingPage({ user }: Props) {
           {(num(form.amountReceived) ?? 0) > 0 && (
             <label className={labelClass}>
               <span>Received In Account</span>
-              <select className={inputClass} required value={form.receivedInAccountId} onChange={set("receivedInAccountId")}>
+              <AppSelect className={inputClass} required value={form.receivedInAccountId} onChange={set("receivedInAccountId")}>
                 <option value="">Select an account…</option>
                 {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}</option>)}
-              </select>
+              </AppSelect>
             </label>
           )}
           <div className="grid gap-4 sm:grid-cols-3">
             <label className={labelClass}>
               <span>Payment Type</span>
-              <select className={inputClass} value={form.paymentType} onChange={set("paymentType")}>
+              <AppSelect className={inputClass} value={form.paymentType} onChange={set("paymentType")}>
                 <option value="Booking">Booking</option>
                 <option value="Confirmation">Confirmation</option>
                 <option value="LumSum">LumSum</option>
-              </select>
+              </AppSelect>
             </label>
             <Field label="Through" value={form.through} onChange={set("through")} />
             <Field label="Date" type="date" value={form.officeDate} onChange={set("officeDate")} />
             <label className={labelClass}>
               <span>Source</span>
-              <select className={inputClass} value={form.source} onChange={set("source")}>
+              <AppSelect className={inputClass} value={form.source} onChange={set("source")}>
                 <option value="WalkIn">Walk-in</option>
                 <option value="Phone">Phone</option>
                 <option value="Referral">Referral</option>
                 <option value="Other">Other</option>
-              </select>
+              </AppSelect>
             </label>
           </div>
         </SectionCard>

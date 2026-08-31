@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "../../App.tsx";
@@ -175,13 +176,13 @@ export default function UnitOverviewTab({ unit, project, user, onUnitUpdate, cov
               <Field label="Price" type="number" value={String(unitForm.price)} onChange={(e) => setUnitForm((p) => ({ ...p, price: Number(e.target.value) }))} placeholder="0" />
               <div>
                 <label className="text-xs font-medium text-[var(--text-muted)] mb-2 block">Status</label>
-                <select value={unitForm.status} onChange={(e) => setUnitForm((p) => ({ ...p, status: e.target.value }))} className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
+                <AppSelect value={unitForm.status} onChange={(e) => setUnitForm((p) => ({ ...p, status: e.target.value }))} className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]">
                   <option value="Available">Available</option>
                   <option value="Sold">Sold</option>
                   <option value="Reserved">Reserved</option>
                   <option value="Booked">Booked</option>
                   <option value="PendingReview">Pending Review</option>
-                </select>
+                </AppSelect>
               </div>
             </div>
             <div className="mt-4 flex items-center gap-3">

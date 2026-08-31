@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useState } from "react";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
@@ -154,13 +155,13 @@ export default function EmployeeOverviewTab({ employee, onEmployeeUpdate }: Prop
               </div>
               <div>
                 <label className="text-xs font-medium text-[var(--text-muted)] mb-2 block">Status</label>
-                <select
+                <AppSelect
                   value={form.status}
                   onChange={e => setForm(f => ({ ...f, status: Number(e.target.value) }))}
                   className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
                 >
                   {Object.entries(STATUS_CONFIG).map(([v, { label }]) => <option key={v} value={v}>{label}</option>)}
-                </select>
+                </AppSelect>
               </div>
             </div>
             {editError && (

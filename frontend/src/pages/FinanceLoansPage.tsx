@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
@@ -297,13 +298,13 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
           {/* A native select, styled as the mock's button: the platform's own dropdown on every
               device, with only its arrow replaced so the search field keeps its width. */}
           <div className="relative shrink-0">
-            <select
+            <AppSelect
               value={statusFilter} onChange={event=>setStatusFilter(event.target.value as StatusFilter)} aria-label="Filter loans by status"
               className="w-full cursor-pointer appearance-none rounded-xl border border-[var(--border)] bg-[var(--surface)] py-2 pl-3 pr-7 text-xs font-semibold text-[var(--text-secondary)] outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--border-hover)]">
               <option value="all">All Status</option>
               <option value="active">Active</option>
               <option value="closed">Closed</option>
-            </select>
+            </AppSelect>
             <span aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconChevronDown className="h-3 w-3"/></span>
           </div>
         </div>
@@ -589,8 +590,8 @@ function Field({label,value,set,type="text"}:{label:string;value:string;set:(val
 
 function Select({label,value,set,children}:{label:string;value:string;set:(value:string)=>void;children:React.ReactNode}){
   return <label className="block text-sm text-[var(--text-muted)]">{label}
-    <select className="mt-1 w-full cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)] outline-none transition focus:border-[var(--border-hover)]"
-      value={value} onChange={event=>set(event.target.value)}>{children}</select>
+    <AppSelect className="mt-1 w-full cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-[var(--text-primary)] outline-none transition focus:border-[var(--border-hover)]"
+      value={value} onChange={event=>set(event.target.value)}>{children}</AppSelect>
   </label>;
 }
 

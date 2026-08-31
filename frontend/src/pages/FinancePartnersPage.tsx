@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
@@ -96,7 +97,7 @@ export default function FinancePartnersPage({user}:{user:User|null}) {
   </Container>;
 }
 function Field({label,value,set,type="text",disabled=false}:{label:string;value:string;set:(value:string)=>void;type?:string;disabled?:boolean}){return <label className="block text-sm text-[var(--text-muted)]">{label}<input disabled={disabled} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 disabled:opacity-60" type={type} value={value} onChange={event=>set(event.target.value)}/></label>}
-function Select({label,value,set,children}:{label:string;value:string;set:(value:string)=>void;children:React.ReactNode}){return <label className="block text-sm text-[var(--text-muted)]">{label}<select className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" value={value} onChange={event=>set(event.target.value)}>{children}</select></label>}
+function Select({label,value,set,children}:{label:string;value:string;set:(value:string)=>void;children:React.ReactNode}){return <label className="block text-sm text-[var(--text-muted)]">{label}<AppSelect className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" value={value} onChange={event=>set(event.target.value)}>{children}</AppSelect></label>}
 function Modal({title,close,children,size="md"}:{title:React.ReactNode;close:()=>void;children:React.ReactNode;size?:"md"|"lg"}){return <div className="fixed inset-0 z-50 flex items-center justify-center p-4"><button aria-label="Close" className="absolute inset-0 bg-black/60" onClick={close}/><div className={`relative max-h-[92dvh] w-full ${size==="lg"?"max-w-5xl":"max-w-2xl"} overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6`}><div className="mb-5 flex items-start justify-between gap-4">{typeof title==="string"?<h2 className="text-xl font-bold">{title}</h2>:title}<button aria-label="Close" className="shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]" onClick={close}>✕</button></div>{children}</div></div>}
 
 const STATEMENT_TYPE_LABELS:Record<string,string>={OpeningBalance:"Committed Opening Balance",Contribution:"Contribution",Withdrawal:"Withdrawal",ProfitShare:"Profit Share",LossShare:"Loss Share"};

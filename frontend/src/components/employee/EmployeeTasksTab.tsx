@@ -1,3 +1,4 @@
+import AppSelect from "../../lib/AppSelect.tsx";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/api.ts";
@@ -221,14 +222,14 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
             </button>
           ))}
           <div className="ml-auto">
-            <select
+            <AppSelect
               value={priorityFilter}
               onChange={e => setPriorityFilter(e.target.value)}
               className="rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-3 py-1.5 text-xs text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
             >
               <option value="all">All Priorities</option>
               {["Urgent", "High", "Medium", "Low"].map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </div>
 
@@ -378,24 +379,24 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="text-xs font-medium text-[var(--text-muted)] mb-2 block">Priority</label>
-                  <select
+                  <AppSelect
                     value={assignForm.priority}
                     onChange={e => setAssignForm(f => ({ ...f, priority: e.target.value }))}
                     className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
                   >
                     {["Low", "Medium", "High", "Urgent"].map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
+                  </AppSelect>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-[var(--text-muted)] mb-2 block">Project <span className="font-normal opacity-60">(optional)</span></label>
-                  <select
+                  <AppSelect
                     value={assignForm.projectId}
                     onChange={e => setAssignForm(f => ({ ...f, projectId: e.target.value }))}
                     className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-2.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]"
                   >
                     <option value="">No project</option>
                     {projects.map(p => <option key={p.id} value={p.id}>{p.projectName}</option>)}
-                  </select>
+                  </AppSelect>
                 </div>
               </div>
               <Field label="Due Date" type="date" value={assignForm.dueDate} onChange={e => setAssignForm(f => ({ ...f, dueDate: e.target.value }))} hint="Optional" />

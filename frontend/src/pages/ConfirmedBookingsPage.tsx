@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -121,7 +122,7 @@ export default function ConfirmedBookingsPage({ user }: Props) {
             </svg>
             Print Blank Form
           </Button>
-          <select
+          <AppSelect
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
             className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-2.5 text-sm text-[var(--text-primary)]"
@@ -130,7 +131,7 @@ export default function ConfirmedBookingsPage({ user }: Props) {
             {Object.entries(STATUS_LABEL).map(([k, v]) => (
               <option key={k} value={k}>{v}</option>
             ))}
-          </select>
+          </AppSelect>
           <input
             type="search"
             placeholder="Search reference, customer, unit..."

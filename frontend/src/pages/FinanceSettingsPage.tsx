@@ -1,3 +1,4 @@
+import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App.tsx";
@@ -569,10 +570,10 @@ function VendorModal({ item, onClose, onSaved }: {
         </div>
         <div>
           <Label required>Filer status</Label>
-          <select className={inputClass} value={form.filerStatus}
+          <AppSelect className={inputClass} value={form.filerStatus}
             onChange={(e) => set("filerStatus", e.target.value as FilerStatus)}>
             {FILER_STATUSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
+          </AppSelect>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
             Unknown is withheld at the non-filer rate. Deducting too little is the penalised
             direction; deducting too much is refunded to the vendor when they file.
@@ -887,13 +888,13 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
         {error && <ErrorBanner message={error} />}
         <div>
           <Label required>Paid from account</Label>
-          <select className={inputClass} value={form.financeAccountId}
+          <AppSelect className={inputClass} value={form.financeAccountId}
             onChange={(e) => set("financeAccountId", e.target.value)}>
             <option value="">Select account</option>
             {accounts.filter((a) => a.isActive || String(a.id) === form.financeAccountId).map((a) => (
               <option key={a.id} value={a.id}>{a.name} — {a.accountHolderName}{a.isActive ? "" : " (Inactive)"}</option>
             ))}
-          </select>
+          </AppSelect>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
@@ -975,9 +976,9 @@ function YearTab({ settings, onSaved }: { settings: FinanceSettings; onSaved: ()
       <div className="mt-5 space-y-4">
         <div>
           <Label required>Year starts in</Label>
-          <select className={inputClass} value={month} onChange={(e) => setMonth(e.target.value)}>
+          <AppSelect className={inputClass} value={month} onChange={(e) => setMonth(e.target.value)}>
             {MONTHS.map((name, index) => <option key={name} value={index + 1}>{name}</option>)}
-          </select>
+          </AppSelect>
           <p className="mt-1 text-xs text-[var(--text-muted)]">Current financial year: {settings.currentFinancialYear}</p>
         </div>
         <Button disabled={saving} onClick={() => void submit({})}>{saving ? "Saving…" : "Save"}</Button>
