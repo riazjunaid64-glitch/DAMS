@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -49,23 +49,23 @@ namespace DAMS.Infrastructure.Migrations
                     table.PrimaryKey("PK_RebateCreditAllocations", x => x.Id);
                     table.CheckConstraint("CK_RebateCreditAllocations_Positive", "[Amount] > 0");
                     table.ForeignKey(
-                        name: "FK_RebateCreditAllocations_RebateDisbursements_DisbursementId",
-                        column: x => x.DisbursementId,
-                        principalTable: "RebateDisbursements",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
                         name: "FK_RebateCreditAllocations_Installments_InstallmentId",
                         column: x => x.InstallmentId,
                         principalTable: "Installments",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_RebateCreditAllocations_RebateDisbursements_DisbursementId",
+                        column: x => x.DisbursementId,
+                        principalTable: "RebateDisbursements",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateIndex(
                 name: "IX_RebateCreditAllocations_DisbursementId_InstallmentId",
                 table: "RebateCreditAllocations",
-                columns: ["DisbursementId", "InstallmentId"],
+                columns: new[] { "DisbursementId", "InstallmentId" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
@@ -77,12 +77,12 @@ namespace DAMS.Infrastructure.Migrations
         }
 
         /// <inheritdoc />
-        protected override void Down(MigrationBuilder migrationBuilder) =>
-            migrationBuilder.DropTable(name: "RebateCreditAllocations");
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "RebateCreditAllocations");
+        }
 
-        // Methods 0, 1 and 3 are OutstandingBalanceReduction, InstallmentAdjustment and CreditNote —
-        // the three that hand the customer a credit instead of cash. Spelled as numbers because a
-        // migration must keep meaning what it meant on the day it ran, whatever the enum does later.
         private const string Backfill = """
             DECLARE @BookingId int, @Placeable decimal(18,2);
 
