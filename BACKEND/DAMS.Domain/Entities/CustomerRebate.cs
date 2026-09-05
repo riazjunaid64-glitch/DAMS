@@ -55,7 +55,36 @@ namespace DAMS.Domain.Entities
         public FinanceAccount? FinanceAccount { get; set; }
         public Installment? Installment { get; set; }
         public ICollection<RebateDisbursementReversal> Reversals { get; set; } = new List<RebateDisbursementReversal>();
+        public ICollection<RebateCreditAllocation> Allocations { get; set; } = new List<RebateCreditAllocation>();
         public ICollection<FinancialEvidence> Evidence { get; set; } = new List<FinancialEvidence>();
+    }
+
+    /// <summary>
+    /// Where a booking-level customer credit lands on the installment schedule.
+    /// <para>
+    /// A balance reduction or credit note is entered against the booking, not against any one
+    /// installment, but the schedule is the only route DAMS has for collecting what the customer
+    /// owes. Without an allocation the plan keeps demanding the full price while the balance says
+    /// something smaller: the last installment can never be settled, the sale can never be
+    /// completed, and Overdue over-states the debt by exactly the rebate.
+    /// </para>
+    /// <para>
+    /// This is bookkeeping, not a financial record — the money lives in the
+    /// <see cref="RebateDisbursement"/> and its reversals, and these rows are rebuilt from those by
+    /// <c>BookingCreditPolicy.Allocate</c> whenever anything moves. So they can never total more
+    /// than the credit they come from, and never double-count it: allocations are read only by the
+    /// per-installment views, never by the booking-level credit total.
+    /// </para>
+    /// </summary>
+    public class RebateCreditAllocation
+    {
+        public int Id { get; set; }
+        public int DisbursementId { get; set; }
+        public int InstallmentId { get; set; }
+        public decimal Amount { get; set; }
+
+        public RebateDisbursement Disbursement { get; set; } = null!;
+        public Installment Installment { get; set; } = null!;
     }
 
     public class RebateDisbursementReversal

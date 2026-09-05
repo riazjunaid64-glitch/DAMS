@@ -64,6 +64,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<CustomerRebate> CustomerRebates { get; set; }
         public DbSet<RebateDisbursement> RebateDisbursements { get; set; }
         public DbSet<RebateDisbursementReversal> RebateDisbursementReversals { get; set; }
+        public DbSet<RebateCreditAllocation> RebateCreditAllocations { get; set; }
         public DbSet<FinancialEvidence> FinancialEvidence { get; set; }
         public DbSet<FinancialWorkflowAuditEntry> FinancialWorkflowAuditEntries { get; set; }
         public DbSet<Team> Teams { get; set; }
@@ -1409,6 +1410,18 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(d => d.Rebate).WithMany(r => r.Disbursements).HasForeignKey(d => d.RebateId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(d => d.FinanceAccount).WithMany(a => a.RebateDisbursements).HasForeignKey(d => d.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(d => d.Installment).WithMany().HasForeignKey(d => d.InstallmentId).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<RebateCreditAllocation>(entity =>
+            {
+                entity.Property(a => a.Amount).HasColumnType("decimal(18,2)");
+                entity.ToTable(t => t.HasCheckConstraint("CK_RebateCreditAllocations_Positive", "[Amount] > 0"));
+                // One row per (credit, installment): the allocation is rebuilt in place rather than
+                // appended to, so a booking's credits can never be represented twice on one installment.
+                entity.HasIndex(a => new { a.DisbursementId, a.InstallmentId }).IsUnique();
+                entity.HasIndex(a => a.InstallmentId);
+                entity.HasOne(a => a.Disbursement).WithMany(d => d.Allocations).HasForeignKey(a => a.DisbursementId).OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(a => a.Installment).WithMany().HasForeignKey(a => a.InstallmentId).OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<RebateDisbursementReversal>(entity =>
