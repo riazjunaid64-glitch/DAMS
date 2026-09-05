@@ -105,7 +105,7 @@ export default function ConfirmedBookingsPage({ user }: Props) {
   }
 
   return (
-    <Container className="py-10">
+    <Container size="wide" className="py-10">
       <div className="mb-6 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
