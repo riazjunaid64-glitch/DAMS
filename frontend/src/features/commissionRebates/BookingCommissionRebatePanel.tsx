@@ -4,6 +4,7 @@ import { api } from "../../api/api";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
+import { Icons } from "../bookings/tokens.tsx";
 import { commissionActions, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, trapDialogKeys } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
@@ -132,20 +133,20 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   const reverseDisbursement=async(r:Rebate,id:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`rebate:${id}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`rebate-reversal-${id}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reverseDisbursement(bookingId,r.id,id,{amount,reason,idempotencyKey:key})))reversalKeys.current.delete(operation);};
   const upload=async(ownerType:string,ownerId:number,file:File|null)=>{if(!file)return;setBusy(true);setError(null);try{await commissionRebateApi.uploadEvidence(ownerType,ownerId,file);await load();}catch(x){setError(x instanceof Error?x.message:"Evidence could not be uploaded.");}finally{setBusy(false);}};
 
-  if(loading)return <section className="mt-8 rounded-2xl border border-[var(--border)] p-8 text-center text-sm text-[var(--text-muted)]">Loading commissions and rebates…</section>;
-  if(!workspace)return <section className="mt-8 rounded-2xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-300">{error??"Commission workspace unavailable."}<button className="ml-3 underline" onClick={()=>void load()}>Retry</button></section>;
+  if(loading)return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-8 text-center text-sm text-[var(--text-muted)]">Loading commissions and rebates…</section>;
+  if(!workspace)return <section className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-300">{error??"Commission workspace unavailable."}<button className="ml-3 underline" onClick={()=>void load()}>Retry</button></section>;
 
   const percentCommission=commission.calculationType==="Percentage";
   const percentRebate=rebate.calculationType==="Percentage";
   const cashDisbursement=disbursement.method==="CashOrBankPayment";
 
-  return <section className="mb-8 mt-8 space-y-6" aria-labelledby="commission-rebate-heading">
+  return <section className="space-y-6" aria-labelledby="commission-rebate-heading">
     <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
-      <Mini label="Sale price" value={money(workspace.agreedSalePrice)}/>
-      <Mini label="Net sale price" value={money(workspace.netSalePrice)}/>
-      <Mini label="Amount collected" value={money(workspace.amountCollected)}/>
-      <Mini label="Rebate credits" value={money(workspace.rebateCredits)}/>
-      <Mini label="Booking status" value={prettyEnum(workspace.bookingStatus)}/>
+      <Mini label="Sale price" value={money(workspace.agreedSalePrice)} icon={<Icons.home/>}/>
+      <Mini label="Net sale price" value={money(workspace.netSalePrice)} icon={<Icons.bank/>}/>
+      <Mini label="Amount collected" value={money(workspace.amountCollected)} tone="emerald" icon={<Icons.wallet/>}/>
+      <Mini label="Rebate credits" value={money(workspace.rebateCredits)} icon={<Icons.percent/>}/>
+      <Mini label="Booking status" value={prettyEnum(workspace.bookingStatus)} tone="sky" icon={<Icons.pulse/>}/>
     </div>
     {error&&<p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
 
@@ -307,7 +308,18 @@ function Readout({label,value,tone="plain"}:{label:string;value:string;tone?:"pl
 }
 
 function Select({label,value,set,options,required=false,disabled=false}:{label:string;value:string;set:(v:string)=>void;options:{v:string;n:string}[];required?:boolean;disabled?:boolean}){return <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">{label}<AppSelect required={required} disabled={disabled} value={value} onChange={e=>set(e.target.value)} className={input}>{options.map(o=><option key={o.v} value={o.v}>{o.n}</option>)}</AppSelect></label>}
-function Mini({label,value}:{label:string;value:string}){return <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"><p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</p><p className="mt-1 font-semibold text-[var(--text-heading)]">{value}</p></div>}
+// Same shape as the booking tabs' StatCard so the whole Booking module reads as one screen; kept
+// here rather than imported because these five are compact enough to sit five-across.
+function Mini({label,value,icon,tone="gold"}:{label:string;value:string;icon:ReactNode;tone?:"gold"|"emerald"|"sky"}){
+  const tones={gold:"bg-[var(--accent-glow)] text-[var(--accent)]",emerald:"bg-emerald-500/10 text-emerald-400",sky:"bg-sky-500/10 text-sky-400"};
+  return <div className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-4">
+    <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${tones[tone]}`}>{icon}</span>
+    <span className="min-w-0">
+      <span className="block text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{label}</span>
+      <span className="mt-0.5 block break-words font-bold leading-tight text-[var(--text-heading)]">{value}</span>
+    </span>
+  </div>;
+}
 function FormButtons({busy,cancel,submitText="Save"}:{busy:boolean;cancel:()=>void;submitText?:string}){return <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" onClick={cancel} disabled={busy}>Cancel</Button><Button type="submit" size="sm" disabled={busy}>{busy?"Saving…":submitText}</Button></div>}
 function Empty({text}:{text:string}){return <p className="rounded-xl border border-dashed border-[var(--border)] p-5 text-center text-sm text-[var(--text-muted)]">{text}</p>}
 function Dialog({title,close,children}:{title:string;close:()=>void;children:ReactNode}){return <div className="fixed inset-0 z-50 flex items-center justify-center p-4"><button aria-label="Close dialog" className="absolute inset-0 bg-black/70" onClick={close}/><section autoFocus tabIndex={-1} onKeyDown={e=>trapDialogKeys(e,close)} role="dialog" aria-modal="true" aria-label={title} className="relative max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6"><div className="mb-4 flex justify-between"><h3 className="text-lg font-semibold">{title}</h3><button aria-label="Close" onClick={close}>✕</button></div>{children}</section></div>}
