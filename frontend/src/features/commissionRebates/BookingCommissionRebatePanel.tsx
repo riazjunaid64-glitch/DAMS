@@ -24,7 +24,16 @@ const paymentMethods=["Cash","BankTransfer","Cheque","Online"].map(v=>({v,n:pret
 // rebate, nor its partner's one live commission.
 const closedStatuses=["Cancelled","Reversed"];
 
-export default function BookingCommissionRebatePanel({bookingId}:{bookingId:number}){
+// onChanged fires after any action that moves money on this booking. A rebate credit changes what
+// the customer owes, can settle installments, and can move the booking's own status — none of which
+// this panel owns — so the page around it has to be told rather than left showing figures that were
+// true a moment ago.
+//
+// refreshToken is the other direction: the panel stays mounted while other tabs are used, so a
+// payment recorded elsewhere would otherwise leave its "Amount collected" — and the installment list
+// its disbursement form offers — describing a booking that has since moved on. The page bumps the
+// token whenever it reloads, and the panel reads everything again.
+export default function BookingCommissionRebatePanel({bookingId,onChanged,refreshToken=0}:{bookingId:number;onChanged?:()=>void;refreshToken?:number}){
   const [workspace,setWorkspace]=useState<BookingWorkspace|null>(null),[partners,setPartners]=useState<Partner[]>([]),[accounts,setAccounts]=useState<FinanceAccountOption[]>([]),[installments,setInstallments]=useState<InstallmentOption[]>([]);
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null),[showAudit,setShowAudit]=useState(false);
   const [olderAudit,setOlderAudit]=useState<AuditEntry[]>([]),[auditHasMore,setAuditHasMore]=useState(false),[auditBusy,setAuditBusy]=useState(false);
@@ -37,7 +46,9 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   const [disbursement,setDisbursement]=useState({method:"OutstandingBalanceReduction" as RebateMethod,amount:"",appliedAt:pakistanToday(),financeAccountId:"",installmentId:"",paymentMethod:"BankTransfer",reference:"",notes:"",idempotencyKey:idempotencyKey("rebate-disbursement")});
   const reversalKeys=useRef(new Map<string,string>()),loadSequence=useRef(0);
   const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const [w,p,a,s]=await Promise.all([commissionRebateApi.workspace(bookingId),commissionRebateApi.partners("",true,0,100),api("/api/finance/accounts/options"),api(`/api/Booking/${bookingId}/installments`)]);if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");if(!s.ok)throw await apiError(s,"The installment schedule could not be loaded.");const accountOptions=await a.json() as FinanceAccountOption[];const schedule=await s.json() as {items:InstallmentOption[]};if(request!==loadSequence.current)return;setWorkspace(w);setPartners(p.items);setAccounts(accountOptions);setInstallments(schedule.items);}catch(x){if(request===loadSequence.current)setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
-  useEffect(()=>{void load();},[load]);
+  // refreshToken is a re-run trigger, not an input to the read: the page bumps it whenever the
+  // booking moves under this panel while it sits mounted behind another tab.
+  useEffect(()=>{void load();},[load,refreshToken]);
   // The workspace inlines only the newest audit preview; reset any appended older pages whenever it
   // reloads, then pull older rows on demand with the keyset endpoint (beforeId = oldest row shown).
   useEffect(()=>{setOlderAudit([]);setAuditHasMore(workspace?.hasMoreAudit??false);},[workspace]);
@@ -68,7 +79,7 @@ export default function BookingCommissionRebatePanel({bookingId}:{bookingId:numb
   },[partners,workspace?.commissions,commission.partnerId]);
   const liveRebate=workspace?.rebates.some(r=>!closedStatuses.includes(r.status))??false;
 
-  const execute=async(operation:()=>Promise<BookingWorkspace>)=>{setBusy(true);setError(null);try{setWorkspace(await operation());return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
+  const execute=async(operation:()=>Promise<BookingWorkspace>)=>{setBusy(true);setError(null);try{setWorkspace(await operation());onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
 
   const savePartner=async(e:FormEvent)=>{e.preventDefault();setBusy(true);setError(null);
     try{

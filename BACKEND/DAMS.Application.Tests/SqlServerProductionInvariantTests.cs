@@ -801,6 +801,180 @@ public sealed class SqlServerProductionInvariantTests
         CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
 
+    /// <summary>
+    /// The rebate-allocation backfill, run against a booking that already existed when the migration
+    /// arrived. It only does work on real SQL Server — it is a T-SQL cursor, so no in-memory test can
+    /// reach it — and it only does work on legacy rows, so the other migration tests here (which
+    /// migrate an empty schema) never execute a single line of it.
+    /// <para>
+    /// The shape is chosen to catch the way an ordered fill fails quietly: the LAST installment is
+    /// already fully paid, so it has no room. Numbering the installments and then discarding the
+    /// empty ones leaves ordinal 1 missing, and a loop that walks ordinals in order stops dead at
+    /// the gap — placing nothing at all, on a booking whose earlier installments had ample room. The
+    /// migration succeeds, and the schedule quietly goes on demanding money the rebate already
+    /// settled. Filtering before numbering is what keeps the ordinals dense.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheRebateAllocationBackfill_PlacesLegacyCredits_EvenWhenTheLastInstallmentIsAlreadyPaid()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        // The migration immediately before the allocation table: everything the legacy booking needs
+        // exists, the allocations do not.
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260823225954_AddMovementAttachments");
+
+        int bookingId, firstId, secondId, thirdId, spillBookingId;
+        int[] spillIds;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Backfill", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "BF-01", UnitType = "Apartment",
+                Price = 10_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Backfill Buyer", Phone = "03007777777", Status = CustomerStatus.Active };
+            var account = new FinanceAccount
+            {
+                Name = "Backfill Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            // 10,000,000 sale, 4,000,000 taken as the booking amount, 6,000,000 scheduled over three.
+            var booking = new Booking
+            {
+                BookingReference = $"BF-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 10_000_000m, DiscountAmount = 0m,
+                BookingAmountRequired = 4_000_000m, BookingAmountReceived = 4_000_000m,
+                BookingDate = new DateTime(2026, 1, 15)
+            };
+            db.AddRange(project, unit, customer, account, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+
+            Installment Row(int sequence, DateTime due) => new()
+            {
+                BookingId = bookingId, SequenceNumber = sequence, DueDate = due, Type = InstallmentType.Regular,
+                Amount = 2_000_000m, Status = InstallmentStatus.Pending
+            };
+            var first = Row(1, new DateTime(2026, 2, 15));
+            var second = Row(2, new DateTime(2026, 3, 15));
+            var third = Row(3, new DateTime(2026, 4, 15));
+            db.Installments.AddRange(first, second, third);
+            db.Payments.Add(new Payment
+            {
+                BookingId = bookingId, FinanceAccountId = account.Id, Amount = 4_000_000m,
+                Type = PaymentType.BookingAmount, PaymentMethod = PaymentMethod.BankTransfer,
+                PaidAt = new DateTime(2026, 1, 15), ReceiptNumber = $"BF-{Guid.NewGuid():N}"[..12]
+            });
+            await db.SaveChangesAsync();
+            firstId = first.Id; secondId = second.Id; thirdId = third.Id;
+
+            // The LAST installment is settled in full — the row that leaves a hole in the numbering.
+            third.Status = InstallmentStatus.Paid;
+            third.PaidAt = new DateTime(2026, 4, 15);
+            db.Payments.Add(new Payment
+            {
+                BookingId = bookingId, InstallmentId = thirdId, FinanceAccountId = account.Id, Amount = 2_000_000m,
+                Type = PaymentType.Installment, PaymentMethod = PaymentMethod.BankTransfer,
+                PaidAt = new DateTime(2026, 4, 15), ReceiptNumber = $"BF-{Guid.NewGuid():N}"[..12]
+            });
+
+            // A 1,000,000 balance reduction the plan was never shrunk by: it names no installment,
+            // and before the allocation table there was nowhere for it to land.
+            var rebate = Rebate(bookingId, customer.Id, CustomerRebateStatus.Applied, 1_000_000m);
+            db.CustomerRebates.Add(rebate);
+            await db.SaveChangesAsync();
+            db.RebateDisbursements.Add(new RebateDisbursement
+            {
+                RebateId = rebate.Id, Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                Amount = 1_000_000m, AppliedAt = new DateTime(2026, 5, 1),
+                IdempotencyKey = $"bf-{Guid.NewGuid():N}", RecordedByName = "Backfill seed"
+            });
+            await db.SaveChangesAsync();
+
+            // A SECOND booking, because the backfill walks a cursor and resets its counters per
+            // booking. If that reset did not happen, everything after the first booking would be
+            // skipped in silence — the same failure as the ordinal gap, one level up. This one also
+            // takes a credit bigger than its last installment, so the spill onto the installment
+            // before it is covered too.
+            var secondUnit = new Unit
+            {
+                Project = project, UnitNumber = "BF-02", UnitType = "Apartment",
+                Price = 6_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var secondCustomer = new Customer { FullName = "Spill Buyer", Phone = "03006666666", Status = CustomerStatus.Active };
+            var spill = new Booking
+            {
+                BookingReference = $"BF-{Guid.NewGuid():N}", Customer = secondCustomer, Unit = secondUnit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 6_000_000m, DiscountAmount = 0m,
+                BookingAmountRequired = 0m, BookingAmountReceived = 0m, BookingDate = new DateTime(2026, 1, 15)
+            };
+            db.AddRange(secondUnit, secondCustomer, spill);
+            await db.SaveChangesAsync();
+            spillBookingId = spill.Id;
+
+            var spillRows = Enumerable.Range(1, 3).Select(n => new Installment
+            {
+                BookingId = spillBookingId, SequenceNumber = n, DueDate = new DateTime(2026, 1 + n, 20),
+                Type = InstallmentType.Regular, Amount = 2_000_000m, Status = InstallmentStatus.Pending
+            }).ToList();
+            db.Installments.AddRange(spillRows);
+            var spillRebate = Rebate(spillBookingId, secondCustomer.Id, CustomerRebateStatus.Applied, 3_000_000m);
+            db.CustomerRebates.Add(spillRebate);
+            await db.SaveChangesAsync();
+            spillIds = spillRows.Select(i => i.Id).ToArray();
+            db.RebateDisbursements.Add(new RebateDisbursement
+            {
+                RebateId = spillRebate.Id, Method = CustomerRebateMethod.CreditNote,
+                Amount = 3_000_000m, AppliedAt = new DateTime(2026, 5, 2), Reference = "CN-SPILL",
+                IdempotencyKey = $"bf-{Guid.NewGuid():N}", RecordedByName = "Backfill seed"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var allocations = await db.RebateCreditAllocations.AsNoTracking()
+                .Where(a => a.Disbursement.Rebate.BookingId == bookingId)
+                .ToListAsync();
+
+            // The whole placeable credit is placed — 6,000,000 scheduled + 4,000,000 received +
+            // 1,000,000 credit − 10,000,000 net — and it lands on the latest installment that still
+            // has room, which is the second, not the paid third.
+            Assert.Equal(1_000_000m, allocations.Sum(a => a.Amount));
+            var allocation = Assert.Single(allocations);
+            Assert.Equal(secondId, allocation.InstallmentId);
+
+            var installments = await db.Installments.AsNoTracking()
+                .Where(i => i.BookingId == bookingId).ToListAsync();
+            // Half covered by the credit, so it reads partially paid rather than still wholly due.
+            Assert.Equal(InstallmentStatus.PartiallyPaid, installments.Single(i => i.Id == secondId).Status);
+            Assert.Equal(InstallmentStatus.Pending, installments.Single(i => i.Id == firstId).Status);
+            Assert.Equal(InstallmentStatus.Paid, installments.Single(i => i.Id == thirdId).Status);
+
+            // The second booking was reached, and its 3,000,000 filled the last installment then
+            // spilled onto the one before it — latest first, never more than the credit.
+            var spillAllocations = await db.RebateCreditAllocations.AsNoTracking()
+                .Where(a => a.Disbursement.Rebate.BookingId == spillBookingId)
+                .ToListAsync();
+            Assert.Equal(3_000_000m, spillAllocations.Sum(a => a.Amount));
+            Assert.Equal(2_000_000m, spillAllocations.Single(a => a.InstallmentId == spillIds[2]).Amount);
+            Assert.Equal(1_000_000m, spillAllocations.Single(a => a.InstallmentId == spillIds[1]).Amount);
+            Assert.DoesNotContain(spillAllocations, a => a.InstallmentId == spillIds[0]);
+
+            var spillInstallments = await db.Installments.AsNoTracking()
+                .Where(i => i.BookingId == spillBookingId).ToListAsync();
+            Assert.Equal(InstallmentStatus.Paid, spillInstallments.Single(i => i.Id == spillIds[2]).Status);
+            Assert.Equal(InstallmentStatus.PartiallyPaid, spillInstallments.Single(i => i.Id == spillIds[1]).Status);
+            Assert.Equal(InstallmentStatus.Pending, spillInstallments.Single(i => i.Id == spillIds[0]).Status);
+        }
+    }
+
     private static CustomerRebate Rebate(int bookingId, int customerId, CustomerRebateStatus status,
         decimal amount) => new()
     {

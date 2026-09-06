@@ -68,10 +68,36 @@ export function BookingTabs({
   );
 }
 
-export function TabPanel({ id, active, children }: { id: string; active: string; children: ReactNode }) {
-  if (id !== active) return null;
+/**
+ * Renders a panel from the first time its tab is opened, and keeps it mounted afterwards.
+ * <p>
+ * Not rendering until first opened is what stops the Commission &amp; Rebate tab issuing its four
+ * requests on every booking anyone glances at. Keeping it mounted after that is what stops a tab
+ * switch throwing away a half-typed commission, an expanded audit history, or the pages of older
+ * audit already fetched — and re-issuing those four requests to get back to where the user was.
+ * </p>
+ * <p>
+ * Hidden with `display:none` rather than unmounted, so the panel keeps its state and its scroll
+ * position. `hidden` also removes it from the accessibility tree, so a screen reader is not offered
+ * four tabs' worth of content at once.
+ * </p>
+ */
+export function TabPanel({
+  id, active, visited, children,
+}: { id: string; active: string; visited: readonly string[]; children: ReactNode }) {
+  const isActive = id === active;
+  // Which tabs have been opened is remembered by whoever changes the tab, not latched here: a panel
+  // deriving it from its own props needs either an effect that runs a beat late or a ref written
+  // during render, and both are the kind of cleverness that goes wrong quietly.
+  if (!visited.includes(id)) return null;
   return (
-    <div role="tabpanel" id={`booking-panel-${id}`} aria-labelledby={`booking-tab-${id}`} className="animate-fade-in">
+    <div
+      role="tabpanel"
+      id={`booking-panel-${id}`}
+      aria-labelledby={`booking-tab-${id}`}
+      hidden={!isActive}
+      className={isActive ? "animate-fade-in" : undefined}
+    >
       {children}
     </div>
   );

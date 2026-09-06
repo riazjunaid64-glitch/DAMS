@@ -175,10 +175,24 @@ export default function BookingDetailPage({ user }: Props) {
   const [payments, setPayments] = useState<BookingPayment[]>([]);
   // Non-cash rebate credits reduce what the customer owes without any payment recording it, so the
   // Summary's price breakdown cannot be derived from the booking alone. Read from the workspace the
-  // Commission & Rebate tab already uses, in the same parallel batch, and treated as zero if it
-  // fails — a display figure must never be able to take the page down with it.
-  const [rebateCredits, setRebateCredits] = useState(0);
+  // Commission & Rebate tab already uses, in the same parallel batch.
+  //
+  // NULL means "not known", never "none". A failed read that defaulted to zero would state as fact
+  // that no rebate has been given and would overstate Outstanding by exactly the credit — the same
+  // silent overstatement this release exists to remove. Every figure derived from it is withheld
+  // instead, and the page says so.
+  const [rebateCredits, setRebateCredits] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState("summary");
+  // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
+  // half-typed commission or a loaded audit page survives a trip to another tab.
+  const [visitedTabs, setVisitedTabs] = useState<string[]>(["summary"]);
+  const selectTab = useCallback((id: string) => {
+    setActiveTab(id);
+    setVisitedTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+  // Bumped on every completed reload. The Commission & Rebate panel stays mounted behind the other
+  // tabs, so this is how it learns that a payment or a plan change has moved the booking under it.
+  const [dataVersion, setDataVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -253,10 +267,17 @@ export default function BookingDetailPage({ user }: Props) {
       ]);
       if (!bookRes.ok) throw new Error("Booking not found");
 
+      // Parsed inside its own guard so a bad workspace response cannot abort the booking load: this
+      // is one display figure, and it must never be able to take the page down with it.
+      let credits: number | null = null;
       if (creditRes?.ok) {
-        const workspace = await creditRes.json() as { rebateCredits?: number };
-        setRebateCredits(workspace.rebateCredits ?? 0);
+        try {
+          credits = (await creditRes.json() as { rebateCredits?: number }).rebateCredits ?? 0;
+        } catch {
+          credits = null;
+        }
       }
+      setRebateCredits(credits);
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
 
@@ -301,6 +322,7 @@ export default function BookingDetailPage({ user }: Props) {
           }));
         }
       }
+      setDataVersion((v) => v + 1);
     } catch {
       setError("Unable to load booking.");
     } finally {
@@ -526,7 +548,11 @@ export default function BookingDetailPage({ user }: Props) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;
   }
 
-  if (loading) {
+  // Only the FIRST load blanks the page. Every reload after that — recording a payment, applying a
+  // rebate, retrying the credit read — keeps the screen up and swaps the figures when they arrive.
+  // Replacing the whole page would unmount the tab panels, throwing away a half-typed commission
+  // and re-issuing its requests, which is the very thing keeping panels mounted exists to prevent.
+  if (loading && !booking) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Loading...</p></Container>;
   }
 
@@ -551,9 +577,19 @@ export default function BookingDetailPage({ user }: Props) {
 
   const netSalePrice = booking.agreedSalePrice - booking.discountAmount;
   const amountCollected = payments.reduce((sum, p) => sum + p.amount, 0);
-  // Rebate credits settle the balance without any cash arriving, so a figure that ignored them
-  // would report the customer owing money a rebate has already cleared.
-  const outstandingAmount = Math.max(0, netSalePrice - amountCollected - rebateCredits);
+  const isCancelled = booking.status === "Cancelled";
+  // Cancelling voids the sale, and Finance drops the booking from the receivable the moment it does
+  // (FinanceService.OutstandingBookings). Reporting the unpaid balance here anyway would have this
+  // screen claim a debt the ledger says does not exist; what the parties still owe each other is
+  // the cancellation settlement, which the Summary tab shows.
+  //
+  // NULL while the rebate credit is unknown: an Outstanding computed without it is wrong, and a
+  // wrong figure is worse than an absent one on a screen people collect money from.
+  const outstandingAmount = isCancelled
+    ? 0
+    : rebateCredits === null
+      ? null
+      : Math.max(0, netSalePrice - amountCollected - rebateCredits);
 
   return (
     <Container size="wide" className="py-8">
@@ -634,6 +670,14 @@ export default function BookingDetailPage({ user }: Props) {
       {/* Page-level, so a failure raised on one tab is not hidden by switching to another. */}
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
 
+      {/* Says which figures are missing and why, rather than letting them quietly read zero. */}
+      {rebateCredits === null && !loading && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          <span>Rebate credits could not be loaded, so Rebate Credits and Outstanding Amount are not shown.</span>
+          <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+        </div>
+      )}
+
       <BookingTabs
         tabs={[
           { id: "summary", label: "Summary" },
@@ -642,10 +686,10 @@ export default function BookingDetailPage({ user }: Props) {
           { id: "commission", label: "Commission & Rebate" },
         ]}
         active={activeTab}
-        onChange={setActiveTab}
+        onChange={selectTab}
       />
 
-      <TabPanel id="summary" active={activeTab}>
+      <TabPanel id="summary" active={activeTab} visited={visitedTabs}>
         <div className="space-y-6">
           {/* Cancellation settlement lives here rather than above the tabs: it is a summary of what
               a cancelled booking owes, and the header pill already says the booking is cancelled. */}
@@ -680,7 +724,12 @@ export default function BookingDetailPage({ user }: Props) {
                 )}
                 <DetailRow label="Net Sale Price" value={formatAmount(netSalePrice)} />
                 <DetailRow label="Amount Collected" value={formatAmount(amountCollected)} />
-                <DetailRow label="Rebate Credits" value={formatAmount(rebateCredits)} />
+                <DetailRow
+                  label="Rebate Credits"
+                  value={rebateCredits === null
+                    ? <span className="font-normal text-[var(--text-muted)]">Unavailable</span>
+                    : formatAmount(rebateCredits)}
+                />
               </div>
             </PanelCard>
 
@@ -779,7 +828,7 @@ export default function BookingDetailPage({ user }: Props) {
       </TabPanel>
 
       {/* ── Installment Plan ── */}
-      <TabPanel id="plan" active={activeTab}>
+      <TabPanel id="plan" active={activeTab} visited={visitedTabs}>
         <div className="space-y-6">
           {/* Plan configuration */}
           {canShowPlanForm && (
@@ -937,9 +986,14 @@ export default function BookingDetailPage({ user }: Props) {
       </TabPanel>
 
       {/* ── Payment History ── */}
-      <TabPanel id="payments" active={activeTab}>
+      <TabPanel id="payments" active={activeTab} visited={visitedTabs}>
         <div className="space-y-6">
-          <PanelCard title="Payment Summary" description="What has been received against this booking.">
+          <PanelCard
+            title="Payment Summary"
+            description={isCancelled
+              ? "This booking is cancelled, so the sale is no longer owed. What remains between the parties is the cancellation settlement, on the Summary tab."
+              : "What has been received against this booking."}
+          >
             <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2 sm:px-6 sm:pb-6 xl:grid-cols-3">
               <StatCard tone="emerald" icon={<Icons.wallet />} label="Booking Amount Received"
                 value={`Rs ${formatMoney(booking.bookingAmountReceived)} / ${formatMoney(booking.bookingAmountRequired)}`} />
@@ -947,8 +1001,15 @@ export default function BookingDetailPage({ user }: Props) {
                 value={`Rs ${formatMoney(amountCollected)}`} />
               {/* Net of rebate credits: they settle the balance without any cash arriving, so leaving
                   them out would report the customer owing money a rebate has already cleared. */}
-              <StatCard tone="sky" icon={<Icons.doc />} label="Outstanding Amount"
-                value={`Rs ${formatMoney(outstandingAmount)}`} />
+              <StatCard
+                tone={isCancelled ? "rose" : "sky"}
+                icon={<Icons.doc />}
+                label={isCancelled ? "Sale Obligation" : "Outstanding Amount"}
+                value={isCancelled
+                  ? "Cancelled"
+                  : outstandingAmount === null
+                    ? <span className="text-[var(--text-muted)]">Unavailable</span>
+                    : `Rs ${formatMoney(outstandingAmount)}`} />
             </div>
           </PanelCard>
 
@@ -1009,8 +1070,11 @@ export default function BookingDetailPage({ user }: Props) {
       </TabPanel>
 
       {/* ── Commission & Rebate ── */}
-      <TabPanel id="commission" active={activeTab}>
-        <BookingCommissionRebatePanel bookingId={bookingId} />
+      <TabPanel id="commission" active={activeTab} visited={visitedTabs}>
+        {/* A rebate credit changes the customer's balance, can settle installments and can move the
+            booking's own status, so every other tab's figures go stale the moment one is applied.
+            `load` is stable (useCallback on bookingId), so this cannot loop. */}
+        <BookingCommissionRebatePanel bookingId={bookingId} onChanged={load} refreshToken={dataVersion} />
       </TabPanel>
 
       {/* Record installment payment modal */}

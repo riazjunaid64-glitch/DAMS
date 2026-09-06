@@ -125,45 +125,54 @@ namespace DAMS.Infrastructure.Migrations
                 BEGIN
                     -- Room left on each installment: its amount less cash taken and less any credit
                     -- the operator already aimed at it.
+                    -- Rows with nothing left to give are excluded BEFORE they are numbered, so the
+                    -- ordinals below run 1, 2, 3 with no gaps. Numbering first and deleting after
+                    -- leaves holes, and the fill loop stops at the first missing ordinal: a fully
+                    -- paid last installment would take ordinal 1, vanish, and silently cost the
+                    -- whole booking its allocation.
                     DECLARE @Room TABLE (InstallmentId int PRIMARY KEY, Ord int, Room decimal(18,2));
                     DELETE FROM @Room;
                     INSERT INTO @Room (InstallmentId, Ord, Room)
-                    SELECT i.Id,
-                           ROW_NUMBER() OVER (ORDER BY i.DueDate DESC, i.SequenceNumber DESC, i.Id DESC),
-                           i.Amount - ISNULL(p.Paid, 0) - ISNULL(dc.Credited, 0)
-                    FROM Installments i
-                    OUTER APPLY (
-                        SELECT Paid = SUM(pm.Amount) FROM Payments pm
-                        WHERE pm.InstallmentId = i.Id AND pm.Type = 1
-                    ) p
-                    OUTER APPLY (
-                        SELECT Credited = SUM(d.Amount - ISNULL(v.Reversed, 0))
+                    SELECT Id, ROW_NUMBER() OVER (ORDER BY DueDate DESC, SequenceNumber DESC, Id DESC), Room
+                    FROM (
+                        SELECT i.Id, i.DueDate, i.SequenceNumber,
+                               Room = i.Amount - ISNULL(p.Paid, 0) - ISNULL(dc.Credited, 0)
+                        FROM Installments i
+                        OUTER APPLY (
+                            SELECT Paid = SUM(pm.Amount) FROM Payments pm
+                            WHERE pm.InstallmentId = i.Id AND pm.Type = 1
+                        ) p
+                        OUTER APPLY (
+                            SELECT Credited = SUM(d.Amount - ISNULL(v.Reversed, 0))
+                            FROM RebateDisbursements d
+                            OUTER APPLY (
+                                SELECT Reversed = SUM(rv.Amount)
+                                FROM RebateDisbursementReversals rv WHERE rv.DisbursementId = d.Id
+                            ) v
+                            WHERE d.InstallmentId = i.Id AND d.Method IN (0, 1, 3)
+                        ) dc
+                        WHERE i.BookingId = @BookingId
+                    ) rooms
+                    WHERE Room > 0;
+
+                    -- Each booking-level credit, newest first: when only part of the total is
+                    -- placeable it is the credit that arrived after the plan was fixed. Fully
+                    -- reversed credits are filtered before numbering for the same reason.
+                    DECLARE @Credit TABLE (DisbursementId int PRIMARY KEY, Ord int, NetAmount decimal(18,2));
+                    DELETE FROM @Credit;
+                    INSERT INTO @Credit (DisbursementId, Ord, NetAmount)
+                    SELECT Id, ROW_NUMBER() OVER (ORDER BY AppliedAt DESC, Id DESC), NetAmount
+                    FROM (
+                        SELECT d.Id, d.AppliedAt, NetAmount = d.Amount - ISNULL(v.Reversed, 0)
                         FROM RebateDisbursements d
+                        JOIN CustomerRebates r ON r.Id = d.RebateId
                         OUTER APPLY (
                             SELECT Reversed = SUM(rv.Amount)
                             FROM RebateDisbursementReversals rv WHERE rv.DisbursementId = d.Id
                         ) v
-                        WHERE d.InstallmentId = i.Id AND d.Method IN (0, 1, 3)
-                    ) dc
-                    WHERE i.BookingId = @BookingId;
-                    DELETE FROM @Room WHERE Room <= 0;
-
-                    -- Each booking-level credit, newest first: when only part of the total is
-                    -- placeable it is the credit that arrived after the plan was fixed.
-                    DECLARE @Credit TABLE (DisbursementId int PRIMARY KEY, Ord int, NetAmount decimal(18,2));
-                    DELETE FROM @Credit;
-                    INSERT INTO @Credit (DisbursementId, Ord, NetAmount)
-                    SELECT d.Id,
-                           ROW_NUMBER() OVER (ORDER BY d.AppliedAt DESC, d.Id DESC),
-                           d.Amount - ISNULL(v.Reversed, 0)
-                    FROM RebateDisbursements d
-                    JOIN CustomerRebates r ON r.Id = d.RebateId
-                    OUTER APPLY (
-                        SELECT Reversed = SUM(rv.Amount)
-                        FROM RebateDisbursementReversals rv WHERE rv.DisbursementId = d.Id
-                    ) v
-                    WHERE r.BookingId = @BookingId AND d.InstallmentId IS NULL AND d.Method IN (0, 1, 3);
-                    DELETE FROM @Credit WHERE NetAmount <= 0;
+                        WHERE r.BookingId = @BookingId AND d.InstallmentId IS NULL AND d.Method IN (0, 1, 3)
+                    ) credits
+                    WHERE NetAmount > 0;
 
                     DECLARE @CreditOrd int = 1, @CreditLeft decimal(18,2) = 0, @DisbursementId int = NULL;
                     DECLARE @RoomOrd int = 1, @RoomLeft decimal(18,2) = 0, @InstallmentId int = NULL;
