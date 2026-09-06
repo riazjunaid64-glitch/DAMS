@@ -8,6 +8,7 @@ import Pagination from "../../lib/Pagination.tsx";
 import { api } from "../../api/api.ts";
 import { parseUnitsPayload } from "../../utils/parseUnit.ts";
 import { formatPkr } from "../../utils/currency.ts";
+import { formatFloor } from "../../lib/floors.ts";
 
 interface Unit {
   id: number;
@@ -356,7 +357,7 @@ export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange,
                       </div>
 
                       <div className="mt-5 grid grid-cols-2 gap-3 text-sm font-semibold text-[var(--text-secondary)]">
-                        <div className="flex items-center gap-2">{icons.floor}<span>Floor {unit.floorNumber}</span></div>
+                        <div className="flex items-center gap-2">{icons.floor}<span>Floor {formatFloor(unit.floorNumber)}</span></div>
                         <div className="flex items-center gap-2">{icons.size}<span>{unit.size.toFixed(1)} sqm</span></div>
                       </div>
 

@@ -7,6 +7,7 @@ import Field from "../../lib/Field.tsx";
 import { api, resolveMediaUrl } from "../../api/api.ts";
 import BookingRequestModal from "../BookingRequestModal.tsx";
 import { formatPkr } from "../../utils/currency.ts";
+import { formatFloor } from "../../lib/floors.ts";
 
 interface Unit {
   id: number;
@@ -77,7 +78,7 @@ export default function UnitOverviewTab({ unit, project, user, onUnitUpdate, cov
   const infoItems = [
     { label: "Unit Number", value: unit.unitNumber, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg> },
     { label: "Unit Type", value: unit.unitType, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg> },
-    { label: "Floor", value: `${unit.floorNumber}`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 3h18v18H3z"/><path d="M3 9h18"/><path d="M3 15h18"/></svg> },
+    { label: "Floor", value: formatFloor(unit.floorNumber), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 3h18v18H3z"/><path d="M3 9h18"/><path d="M3 15h18"/></svg> },
     { label: "Size", value: `${unit.size.toFixed(1)} sqm`, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg> },
     { label: "Price", value: formatPkr(unit.price), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 100 4h4a2 2 0 110 4H8"/><path d="M12 18V6"/></svg> },
     { label: "Status", value: unit.status, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> },
@@ -111,7 +112,7 @@ export default function UnitOverviewTab({ unit, project, user, onUnitUpdate, cov
             <div className="grid grid-cols-3 gap-3">
               {[
                 { label: "Type", value: unit.unitType },
-                { label: "Floor", value: `${unit.floorNumber}` },
+                { label: "Floor", value: formatFloor(unit.floorNumber) },
                 { label: "Size", value: `${unit.size.toFixed(1)} sqm` },
               ].map((s) => (
                 <div key={s.label} className="rounded-xl border border-[var(--border)] bg-[var(--surface-glass)] p-4 text-center">
