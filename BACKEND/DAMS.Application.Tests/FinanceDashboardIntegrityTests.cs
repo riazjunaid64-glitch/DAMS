@@ -490,6 +490,14 @@ public sealed class FinanceDashboardIntegrityTests
             Name = "Commission Payable", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability,
             SystemRole = FinanceSystemAccountRole.CommissionPayable, DisplayOrder = 517, IsActive = true
         };
+        // A recognised sale is carried by Customer Receivables until its cash and credits clear it.
+        // The fixture deliberately creates such a sale below, so it needs the asset-side system
+        // account just as the commission accrual above needs its payable-side system account.
+        var customerReceivables = new FinanceAccount
+        {
+            Name = "Customer Receivables", AccountHolderName = "DAMS", Type = FinanceAccountType.Receivable,
+            SystemRole = FinanceSystemAccountRole.CustomerReceivables, DisplayOrder = 420, IsActive = true
+        };
         var project = new Project { ProjectName = "Dashboard Integrity", Location = "Karachi", CreatedById = 1 };
         var unit = new Unit { Project = project, UnitNumber = "U-1", UnitType = "Apartment", Price = 5_000_000m, Status = UnitStatus.Sold };
         var customer = new Customer { FullName = "Buyer", Phone = "03001112222", Status = CustomerStatus.Active };
@@ -501,7 +509,8 @@ public sealed class FinanceDashboardIntegrityTests
             BookingAmountReceived = 1_000_000m, BookingDate = new DateTime(2026, 7, 1)
         };
         var partner = new ThirdPartyPartner { Name = "Broker", PartnerType = "Broker", InternalCode = "BR-1" };
-        context.AddRange(bank, equipment, loanAccount, commissionPayable, project, unit, customer, booking, partner);
+        context.AddRange(bank, equipment, loanAccount, commissionPayable, customerReceivables,
+            project, unit, customer, booking, partner);
         await context.SaveChangesAsync();
 
         // Recognised at possession — the credits below are only a cost once the sale is income.
