@@ -197,28 +197,13 @@ namespace DAMS.Application.Services
                 .GroupBy(p => p.InstallmentId!.Value)
                 .Select(g => new { InstallmentId = g.Key, Paid = g.Sum(p => p.Amount) })
                 .ToDictionaryAsync(x => x.InstallmentId, x => x.Paid);
-            var credits = await _context.RebateDisbursements.AsNoTracking()
-                .Where(d => d.Rebate.BookingId == bookingId && d.InstallmentId != null)
-                .GroupBy(d => d.InstallmentId!.Value)
-                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => d.Amount) })
-                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
-            var reversals = await _context.RebateDisbursementReversals.AsNoTracking()
-                .Where(r => r.Disbursement.Rebate.BookingId == bookingId && r.Disbursement.InstallmentId != null)
-                .GroupBy(r => r.Disbursement.InstallmentId!.Value)
-                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => r.Amount) })
-                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
-            // A booking-level credit reduces what the customer owes, and BookingCreditPolicy has
-            // already decided which installments it comes off. Leaving it out here is what used to
-            // leave the schedule demanding money the customer no longer owed.
-            var allocations = await _context.RebateCreditAllocations.AsNoTracking()
-                .Where(a => a.Disbursement.Rebate.BookingId == bookingId)
-                .GroupBy(a => a.InstallmentId)
-                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(a => a.Amount) })
-                .ToDictionaryAsync(x => x.InstallmentId, x => x.Amount);
-            foreach (var key in credits.Keys.Union(reversals.Keys).Union(allocations.Keys))
-                paid[key] = (paid.TryGetValue(key, out var amount) ? amount : 0m)
-                    + credits.GetValueOrDefault(key) - reversals.GetValueOrDefault(key)
-                    + allocations.GetValueOrDefault(key);
+            // A credit aimed at an installment, and a booking-level credit BookingCreditPolicy has
+            // already decided which installments it comes off, both settle the row exactly as cash
+            // does. Leaving them out is what used to leave the schedule demanding money the customer
+            // no longer owed. Read through the policy so the booking projections see the same figure.
+            var credits = await BookingCreditPolicy.InstallmentCreditsByBookingAsync(_context, [bookingId]);
+            foreach (var (installmentId, amount) in credits)
+                paid[installmentId] = paid.GetValueOrDefault(installmentId) + amount;
             return paid;
         }
 
@@ -457,40 +442,11 @@ namespace DAMS.Application.Services
             return startDate.Date.AddMonths(months);
         }
 
-        private async Task<bool> CanRegenerateAsync(int bookingId)
-        {
-            var installments = await _context.Installments
-                .AsNoTracking()
-                .Where(i => i.BookingId == bookingId)
-                .ToListAsync();
-
-            if (installments.Count == 0)
-                return false;
-
-            // An installment that is only non-Pending because a booking-level credit was allocated
-            // onto it does not pin the plan: that placement is derived, and it is thrown away and
-            // rebuilt against the new schedule. Blocking on it would mean granting a customer a
-            // balance reduction cost the operator the ability to restructure the plan at all.
-            var creditedByAllocation = await _context.RebateCreditAllocations.AsNoTracking()
-                .Where(a => a.Disbursement.Rebate.BookingId == bookingId)
-                .Select(a => a.InstallmentId)
-                .Distinct()
-                .ToListAsync();
-
-            if (installments.Any(i => i.Status != InstallmentStatus.Pending && !creditedByAllocation.Contains(i.Id)))
-                return false;
-
-            var hasInstallmentPayments = await _context.Payments
-                .AnyAsync(p => p.BookingId == bookingId
-                               && p.InstallmentId != null
-                               && p.Type == PaymentType.Installment);
-
-            var hasRebateCredits = await _context.RebateDisbursements.AnyAsync(d =>
-                d.Rebate.BookingId == bookingId && d.InstallmentId != null
-                && d.Amount > (d.Reversals.Sum(r => (decimal?)r.Amount) ?? 0m));
-
-            return !hasInstallmentPayments && !hasRebateCredits;
-        }
+        // One implementation, in BookingCreditPolicy: the rebate service asks the same question
+        // before it reverses a credit the plan was built smaller by, and two answers to "can this
+        // plan be rebuilt" would let one path allow what the other refuses.
+        private Task<bool> CanRegenerateAsync(int bookingId) =>
+            BookingCreditPolicy.CanRegenerateScheduleAsync(_context, bookingId);
 
         private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate,
             Dictionary<int, decimal> paidByInstallment, decimal nonCashCredits)

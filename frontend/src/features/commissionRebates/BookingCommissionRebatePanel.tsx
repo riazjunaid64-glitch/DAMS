@@ -5,7 +5,7 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
-import { commissionActions, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, trapDialogKeys } from "./state";
+import { commissionActions, commissionRequestBody, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateRequestBody, trapDialogKeys } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -90,37 +90,18 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
     }catch(x){setError(x instanceof Error?x.message:"The partner could not be saved.");}
     finally{setBusy(false);}};
 
+  // Both bodies are built in state.ts, where the "an update REPLACES the whole record" rule can be
+  // tested on its own. See commissionRequestBody for what sending nulls used to cost.
   const saveCommission=async(e:FormEvent)=>{e.preventDefault();await execute(async()=>{
-    const percentage=commission.calculationType==="Percentage";
-    const body={
-      partnerId:Number(commission.partnerId),attributionId:null,ruleId:null,isManual:true,
-      manualReason:commission.notes.trim()||null,manualCalculationType:commission.calculationType,
-      // A fixed amount still records a basis so the saved commission reads back against the booking
-      // it was agreed on. It never changes the amount.
-      manualCalculationBasis:percentage?commission.calculationBasis:"NetSalePriceAfterDiscount",
-      manualPercentageRate:percentage?Number(commission.percentageRate):null,
-      manualFixedAmount:percentage?null:Number(commission.fixedAmount),
-      manualBasisAmount:null,manualEarningCondition:"ManualMilestone",minimumCollectionPercent:null,
-      adjustmentAmount:0,adjustmentReason:null,
-      ...(editingCommission?{concurrencyToken:editingCommission.concurrencyToken,changeReason:commission.changeReason}:{})
-    };
-    const result=editingCommission?await commissionRebateApi.updateCommission(bookingId,editingCommission.id,body):await commissionRebateApi.createCommission(bookingId,body);
+    const existing=editingCommission;
+    const body=commissionRequestBody(commission,existing);
+    const result=existing?await commissionRebateApi.updateCommission(bookingId,existing.id,body):await commissionRebateApi.createCommission(bookingId,body);
     setShowCommission(false);setEditingCommission(null);return result;});};
 
   const saveRebate=async(e:FormEvent)=>{e.preventDefault();await execute(async()=>{
-    const percentage=rebate.calculationType==="Percentage";
-    const body={
-      calculationType:rebate.calculationType,
-      calculationBasis:percentage?rebate.calculationBasis:"AgreedSalePrice",
-      percentageRate:percentage?Number(rebate.percentageRate):null,
-      fixedAmount:percentage?null:Number(rebate.fixedAmount),
-      manualBasisAmount:null,adjustmentAmount:0,adjustmentReason:null,
-      reason:rebate.reason.trim()||null,notes:null,
-      // How the rebate reaches the customer is chosen when it is applied, not here.
-      method:editingRebate?editingRebate.method:"OutstandingBalanceReduction",
-      ...(editingRebate?{concurrencyToken:editingRebate.concurrencyToken,changeReason:rebate.changeReason}:{})
-    };
-    const result=editingRebate?await commissionRebateApi.updateRebate(bookingId,editingRebate.id,body):await commissionRebateApi.createRebate(bookingId,body);
+    const existing=editingRebate;
+    const body=rebateRequestBody(rebate,existing);
+    const result=existing?await commissionRebateApi.updateRebate(bookingId,existing.id,body):await commissionRebateApi.createRebate(bookingId,body);
     setShowRebate(false);setEditingRebate(null);return result;});};
 
   const openNewCommission=()=>{setEditingCommission(null);setCommission(emptyCommissionForm());setShowCommission(true);};
@@ -150,6 +131,10 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const percentCommission=commission.calculationType==="Percentage";
   const percentRebate=rebate.calculationType==="Percentage";
   const cashDisbursement=disbursement.method==="CashOrBankPayment";
+  // A rule-driven commission takes its figures from the rule, and the server recomputes them on
+  // save. Offering the rate and basis as editable inputs would show changes that are silently
+  // discarded, so the card states what the rule says instead.
+  const editingRuleCommission=!!editingCommission&&!editingCommission.isManual;
 
   return <section className="space-y-6" aria-labelledby="commission-rebate-heading">
     <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -177,16 +162,22 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
                 <Button type="button" size="sm" variant="outline" className="shrink-0" disabled={busy} onClick={()=>setShowPartner(true)}>+ Add Partner</Button>
               </div>
             </div>
-            <Segmented label="Commission Type" value={commission.calculationType} options={calculationTypes} onChange={v=>setCommission({...commission,calculationType:v as CalculationType,percentageRate:"",fixedAmount:""})}/>
+            {!editingRuleCommission&&<Segmented label="Commission Type" value={commission.calculationType} options={calculationTypes} onChange={v=>setCommission({...commission,calculationType:v as CalculationType,percentageRate:"",fixedAmount:""})}/>}
           </div>
-          {percentCommission
-            ? <div className="grid gap-4 sm:grid-cols-3">
-                <UnitField label="Percentage" required suffix="%" max="100" value={commission.percentageRate} onChange={v=>setCommission({...commission,percentageRate:v})}/>
-                <BasisSelect label="Calculate On" value={commission.calculationBasis} options={commissionBases} onChange={v=>setCommission({...commission,calculationBasis:v})}/>
-                <Readout label="Calculated Commission" value={money(commissionAmount)} tone="accent"/>
+          {editingRuleCommission
+            ? <div className="grid gap-4 sm:grid-cols-2">
+                <Readout label="Set by rule" value={editingCommission!.ruleNameSnapshot??describe(editingCommission!.calculationType,editingCommission!.percentageRate,editingCommission!.fixedAmount,editingCommission!.calculationBasis)}/>
+                <Readout label="Commission" value={money(editingCommission!.finalAmount)} tone="accent"/>
+                <p className="sm:col-span-2 text-xs text-[var(--text-muted)]">This commission follows a commission rule, so the rule decides the amount. Changing the partner re-applies the rule; edit the rule itself to change the figures.</p>
               </div>
-            : <div className="grid gap-4 sm:grid-cols-3"><UnitField label="Amount" required prefix="Rs" value={commission.fixedAmount} onChange={v=>setCommission({...commission,fixedAmount:v})}/></div>}
-          <Field label="Notes (optional)" as="textarea" placeholder="Add any notes about this commission (optional)" value={commission.notes} onChange={e=>setCommission({...commission,notes:e.target.value})}/>
+            : percentCommission
+              ? <div className="grid gap-4 sm:grid-cols-3">
+                  <UnitField label="Percentage" required suffix="%" max="100" value={commission.percentageRate} onChange={v=>setCommission({...commission,percentageRate:v})}/>
+                  <BasisSelect label="Calculate On" value={commission.calculationBasis} options={commissionBases} onChange={v=>setCommission({...commission,calculationBasis:v})}/>
+                  <Readout label="Calculated Commission" value={money(commissionAmount)} tone="accent"/>
+                </div>
+              : <div className="grid gap-4 sm:grid-cols-3"><UnitField label="Amount" required prefix="Rs" value={commission.fixedAmount} onChange={v=>setCommission({...commission,fixedAmount:v})}/></div>}
+          {!editingRuleCommission&&<Field label="Notes (optional)" as="textarea" placeholder="Add any notes about this commission (optional)" value={commission.notes} onChange={e=>setCommission({...commission,notes:e.target.value})}/>}
           <FormButtons busy={busy} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
         </form>
       </EntryCard>}
@@ -338,10 +329,8 @@ function EvidenceList({items,onError}:{items:{id:number;originalFileName:string;
 function MovementEvidence({id,items,busy,upload,onError}:{id:number;items:{id:number;originalFileName:string;fileSize:number}[];busy:boolean;upload:(id:number,file:File|null)=>void;onError:(message:string)=>void}){return <div><label title="PDF, image, Word, or Excel; maximum 15 MB" className="cursor-pointer text-xs text-[var(--accent)] underline">Attach proof<input className="sr-only" type="file" accept={evidenceAccept} disabled={busy} onChange={e=>upload(id,e.target.files?.[0]??null)}/></label><EvidenceList items={items} onError={onError}/></div>}
 
 function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploadMovement,onEvidenceError}:{value:Commission;index:number;busy:boolean;cancel:()=>void;edit:()=>void;pay:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
-  const a=commissionActions(c.status,c.paidAmount);
-  // Correcting the agreed figures is only honest while none of it has been paid; after that the
-  // payout has to be reversed first, which is the same rule the server enforces.
-  const untouched=c.payouts.length===0;
+  // Edit and Cancel are different rules, both of them the server's — see commissionActions.
+  const a=commissionActions(c.status,c.paidAmount,c.payouts.length);
   return <article className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
     <div className="flex flex-wrap justify-between gap-3">
       <div>
@@ -358,16 +347,16 @@ function CommissionCard({value:c,index,busy,cancel,edit,pay,reverse,upload,uploa
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">#{index}</span>
       </div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-2">{a.canPay&&<Action text="Record payment" onClick={pay} disabled={busy}/>} {a.canEdit&&untouched&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&untouched&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
+    <div className="mt-3 flex flex-wrap gap-2">{a.canPay&&<Action text="Record payment" onClick={pay} disabled={busy}/>} {a.canEdit&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
     <EvidenceList items={c.evidence} onError={onEvidenceError}/>
     {c.payouts.length>0&&<div className="mt-3 space-y-2">{c.payouts.map(p=><div key={p.id} className="rounded-lg border border-[var(--border)] p-2 text-xs text-[var(--text-muted)]"><div className="flex flex-wrap justify-between gap-2"><span>{new Date(p.date).toLocaleDateString()} · {p.financeAccountName} · {p.reference??prettyEnum(p.paymentMethod??"")}</span><span>Original {money(p.amount)}{p.reversedAmount>0?` · Reversed ${money(p.reversedAmount)} · Net ${money(p.amount-p.reversedAmount)}`:""} {p.amount>p.reversedAmount&&<button className="ml-2 text-rose-300 underline" disabled={busy} onClick={()=>reverse(p.id,p.amount-p.reversedAmount)}>Reverse</button>}</span></div><MovementEvidence id={p.id} items={p.evidence} busy={busy} upload={uploadMovement} onError={onEvidenceError}/></div>)}</div>}
   </article>;
 }
 
 function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,reverse,upload,uploadMovement,onEvidenceError}:{value:Rebate;index:number;netSalePrice:number;busy:boolean;cancel:()=>void;edit:()=>void;disburse:()=>void;reverse:(id:number,amount:number)=>void;upload:(f:File|null)=>void;uploadMovement:(id:number,f:File|null)=>void;onEvidenceError:(message:string)=>void}){
-  const a=rebateActions(r.status,r.appliedOrPaidAmount);
+  // Edit and Cancel are different rules, both of them the server's — see rebateActions.
+  const a=rebateActions(r.status,r.appliedOrPaidAmount,r.disbursements.length);
   const settled=r.finalAmount;
-  const untouched=r.disbursements.length===0;
   return <article className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
     <div className="flex flex-wrap justify-between gap-3">
       <div>
@@ -383,7 +372,7 @@ function RebateCard({value:r,index,netSalePrice,busy,cancel,edit,disburse,revers
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">#{index}</span>
       </div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-2">{a.canDisburse&&<Action text="Apply / pay" onClick={disburse} disabled={busy}/>} {a.canEdit&&untouched&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&untouched&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
+    <div className="mt-3 flex flex-wrap gap-2">{a.canDisburse&&<Action text="Apply / pay" onClick={disburse} disabled={busy}/>} {a.canEdit&&<Action text="Edit" onClick={edit} disabled={busy}/>} {a.canCancel&&<Action text="Cancel" onClick={cancel} disabled={busy}/>}<label className="cursor-pointer rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">Attach proof (optional)<input className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png" disabled={busy} onChange={e=>upload(e.target.files?.[0]??null)}/></label></div>
     <EvidenceList items={r.evidence} onError={onEvidenceError}/>
     {r.disbursements.length>0&&<div className="mt-3 space-y-2">{r.disbursements.map(d=><div key={d.id} className="rounded-lg border border-[var(--border)] p-2 text-xs text-[var(--text-muted)]"><div className="flex flex-wrap justify-between gap-2"><span>{new Date(d.date).toLocaleDateString()} · {prettyEnum(d.rebateMethod??r.method)} · {d.reference??"No reference"}</span><span>Original {money(d.amount)}{d.reversedAmount>0?` · Reversed ${money(d.reversedAmount)} · Net ${money(d.amount-d.reversedAmount)}`:""} {d.amount>d.reversedAmount&&<button className="ml-2 text-rose-300 underline" disabled={busy} onClick={()=>reverse(d.id,d.amount-d.reversedAmount)}>Reverse</button>}</span></div><MovementEvidence id={d.id} items={d.evidence} busy={busy} upload={uploadMovement} onError={onEvidenceError}/></div>)}</div>}
   </article>;

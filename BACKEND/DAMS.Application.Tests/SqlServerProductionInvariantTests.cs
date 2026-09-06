@@ -2125,7 +2125,7 @@ public sealed class SqlServerProductionInvariantTests
         await db.Database.MigrateAsync();
 
         var accounts = new FinanceAccountService(db);
-        // This also exercises all four system-role branches against the real provider.
+        // This also exercises every system-role branch against the real provider.
         await accounts.SetupClientChartAsync();
         await SeedDashboardVolumeAsync(db, firstProject: 1, projects: 8);
 
@@ -2938,6 +2938,114 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         await command.ExecuteNonQueryAsync();
     }
+
+    /// <summary>
+    /// The commission obligation is reported by the REAL provider, end to end.
+    /// <para>
+    /// The in-memory store evaluates in C# things SQL Server cannot translate at all, and every one
+    /// of these paths reaches through an accrual into its commission, booking, unit and project.
+    /// The account ledger is the sharpest of them: it is one UNION of a dozen projections, EF aligns
+    /// a union on the FIRST branch's bindings, and a mis-shaped branch fails only against SQL.
+    /// </para>
+    /// <para>
+    /// It also proves the accounting the ledger exists for: the commission is a cost the day it is
+    /// agreed, the payout settles Commission Payable rather than costing anything a second time, and
+    /// the Balance Sheet balances at both points.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrual_IsReportedByTheRealProvider_AcrossPnlSheetTrialBalanceAndLedger()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+        await db.Database.MigrateAsync();
+        db.Database.SetCommandTimeout(TimeSpan.FromSeconds(30));
+
+        var accounts = new FinanceAccountService(db);
+        await accounts.SetupClientChartAsync();
+        var payable = await db.FinanceAccounts.AsNoTracking()
+            .SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable);
+        var bank = await db.FinanceAccounts.AsNoTracking()
+            .OrderBy(a => a.DisplayOrder).FirstAsync(a => a.Type == FinanceAccountType.Bank);
+
+        var project = new Project { ProjectName = "Accrual SQL", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = "S-1", UnitType = "Apartment", Price = 5_000_000m };
+        var customer = new Customer { FullName = "SQL Buyer", Phone = "03007778888" };
+        var booking = new Booking
+        {
+            BookingReference = "BK-ACCRUAL-1", Customer = customer, Unit = unit,
+            Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+            AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+            BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 7, 1)
+        };
+        var partner = new ThirdPartyPartner
+        {
+            Name = "SQL Broker", PartnerType = "Broker", InternalCode = "SQLBR-1", IsActive = true,
+            BankName = "Test Bank", AccountTitle = "SQL Broker", AccountNumber = "00123456789"
+        };
+        db.AddRange(project, unit, customer, booking, partner);
+        await db.SaveChangesAsync();
+
+        var service = new CommissionRebateService(db, accounts, new NullPrivateStorage());
+        var actor = new FinancialWorkflowActor(1, "SQL Admin");
+        var commission = Assert.Single((await service.CreateCommissionAsync(booking.Id,
+            new CreateBookingCommissionDto
+            {
+                PartnerId = partner.Id, IsManual = true,
+                ManualCalculationType = FinancialCalculationType.FixedAmount,
+                ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                ManualFixedAmount = 150_000m
+            }, actor)).Commissions);
+
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        var today = PakistanTime.Today;
+
+        var beforePayout = await finance.GetProfitAndLossAsync(null, today, today);
+        Assert.Equal(150_000m,
+            Assert.Single(beforePayout.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+        var sheetBefore = await finance.GetBalanceSheetAsync(null, today);
+        Assert.True(sheetBefore.IsBalanced, $"out by {sheetBefore.Imbalance}");
+        Assert.Equal(150_000m, PayableLine(sheetBefore));
+
+        await service.RecordPayoutAsync(booking.Id, commission.Id, new RecordCommissionPayoutDto
+        {
+            FinanceAccountId = bank.Id, Amount = 90_000m, PaymentDate = today,
+            PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-ACCRUAL-1",
+            IdempotencyKey = "sql-accrual-payout", CommissionConcurrencyToken = commission.ConcurrencyToken
+        }, actor);
+
+        // Paying it settles the payable and does not charge profit a second time.
+        var afterPayout = await finance.GetProfitAndLossAsync(null, today, today);
+        Assert.Equal(150_000m,
+            Assert.Single(afterPayout.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+        var sheetAfter = await finance.GetBalanceSheetAsync(null, today);
+        Assert.True(sheetAfter.IsBalanced, $"out by {sheetAfter.Imbalance}");
+        Assert.Equal(60_000m, PayableLine(sheetAfter));
+
+        // Trial Balance, drill-down and the account ledger all translate and agree.
+        var trial = await finance.GetTrialBalanceAsync(null, today, 0);
+        var payableRow = Assert.Single(trial.Rows, r => r.AccountName == "Commission Payable");
+        // A liability is credit-normal, so the payable stands in the Credit column.
+        Assert.Equal(60_000m, payableRow.CreditBalances[^1]);
+        var drill = await finance.GetTrialBalanceDetailsAsync("E:commission-expense", null, today, today);
+        Assert.Equal(150_000m, drill.TotalDebit - drill.TotalCredit);
+        Assert.Single(drill.Rows);
+
+        var ledger = await accounts.GetTransactionLedgerSliceAsync(
+            payable.Id, null, today.AddYears(-1), today, 0, 50);
+        Assert.Contains(ledger.Items, i => i.Kind == "Commission accrued" && i.Amount == 150_000m);
+        Assert.Contains(ledger.Items, i => i.Kind == "Commission paid" && i.Amount == -90_000m);
+
+        var card = await accounts.GetByIdAsync(payable.Id);
+        Assert.Equal(60_000m, card.CurrentBalance);
+    }
+
+    private static decimal PayableLine(DTOs.FinanceDtos.BalanceSheetDto sheet) =>
+        sheet.LiabilityGroups.SelectMany(g => g.Lines)
+            .Where(l => l.Name == "Commission Payable").Sum(l => l.Amount);
 
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)

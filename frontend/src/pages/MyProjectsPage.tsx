@@ -352,8 +352,10 @@ function DeclinedCard({ item }: { item: JourneyItem }) {
 
 /** Stage-specific banner telling the customer exactly what happens next. */
 function bookingActionBanner(b: MyBooking): { tone: "approved" | "info" | "success"; title: string; body: string } {
+  // ?? not ||: the server figure is credit-aware and is legitimately ZERO when a rebate has covered
+  // the booking amount, which a falsy check would discard in favour of the raw cash difference.
   const bookingRemaining =
-    b.bookingAmountRemaining || Math.max(0, b.bookingAmountRequired - b.bookingAmountReceived);
+    b.bookingAmountRemaining ?? Math.max(0, b.bookingAmountRequired - b.bookingAmountReceived);
 
   switch (b.status) {
     case "AwaitingBookingAmount":
@@ -398,7 +400,7 @@ const bannerTone: Record<string, string> = {
 function BookingCard({ item }: { item: JourneyItem }) {
   const b = item.booking!;
   const bookingRemaining =
-    b.bookingAmountRemaining || Math.max(0, b.bookingAmountRequired - b.bookingAmountReceived);
+    b.bookingAmountRemaining ?? Math.max(0, b.bookingAmountRequired - b.bookingAmountReceived);
   const banner = bookingActionBanner(b);
   return (
     <CardShell item={item} to={`/my-projects/${b.id}`}>

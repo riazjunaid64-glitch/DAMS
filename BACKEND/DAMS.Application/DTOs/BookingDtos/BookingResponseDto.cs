@@ -66,13 +66,39 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public decimal BookingAmountReceived { get; set; }
 
-        public decimal BookingAmountRemaining => Math.Max(0m, BookingAmountRequired - BookingAmountReceived);
+        /// <summary>
+        /// Non-cash rebate credits standing on this booking (balance reduction, credit note,
+        /// installment adjustment), net of reversals. They settle what the customer owes without any
+        /// cash arriving, which is why every "still owed" figure below is measured against them.
+        /// </summary>
+        public decimal RebateCredits { get; set; }
 
-        public bool IsBookingAmountFullyPaid => BookingAmountRequired > 0m && BookingAmountReceived >= BookingAmountRequired;
+        /// <summary>
+        /// The booking amount still payable in CASH. A credit substitutes for the cash the customer
+        /// would otherwise pay, so it comes off the requirement — the same rule the payment service
+        /// enforces (BookingCreditPolicy.EffectiveBookingAmountRequired). Reporting the raw
+        /// difference here asked for money the service would then refuse to take.
+        /// </summary>
+        public decimal BookingAmountRemaining =>
+            Math.Max(0m, EffectiveBookingAmountRequired - BookingAmountReceived);
+
+        /// <summary>What the booking milestone still needs in cash before credits are applied to it.</summary>
+        public decimal EffectiveBookingAmountRequired =>
+            Math.Max(0m, BookingAmountRequired - Math.Max(0m, RebateCredits));
+
+        public bool IsBookingAmountFullyPaid =>
+            BookingAmountRequired > 0m && BookingAmountReceived >= EffectiveBookingAmountRequired;
 
         public decimal TotalInstallmentAmount { get; set; }
 
+        /// <summary>
+        /// What the schedule has been settled by: cash receipts plus the credits that closed
+        /// installments. Matches the schedule screen's <c>SchedulePaid</c>.
+        /// </summary>
         public decimal InstallmentPaid { get; set; }
+
+        /// <summary>The cash half of <see cref="InstallmentPaid"/> — what actually reached the bank.</summary>
+        public decimal InstallmentCashReceived { get; set; }
 
         public decimal InstallmentRemaining { get; set; }
 

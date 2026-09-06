@@ -67,6 +67,11 @@ namespace DAMS.Application.Services
             if (commission.FinalAmount <= 0m)
                 throw new InvalidOperationException("Final commission must be greater than zero.");
             _context.BookingCommissions.Add(commission);
+            // Agreeing the commission is what makes it a cost and a liability, so that is the day
+            // the formal statements have to see. Waiting for the payout left the P&L silent about a
+            // commission already owed and the Balance Sheet silent about the payable.
+            Accrue(commission, commission.FinalAmount, CommissionAccrualKind.Recognition, actor,
+                commission.IsManual ? CommissionNarrative(commission) : commission.RuleNameSnapshot);
             var audit = Audit(FinancialWorkflowAction.CommissionCreated, actor, partner.Id, booking.CustomerId, bookingId,
                 newCommission: commission.Status, newAmount: commission.FinalAmount,
                 reason: commission.IsManual ? CommissionNarrative(commission) : commission.RuleNameSnapshot);
@@ -136,6 +141,12 @@ namespace DAMS.Application.Services
             // so only the figures and the audit trail change.
             commission.UpdatedAt = DateTime.UtcNow;
 
+            // The obligation moves by the DIFFERENCE, dated today. Restating the original accrual
+            // would rewrite the period it was first reported in; a signed correction leaves that
+            // period alone and puts the change where it was actually decided.
+            Accrue(commission, Money(commission.FinalAmount - previousAmount),
+                CommissionAccrualKind.Adjustment, actor, changeReason);
+
             Audit(FinancialWorkflowAction.CommissionAdjusted, actor, partner.Id, booking.CustomerId, bookingId,
                 commission.Id, oldCommission: commission.Status, newCommission: commission.Status,
                 previousAmount: previousAmount, newAmount: commission.FinalAmount, reason: changeReason,
@@ -165,6 +176,9 @@ namespace DAMS.Application.Services
                     RequireReason(reason, "A cancellation reason is required.");
                     if (NetPaid(commission) > 0m) throw new InvalidOperationException("Part of this commission has already been paid. Reverse the payment before cancelling it.");
                     commission.Status = BookingCommissionStatus.Cancelled; commission.CancellationOrReversalReason = reason;
+                    // Nothing is owed any more, so the payable and the expense come back off — on
+                    // today's date, not by unwinding the period the commission was agreed in.
+                    await ReleaseAccrualAsync(commission, actor, reason!, cancellationToken);
                     action = FinancialWorkflowAction.CommissionCancelled; break;
                 default:
                     throw new InvalidOperationException($"Commission cannot move from {previous} to {dto.TargetStatus}.");
@@ -472,6 +486,57 @@ namespace DAMS.Application.Services
             FinancialCalculationType.FixedAmount when fixedAmount is > 0m => fixedAmount.Value,
             _ => throw new InvalidOperationException("Calculation inputs are invalid.")
         };
+
+        /// <summary>
+        /// Records one signed movement of the commission obligation, dated today.
+        /// <para>
+        /// The date is <see cref="PakistanTime.Today"/> rather than a caller-supplied one, and is
+        /// deliberately not run through <see cref="FinanceDateRules"/>: today can never be in the
+        /// future, and the go-live date can never be in the future either
+        /// (<see cref="FinanceDateRules.EnsureBaselineDate"/>), so today is always on or after the
+        /// committed baseline. There is nothing for the rule to reject and no reason to pay for the
+        /// query. Zero movements are skipped — a row that moves nothing is noise the reports would
+        /// still have to read.
+        /// </para>
+        /// </summary>
+        private void Accrue(BookingCommission commission, decimal amount, CommissionAccrualKind kind,
+            FinancialWorkflowActor actor, string? reason)
+        {
+            var value = Money(amount);
+            if (value == 0m) return;
+            _context.CommissionAccruals.Add(new CommissionAccrual
+            {
+                Commission = commission,
+                Amount = value,
+                AccruedOn = PakistanTime.Today,
+                Kind = kind,
+                Reason = Limited(reason, "Accrual reason", 2000),
+                RecordedByUserId = actor.UserId,
+                RecordedByName = Limited(actor.DisplayName, "Actor name", 200)
+            });
+        }
+
+        /// <summary>
+        /// Takes the whole remaining obligation back off the books. Reads the accrued balance from
+        /// the ledger rather than assuming it equals <c>FinalAmount</c>: an edited commission has
+        /// adjustment rows, and one already released (a cancelled booking, then the commission
+        /// cancelled) must not be released twice.
+        /// </summary>
+        private async Task ReleaseAccrualAsync(BookingCommission commission, FinancialWorkflowActor actor,
+            string reason, CancellationToken cancellationToken)
+        {
+            var accrued = Money(await _context.CommissionAccruals.AsNoTracking()
+                .Where(a => a.CommissionId == commission.Id)
+                .SumAsync(a => (decimal?)a.Amount, cancellationToken) ?? 0m);
+            // Rows added in this same unit of work are not in the database yet. Only the ADDED ones
+            // are counted here — a tracked row already saved is inside the query above, and adding
+            // it twice would release more than was ever accrued.
+            accrued += Money(_context.ChangeTracker.Entries<CommissionAccrual>()
+                .Where(e => e.State == EntityState.Added
+                    && (ReferenceEquals(e.Entity.Commission, commission) || e.Entity.CommissionId == commission.Id))
+                .Sum(e => e.Entity.Amount));
+            Accrue(commission, -accrued, CommissionAccrualKind.Release, actor, reason);
+        }
 
         private static decimal NetPaid(BookingCommission commission) => Money(commission.Payouts.Sum(p => p.Amount - p.Reversals.Sum(r => r.Amount)));
         private static void EnsureActiveBooking(Booking booking)

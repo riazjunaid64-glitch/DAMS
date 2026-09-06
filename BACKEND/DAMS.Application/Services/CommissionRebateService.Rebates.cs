@@ -392,6 +392,8 @@ namespace DAMS.Application.Services
                     "This credit was applied to a completed or possession-given booking. Reopen the booking before reversing the credit.");
             var amount = Money(dto.Amount); var available = Money(disbursement.Amount - disbursement.Reversals.Sum(r => r.Amount));
             if (amount > available) throw new InvalidOperationException($"Reversal exceeds the disbursement balance of {available:0.00}.");
+            if (BookingCreditPolicy.IsNonCashCredit(disbursement.Method))
+                await EnsureRestoredDebtIsCollectableAsync(rebate.Booking, amount, cancellationToken);
             _context.RebateDisbursementReversals.Add(new RebateDisbursementReversal
             {
                 DisbursementId = disbursement.Id, Amount = amount, Reason = reason,
@@ -425,6 +427,47 @@ namespace DAMS.Application.Services
             }
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }, cancellationToken);
+
+        /// <summary>
+        /// Refuses a credit reversal that would put debt back on a booking the installment plan can
+        /// no longer collect.
+        /// <para>
+        /// A plan generated while the credit stood was built SMALLER by it —
+        /// <see cref="BookingCreditPolicy.RemainingInstallmentPool"/> takes the credit out of the
+        /// pool — so the principal now being restored was never given a row to sit on. Rebuilding
+        /// the allocation cannot put it back: an allocation only moves an existing installment's
+        /// balance, it cannot create one. And a receipt is capped by the installment it is recorded
+        /// against, so once the plan is pinned the restored amount has no collection path at all: it
+        /// silently blocks completion for ever while the schedule shows nothing owing.
+        /// </para>
+        /// <para>
+        /// Regenerating the plan is the repair, so the reversal is only refused when the plan can no
+        /// longer be regenerated — the same shape as
+        /// <see cref="ReconcileBookingAmountMilestoneAsync"/>, which refuses a reversal that would
+        /// unwind the booking-amount milestone only once installment activity has begun.
+        /// </para>
+        /// </summary>
+        private async Task EnsureRestoredDebtIsCollectableAsync(
+            Booking booking, decimal reversalAmount, CancellationToken cancellationToken)
+        {
+            var scheduleTotal = await _context.Installments.AsNoTracking()
+                .Where(i => i.BookingId == booking.Id)
+                .SumAsync(i => (decimal?)i.Amount, cancellationToken) ?? 0m;
+            if (scheduleTotal <= 0m) return;
+
+            var creditsAfterReversal = Money(
+                await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id, cancellationToken)
+                - reversalAmount);
+            var shortfall = BookingCreditPolicy.UncollectableShortfall(booking, scheduleTotal, creditsAfterReversal);
+            if (shortfall <= 0m) return;
+            if (await BookingCreditPolicy.CanRegenerateScheduleAsync(_context, booking.Id, cancellationToken)) return;
+
+            throw new InvalidOperationException(
+                $"Reversing this credit puts {shortfall:0.00} back on the customer's balance, but the "
+                + "installment plan was generated without it and can no longer be regenerated, so there "
+                + "would be no way to collect it. Reverse the installment payments, or leave the credit "
+                + "in place and correct it another way.");
+        }
 
         private static void ValidateRebateMethod(RecordRebateDisbursementDto dto)
         {

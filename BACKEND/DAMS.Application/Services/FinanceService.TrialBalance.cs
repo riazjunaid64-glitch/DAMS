@@ -35,6 +35,10 @@ namespace DAMS.Application.Services
             var pnlDeltas = await LoadTrialPnlDeltasAsync(projectId, finalEnd, cancellationToken);
             await AddCustomerTrialDeltasAsync(
                 projectId, finalEnd, templates, pnlDeltas, accountDeltas, cancellationToken);
+            AddCommissionPayableTrialDeltas(
+                templates.Where(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable)
+                    .Select(a => a.Id).ToList(),
+                pnlDeltas, accountDeltas);
 
             var allocationDeltas = !projectId.HasValue
                 ? await _context.CapitalTransactions.AsNoTracking()
@@ -146,6 +150,8 @@ namespace DAMS.Application.Services
                 .Select(a => a.Id).ToArray();
             var refundAccountIds = accounts.Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
                 .Select(a => a.Id).ToArray();
+            var commissionPayableIds = accounts.Where(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable)
+                .Select(a => a.Id).ToArray();
 
             deltas.AddRange(await PaymentsQuery(projectId, null, finalEnd)
                 .Where(p => p.FinanceAccountId != null)
@@ -211,24 +217,41 @@ namespace DAMS.Application.Services
                     Kind = TrialAccountDeltaKind.Normal
                 }).ToListAsync(cancellationToken));
 
-            deltas.AddRange(await CommissionPayoutQuery(projectId, null, finalEnd, null, false)
+            // A payout moves two accounts: the bank falls and Commission Payable falls with it. The
+            // payable side is what makes the commission double-sided now that the expense is raised
+            // by the accrual instead of by the payment.
+            var commissionPayouts = await CommissionPayoutQuery(projectId, null, finalEnd, null, false)
                 .GroupBy(p => new { p.FinanceAccountId, p.PaymentDate })
-                .Select(g => new TrialAccountDelta
+                .Select(g => new TrialSourceDelta
                 {
                     AccountId = g.Key.FinanceAccountId,
                     Date = g.Key.PaymentDate,
-                    Amount = -g.Sum(p => p.Amount),
-                    Kind = TrialAccountDeltaKind.Normal
-                }).ToListAsync(cancellationToken));
-            deltas.AddRange(await CommissionReversalQuery(projectId, null, finalEnd, null, false)
+                    Amount = g.Sum(p => p.Amount)
+                }).ToListAsync(cancellationToken);
+            foreach (var row in commissionPayouts)
+            {
+                AddTrialDelta(deltas, row.AccountId!.Value, row.Date, -row.Amount);
+                foreach (var id in commissionPayableIds)
+                    AddTrialDelta(deltas, id, row.Date, -row.Amount);
+            }
+            var commissionReversals = await CommissionReversalQuery(projectId, null, finalEnd, null, false)
                 .GroupBy(r => new { r.Payout.FinanceAccountId, r.ReversedAt })
-                .Select(g => new TrialAccountDelta
+                .Select(g => new TrialSourceDelta
                 {
                     AccountId = g.Key.FinanceAccountId,
                     Date = g.Key.ReversedAt,
-                    Amount = g.Sum(r => r.Amount),
-                    Kind = TrialAccountDeltaKind.Normal
-                }).ToListAsync(cancellationToken));
+                    Amount = g.Sum(r => r.Amount)
+                }).ToListAsync(cancellationToken);
+            foreach (var row in commissionReversals)
+            {
+                AddTrialDelta(deltas, row.AccountId!.Value, row.Date, row.Amount);
+                foreach (var id in commissionPayableIds)
+                    AddTrialDelta(deltas, id, row.Date, row.Amount);
+            }
+            // The accrual side is NOT read again here. It is already loaded as a dated P&L delta, and
+            // AddCommissionPayableTrialDeltas folds those same rows onto this account — the way the
+            // receivable is folded out of the unit-sales deltas. A second read would be a second SQL
+            // command per report for a figure already in hand.
 
             deltas.AddRange(await CashRebateQuery(projectId, null, finalEnd, null, false)
                 .Where(d => d.FinanceAccountId != null)
@@ -453,19 +476,17 @@ namespace DAMS.Application.Services
                 row.Key = (row.CategoryId == null ? "U" : row.CategoryId.ToString()) + ":" + row.Name;
             rows.AddRange(expenses);
 
-            rows.AddRange(await CommissionPayoutQuery(projectId, SqlStart, finalEnd, null, false)
-                .Select(p => new { Date = p.PaymentDate, Amount = p.Amount, Count = 1 })
-                .Concat(CommissionReversalQuery(projectId, SqlStart, finalEnd, null, false)
-                    .Select(r => new { Date = r.ReversedAt, Amount = -r.Amount, Count = 1 }))
-                .GroupBy(x => x.Date)
+            // The obligation, dated when it arose — the payout is a payable settlement, not a cost.
+            rows.AddRange(await CommissionAccrualQuery(projectId, SqlStart, finalEnd, null, false)
+                .GroupBy(a => a.AccruedOn)
                 .Select(g => new TrialPnlDelta
                 {
                     Date = g.Key,
-                    Key = "commission-payouts",
-                    Name = "Commission Payouts",
+                    Key = "commission-expense",
+                    Name = "Partner Commissions",
                     Order = int.MaxValue - 1,
-                    Amount = g.Sum(x => x.Amount),
-                    Count = g.Sum(x => x.Count)
+                    Amount = g.Sum(a => a.Amount),
+                    Count = g.Count()
                 }).ToListAsync(cancellationToken));
             rows.AddRange(await CashRebateQuery(projectId, SqlStart, finalEnd, null, false)
                 .Select(d => new { Date = d.AppliedAt, Amount = d.Amount, Count = 1 })
@@ -521,7 +542,28 @@ namespace DAMS.Application.Services
             return rows;
         }
 
-        private async Task AddCustomerTrialDeltasAsync(
+        /// <summary>
+    /// Puts the commission obligation on Commission Payable, from the P&amp;L deltas already loaded.
+    /// <para>
+    /// Every accrual raises the expense AND the payable by the same amount on the same day, so the
+    /// dated rows behind the expense line are exactly the rows this account needs. Reading them a
+    /// second time would cost a SQL command per report to re-derive a figure already in memory —
+    /// the same reason the customer receivable is folded out of the unit-sales deltas rather than
+    /// re-queried.
+    /// </para>
+    /// </summary>
+    private static void AddCommissionPayableTrialDeltas(
+        IReadOnlyList<int> accountIds,
+        IReadOnlyList<TrialPnlDelta> pnlDeltas,
+        List<TrialAccountDelta> accountDeltas)
+    {
+        if (accountIds.Count == 0) return;
+        foreach (var row in pnlDeltas.Where(r => r.Key == "commission-expense"))
+            foreach (var id in accountIds)
+                AddTrialDelta(accountDeltas, id, row.Date, row.Amount);
+    }
+
+    private async Task AddCustomerTrialDeltasAsync(
             int? projectId,
             DateTime finalEnd,
             IReadOnlyList<AccountSnapshot> accounts,

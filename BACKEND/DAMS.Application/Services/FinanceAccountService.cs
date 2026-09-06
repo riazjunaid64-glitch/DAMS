@@ -104,7 +104,8 @@ namespace DAMS.Application.Services
                     IsTaxPayable = a.SystemRole == FinanceSystemAccountRole.TaxPayable,
                     IsRefundPayable = a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable,
                     IsCustomerDeposits = a.SystemRole == FinanceSystemAccountRole.CustomerDeposits,
-                    IsCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables
+                    IsCustomerReceivables = a.SystemRole == FinanceSystemAccountRole.CustomerReceivables,
+                    IsCommissionPayable = a.SystemRole == FinanceSystemAccountRole.CommissionPayable
                 }).SingleOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Finance account not found.");
 
@@ -282,6 +283,43 @@ namespace DAMS.Application.Services
                     ProjectName = s.Booking.Unit.Project.ProjectName,
                     Amount = s.RefundAmount, GrossAmount = s.RefundAmount, WhtAmount = 0m,
                     PostedAt = s.CancelledAt, SourceOrder = 91
+                });
+            // ── Commission Payable ledger ─────────────────────────────────────────────────
+            // Derived like the refund payable: the accrual raises what the company owes a partner,
+            // the payout clears it, and a payout reversal puts it back.
+            var commissionAccrued = _context.CommissionAccruals.AsNoTracking()
+                .Where(a => account.IsCommissionPayable)
+                .Select(a => new FinanceAccountTransactionDto
+                {
+                    Kind = a.Amount < 0m ? "Commission released" : "Commission accrued",
+                    RecordId = a.Id, Date = a.AccruedOn,
+                    Label = a.Commission.PartnerNameSnapshot, Reference = a.Commission.Booking.BookingReference,
+                    Description = a.Reason, ProjectId = a.Commission.Booking.Unit.ProjectId,
+                    ProjectName = a.Commission.Booking.Unit.Project.ProjectName,
+                    Amount = a.Amount, GrossAmount = a.Amount < 0m ? -a.Amount : a.Amount, WhtAmount = 0m,
+                    PostedAt = a.RecordedAt, SourceOrder = 93
+                });
+            var commissionPayableSettled = _context.CommissionPayouts.AsNoTracking()
+                .Where(p => account.IsCommissionPayable)
+                .Select(p => new FinanceAccountTransactionDto
+                {
+                    Kind = "Commission paid", RecordId = p.Id, Date = p.PaymentDate,
+                    Label = p.Commission.PartnerNameSnapshot, Reference = p.PaymentReference,
+                    Description = p.Notes, ProjectId = p.Commission.Booking.Unit.ProjectId,
+                    ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
+                    Amount = -p.Amount, GrossAmount = p.Amount, WhtAmount = 0m,
+                    PostedAt = p.RecordedAt, SourceOrder = 94
+                });
+            var commissionPayableRestored = _context.CommissionPayoutReversals.AsNoTracking()
+                .Where(r => account.IsCommissionPayable)
+                .Select(r => new FinanceAccountTransactionDto
+                {
+                    Kind = "Commission payment reversed", RecordId = r.Id, Date = r.ReversedAt,
+                    Label = r.Payout.Commission.PartnerNameSnapshot, Reference = r.Reason,
+                    Description = r.Reason, ProjectId = r.Payout.Commission.Booking.Unit.ProjectId,
+                    ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
+                    Amount = r.Amount, GrossAmount = r.Amount, WhtAmount = 0m,
+                    PostedAt = r.ReversedAt, SourceOrder = 95
                 });
             var refundPayablePaid = _context.BookingCancellationRefunds.AsNoTracking()
                 .Where(r => account.IsRefundPayable && r.Settlement.RefundPayableAccountId == id)
@@ -502,6 +540,7 @@ namespace DAMS.Application.Services
                 .Concat(rebatePayments).Concat(rebateReversals).Concat(whtDeposits)
                 .Concat(assetPurchasesPaid).Concat(assetPurchasesCapitalised)
                 .Concat(cancellationRefundsCash).Concat(refundPayableCreated).Concat(refundPayablePaid)
+                .Concat(commissionAccrued).Concat(commissionPayableSettled).Concat(commissionPayableRestored)
                 .Concat(capitalCash).Concat(partnerCapital)
                 .Concat(loanCash).Concat(loanLiability)
                 .Concat(staffTransfers).Concat(staffCounterpartyTransfers)
@@ -881,6 +920,8 @@ namespace DAMS.Application.Services
                 // would put a code DAMS made up into the Trial Balance and its exports as though the
                 // accountant had issued it. Null until they tell us what it should be.
                 new("Customer Refunds Payable", FinanceAccountType.Liability, null, 515, SystemRole: FinanceSystemAccountRole.CustomerRefundPayable),
+                // Also no ledger code, for the same reason.
+                new("Commission Payable", FinanceAccountType.Liability, null, 517, SystemRole: FinanceSystemAccountRole.CommissionPayable),
                 new("Loan A/C", FinanceAccountType.Liability, "32", 520)
             };
             rows.AddRange(ClientPartnerNames.Select((name, index) =>
@@ -1207,6 +1248,48 @@ namespace DAMS.Application.Services
                         }));
             }
 
+            var commissionPayableId = accounts
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable)
+                .Select(a => (int?)a.Id).SingleOrDefault();
+            if (commissionPayableId.HasValue)
+            {
+                var id = commissionPayableId.Value;
+                movements = movements
+                    .Concat(_context.CommissionAccruals.AsNoTracking()
+                        .Select(a => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            // A release is a negative accrual, so it belongs on the OUT side rather
+                            // than as a negative inflow — a negative "revenue received" would read
+                            // as a mistake on the account card.
+                            Kind = a.Amount < 0m ? AccountMovementKind.SystemOut : AccountMovementKind.SystemIn,
+                            Amount = a.Amount < 0m ? -a.Amount : a.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.CommissionPayouts.AsNoTracking()
+                        .Select(p => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemOut,
+                            Amount = p.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }))
+                    .Concat(_context.CommissionPayoutReversals.AsNoTracking()
+                        .Select(r => new AccountMovementRow
+                        {
+                            AccountId = id,
+                            Kind = AccountMovementKind.SystemIn,
+                            Amount = r.Amount,
+                            WhtWithheld = 0m,
+                            WhtDeposited = 0m,
+                            TransactionCount = 1
+                        }));
+            }
+
             var customerDepositsId = accounts
                 .Where(a => a.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
                 .Select(a => (int?)a.Id).SingleOrDefault();
@@ -1418,7 +1501,10 @@ namespace DAMS.Application.Services
                     SystemRole: FinanceSystemAccountRole.CustomerDeposits),
             [FinanceSystemAccountRole.CustomerReceivables] =
                 new ChartAccount("Customer Receivables", FinanceAccountType.Receivable, null, 420,
-                    SystemRole: FinanceSystemAccountRole.CustomerReceivables)
+                    SystemRole: FinanceSystemAccountRole.CustomerReceivables),
+            [FinanceSystemAccountRole.CommissionPayable] =
+                new ChartAccount("Commission Payable", FinanceAccountType.Liability, null, 517,
+                    SystemRole: FinanceSystemAccountRole.CommissionPayable)
         };
 
         public async Task<int> EnsureSystemAccountAsync(FinanceSystemAccountRole role, CancellationToken cancellationToken = default)

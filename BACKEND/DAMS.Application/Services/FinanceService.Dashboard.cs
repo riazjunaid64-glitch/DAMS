@@ -78,8 +78,7 @@ namespace DAMS.Application.Services
             RetainedCancellation,
             ManualRevenue,
             OrdinaryExpense,
-            CommissionPayout,
-            CommissionReversal,
+            CommissionExpense,
             CashRebate,
             CashRebateReversal,
             NonCashCredit,
@@ -114,8 +113,11 @@ namespace DAMS.Application.Services
             public List<Slice> RetainedCancellations { get; init; } = [];
             public List<Slice> ManualRevenue { get; init; } = [];
             public List<Slice> OrdinaryExpenses { get; init; } = [];
-            public List<Slice> CommissionPayouts { get; init; } = [];
-            public List<Slice> CommissionReversals { get; init; } = [];
+            /// <summary>Signed obligation movements: a release or a downward correction carries a
+            /// negative amount, so a bucket holding only one of those lowers the bar exactly as it
+            /// lowers the card. There is no separate reversal list — a payout is a payable
+            /// settlement and is not a cost at all.</summary>
+            public List<Slice> CommissionExpense { get; init; } = [];
             public List<Slice> CashRebates { get; init; } = [];
             public List<Slice> CashRebateReversals { get; init; } = [];
             public List<Slice> NonCashCredits { get; init; } = [];
@@ -140,7 +142,7 @@ namespace DAMS.Application.Services
             /// row by row.</summary>
             public decimal TotalExpenses =>
                 Total(OrdinaryExpenses)
-                + Total(CommissionPayouts) - Total(CommissionReversals)
+                + Total(CommissionExpense)
                 + Total(CashRebates) - Total(CashRebateReversals)
                 + Total(NonCashCredits) - Total(NonCashCreditReversals)
                 + Total(LoanInterest) + FixedAssetCharge;
@@ -153,7 +155,7 @@ namespace DAMS.Application.Services
             /// holding only a reversal lowers the bar exactly as it lowers the card.</summary>
             public IEnumerable<Slice> CostSlices =>
                 OrdinaryExpenses
-                    .Concat(CommissionPayouts).Concat(Negated(CommissionReversals))
+                    .Concat(CommissionExpense)
                     .Concat(CashRebates).Concat(Negated(CashRebateReversals))
                     .Concat(NonCashCredits).Concat(Negated(NonCashCreditReversals))
                     .Concat(LoanInterest).Concat(FixedAssetPurchases);
@@ -216,22 +218,15 @@ namespace DAMS.Application.Services
                     Amount = e.Amount,
                     Wht = e.WhtAmount
                 });
-            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(p => new PeriodAggregateRow
+            // Accrued, not paid. A payout settles Commission Payable and never reaches profit, so
+            // the dashboard reads the same obligation ledger the P&L does.
+            var commissionExpense = CommissionAccrualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Select(a => new PeriodAggregateRow
                 {
-                    Source = PeriodAggregateSource.CommissionPayout,
-                    Date = p.PaymentDate,
-                    ProjectId = p.Commission.Booking.Unit.ProjectId,
-                    Amount = p.Amount,
-                    Wht = 0m
-                });
-            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(r => new PeriodAggregateRow
-                {
-                    Source = PeriodAggregateSource.CommissionReversal,
-                    Date = r.ReversedAt,
-                    ProjectId = r.Payout.Commission.Booking.Unit.ProjectId,
-                    Amount = r.Amount,
+                    Source = PeriodAggregateSource.CommissionExpense,
+                    Date = a.AccruedOn,
+                    ProjectId = a.Commission.Booking.Unit.ProjectId,
+                    Amount = a.Amount,
                     Wht = 0m
                 });
             var cashRebates = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
@@ -297,7 +292,7 @@ namespace DAMS.Application.Services
                 });
 
             var rows = await recognisedSales.Concat(retainedCancellations).Concat(manualRevenue)
-                .Concat(expenses).Concat(commissionPayouts).Concat(commissionReversals)
+                .Concat(expenses).Concat(commissionExpense)
                 .Concat(cashRebates).Concat(cashRebateReversals)
                 .Concat(nonCashCredits).Concat(nonCashCreditReversals)
                 .Concat(loanInterest).Concat(assetPurchases)
@@ -319,8 +314,7 @@ namespace DAMS.Application.Services
                 ManualRevenue = Slices(rows, PeriodAggregateSource.ManualRevenue),
                 OrdinaryExpenses = Slices(rows, PeriodAggregateSource.OrdinaryExpense),
                 WhtWithheld = rows.Sum(x => x.Wht),
-                CommissionPayouts = Slices(rows, PeriodAggregateSource.CommissionPayout),
-                CommissionReversals = Slices(rows, PeriodAggregateSource.CommissionReversal),
+                CommissionExpense = Slices(rows, PeriodAggregateSource.CommissionExpense),
                 CashRebates = Slices(rows, PeriodAggregateSource.CashRebate),
                 CashRebateReversals = Slices(rows, PeriodAggregateSource.CashRebateReversal),
                 NonCashCredits = Slices(rows, PeriodAggregateSource.NonCashCredit),

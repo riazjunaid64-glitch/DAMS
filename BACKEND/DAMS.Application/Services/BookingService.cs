@@ -300,7 +300,14 @@ namespace DAMS.Application.Services
                 .Take(pageSize)
                 .ToListAsync();
 
-            var items = entities.Select(MapProjection).ToList();
+            // Installments are not loaded on the list, so only the booking-level credit is needed —
+            // it is what makes "Booking Amount Remaining" agree with what the payment service will
+            // actually accept.
+            var (creditsByBooking, _) = await LoadCreditsAsync(
+                entities.Select(b => b.Id).ToList(), includeInstallments: false);
+            var items = entities
+                .Select(b => MapProjection(b, creditsByBooking.GetValueOrDefault(b.Id)))
+                .ToList();
 
             return new BookingListDto
             {
@@ -351,7 +358,8 @@ namespace DAMS.Application.Services
             // price below it would owe the customer a refund the sale has no way to express.
             var collected = await _context.Payments.Where(p => p.BookingId == booking.Id)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var settled = Money(collected + await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id));
+            var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+            var settled = Money(collected + bookingCredits);
             if (netSalePrice < settled)
                 throw new InvalidOperationException(
                     $"The revised net sale price of {netSalePrice:0.00} is below the {settled:0.00} already settled "
@@ -367,8 +375,14 @@ namespace DAMS.Application.Services
             booking.TotalInstallmentAmount = netSalePrice - dto.BookingAmountRequired;
             booking.UpdatedAt = DateTime.UtcNow;
 
-            // If terms now mean the booking amount is already covered, advance the workflow.
-            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            // If terms now mean the booking amount is already covered, advance the workflow. Covered
+            // means covered in CASH OR CREDIT: a non-cash credit substitutes for the cash the
+            // customer would otherwise pay, and RecordBookingAmountPaymentAsync already refuses to
+            // collect more than the effective requirement. Comparing against the raw requirement
+            // here left a credit-covered booking stuck in AwaitingBookingAmount with no payment the
+            // service would accept — the plan could never be generated and the sale never finished.
+            if (booking.BookingAmountReceived
+                >= BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits))
             {
                 var unit = await _context.Units.FirstOrDefaultAsync(u => u.Id == booking.UnitId);
                 booking.Status = BookingStatus.PaymentPlanActive;
@@ -762,12 +776,42 @@ namespace DAMS.Application.Services
                 .AsSplitQuery()
                 .FirstAsync(b => b.Id == id, cancellationToken);
 
-            return MapProjection(booking);
+            var (byBooking, byInstallment) = await LoadCreditsAsync([id], includeInstallments: true, cancellationToken);
+            return MapProjection(booking, byBooking.GetValueOrDefault(id), byInstallment);
         }
 
-        private static BookingResponseDto MapProjection(Booking b)
+        /// <summary>
+        /// Every non-cash credit figure a projection needs, for a whole page of bookings at once:
+        /// the booking-level total each one carries, and the net credit sitting on each of its
+        /// installments. Read as two set-based queries rather than per booking, so a page of twenty
+        /// does not become forty round trips.
+        /// </summary>
+        private async Task<(Dictionary<int, decimal> ByBooking, Dictionary<int, decimal> ByInstallment)>
+            LoadCreditsAsync(IReadOnlyCollection<int> bookingIds, bool includeInstallments,
+                CancellationToken cancellationToken = default)
         {
-            var installmentTotals = ComputeInstallmentTotals(b);
+            var byBooking = await BookingCreditPolicy.NonCashCreditsByBookingAsync(
+                _context, bookingIds, cancellationToken);
+            var byInstallment = includeInstallments
+                ? await BookingCreditPolicy.InstallmentCreditsByBookingAsync(_context, bookingIds, cancellationToken)
+                : new Dictionary<int, decimal>();
+            return (byBooking, byInstallment);
+        }
+
+        /// <param name="rebateCredits">
+        /// Required, with no default: a projection that quietly defaulted its credits to zero is the
+        /// defect this parameter exists to remove — it would report a balance the customer no longer
+        /// owes and offer a payment the service would refuse.
+        /// </param>
+        /// <param name="installmentCredits">
+        /// Optional, because the list query does not load installments at all and the per-installment
+        /// figures are then not computed from anything.
+        /// </param>
+        private static BookingResponseDto MapProjection(Booking b,
+            decimal rebateCredits, IReadOnlyDictionary<int, decimal>? installmentCredits = null)
+        {
+            var installmentTotals = ComputeInstallmentTotals(b,
+                installmentCredits ?? new Dictionary<int, decimal>());
 
             return new BookingResponseDto
             {
@@ -801,7 +845,9 @@ namespace DAMS.Application.Services
                 BookingAmountRequired = b.BookingAmountRequired,
                 BookingAmountReceived = b.BookingAmountReceived,
                 TotalInstallmentAmount = b.TotalInstallmentAmount,
-                InstallmentPaid = installmentTotals.Paid,
+                RebateCredits = rebateCredits,
+                InstallmentPaid = installmentTotals.Settled,
+                InstallmentCashReceived = installmentTotals.Cash,
                 InstallmentRemaining = installmentTotals.Remaining,
                 HasInstallmentSchedule = installmentTotals.HasSchedule,
                 BookingDate = b.BookingDate,
@@ -907,7 +953,11 @@ namespace DAMS.Application.Services
                 .OrderByDescending(b => b.BookingDate)
                 .ToListAsync();
 
-            return entities.Select(b => SanitizeForClient(MapProjection(b))).ToList();
+            var ids = entities.Select(b => b.Id).ToList();
+            var (byBooking, byInstallment) = await LoadCreditsAsync(ids, includeInstallments: true);
+            return entities
+                .Select(b => SanitizeForClient(MapProjection(b, byBooking.GetValueOrDefault(b.Id), byInstallment)))
+                .ToList();
         }
 
         public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null)
@@ -935,11 +985,26 @@ namespace DAMS.Application.Services
                                 || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)));
         }
 
-        private static (decimal Paid, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(Booking b)
+        /// <summary>
+        /// What the installment plan has been settled by and what it still demands.
+        /// <para>
+        /// Settled means cash OR credit, exactly as the schedule screen counts it
+        /// (<c>InstallmentService.GetPaidByInstallmentAsync</c>): a credit aimed at an installment,
+        /// and a booking-level credit's allocated share of one, close the row just as a receipt
+        /// does. Counting only cash here made the list and detail projections claim a balance the
+        /// schedule itself no longer showed, and the difference was the rebate.
+        /// </para>
+        /// <para>
+        /// The cash actually received stays its own figure so the two are never conflated:
+        /// <see cref="BookingResponseDto.InstallmentCashReceived"/> is what came through the bank.
+        /// </para>
+        /// </summary>
+        private static (decimal Cash, decimal Settled, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(
+            Booking b, IReadOnlyDictionary<int, decimal> installmentCredits)
         {
             var installments = b.Installments?.ToList() ?? new List<Installment>();
             if (installments.Count == 0)
-                return (0m, 0m, false);
+                return (0m, 0m, 0m, false);
 
             var paidByInstallment = (b.Payments ?? new List<Payment>())
                 .Where(p => p.InstallmentId.HasValue && p.Type == PaymentType.Installment)
@@ -947,10 +1012,12 @@ namespace DAMS.Application.Services
                 .ToDictionary(g => g.Key, g => g.Sum(p => p.Amount));
 
             var total = installments.Sum(i => i.Amount);
-            var paid = installments.Sum(i =>
+            var cash = installments.Sum(i =>
                 paidByInstallment.TryGetValue(i.Id, out var amount) ? amount : 0m);
+            var settled = Money(cash + installments.Sum(i =>
+                installmentCredits.TryGetValue(i.Id, out var credit) ? credit : 0m));
 
-            return (paid, Math.Max(0m, total - paid), true);
+            return (Money(cash), settled, Math.Max(0m, Money(total - settled)), true);
         }
 
         private static BookingResponseDto SanitizeForClient(BookingResponseDto dto)

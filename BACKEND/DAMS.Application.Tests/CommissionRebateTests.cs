@@ -1134,12 +1134,16 @@ public sealed class CommissionRebateTests
         var reversal = Assert.Single(harness.Context.CommissionPayoutReversals.ToList());
         Assert.Equal(today, reversal.ReversedAt.Date);
 
-        // …and the reversal lands in the same day's P&L as the payout it corrects, netting to 60.
+        // …and today's P&L carries the commission the day it was AGREED, untouched by the payout or
+        // its reversal: both settle Commission Payable and neither is a cost. The payable itself
+        // moves with them — 19,000.01 accrued, 100 paid, 40 given back.
         var accounts = new FinanceAccountService(harness.Context);
         var finance = new FinanceService(harness.Context, new NoopAttachmentStorage(), accounts,
             new WhtService(harness.Context, accounts), NullLogger<FinanceService>.Instance);
         var pnl = await finance.GetProfitAndLossAsync(null, today, today);
-        Assert.Equal(60m, Assert.Single(pnl.ExpenseLines, l => l.Name == "Commission Payouts").Amount);
+        var accrued = Assert.Single(harness.Context.CommissionAccruals.ToList()).Amount;
+        Assert.Equal(commission.FinalAmount, accrued);
+        Assert.Equal(accrued, Assert.Single(pnl.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
     }
 
     /// <summary>

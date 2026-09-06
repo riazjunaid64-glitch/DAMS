@@ -35,7 +35,14 @@ namespace DAMS.Domain.Enums
         /// What buyers still owe on sales that HAVE been recognised. Raised at possession for the
         /// unpaid part of the net sale value, cleared by later collections and valid credits.
         /// </summary>
-        CustomerReceivables = 4
+        CustomerReceivables = 4,
+
+        /// <summary>
+        /// What the company owes third-party partners on agreed booking commissions. Raised on the
+        /// day the commission is agreed (the same day it becomes an expense), cleared when the
+        /// payout is recorded, and released if the commission is cancelled or dies with its booking.
+        /// </summary>
+        CommissionPayable = 5
     }
 
     public static class AccountBalanceDirection

@@ -160,6 +160,8 @@ namespace DAMS.Application.Services
                     .Where(e => e.Date < cutover).Select(e => e.Date), cancellationToken),
                 await ProbeAsync("fixed-asset purchases", context.AssetPurchases
                     .Where(p => p.Date < cutover).Select(p => p.Date), cancellationToken),
+                await ProbeAsync("commission accruals", context.CommissionAccruals
+                    .Where(a => a.AccruedOn < cutover).Select(a => a.AccruedOn), cancellationToken),
                 await ProbeAsync("commission payouts", context.CommissionPayouts
                     .Where(p => p.PaymentDate < cutover).Select(p => p.PaymentDate), cancellationToken),
                 await ProbeAsync("commission reversals", context.CommissionPayoutReversals

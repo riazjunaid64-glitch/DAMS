@@ -46,6 +46,8 @@ namespace DAMS.Domain.Entities
         public CommissionRule? Rule { get; set; }
         public CommissionRuleRevision? RuleRevision { get; set; }
         public ICollection<CommissionPayout> Payouts { get; set; } = new List<CommissionPayout>();
+        /// <summary>The dated obligation ledger — what this commission put on the books, and when.</summary>
+        public ICollection<CommissionAccrual> Accruals { get; set; } = new List<CommissionAccrual>();
         public ICollection<FinancialEvidence> Evidence { get; set; } = new List<FinancialEvidence>();
     }
 }

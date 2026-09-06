@@ -77,6 +77,14 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(cancellationToken);
             // Still owed to partners: the pending commissions, less whatever has already gone out
             // against them and plus anything since reversed.
+            //
+            // This is the MANAGEMENT view and it is deliberately not the same number as the Balance
+            // Sheet's Commission Payable. Both are built from the same facts and agree on every
+            // status but one: a ReversalRequired commission reads zero here and NEGATIVE on the
+            // sheet, because the money already paid on a void sale is recoverable from the partner.
+            // That amount is reported here on its own line instead, so the two reconcile exactly —
+            // sheet payable = PayableCommission − CommissionReversalRequired — rather than
+            // disagreeing. Everything else (Pending, Paid, Cancelled, Reversed) is identical.
             var payableCommission = Math.Max(0m,
                 (commissions?.PayableBase ?? 0m) - (payouts?.Pending ?? 0m) + (payoutReversals?.Pending ?? 0m));
             // Everything promised to customers that is still standing — cancelled and reversed

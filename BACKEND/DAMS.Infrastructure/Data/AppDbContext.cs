@@ -61,6 +61,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<BookingCommission> BookingCommissions { get; set; }
         public DbSet<CommissionPayout> CommissionPayouts { get; set; }
         public DbSet<CommissionPayoutReversal> CommissionPayoutReversals { get; set; }
+        public DbSet<CommissionAccrual> CommissionAccruals { get; set; }
         public DbSet<CustomerRebate> CustomerRebates { get; set; }
         public DbSet<RebateDisbursement> RebateDisbursements { get; set; }
         public DbSet<RebateDisbursementReversal> RebateDisbursementReversals { get; set; }
@@ -908,7 +909,7 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t =>
                 {
-                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 4");
+                    t.HasCheckConstraint("CK_FinanceAccounts_SystemRole", "[SystemRole] >= 0 AND [SystemRole] <= 5");
                     t.HasCheckConstraint("CK_FinanceAccounts_TaxPayableRole", "[SystemRole] <> 1 OR [Type] = 5");
                     t.HasCheckConstraint("CK_FinanceAccounts_CustomerRefundPayableRole", "[SystemRole] <> 2 OR [Type] = 5");
                     // A deposit is money owed back, so its account must be a Liability (5); a
@@ -916,6 +917,9 @@ namespace DAMS.Infrastructure.Data
                     // either the wrong way round and every balance built on it inverts.
                     t.HasCheckConstraint("CK_FinanceAccounts_CustomerDepositsRole", "[SystemRole] <> 3 OR [Type] = 5");
                     t.HasCheckConstraint("CK_FinanceAccounts_CustomerReceivablesRole", "[SystemRole] <> 4 OR [Type] = 8");
+                    // A commission owed to a partner is money owed out, so its account is a
+                    // Liability (5) like the other two payables.
+                    t.HasCheckConstraint("CK_FinanceAccounts_CommissionPayableRole", "[SystemRole] <> 5 OR [Type] = 5");
                 });
             });
 
@@ -1358,6 +1362,25 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(r => r.Payout).WithMany(p => p.Reversals).HasForeignKey(r => r.PayoutId).OnDelete(DeleteBehavior.Restrict);
             });
 
+            modelBuilder.Entity<CommissionAccrual>(entity =>
+            {
+                entity.Property(a => a.Kind).HasConversion<int>();
+                entity.Property(a => a.Amount).HasColumnType("decimal(18,2)");
+                entity.Property(a => a.AccruedOn).HasColumnType("date");
+                entity.Property(a => a.Reason).HasMaxLength(2000);
+                entity.Property(a => a.RecordedByName).HasMaxLength(200);
+                // Signed, so no positivity constraint: a release and a downward correction are
+                // negative by design. A ZERO row would be a movement that moves nothing, and every
+                // writer skips it, so it is refused here rather than left to clutter the ledger.
+                entity.ToTable(t => t.HasCheckConstraint("CK_CommissionAccruals_NonZero", "[Amount] <> 0"));
+                // The reports sum this by date, per commission and (through the commission) per
+                // project, so those are the two shapes worth indexing.
+                entity.HasIndex(a => new { a.CommissionId, a.AccruedOn });
+                entity.HasIndex(a => a.AccruedOn);
+                entity.HasOne(a => a.Commission).WithMany(c => c.Accruals)
+                    .HasForeignKey(a => a.CommissionId).OnDelete(DeleteBehavior.Restrict);
+            });
+
             modelBuilder.Entity<CustomerRebate>(entity =>
             {
                 entity.Property(r => r.CalculationType).HasConversion<int>();
@@ -1507,6 +1530,11 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<CapitalTransaction>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Capital transactions are immutable.");
+            // Editing one would silently restate a P&L period that has already been reported. A
+            // correction is a new signed row for the difference.
+            if (ChangeTracker.Entries<CommissionAccrual>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Commission accruals are append-only.");
             if (ChangeTracker.Entries<BookingCancellationSettlement>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking cancellation settlements are append-only.");
