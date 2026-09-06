@@ -122,6 +122,12 @@ namespace DAMS.Application.Services
             var attribution = await ResolveAttributionAsync(bookingId, dto.PartnerId, dto.AttributionId, cancellationToken);
 
             var previousAmount = commission.FinalAmount;
+            // Captured before the reset below zeroes BasisAmount. Only meaningful when the commission
+            // was ALREADY manual: a rule-driven record's basis belongs to the rule, not to an
+            // operator's choice, so switching TO manual has nothing of this shape to freeze against.
+            var wasManual = commission.IsManual;
+            var previousBasis = commission.CalculationBasis;
+            var previousBasisAmount = commission.BasisAmount;
             ResetCommissionCalculation(commission);
             commission.PartnerId = partner.Id;
             commission.AttributionId = attribution?.Id;
@@ -130,7 +136,9 @@ namespace DAMS.Application.Services
             commission.PartnerInternalCodeSnapshot = partner.InternalCode;
             commission.AllocationPercentSnapshot = attribution?.AllocationPercent ?? 100m;
             commission.IsManual = dto.IsManual;
-            if (dto.IsManual) ApplyManualCalculation(commission, booking, dto);
+            if (dto.IsManual)
+                ApplyManualCalculation(commission, booking, dto,
+                    wasManual ? previousBasis : null, wasManual ? previousBasisAmount : null);
             else await ApplyRuleCalculationAsync(commission, booking, partner, dto.RuleId, cancellationToken);
             ApplyCommissionAdjustment(commission, dto.AdjustmentAmount, dto.AdjustmentReason,
                 dto.IsManual ? dto.ManualReason : null, booking);
@@ -403,7 +411,8 @@ namespace DAMS.Application.Services
             commission.MaximumCommissionSnapshot = rule.MaximumCommission;
         }
 
-        private static void ApplyManualCalculation(BookingCommission commission, Booking booking, CreateBookingCommissionDto dto)
+        private static void ApplyManualCalculation(BookingCommission commission, Booking booking, CreateBookingCommissionDto dto,
+            FinancialCalculationBasis? previousBasis = null, decimal? previousBasisAmount = null)
         {
             // Optional: a commission agreed directly with a partner is self-explanatory from its own
             // rate and basis. A note is still stored when one is given, and is still what justifies an
@@ -415,7 +424,14 @@ namespace DAMS.Application.Services
                 ?? throw new InvalidOperationException("Manual calculation basis is required.");
             if (!Enum.IsDefined(commission.CalculationType) || !Enum.IsDefined(commission.CalculationBasis))
                 throw new InvalidOperationException("Select a valid manual calculation type and basis.");
-            commission.BasisAmount = BasisAmount(booking, commission.CalculationBasis, dto.ManualBasisAmount);
+            // The edit form cannot offer a different value for a locked basis, so it always resubmits
+            // the one already stored. Re-deriving BasisAmount from today's booking in that case is
+            // what let a note-only edit silently move the obligation; freeze it instead whenever the
+            // basis did not change and is not one the operator could have actively re-picked.
+            commission.BasisAmount = previousBasis == commission.CalculationBasis
+                && !CommissionRebasableBases.Contains(commission.CalculationBasis)
+                ? previousBasisAmount!.Value
+                : BasisAmount(booking, commission.CalculationBasis, dto.ManualBasisAmount);
             if (commission.CalculationType == FinancialCalculationType.Percentage)
             {
                 if (dto.ManualPercentageRate is not (> 0m and <= 100m) || dto.ManualFixedAmount.HasValue)
@@ -463,6 +479,26 @@ namespace DAMS.Application.Services
             commission.AdjustmentReason = null;
             commission.FinalAmount = 0m;
         }
+
+        // Mirrors commissionBases/rebateBases on the frontend edit form exactly: the bases an
+        // operator can actively re-pick on an edit. Anything else — BookingAmountReceived and
+        // ManuallyApprovedAmount for a commission, plus AmountActuallyCollected too for a rebate —
+        // is shown read-only and carried back unchanged, so its BASIS AMOUNT must be frozen as well.
+        // BasisAmount is otherwise re-derived from LIVE booking data on every save regardless of
+        // which enum value is submitted, so a note-only edit of a commission agreed against, say,
+        // BookingAmountReceived silently re-priced itself against however much has since been
+        // collected — an obligation change the operator never saw, since the field showing that
+        // basis is not even editable. See UpdateCommissionAsync/UpdateRebateAsync.
+        internal static readonly FinancialCalculationBasis[] CommissionRebasableBases =
+        [
+            FinancialCalculationBasis.AgreedSalePrice, FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FinancialCalculationBasis.AmountActuallyCollected
+        ];
+
+        internal static readonly FinancialCalculationBasis[] RebateRebasableBases =
+        [
+            FinancialCalculationBasis.AgreedSalePrice, FinancialCalculationBasis.NetSalePriceAfterDiscount
+        ];
 
         private static decimal BasisAmount(Booking booking, FinancialCalculationBasis basis, decimal? manual) => basis switch
         {

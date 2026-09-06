@@ -27,6 +27,12 @@ namespace DAMS.Infrastructure.Migrations
     /// built from accruals — but a row dated inside a closed period would be counted in the payable
     /// while the P&amp;L window excluded it, and the sheet would go out by exactly that amount.
     /// </para>
+    /// <para>
+    /// Before any of that: <see cref="RestoreLostApprovalOverrides"/> fixes the small set of
+    /// pre-simplification records whose <c>FinalAmount</c> is not what was actually paid, because an
+    /// earlier migration dropped the approval override that had settled them at a different figure.
+    /// The backfill below reads <c>FinalAmount</c> as gospel, so this runs first.
+    /// </para>
     /// </summary>
     public partial class AddCommissionAccruals : Migration
     {
@@ -144,6 +150,10 @@ namespace DAMS.Infrastructure.Migrations
                         0, NULL, 517, 5, NULL, NULL, 1, SYSUTCDATETIME(), SYSUTCDATETIME();
                 """);
 
+            // Must run BEFORE the backfill: the backfill trusts FinalAmount as the true total, and
+            // for a narrow set of pre-simplification records that column is wrong.
+            migrationBuilder.Sql(RestoreLostApprovalOverrides);
+
             // The helper exists only for the reconstruction below and is dropped straight after, so
             // no application code can come to depend on a function this migration owns.
             migrationBuilder.Sql(DateHelper);
@@ -183,6 +193,70 @@ namespace DAMS.Infrastructure.Migrations
                 table: "FinanceAccounts",
                 sql: "[SystemRole] >= 0 AND [SystemRole] <= 4");
         }
+
+        /// <summary>
+        /// Restores the amount a pre-simplification approval override actually settled a commission
+        /// or rebate at, where that differs from <c>FinalAmount</c>.
+        /// <para>
+        /// <c>20260823030000_DropCommissionApprovalColumns</c> dropped <c>ApprovedAmount</c> without
+        /// folding its value into <c>FinalAmount</c> first. Before that, a payout's target was
+        /// <c>ApprovedAmount ?? FinalAmount</c> — an approver could settle a commission at a figure
+        /// other than the one it was calculated at — so a record an approver adjusted has carried
+        /// the WRONG figure in <c>FinalAmount</c> ever since, invisibly, because nothing cross-checked
+        /// it against what was actually paid. <see cref="Backfill"/> trusts <c>FinalAmount</c> as the
+        /// true total, so this has to run first or it reconstructs the payable from the same wrong
+        /// number: a fully paid commission would accrue a permanent non-zero balance — remaining if
+        /// the override was lower than the calculated figure, negative if it was higher.
+        /// </para>
+        /// <para>
+        /// <c>ApprovedAmount</c> itself cannot be recovered — the column is gone with no data kept —
+        /// but a record in a terminal, fully-settled state does not need it: a commission only
+        /// reaches Paid, and a rebate only reaches Applied or Paid, when its payouts or disbursements
+        /// summed to exactly its outstanding target AT THAT TIME, and neither status ever accepts
+        /// another payout or disbursement afterwards. Today's payout/disbursement total is therefore
+        /// still exact for these records, whatever <c>FinalAmount</c> says. Records still open
+        /// (Pending) are left alone: a partial payout does not reveal what the full target was, and
+        /// nothing here can safely guess it.
+        /// </para>
+        /// <para>
+        /// Applied as a signed adjustment, not a silent overwrite of <c>FinalAmount</c>, so the
+        /// correction is self-documenting on a record nothing will ever edit again. Idempotent on its
+        /// own terms: once corrected, the total matches and the <c>WHERE</c> clause no longer selects
+        /// the row, so re-running this migration's SQL a second time (it never is, but the backfill
+        /// beside it uses the same property) changes nothing further.
+        /// </para>
+        /// </summary>
+        private const string RestoreLostApprovalOverrides = """
+            UPDATE c
+            SET c.AdjustmentAmount = c.AdjustmentAmount + (paid.[Total] - c.[FinalAmount]),
+                c.[FinalAmount] = paid.[Total],
+                c.AdjustmentReason = LEFT(
+                    (CASE WHEN c.[AdjustmentReason] IS NULL THEN N'' ELSE c.[AdjustmentReason] + N' ' END)
+                    + N'Data correction (commission accrual migration, 2026-09-06): restored the amount actually paid, lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
+                    2000),
+                c.[UpdatedAt] = SYSUTCDATETIME()
+            FROM [BookingCommissions] c
+            CROSS APPLY (
+                SELECT [Total] = SUM(p.[Amount]) FROM [CommissionPayouts] p WHERE p.[CommissionId] = c.[Id]
+            ) paid
+            WHERE c.[Status] = 1 -- Paid: the one commission status a payout can never follow.
+              AND paid.[Total] IS NOT NULL AND paid.[Total] <> c.[FinalAmount];
+
+            UPDATE r
+            SET r.AdjustmentAmount = r.AdjustmentAmount + (paid.[Total] - r.[FinalAmount]),
+                r.[FinalAmount] = paid.[Total],
+                r.AdjustmentReason = LEFT(
+                    (CASE WHEN r.[AdjustmentReason] IS NULL THEN N'' ELSE r.[AdjustmentReason] + N' ' END)
+                    + N'Data correction (commission accrual migration, 2026-09-06): restored the amount actually disbursed, lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
+                    2000),
+                r.[UpdatedAt] = SYSUTCDATETIME()
+            FROM [CustomerRebates] r
+            CROSS APPLY (
+                SELECT [Total] = SUM(d.[Amount]) FROM [RebateDisbursements] d WHERE d.[RebateId] = r.[Id]
+            ) paid
+            WHERE r.[Status] IN (1, 2) -- Applied, Paid: a rebate's two fully-disbursed terminal states.
+              AND paid.[Total] IS NOT NULL AND paid.[Total] <> r.[FinalAmount];
+            """;
 
         /// <summary>
         /// Reconstructs each commission's obligation history from the dated audit log, so the periods

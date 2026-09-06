@@ -114,7 +114,16 @@ namespace DAMS.Application.Services
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
             var reason = Limited(dto.Reason, "Rebate reason", 2000)
                 ?? DescribeCalculation(dto.CalculationType, dto.PercentageRate, dto.FixedAmount, dto.CalculationBasis);
-            var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
+            // The edit form cannot offer a different value for a locked basis (BookingAmountReceived,
+            // AmountActuallyCollected, ManuallyApprovedAmount — see RebateRebasableBases), so it always
+            // resubmits the one already stored. Re-deriving the basis amount from today's booking in
+            // that case is what let a note-only edit silently move the obligation; freeze it instead
+            // whenever the basis did not change and is not one the operator could have actively
+            // re-picked.
+            var basis = rebate.CalculationBasis == dto.CalculationBasis
+                && !RebateRebasableBases.Contains(dto.CalculationBasis)
+                ? rebate.BasisAmount
+                : BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
             decimal calculated;
             if (dto.CalculationType == FinancialCalculationType.Percentage)
             {
