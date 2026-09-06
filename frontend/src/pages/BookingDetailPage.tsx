@@ -7,6 +7,8 @@ import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
 import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
+import { BookingTabs, DetailRow, EmptyState, PanelCard, StatCard, TabPanel } from "../features/bookings/ui.tsx";
+import { Icons, th } from "../features/bookings/tokens.tsx";
 import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
 import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
 import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
@@ -120,8 +122,29 @@ function prettyStatus(status: string) {
   return status.replace(/([A-Z])/g, " $1").trim();
 }
 
+// Matches the booking list, so a booking wears the same colour wherever it is seen: the live stages
+// in the house gold, and a colour each for the three states that end or advance the journey.
+function bookingStatusClass(status: string) {
+  switch (status) {
+    case "PossessionGiven":
+      return "border-sky-400/30 bg-sky-500/10 text-sky-300";
+    case "SaleCompleted":
+      return "border-emerald-400/30 bg-emerald-500/10 text-emerald-300";
+    case "Cancelled":
+      return "border-rose-400/30 bg-rose-500/10 text-rose-300";
+    default:
+      return "border-[var(--border-hover)] bg-[var(--accent-glow)] text-[var(--accent-light)]";
+  }
+}
+
 function formatMoney(n: number) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+// The price breakdown always carries both decimals, so the figures line up as a column and read as
+// a statement rather than as rounded headline numbers. Matches the commission panel's `money`.
+function formatAmount(n: number) {
+  return `Rs ${n.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatDate(iso: string) {
@@ -150,6 +173,26 @@ export default function BookingDetailPage({ user }: Props) {
   const [booking, setBooking] = useState<BookingDetail | null>(null);
   const [schedule, setSchedule] = useState<InstallmentSchedule | null>(null);
   const [payments, setPayments] = useState<BookingPayment[]>([]);
+  // Non-cash rebate credits reduce what the customer owes without any payment recording it, so the
+  // Summary's price breakdown cannot be derived from the booking alone. Read from the workspace the
+  // Commission & Rebate tab already uses, in the same parallel batch.
+  //
+  // NULL means "not known", never "none". A failed read that defaulted to zero would state as fact
+  // that no rebate has been given and would overstate Outstanding by exactly the credit — the same
+  // silent overstatement this release exists to remove. Every figure derived from it is withheld
+  // instead, and the page says so.
+  const [rebateCredits, setRebateCredits] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState("summary");
+  // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
+  // half-typed commission or a loaded audit page survives a trip to another tab.
+  const [visitedTabs, setVisitedTabs] = useState<string[]>(["summary"]);
+  const selectTab = useCallback((id: string) => {
+    setActiveTab(id);
+    setVisitedTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+  // Bumped on every completed reload. The Commission & Rebate panel stays mounted behind the other
+  // tabs, so this is how it learns that a payment or a plan change has moved the booking under it.
+  const [dataVersion, setDataVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -216,12 +259,25 @@ export default function BookingDetailPage({ user }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [bookRes, schedRes, payRes] = await Promise.all([
+      const [bookRes, schedRes, payRes, creditRes] = await Promise.all([
         api(`/api/Booking/${bookingId}`),
         api(`/api/Booking/${bookingId}/installments`),
         api(`/api/Booking/${bookingId}/payments`),
+        api(`/api/finance/commissions-rebates/bookings/${bookingId}`).catch(() => null),
       ]);
       if (!bookRes.ok) throw new Error("Booking not found");
+
+      // Parsed inside its own guard so a bad workspace response cannot abort the booking load: this
+      // is one display figure, and it must never be able to take the page down with it.
+      let credits: number | null = null;
+      if (creditRes?.ok) {
+        try {
+          credits = (await creditRes.json() as { rebateCredits?: number }).rebateCredits ?? 0;
+        } catch {
+          credits = null;
+        }
+      }
+      setRebateCredits(credits);
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
 
@@ -266,6 +322,7 @@ export default function BookingDetailPage({ user }: Props) {
           }));
         }
       }
+      setDataVersion((v) => v + 1);
     } catch {
       setError("Unable to load booking.");
     } finally {
@@ -491,7 +548,11 @@ export default function BookingDetailPage({ user }: Props) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Admin access required.</p></Container>;
   }
 
-  if (loading) {
+  // Only the FIRST load blanks the page. Every reload after that — recording a payment, applying a
+  // rebate, retrying the credit read — keeps the screen up and swaps the figures when they arrive.
+  // Replacing the whole page would unmount the tab panels, throwing away a half-typed commission
+  // and re-issuing its requests, which is the very thing keeping panels mounted exists to prevent.
+  if (loading && !booking) {
     return <Container className="py-16 text-center"><p className="text-[var(--text-muted)]">Loading...</p></Container>;
   }
 
@@ -514,22 +575,72 @@ export default function BookingDetailPage({ user }: Props) {
   // terms it was recognised on. Showing them as editable would only produce a rejection.
   const termsFrozen = booking.status === "PossessionGiven";
 
-  return (
-    <Container className="py-10">
-      <Button variant="ghost" size="sm" className="mb-6" onClick={() => navigate("/confirmed-bookings")}>← Confirmed Bookings</Button>
+  const netSalePrice = booking.agreedSalePrice - booking.discountAmount;
+  const amountCollected = payments.reduce((sum, p) => sum + p.amount, 0);
+  const isCancelled = booking.status === "Cancelled";
+  // Cancelling voids the sale, and Finance drops the booking from the receivable the moment it does
+  // (FinanceService.OutstandingBookings). Reporting the unpaid balance here anyway would have this
+  // screen claim a debt the ledger says does not exist; what the parties still owe each other is
+  // the cancellation settlement, which the Summary tab shows.
+  //
+  // NULL while the rebate credit is unknown: an Outstanding computed without it is wrong, and a
+  // wrong figure is worse than an absent one on a screen people collect money from.
+  const outstandingAmount = isCancelled
+    ? 0
+    : rebateCredits === null
+      ? null
+      : Math.max(0, netSalePrice - amountCollected - rebateCredits);
 
-      <div className="mb-8 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--text-heading)]">{booking.bookingReference}</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
-            {booking.customerName} · {booking.projectName} · Unit {booking.unitNumber}
-          </p>
+  return (
+    <Container size="wide" className="py-8">
+      {/* ── Booking header ── */}
+      <nav aria-label="Breadcrumb" className="mb-4 flex items-center gap-2 text-sm">
+        <button
+          type="button"
+          onClick={() => navigate("/confirmed-bookings")}
+          className="inline-flex cursor-pointer items-center gap-2 text-[var(--text-muted)] transition-colors hover:text-[var(--accent)]"
+        >
+          <Icons.back className="h-4 w-4" />
+          Confirmed Bookings
+        </button>
+        <span className="text-[var(--text-muted)]">›</span>
+        <span className="text-[var(--text-secondary)]">{booking.bookingReference}</span>
+      </nav>
+
+      <div className="mb-6 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-bold tracking-tight text-[var(--text-heading)]">{booking.bookingReference}</h1>
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${bookingStatusClass(booking.status)}`}>
+              <Icons.pulse className="h-3.5 w-3.5" />
+              {prettyStatus(booking.status)}
+            </span>
+          </div>
+          {/* Who and what, in one scannable row. Wraps rather than truncating: a long customer or
+              project name is exactly the case where the reader needs to see all of it. */}
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-[var(--text-secondary)]">
+            <span className="inline-flex items-center gap-2">
+              <Icons.user className="h-4 w-4 text-[var(--text-muted)]" />
+              <span className="font-medium text-[var(--text-primary)]">{booking.customerName}</span>
+            </span>
+            <span className="inline-flex items-center gap-2">
+              <Icons.phone className="h-4 w-4 text-[var(--text-muted)]" />
+              {booking.customerPhone}
+            </span>
+            <span className="inline-flex items-center gap-2">
+              <Icons.pin className="h-4 w-4 text-[var(--text-muted)]" />
+              {booking.projectName}
+            </span>
+            <span className="inline-flex items-center gap-2">
+              <Icons.unit className="h-4 w-4 text-[var(--text-muted)]" />
+              Unit {booking.unitNumber}
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="inline-flex w-fit rounded-full border border-indigo-500/20 bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400">
-            {booking.status.replace(/([A-Z])/g, " $1").trim()}
-          </span>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <Button variant="outline" size="sm" onClick={() => navigate(`/application-form?bookingId=${booking.id}`)}>
+            <Icons.printer className="h-4 w-4" />
             Print Application Form
           </Button>
           {booking.status === "PaymentPlanActive" && (
@@ -556,307 +667,415 @@ export default function BookingDetailPage({ user }: Props) {
         </div>
       </div>
 
+      {/* Page-level, so a failure raised on one tab is not hidden by switching to another. */}
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
 
-      <BookingCancellationPanel
-        bookingId={bookingId}
-        status={booking.status}
-        settlement={booking.cancellationSettlement}
-        financeAccounts={financeAccounts}
-        onChanged={load}
+      {/* Says which figures are missing and why, rather than letting them quietly read zero. */}
+      {rebateCredits === null && !loading && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          <span>Rebate credits could not be loaded, so Rebate Credits and Outstanding Amount are not shown.</span>
+          <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+        </div>
+      )}
+
+      <BookingTabs
+        tabs={[
+          { id: "summary", label: "Summary" },
+          { id: "plan", label: "Installment Plan" },
+          { id: "payments", label: "Payment History" },
+          { id: "commission", label: "Commission & Rebate" },
+        ]}
+        active={activeTab}
+        onChange={selectTab}
       />
 
-      {/* Financial summary */}
-      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[
-          { label: "Agreed Sale Price", value: formatMoney(booking.agreedSalePrice) },
-          { label: "Booking Amount Received", value: `${formatMoney(booking.bookingAmountReceived)} / ${formatMoney(booking.bookingAmountRequired)}` },
-          { label: "Booking Amount Remaining", value: formatMoney(booking.bookingAmountRemaining) },
-          { label: "Installment Pool (preview)", value: formatMoney(schedule?.installmentPool ?? previewPool) },
-        ].map((item) => (
-          <div key={item.label} className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-4">
-            <p className="text-xs text-[var(--text-muted)]">{item.label}</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--text-heading)]">{item.value}</p>
+      <TabPanel id="summary" active={activeTab} visited={visitedTabs}>
+        <div className="space-y-6">
+          {/* Cancellation settlement lives here rather than above the tabs: it is a summary of what
+              a cancelled booking owes, and the header pill already says the booking is cancelled. */}
+          <BookingCancellationPanel
+            bookingId={bookingId}
+            status={booking.status}
+            settlement={booking.cancellationSettlement}
+            financeAccounts={financeAccounts}
+            onChanged={load}
+          />
+
+          <PanelCard title="Booking Summary" description="Key financial information for this booking.">
+            <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2 sm:px-6 sm:pb-6 xl:grid-cols-4">
+              <StatCard tone="gold" icon={<Icons.home />} label="Agreed Sale Price"
+                value={formatMoney(booking.agreedSalePrice)} />
+              <StatCard tone="emerald" icon={<Icons.wallet />} label="Booking Amount Received"
+                value={`${formatMoney(booking.bookingAmountReceived)} / ${formatMoney(booking.bookingAmountRequired)}`} />
+              <StatCard tone="gold" icon={<Icons.coins />} label="Booking Amount Remaining"
+                value={formatMoney(booking.bookingAmountRemaining)} />
+              <StatCard tone="sky" icon={<Icons.calendar />} label="Installment Pool (preview)"
+                value={formatMoney(schedule?.installmentPool ?? previewPool)} />
+            </div>
+          </PanelCard>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <PanelCard title="Price Details">
+              <div className="px-5 pb-5 sm:px-6 sm:pb-6">
+                <DetailRow label="Sale Price" value={formatAmount(booking.agreedSalePrice)} />
+                {/* Shown only when there is one, so an undiscounted sale is not padded with a zero row. */}
+                {booking.discountAmount > 0 && (
+                  <DetailRow label={`Discount (${booking.discountPercent}%)`} value={`− ${formatAmount(booking.discountAmount)}`} />
+                )}
+                <DetailRow label="Net Sale Price" value={formatAmount(netSalePrice)} />
+                <DetailRow label="Amount Collected" value={formatAmount(amountCollected)} />
+                <DetailRow
+                  label="Rebate Credits"
+                  value={rebateCredits === null
+                    ? <span className="font-normal text-[var(--text-muted)]">Unavailable</span>
+                    : formatAmount(rebateCredits)}
+                />
+              </div>
+            </PanelCard>
+
+            <PanelCard title="Booking Status">
+              <div className="flex items-center gap-4 px-5 pb-5 sm:px-6 sm:pb-6">
+                <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[var(--accent-glow)] text-[var(--accent)]">
+                  <Icons.pulse className="h-7 w-7" />
+                </span>
+                <span>
+                  <span className="block text-xs text-[var(--text-muted)]">Status</span>
+                  <span className="mt-0.5 block text-2xl font-bold text-[var(--text-heading)]">
+                    {prettyStatus(booking.status)}
+                  </span>
+                </span>
+              </div>
+            </PanelCard>
           </div>
-        ))}
-      </div>
 
-      {/* Booking amount workflow (step before installment plan) */}
-      {booking.status === "AwaitingBookingAmount" && (
-        <div className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-[var(--text-heading)]">Booking Amount</h2>
-              <p className="text-sm text-[var(--text-muted)]">
-                Set the negotiated terms, then record the booking amount. Once it is fully received, the
-                installment plan unlocks.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => { setFinError(null); setShowFinancials((v) => !v); }}>
-                {booking.bookingAmountRequired > 0 ? "Edit Terms" : "Set Terms"}
-              </Button>
-              <Button
-                size="sm"
-                disabled={booking.bookingAmountRequired <= 0 || booking.bookingAmountRemaining <= 0}
-                onClick={openBookingPay}
-              >
-                Record Payment
-              </Button>
-            </div>
-          </div>
-
-          {booking.bookingAmountRequired <= 0 && !showFinancials && (
-            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-              No booking amount has been set yet. Click <strong>Set Terms</strong> to enter the agreed sale price and
-              the required booking amount before recording payments.
-            </div>
-          )}
-
-          {showFinancials && (
-            <form onSubmit={handleSaveFinancials} className="mt-5 grid gap-4 sm:grid-cols-2">
-              {finError && (
-                <div className="sm:col-span-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
-                  {finError}
+          {/* Booking amount workflow (step before installment plan) */}
+          {booking.status === "AwaitingBookingAmount" && (
+            <PanelCard
+              title="Booking Amount"
+              description="Set the negotiated terms, then record the booking amount. Once it is fully received, the installment plan unlocks."
+              action={<>
+                <Button variant="outline" size="sm" onClick={() => { setFinError(null); setShowFinancials((v) => !v); }}>
+                  {booking.bookingAmountRequired > 0 ? "Edit Terms" : "Set Terms"}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={booking.bookingAmountRequired <= 0 || booking.bookingAmountRemaining <= 0}
+                  onClick={openBookingPay}
+                >
+                  Record Payment
+                </Button>
+              </>}
+            >
+            <div className="px-5 pb-5 sm:px-6 sm:pb-6">
+              {booking.bookingAmountRequired <= 0 && !showFinancials && (
+                <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+                  No booking amount has been set yet. Click <strong>Set Terms</strong> to enter the agreed sale price and
+                  the required booking amount before recording payments.
                 </div>
               )}
-              <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
-                value={finForm.agreedSalePrice}
-                onChange={(e) => setFinForm({ ...finForm, agreedSalePrice: e.target.value })} />
-              <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
-                <span>Booking Amount (% of sale price)</span>
-                <AppSelect value={finForm.bookingPercent}
-                  onChange={(e) => setFinForm({ ...finForm, bookingPercent: e.target.value })}
-                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
-                  {BOOKING_PERCENTS.map((p) => (
-                    <option key={p} value={p}>{p === "custom" ? "Custom amount" : `${p}%`}</option>
-                  ))}
-                </AppSelect>
-                {finForm.bookingPercent !== "custom" && (
-                  <span className="text-xs text-[var(--text-muted)]">
-                    = {formatMoney(Math.round((Number(finForm.agreedSalePrice) || 0) * (Number(finForm.bookingPercent) / 100) * 100) / 100)}
-                  </span>
-                )}
-              </label>
-              {finForm.bookingPercent === "custom" && (
-                <Field label="Booking Amount Required" type="number" min="0" step="0.01" required
-                  value={finForm.bookingAmountRequired}
-                  onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
-              )}
-              <Field label="Discount %" type="number" min="0" max="100" step="0.01"
-                value={finForm.discountPercent}
-                onChange={(e) => setFinForm({ ...finForm, discountPercent: e.target.value })} />
-              <Field label="Booking Amount Due Date (optional)" type="date"
-                value={finForm.bookingAmountDueDate}
-                onChange={(e) => setFinForm({ ...finForm, bookingAmountDueDate: e.target.value })} />
-              <div className="sm:col-span-2">
-                <Field label="Discount Reason (optional)"
-                  value={finForm.discountReason}
-                  onChange={(e) => setFinForm({ ...finForm, discountReason: e.target.value })} />
-              </div>
-              <div className="sm:col-span-2 flex gap-2">
-                <Button type="submit" disabled={finSubmitting}>{finSubmitting ? "Saving..." : "Save Terms"}</Button>
-                <Button type="button" variant="ghost" onClick={() => setShowFinancials(false)} disabled={finSubmitting}>Cancel</Button>
-              </div>
-            </form>
-          )}
-        </div>
-      )}
 
-      <BookingCommissionRebatePanel bookingId={bookingId} />
-
-      {/* Plan configuration */}
-      {canShowPlanForm && (
-        <div className="mb-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-6">
-          <h2 className="mb-1 text-lg font-semibold text-[var(--text-heading)]">
-            {schedule?.hasSchedule ? "Regenerate Installment Plan" : "Configure Installment Plan"}
-          </h2>
-          <p className="mb-6 text-sm text-[var(--text-muted)]">
-            Define the negotiated structure for this booking. Each booking has its own schedule.
-          </p>
-
-          {planLocked && (
-            <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-muted)]">
-              Schedule is locked because payments exist or installments are no longer all pending.
-            </div>
-          )}
-
-          {termsFrozen && (
-            <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-muted)]">
-              The sale was recognised at possession, so the agreed price and discount are fixed. You
-              can still change how the remaining balance is collected — dates, frequency and the
-              number of installments.
-            </div>
-          )}
-
-          <form onSubmit={(e) => {
-            if (schedule?.hasSchedule && schedule.canRegenerate) {
-              e.preventDefault();
-              setShowRegenerateConfirm(true);
-            } else {
-              handleGenerate(e, false);
-            }
-          }} className="grid gap-4 sm:grid-cols-2">
-            <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
-              value={form.agreedSalePrice} disabled={planLocked || termsFrozen}
-              onChange={(e) => setForm({ ...form, agreedSalePrice: e.target.value })} />
-            <Field label="Discount %" type="number" min="0" max="100" step="0.01"
-              value={form.discountPercent} disabled={planLocked || termsFrozen}
-              onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} />
-            <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
-              <span>Frequency</span>
-              <AppSelect value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}
-                disabled={planLocked}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
-                {FREQUENCIES.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </AppSelect>
-            </label>
-            <Field label="Number of Installments" type="number" min={1} max={600} required
-              value={form.numberOfInstallments} disabled={planLocked}
-              onChange={(e) => setForm({ ...form, numberOfInstallments: e.target.value })} />
-            <Field label="Installment Start Date" type="date" required
-              value={form.installmentStartDate} disabled={planLocked}
-              onChange={(e) => setForm({ ...form, installmentStartDate: e.target.value })} />
-            <Field label="Possession Amount (optional)" type="number" min="0" step="0.01"
-              value={form.possessionAmount} disabled={planLocked}
-              onChange={(e) => setForm({ ...form, possessionAmount: e.target.value })} />
-            {Number(form.possessionAmount) > 0 && (
-              <Field label="Possession Due Date" type="date" required
-                value={form.possessionDueDate} disabled={planLocked}
-                onChange={(e) => setForm({ ...form, possessionDueDate: e.target.value })} />
-            )}
-
-            <div className="sm:col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-              <strong>Preview:</strong> {form.numberOfInstallments} installments × ~{formatMoney(previewPerInstallment)}
-              {Number(form.possessionAmount) > 0 && ` + possession ${formatMoney(Number(form.possessionAmount))}`}
-              {" "}(pool {formatMoney(previewPool)})
-            </div>
-
-            {!planLocked && (
-              <div className="sm:col-span-2">
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? "Generating..." : schedule?.hasSchedule ? "Regenerate Schedule" : "Generate Schedule"}
-                </Button>
-              </div>
-            )}
-          </form>
-
-          {showRegenerateConfirm && (
-            <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
-              <p className="text-sm text-amber-200">This will replace the existing pending schedule. Continue?</p>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" type="button" onClick={() => { void handleGenerate({ preventDefault: () => {} } as FormEvent, true); }} disabled={submitting}>Yes, regenerate</Button>
-                <Button size="sm" variant="ghost" onClick={() => setShowRegenerateConfirm(false)}>Cancel</Button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Schedule table */}
-      {schedule?.hasSchedule && schedule.items.length > 0 && (
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] overflow-hidden">
-          <div className="border-b border-[var(--border)] px-6 py-4 flex justify-between items-center">
-            <div>
-              <h2 className="text-lg font-semibold text-[var(--text-heading)]">Installment Schedule</h2>
-              <p className="text-xs text-[var(--text-muted)]">
-                Generated {schedule.generatedAt ? formatDate(schedule.generatedAt) : "—"} · Total {formatMoney(schedule.scheduleTotal)}
-                {" · "}Paid {formatMoney(schedule.schedulePaid)} · Remaining {formatMoney(schedule.scheduleRemaining)}
-              </p>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-          <table className="data-table w-full text-left text-sm">
-            <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
-              <tr>
-                {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status", "Notes", ""].map((h, i) => (
-                  <th key={h || `col-${i}`} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {schedule.items.map((item) => {
-                // Collection continues after possession: the unpaid balance is then an Accounts
-                // Receivable, and the backend accepts a receipt against it for exactly that reason.
-                // Only the two collectable states — a cancelled or completed booking takes neither.
-                const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
-                  && item.status !== "Paid" && item.remainingBalance > 0;
-                return (
-                <tr key={item.id} className="border-b border-[var(--border)] last:border-0">
-                  <td className="px-4 py-3">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
-                  <td className="px-4 py-3">
-                    <span className={item.type === "Possession" ? "text-violet-400" : "text-[var(--text-secondary)]"}>
-                      {item.type === "Possession" ? "Possession" : "Regular"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">{formatDate(item.dueDate)}</td>
-                  <td className="px-4 py-3 font-medium text-[var(--text-heading)]">{formatMoney(item.amount)}</td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">{formatMoney(item.amountPaid)}</td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)]">{formatMoney(item.remainingBalance)}</td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full border px-2 py-0.5 text-xs ${statusBadgeClass(item.status)}`}>{prettyStatus(item.status)}</span>
-                  </td>
-                  <td className="px-4 py-3 text-[var(--text-muted)] text-xs max-w-[160px] truncate">{item.notes ?? "—"}</td>
-                  <td className="px-4 py-3 text-right">
-                    {isPayable && (
-                      <Button size="sm" variant="outline" onClick={() => openPayModal(item)}>Record Payment</Button>
+              {showFinancials && (
+                <form onSubmit={handleSaveFinancials} className="mt-5 grid gap-4 sm:grid-cols-2">
+                  {finError && (
+                    <div className="sm:col-span-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+                      {finError}
+                    </div>
+                  )}
+                  <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
+                    value={finForm.agreedSalePrice}
+                    onChange={(e) => setFinForm({ ...finForm, agreedSalePrice: e.target.value })} />
+                  <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                    <span>Booking Amount (% of sale price)</span>
+                    <AppSelect value={finForm.bookingPercent}
+                      onChange={(e) => setFinForm({ ...finForm, bookingPercent: e.target.value })}
+                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                      {BOOKING_PERCENTS.map((p) => (
+                        <option key={p} value={p}>{p === "custom" ? "Custom amount" : `${p}%`}</option>
+                      ))}
+                    </AppSelect>
+                    {finForm.bookingPercent !== "custom" && (
+                      <span className="text-xs text-[var(--text-muted)]">
+                        = {formatMoney(Math.round((Number(finForm.agreedSalePrice) || 0) * (Number(finForm.bookingPercent) / 100) * 100) / 100)}
+                      </span>
                     )}
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
+                  </label>
+                  {finForm.bookingPercent === "custom" && (
+                    <Field label="Booking Amount Required" type="number" min="0" step="0.01" required
+                      value={finForm.bookingAmountRequired}
+                      onChange={(e) => setFinForm({ ...finForm, bookingAmountRequired: e.target.value })} />
+                  )}
+                  <Field label="Discount %" type="number" min="0" max="100" step="0.01"
+                    value={finForm.discountPercent}
+                    onChange={(e) => setFinForm({ ...finForm, discountPercent: e.target.value })} />
+                  <Field label="Booking Amount Due Date (optional)" type="date"
+                    value={finForm.bookingAmountDueDate}
+                    onChange={(e) => setFinForm({ ...finForm, bookingAmountDueDate: e.target.value })} />
+                  <div className="sm:col-span-2">
+                    <Field label="Discount Reason (optional)"
+                      value={finForm.discountReason}
+                      onChange={(e) => setFinForm({ ...finForm, discountReason: e.target.value })} />
+                  </div>
+                  <div className="sm:col-span-2 flex gap-2">
+                    <Button type="submit" disabled={finSubmitting}>{finSubmitting ? "Saving..." : "Save Terms"}</Button>
+                    <Button type="button" variant="ghost" onClick={() => setShowFinancials(false)} disabled={finSubmitting}>Cancel</Button>
+                  </div>
+                </form>
+              )}
+            </div>
+            </PanelCard>
+          )}
         </div>
-      )}
+      </TabPanel>
 
-      {/* Payment history */}
-      {payments.length > 0 && (
-        <div className="mt-8 rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] overflow-hidden">
-          <div className="border-b border-[var(--border)] px-6 py-4">
-            <h2 className="text-lg font-semibold text-[var(--text-heading)]">Payment History</h2>
-            <p className="text-xs text-[var(--text-muted)]">All recorded payments for this booking with receipt numbers.</p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="data-table w-full text-left text-sm">
-              <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
-                <tr>
-                  {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", ""].map((h, i) => (
-                    <th key={h || `col-${i}`} className="px-4 py-3 font-medium text-[var(--text-muted)]">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {payments.map((p) => {
-                  const inst = p.installmentId ? schedule?.items.find((i) => i.id === p.installmentId) : null;
-                  const forLabel = p.type === "BookingAmount"
-                    ? "Booking Amount"
-                    : inst
-                      ? (inst.type === "Possession" ? "Possession" : `Installment ${inst.sequenceNumber}`)
-                      : "Installment";
-                  return (
-                    <tr key={p.id} className="border-b border-[var(--border)] last:border-0">
-                      <td className="px-4 py-3 font-mono text-xs text-[var(--text-heading)]">{p.receiptNumber ?? "—"}</td>
-                      <td className="px-4 py-3 text-[var(--text-secondary)]">{formatDate(p.paidAt)}</td>
-                      <td className="px-4 py-3 text-[var(--text-muted)] text-xs">{prettyStatus(p.type)}</td>
-                      <td className="px-4 py-3 text-[var(--text-secondary)]">{forLabel}</td>
-                      <td className="px-4 py-3 font-medium text-[var(--text-heading)]">{formatMoney(p.amount)}</td>
-                      <td className="px-4 py-3 text-[var(--text-secondary)]">{prettyStatus(p.paymentMethod)}</td>
-                      <td className="px-4 py-3 text-[var(--text-muted)] text-xs max-w-[160px] truncate">{p.paymentReference ?? "—"}</td>
-                      <td className="px-4 py-3 text-right">
-                        <Button size="sm" variant="outline" onClick={() => window.open(`/receipt/${bookingId}/${p.id}`, "_blank")}>
-                          Receipt
-                        </Button>
+      {/* ── Installment Plan ── */}
+      <TabPanel id="plan" active={activeTab} visited={visitedTabs}>
+        <div className="space-y-6">
+          {/* Plan configuration */}
+          {canShowPlanForm && (
+            <PanelCard
+              title={schedule?.hasSchedule ? "Regenerate Installment Plan" : "Configure Installment Plan"}
+              description="Define the negotiated structure for this booking. Each booking has its own schedule."
+            >
+            <div className="px-5 pb-5 sm:px-6 sm:pb-6">
+              {planLocked && (
+                <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-muted)]">
+                  Schedule is locked because payments exist or installments are no longer all pending.
+                </div>
+              )}
+
+              {termsFrozen && (
+                <div className="mb-4 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-muted)]">
+                  The sale was recognised at possession, so the agreed price and discount are fixed. You
+                  can still change how the remaining balance is collected — dates, frequency and the
+                  number of installments.
+                </div>
+              )}
+
+              <form onSubmit={(e) => {
+                if (schedule?.hasSchedule && schedule.canRegenerate) {
+                  e.preventDefault();
+                  setShowRegenerateConfirm(true);
+                } else {
+                  handleGenerate(e, false);
+                }
+              }} className="grid gap-4 sm:grid-cols-2">
+                <Field label="Agreed Sale Price" type="number" min="0" step="0.01" required
+                  value={form.agreedSalePrice} disabled={planLocked || termsFrozen}
+                  onChange={(e) => setForm({ ...form, agreedSalePrice: e.target.value })} />
+                <Field label="Discount %" type="number" min="0" max="100" step="0.01"
+                  value={form.discountPercent} disabled={planLocked || termsFrozen}
+                  onChange={(e) => setForm({ ...form, discountPercent: e.target.value })} />
+                <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)]">
+                  <span>Frequency</span>
+                  <AppSelect value={form.frequency} onChange={(e) => setForm({ ...form, frequency: e.target.value })}
+                    disabled={planLocked}
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)]">
+                    {FREQUENCIES.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                  </AppSelect>
+                </label>
+                <Field label="Number of Installments" type="number" min={1} max={600} required
+                  value={form.numberOfInstallments} disabled={planLocked}
+                  onChange={(e) => setForm({ ...form, numberOfInstallments: e.target.value })} />
+                <Field label="Installment Start Date" type="date" required
+                  value={form.installmentStartDate} disabled={planLocked}
+                  onChange={(e) => setForm({ ...form, installmentStartDate: e.target.value })} />
+                <Field label="Possession Amount (optional)" type="number" min="0" step="0.01"
+                  value={form.possessionAmount} disabled={planLocked}
+                  onChange={(e) => setForm({ ...form, possessionAmount: e.target.value })} />
+                {Number(form.possessionAmount) > 0 && (
+                  <Field label="Possession Due Date" type="date" required
+                    value={form.possessionDueDate} disabled={planLocked}
+                    onChange={(e) => setForm({ ...form, possessionDueDate: e.target.value })} />
+                )}
+
+                <div className="sm:col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                  <strong>Preview:</strong> {form.numberOfInstallments} installments × ~{formatMoney(previewPerInstallment)}
+                  {Number(form.possessionAmount) > 0 && ` + possession ${formatMoney(Number(form.possessionAmount))}`}
+                  {" "}(pool {formatMoney(previewPool)})
+                </div>
+
+                {!planLocked && (
+                  <div className="sm:col-span-2">
+                    <Button type="submit" disabled={submitting}>
+                      {submitting ? "Generating..." : schedule?.hasSchedule ? "Regenerate Schedule" : "Generate Schedule"}
+                    </Button>
+                  </div>
+                )}
+              </form>
+
+              {showRegenerateConfirm && (
+                <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+                  <p className="text-sm text-amber-200">This will replace the existing pending schedule. Continue?</p>
+                  <div className="mt-3 flex gap-2">
+                    <Button size="sm" type="button" onClick={() => { void handleGenerate({ preventDefault: () => {} } as FormEvent, true); }} disabled={submitting}>Yes, regenerate</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setShowRegenerateConfirm(false)}>Cancel</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+            </PanelCard>
+          )}
+
+          {/* Schedule table */}
+          {schedule?.hasSchedule && schedule.items.length > 0 ? (
+            <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
+              <div className="border-b border-[var(--border)] px-5 py-4 sm:px-6">
+                <h2 className="text-lg font-semibold text-[var(--text-heading)]">Installment Schedule</h2>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  Generated {schedule.generatedAt ? formatDate(schedule.generatedAt) : "—"} · Total {formatMoney(schedule.scheduleTotal)}
+                  {" · "}Paid {formatMoney(schedule.schedulePaid)} · Remaining {formatMoney(schedule.scheduleRemaining)}
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+              <table className="data-table w-full min-w-[900px] text-left text-sm">
+                <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
+                  <tr>
+                    {["#", "Type", "Due Date", "Amount", "Paid", "Remaining", "Status", "Notes", "Action"].map((h, i) => (
+                      <th key={h || `col-${i}`} className={`${th} ${h === "Action" ? "text-right" : ""}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {schedule.items.map((item) => {
+                    // Collection continues after possession: the unpaid balance is then an Accounts
+                    // Receivable, and the backend accepts a receipt against it for exactly that reason.
+                    // Only the two collectable states — a cancelled or completed booking takes neither.
+                    const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
+                      && item.status !== "Paid" && item.remainingBalance > 0;
+                    return (
+                    <tr key={item.id} className="border-b border-[var(--border)] transition-colors last:border-0 hover:bg-[var(--surface-glass-hover)]">
+                      <td className="px-5 py-3.5 text-[var(--text-secondary)]">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={item.type === "Possession" ? "text-violet-400" : "text-[var(--text-secondary)]"}>
+                          {item.type === "Possession" ? "Possession" : "Regular"}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-[var(--text-secondary)]">{formatDate(item.dueDate)}</td>
+                      <td className="px-5 py-3.5 font-semibold tabular-nums text-[var(--text-heading)]">{formatMoney(item.amount)}</td>
+                      <td className="px-5 py-3.5 tabular-nums text-[var(--text-secondary)]">{formatMoney(item.amountPaid)}</td>
+                      <td className="px-5 py-3.5 tabular-nums text-[var(--text-secondary)]">{formatMoney(item.remainingBalance)}</td>
+                      <td className="px-5 py-3.5">
+                        <span className={`inline-flex whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium ${statusBadgeClass(item.status)}`}>{prettyStatus(item.status)}</span>
+                      </td>
+                      <td className="max-w-[160px] truncate px-5 py-3.5 text-xs text-[var(--text-muted)]">{item.notes ?? "—"}</td>
+                      <td className="px-5 py-3.5 text-right">
+                        {isPayable && (
+                          <Button size="sm" variant="outline" onClick={() => openPayModal(item)}>Record Payment</Button>
+                        )}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+              </div>
+            </div>
+          ) : (
+            // A tab must always say something. Which message depends on why there is no schedule: the
+            // form above is the next step when it is available, and the booking amount is when it is not.
+            <PanelCard>
+              <EmptyState
+                message="No installment schedule yet."
+                hint={canShowPlanForm
+                  ? "Set the plan terms above and generate the schedule."
+                  : "The booking amount must be fully received before the installment plan unlocks."}
+              />
+            </PanelCard>
+          )}
         </div>
-      )}
+      </TabPanel>
+
+      {/* ── Payment History ── */}
+      <TabPanel id="payments" active={activeTab} visited={visitedTabs}>
+        <div className="space-y-6">
+          <PanelCard
+            title="Payment Summary"
+            description={isCancelled
+              ? "This booking is cancelled, so the sale is no longer owed. What remains between the parties is the cancellation settlement, on the Summary tab."
+              : "What has been received against this booking."}
+          >
+            <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2 sm:px-6 sm:pb-6 xl:grid-cols-3">
+              <StatCard tone="emerald" icon={<Icons.wallet />} label="Booking Amount Received"
+                value={`Rs ${formatMoney(booking.bookingAmountReceived)} / ${formatMoney(booking.bookingAmountRequired)}`} />
+              <StatCard tone="gold" icon={<Icons.coins />} label="Amount Collected"
+                value={`Rs ${formatMoney(amountCollected)}`} />
+              {/* Net of rebate credits: they settle the balance without any cash arriving, so leaving
+                  them out would report the customer owing money a rebate has already cleared. */}
+              <StatCard
+                tone={isCancelled ? "rose" : "sky"}
+                icon={<Icons.doc />}
+                label={isCancelled ? "Sale Obligation" : "Outstanding Amount"}
+                value={isCancelled
+                  ? "Cancelled"
+                  : outstandingAmount === null
+                    ? <span className="text-[var(--text-muted)]">Unavailable</span>
+                    : `Rs ${formatMoney(outstandingAmount)}`} />
+            </div>
+          </PanelCard>
+
+          {payments.length > 0 ? (
+            <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
+              <div className="border-b border-[var(--border)] px-5 py-4 sm:px-6">
+                <h2 className="text-lg font-semibold text-[var(--text-heading)]">Payment History</h2>
+                <p className="mt-1 text-sm text-[var(--text-muted)]">All recorded payments for this booking with receipt numbers.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="data-table w-full min-w-[900px] text-left text-sm">
+                  <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
+                    <tr>
+                      {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", "Actions"].map((h, i) => (
+                        <th key={h || `col-${i}`} className={`${th} ${h === "Actions" ? "text-right" : ""}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payments.map((p) => {
+                      const inst = p.installmentId ? schedule?.items.find((i) => i.id === p.installmentId) : null;
+                      const forLabel = p.type === "BookingAmount"
+                        ? "Booking Amount"
+                        : inst
+                          ? (inst.type === "Possession" ? "Possession" : `Installment ${inst.sequenceNumber}`)
+                          : "Installment";
+                      return (
+                        <tr key={p.id} className="border-b border-[var(--border)] transition-colors last:border-0 hover:bg-[var(--surface-glass-hover)]">
+                          <td className="px-5 py-3.5 font-mono text-xs font-semibold text-[var(--text-heading)]">{p.receiptNumber ?? "—"}</td>
+                          <td className="px-5 py-3.5 text-[var(--text-secondary)]">{formatDate(p.paidAt)}</td>
+                          <td className="px-5 py-3.5 text-[var(--text-secondary)]">{prettyStatus(p.type)}</td>
+                          <td className="px-5 py-3.5 text-[var(--text-secondary)]">{forLabel}</td>
+                          <td className="px-5 py-3.5 font-semibold tabular-nums text-[var(--text-heading)]">{formatMoney(p.amount)}</td>
+                          <td className="px-5 py-3.5 text-[var(--text-secondary)]">{prettyStatus(p.paymentMethod)}</td>
+                          <td className="max-w-[160px] truncate px-5 py-3.5 text-xs text-[var(--text-muted)]">{p.paymentReference ?? "—"}</td>
+                          <td className="px-5 py-3.5 text-right">
+                            <Button size="sm" variant="outline" onClick={() => window.open(`/receipt/${bookingId}/${p.id}`, "_blank")}>
+                              <Icons.doc className="h-4 w-4" />
+                              Receipt
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <PanelCard>
+              <EmptyState
+                message="No payments recorded yet."
+                hint="Receipts appear here as soon as the first payment is recorded."
+              />
+            </PanelCard>
+          )}
+        </div>
+      </TabPanel>
+
+      {/* ── Commission & Rebate ── */}
+      <TabPanel id="commission" active={activeTab} visited={visitedTabs}>
+        {/* A rebate credit changes the customer's balance, can settle installments and can move the
+            booking's own status, so every other tab's figures go stale the moment one is applied.
+            `load` is stable (useCallback on bookingId), so this cannot loop. */}
+        <BookingCommissionRebatePanel bookingId={bookingId} onChanged={load} refreshToken={dataVersion} />
+      </TabPanel>
 
       {/* Record installment payment modal */}
       {payTarget && (

@@ -343,6 +343,21 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException(
                     $"Booking amount required cannot be less than the amount already received ({booking.BookingAmountReceived:0.00}).");
 
+            // A rebate already reduced what this customer owes. Cutting the sale price by that same
+            // concession would grant it twice — the money would come off the booking value AND off
+            // the balance — and the receivable would end up negative on a booking nobody has fully
+            // paid. GenerateScheduleAsync refuses the same restatement; so does this, which is the
+            // other door into the price. Cash already taken is included for the same reason: a net
+            // price below it would owe the customer a refund the sale has no way to express.
+            var collected = await _context.Payments.Where(p => p.BookingId == booking.Id)
+                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+            var settled = Money(collected + await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id));
+            if (netSalePrice < settled)
+                throw new InvalidOperationException(
+                    $"The revised net sale price of {netSalePrice:0.00} is below the {settled:0.00} already settled "
+                    + "on this booking in payments and rebate credits. Reverse or adjust the rebate credit before "
+                    + "reducing the price — a rebate already granted as a credit cannot be granted again as a discount.");
+
             booking.AgreedSalePrice = dto.AgreedSalePrice;
             booking.DiscountPercent = dto.DiscountPercent;
             booking.DiscountAmount = discountAmount;

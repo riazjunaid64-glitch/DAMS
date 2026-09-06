@@ -273,8 +273,6 @@ namespace DAMS.Application.Services
                     RecordedByName = actor.DisplayName, RecordedAt = DateTime.UtcNow
                 };
                 _context.RebateDisbursements.Add(disbursement);
-                if (dto.InstallmentId.HasValue)
-                    await RefreshInstallmentStatusAsync(dto.InstallmentId.Value, amount, appliedAt, cancellationToken);
                 // Part of it going out leaves the rebate Pending; how much has been given and how
                 // much is left is read from the disbursement rows.
                 rebate.Status = amount == outstanding
@@ -285,10 +283,18 @@ namespace DAMS.Application.Services
                     actor, customerId: rebate.CustomerId, bookingId: bookingId, rebateId: rebate.Id,
                     newRebate: rebate.Status, newAmount: amount, reason: dto.Reference);
                 audit.RebateDisbursement = disbursement;
-                if (dto.Method is CustomerRebateMethod.OutstandingBalanceReduction
-                    or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment)
+                if (BookingCreditPolicy.IsNonCashCredit(dto.Method))
                     await ReconcileBookingAmountMilestoneAsync(bookingId, amount, cancellationToken);
                 await _context.SaveChangesAsync(cancellationToken);
+                // Land the credit on the installment schedule — second save, same transaction, so
+                // the reallocation sees the row just written and commits with it or not at all.
+                // Without this the plan keeps demanding money the customer no longer owes: the tail
+                // installment can never close and the sale can never be completed.
+                if (BookingCreditPolicy.IsNonCashCredit(dto.Method))
+                {
+                    await BookingCreditPolicy.ReallocateAsync(_context, bookingId, appliedAt, cancellationToken);
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
                 return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
             }, cancellationToken);
 
@@ -392,8 +398,6 @@ namespace DAMS.Application.Services
                 IdempotencyKey = idempotencyKey, ReversedByUserId = actor.UserId,
                 ReversedByName = actor.DisplayName, ReversedAt = PakistanTime.Now
             });
-            if (disbursement.InstallmentId.HasValue)
-                await RefreshInstallmentStatusAsync(disbursement.InstallmentId.Value, -amount, PakistanTime.Now, cancellationToken);
             // NetDisbursed already reflects this reversal (EF fixup tracked it into
             // disbursement.Reversals above); subtracting `amount` again would double-count and
             // leave a fully reversed rebate stuck in PartiallyApplied / ReversalRequired.
@@ -408,10 +412,17 @@ namespace DAMS.Application.Services
             if (rebate.Status == CustomerRebateStatus.Reversed)
                 Audit(FinancialWorkflowAction.RebateReversed, actor, customerId: rebate.CustomerId, bookingId: bookingId,
                     rebateId: rebate.Id, oldRebate: previous, newRebate: rebate.Status, reason: dto.Reason);
-            if (disbursement.Method is CustomerRebateMethod.OutstandingBalanceReduction
-                or CustomerRebateMethod.CreditNote or CustomerRebateMethod.InstallmentAdjustment)
+            if (BookingCreditPolicy.IsNonCashCredit(disbursement.Method))
                 await ReconcileBookingAmountMilestoneAsync(bookingId, -amount, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
+            // Taking the credit back puts the balance back on the plan. Rebuilding the allocation
+            // from the rows — rather than unwinding it by hand — is what makes a partial reversal
+            // need no special case.
+            if (BookingCreditPolicy.IsNonCashCredit(disbursement.Method))
+            {
+                await BookingCreditPolicy.ReallocateAsync(_context, bookingId, PakistanTime.Now, cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }, cancellationToken);
 
@@ -440,11 +451,11 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Describe the other rebate method in notes.");
         }
 
-        private async Task<decimal> ValidInstallmentCreditsAsync(int installmentId, CancellationToken cancellationToken) => Money(
-            (await _context.RebateDisbursements.Where(d => d.InstallmentId == installmentId)
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m)
-            - (await _context.RebateDisbursementReversals.Where(r => r.Disbursement.InstallmentId == installmentId)
-                .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
+        // Includes the share of any booking-level credit already sitting on this installment, so a
+        // targeted adjustment cannot be stacked on top of a balance reduction that has already
+        // settled the same money.
+        private Task<decimal> ValidInstallmentCreditsAsync(int installmentId, CancellationToken cancellationToken) =>
+            BookingCreditPolicy.InstallmentCreditsAsync(_context, installmentId, cancellationToken);
 
         private Task<decimal> ValidBookingRebateCreditsAsync(int bookingId, CancellationToken cancellationToken) =>
             BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId, cancellationToken);
@@ -453,17 +464,5 @@ namespace DAMS.Application.Services
             Money(rebate.Disbursements.Sum(d => d.Amount - d.Reversals.Sum(r => r.Amount)));
 
 
-        private async Task RefreshInstallmentStatusAsync(int installmentId, decimal pendingCreditChange,
-            DateTime effectiveAt, CancellationToken cancellationToken)
-        {
-            var installment = await _context.Installments.SingleAsync(i => i.Id == installmentId, cancellationToken);
-            var payments = await _context.Payments.Where(p => p.InstallmentId == installmentId && p.Type == PaymentType.Installment)
-                .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
-            var credits = await ValidInstallmentCreditsAsync(installmentId, cancellationToken) + pendingCreditChange;
-            var covered = Money(payments + credits);
-            installment.Status = covered >= installment.Amount ? InstallmentStatus.Paid
-                : covered > 0m ? InstallmentStatus.PartiallyPaid : InstallmentStatus.Pending;
-            installment.PaidAt = installment.Status == InstallmentStatus.Paid ? effectiveAt : null;
-        }
     }
 }

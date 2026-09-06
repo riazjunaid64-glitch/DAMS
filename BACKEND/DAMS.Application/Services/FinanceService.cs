@@ -1198,6 +1198,12 @@ namespace DAMS.Application.Services
                 .Where(r => r.Disbursement.InstallmentId != null)
                 .GroupBy(r => r.Disbursement.InstallmentId!.Value)
                 .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => (decimal?)r.Amount) });
+            // A booking-level credit settles installments too — BookingCreditPolicy has already
+            // decided which ones. Reading only the credits that name an installment is what used to
+            // report a customer overdue for money a rebate had already taken off their balance.
+            var allocations = _context.RebateCreditAllocations.AsNoTracking()
+                .GroupBy(a => a.InstallmentId)
+                .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(a => (decimal?)a.Amount) });
 
             return
                 from installment in OverdueInstallments(projectId)
@@ -1207,7 +1213,10 @@ namespace DAMS.Application.Services
                 from credit in creditGroup.DefaultIfEmpty()
                 join reversal in reversals on installment.Id equals reversal.InstallmentId into reversalGroup
                 from reversal in reversalGroup.DefaultIfEmpty()
+                join allocation in allocations on installment.Id equals allocation.InstallmentId into allocationGroup
+                from allocation in allocationGroup.DefaultIfEmpty()
                 let settled = (payment.Amount ?? 0m) + (credit.Amount ?? 0m) - (reversal.Amount ?? 0m)
+                    + (allocation.Amount ?? 0m)
                 let overdue = installment.Amount - settled
                 where overdue > 0m
                 select new OverdueBalanceRow
