@@ -40,7 +40,9 @@ namespace DAMS.Application.Services
             var canRegenerate = await CanRegenerateAsync(bookingId);
             var paidByInstallment = await GetPaidByInstallmentAsync(bookingId);
             var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
-            return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits);
+            var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
+                _context, booking, booking.Installments.Sum(i => i.Amount), nonCashCredits);
+            return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits, stranded);
         }
 
         public async Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
@@ -95,6 +97,7 @@ namespace DAMS.Application.Services
             var totalCollected = await _context.Payments.Where(p => p.BookingId == bookingId)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
             var rebateCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
+            await EnsureScheduleCoversTheBalanceAsync(booking, rebateCredits);
             var overallRemaining = Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - totalCollected - rebateCredits);
             remaining = Math.Min(remaining, overallRemaining);
             if (dto.Amount > remaining)
@@ -359,8 +362,9 @@ namespace DAMS.Application.Services
             // Reload for mapping with ids assigned.
             await _context.Entry(booking).Collection(b => b.Installments).LoadAsync();
 
+            // Freshly generated for the current balance, so nothing is left outside it by construction.
             return MapSchedule(booking, canRegenerate: true,
-                await GetPaidByInstallmentAsync(bookingId), nonCashCredits);
+                await GetPaidByInstallmentAsync(bookingId), nonCashCredits, unscheduledBalance: 0m);
         }
 
         private static void ValidatePlanInput(GenerateInstallmentPlanDto dto)
@@ -448,8 +452,40 @@ namespace DAMS.Application.Services
         private Task<bool> CanRegenerateAsync(int bookingId) =>
             BookingCreditPolicy.CanRegenerateScheduleAsync(_context, bookingId);
 
+        /// <summary>
+        /// Refuses a receipt while the schedule demands LESS than the customer still owes.
+        /// <para>
+        /// Reversing a credit that a later-generated plan was built smaller by restores principal
+        /// with no installment to sit on. That is repairable — regenerate — right up until the next
+        /// receipt, which pins the plan and makes the shortfall permanently uncollectable: the sale
+        /// can never be completed and the schedule shows nothing owing. So the reversal is allowed
+        /// while the plan is still rebuildable, and the COLLECTION is what waits for the repair.
+        /// </para>
+        /// <para>
+        /// Only the part a REVERSED credit is responsible for
+        /// (<see cref="BookingCreditPolicy.UncollectableFromReversedCreditsAsync"/>) blocks a
+        /// receipt. A plan that is short for some other reason — imported, or built by hand against
+        /// part of the balance — is left alone: collection on it worked before this change and must
+        /// keep working.
+        /// </para>
+        /// </summary>
+        private async Task EnsureScheduleCoversTheBalanceAsync(Booking booking, decimal rebateCredits)
+        {
+            var scheduleTotal = await _context.Installments.AsNoTracking()
+                .Where(i => i.BookingId == booking.Id)
+                .SumAsync(i => (decimal?)i.Amount) ?? 0m;
+            var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
+                _context, booking, scheduleTotal, rebateCredits);
+            if (stranded <= 0m) return;
+
+            throw new InvalidOperationException(
+                $"A reversed rebate credit put {stranded:0.00} back on this booking that the installment "
+                + "plan does not collect, so taking this payment would lock the plan with that amount "
+                + "uncollectable. Regenerate the installment plan for the current balance first.");
+        }
+
         private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate,
-            Dictionary<int, decimal> paidByInstallment, decimal nonCashCredits)
+            Dictionary<int, decimal> paidByInstallment, decimal nonCashCredits, decimal unscheduledBalance)
         {
             var hasSchedule = booking.Installments.Count > 0;
             var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, nonCashCredits);
@@ -519,6 +555,10 @@ namespace DAMS.Application.Services
                 ScheduleTotal = items.Sum(i => i.Amount),
                 SchedulePaid = items.Sum(i => i.AmountPaid),
                 ScheduleRemaining = items.Sum(i => i.RemainingBalance),
+                // Named on the DTO so the screen can say the plan is short before an operator tries
+                // a receipt the payment service will refuse — and it is the SAME number that refusal
+                // uses, so the banner and the block can never disagree.
+                UnscheduledBalance = hasSchedule ? unscheduledBalance : 0m,
                 Items = items
             };
         }

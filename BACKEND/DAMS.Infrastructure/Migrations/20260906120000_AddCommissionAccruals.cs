@@ -44,6 +44,26 @@ namespace DAMS.Infrastructure.Migrations
                     THROW 51010, N'An account named "Commission Payable" already exists but is not an unclaimed Liability account, so it cannot take the Commission Payable role. Retype it to Liability and clear its system role, or rename it, then re-run.', 1;
                 """);
 
+            // An account this migration is about to adopt must be EMPTY. From here the payable is
+            // derived per commission — accrual raises it, payout clears it — so an aggregate opening
+            // figure entered by the accountant for the same unpaid commissions would be counted a
+            // second time by the backfill below, and nothing would ever clear it: pay the commission
+            // in full and the payout settles only its own accrual, leaving the opening amount owed
+            // for ever on a balance sheet that still balances. Refusing is the only safe answer;
+            // silently zeroing the accountant's figure is not this migration's decision to make.
+            migrationBuilder.Sql("""
+                IF EXISTS (SELECT 1 FROM [FinanceAccounts]
+                           WHERE ([SystemRole] = 5 OR [Name] = N'Commission Payable')
+                             AND [OpeningBalance] <> 0)
+                    THROW 51012, N'The Commission Payable account already carries an opening balance. From this upgrade the balance is derived from the commissions themselves, so that figure would be counted twice and could never be cleared by paying the commissions it represents. Clear it through the opening-balance correction process — entering the commissions it stands for as commission records — and re-run.', 1;
+                IF EXISTS (
+                    SELECT 1 FROM [OpeningBalanceEntries] e
+                    JOIN [FinanceAccounts] a ON a.[Id] = e.[FinanceAccountId]
+                    WHERE ([a].[SystemRole] = 5 OR [a].[Name] = N'Commission Payable')
+                      AND (e.[DebitAmount] <> 0 OR e.[CreditAmount] <> 0))
+                    THROW 51012, N'A committed or draft opening-balance set holds an amount against Commission Payable. From this upgrade the balance is derived from the commissions themselves, so that figure would be counted twice and could never be cleared. Correct the opening-balance set — entering the commissions it stands for as commission records — and re-run.', 1;
+                """);
+
             migrationBuilder.DropCheckConstraint(
                 name: "CK_FinanceAccounts_SystemRole",
                 table: "FinanceAccounts");
@@ -124,7 +144,11 @@ namespace DAMS.Infrastructure.Migrations
                         0, NULL, 517, 5, NULL, NULL, 1, SYSUTCDATETIME(), SYSUTCDATETIME();
                 """);
 
+            // The helper exists only for the reconstruction below and is dropped straight after, so
+            // no application code can come to depend on a function this migration owns.
+            migrationBuilder.Sql(DateHelper);
             migrationBuilder.Sql(Backfill);
+            migrationBuilder.Sql("DROP FUNCTION dbo.CommissionAccrualBackfillDate;");
 
             // Postcondition: if a chart exists, the role must be held. Anything else means the
             // payable this migration exists to create has no account to sit in.
@@ -161,48 +185,160 @@ namespace DAMS.Infrastructure.Migrations
         }
 
         /// <summary>
-        /// One Recognition row per commission the company still owes something on — Pending (0) or
-        /// Paid (1). Cancelled (2), ReversalRequired (3) and Reversed (4) are closed records that owe
-        /// nothing, so they get no rows at all: an accrual and its release in the same breath would
-        /// net to zero in the payable anyway, and there is no dated record of WHEN they closed, so
-        /// inventing two dates would only risk putting the pair in different periods.
+        /// Reconstructs each commission's obligation history from the dated audit log, so the periods
+        /// that have already been reported keep reporting what happened in them.
+        /// <para>
+        /// Stamping today's <c>FinalAmount</c> at the creation date would have been wrong in exactly
+        /// the two ways that matter: a commission agreed at 100,000 in August and raised to 130,000
+        /// in September would show 130,000 of August expense and no September movement, and one
+        /// agreed in August and cancelled in September would show no August expense at all. Current
+        /// balances would still reconcile while both periods were wrong.
+        /// </para>
+        /// <para>Three sources, all of them already dated and already immutable:</para>
+        /// <list type="number">
+        /// <item><b>Recognition</b> — the <c>CommissionCreated</c> audit row's <c>NewAmount</c>, which
+        /// is the final amount as first agreed (it already includes any adjustment made at entry).</item>
+        /// <item><b>Adjustment</b> — each later <c>CommissionAdjusted</c> row's
+        /// (<c>NewAmount − PreviousAmount</c>). The adjustment written AT creation is excluded by an
+        /// exact structural test, not a guess: only the edit path passes a status pair, so a
+        /// creation-time adjustment has <c>NewCommissionStatus</c> NULL and an edit has it set.</item>
+        /// <item><b>Release</b> — the whole accrued balance, reversed on the first date the record
+        /// moved to Cancelled / ReversalRequired / Reversed.</item>
+        /// </list>
         /// <para>
         /// A ReversalRequired commission with money already paid therefore lands as a NEGATIVE
-        /// payable, which is what it is: the sale was cancelled, the commission is not a cost, and
-        /// the amount already paid is recoverable from the partner. The workspace already reports
-        /// that figure as "Recovery due".
+        /// payable, which is what it is: the sale was void, the commission is not a cost, and what
+        /// was paid is recoverable from the partner. The workspace reports it as "Recovery due".
         /// </para>
         /// <para>
-        /// The date is the commission's own creation day, converted from UTC to the Pakistan
-        /// business date the rest of the finance module uses, and never earlier than a committed
-        /// opening-balance date — everything before that is already inside the accountant's figures
-        /// and the P&amp;L window starts there. Re-runnable: nothing is inserted for a commission that
-        /// already has an accrual row.
+        /// Every date is a Pakistan business date and is clamped up to a committed opening-balance
+        /// date: everything before that is already inside the accountant's figures, and the Balance
+        /// Sheet's retained-profit window starts there while the payable is all-time, so a
+        /// pre-baseline row would put the sheet out by its own amount.
         /// </para>
+        /// <para>
+        /// Where the log cannot explain the record — a commission with no <c>CommissionCreated</c>
+        /// row, or one whose audited movements do not add up to its current <c>FinalAmount</c> — the
+        /// remainder is written as a single dated cutover correction rather than silently presented
+        /// as history. Today's payable is therefore exact whatever the log contains.
+        /// </para>
+        /// <para>The whole backfill is skipped if the table already holds anything, which is what
+        /// makes it re-runnable.</para>
         /// </summary>
         private const string Backfill = """
-            DECLARE @Baseline date = (
-                SELECT MAX([AsAtDate]) FROM [OpeningBalanceSets] WHERE [CommittedAt] IS NOT NULL);
+            IF NOT EXISTS (SELECT 1 FROM [CommissionAccruals])
+            BEGIN
+                DECLARE @Baseline date = (
+                    SELECT MAX([AsAtDate]) FROM [OpeningBalanceSets] WHERE [CommittedAt] IS NOT NULL);
+                DECLARE @Today date = CAST(DATEADD(hour, 5, SYSUTCDATETIME()) AS date);
+                DECLARE @Note nvarchar(200) =
+                    N'Reconstructed when commission accrual accounting was introduced.';
 
-            INSERT INTO [CommissionAccruals]
-                ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason], [RecordedByUserId], [RecordedByName], [RecordedAt])
-            SELECT
-                c.[Id],
-                c.[FinalAmount],
-                CASE
-                    WHEN @Baseline IS NOT NULL AND CAST(DATEADD(hour, 5, c.[CreatedAt]) AS date) < @Baseline
-                        THEN @Baseline
-                    ELSE CAST(DATEADD(hour, 5, c.[CreatedAt]) AS date)
-                END,
-                0,
-                N'Backfilled when commission accrual accounting was introduced.',
-                c.[CreatedByUserId],
-                c.[CreatedByName],
-                c.[CreatedAt]
-            FROM [BookingCommissions] c
-            WHERE c.[Status] IN (0, 1)
-              AND c.[FinalAmount] <> 0
-              AND NOT EXISTS (SELECT 1 FROM [CommissionAccruals] a WHERE a.[CommissionId] = c.[Id]);
+                -- 1. Recognition: what was agreed, on the day it was agreed.
+                INSERT INTO [CommissionAccruals]
+                    ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
+                     [RecordedByUserId], [RecordedByName], [RecordedAt])
+                SELECT c.[Id],
+                       ISNULL(created.[NewAmount], c.[FinalAmount]),
+                       dbo.CommissionAccrualBackfillDate(
+                           ISNULL(created.[OccurredAt], c.[CreatedAt]), @Baseline),
+                       0, @Note, c.[CreatedByUserId], c.[CreatedByName],
+                       ISNULL(created.[OccurredAt], c.[CreatedAt])
+                FROM [BookingCommissions] c
+                OUTER APPLY (
+                    SELECT TOP (1) a.[NewAmount], a.[OccurredAt]
+                    FROM [FinancialWorkflowAuditEntries] a
+                    WHERE a.[CommissionId] = c.[Id] AND a.[Action] = 8 AND a.[NewAmount] IS NOT NULL
+                    ORDER BY a.[OccurredAt], a.[Id]
+                ) created
+                WHERE ISNULL(created.[NewAmount], c.[FinalAmount]) <> 0;
+
+                -- 2. Adjustments: the difference each correction made, on the day it was made. Only
+                -- the edit path writes a status pair, so NewCommissionStatus separates a real
+                -- correction from the adjustment recorded as part of the original entry.
+                INSERT INTO [CommissionAccruals]
+                    ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
+                     [RecordedByUserId], [RecordedByName], [RecordedAt])
+                SELECT a.[CommissionId], a.[NewAmount] - a.[PreviousAmount],
+                       dbo.CommissionAccrualBackfillDate(a.[OccurredAt], @Baseline),
+                       1, @Note, a.[PerformedByUserId], a.[PerformedByName], a.[OccurredAt]
+                FROM [FinancialWorkflowAuditEntries] a
+                WHERE a.[Action] = 10
+                  AND a.[CommissionId] IS NOT NULL
+                  AND a.[NewCommissionStatus] IS NOT NULL
+                  AND a.[NewAmount] IS NOT NULL AND a.[PreviousAmount] IS NOT NULL
+                  AND a.[NewAmount] <> a.[PreviousAmount]
+                  AND EXISTS (SELECT 1 FROM [BookingCommissions] c WHERE c.[Id] = a.[CommissionId])
+                  -- Only where step 1 could read the opening amount from the log too. Without a
+                  -- CommissionCreated row it fell back to today's FinalAmount, which ALREADY
+                  -- contains every adjustment; adding them again would double-count and then be
+                  -- corrected back, inventing two movements that never happened.
+                  AND EXISTS (
+                      SELECT 1 FROM [FinancialWorkflowAuditEntries] o
+                      WHERE o.[CommissionId] = a.[CommissionId] AND o.[Action] = 8
+                        AND o.[NewAmount] IS NOT NULL);
+
+                -- 3. Cutover correction, only where the log does not add up to the record. Dated
+                -- today rather than dressed up as history.
+                INSERT INTO [CommissionAccruals]
+                    ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
+                     [RecordedByUserId], [RecordedByName], [RecordedAt])
+                SELECT c.[Id], c.[FinalAmount] - ISNULL(m.[Accrued], 0), @Today, 1,
+                       N'Cutover correction: the audit history did not account for this commission in full.',
+                       c.[CreatedByUserId], c.[CreatedByName], SYSUTCDATETIME()
+                FROM [BookingCommissions] c
+                OUTER APPLY (
+                    SELECT [Accrued] = SUM(x.[Amount]) FROM [CommissionAccruals] x
+                    WHERE x.[CommissionId] = c.[Id]
+                ) m
+                WHERE c.[FinalAmount] - ISNULL(m.[Accrued], 0) <> 0;
+
+                -- 4. Release: a closed record owes nothing from the day it closed. Never dated before
+                -- the movements it reverses, so no intermediate period can show a negative payable.
+                INSERT INTO [CommissionAccruals]
+                    ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
+                     [RecordedByUserId], [RecordedByName], [RecordedAt])
+                SELECT c.[Id], -m.[Accrued],
+                       -- A record with no closure audit falls back to today; either way the release
+                       -- is never dated before the movements it reverses, so no intermediate period
+                       -- can show a payable that was released before it was raised.
+                       CASE WHEN ISNULL(closed.[ClosedOn], @Today) > m.[LastOn]
+                            THEN ISNULL(closed.[ClosedOn], @Today) ELSE m.[LastOn] END,
+                       2, ISNULL(c.[CancellationOrReversalReason], @Note),
+                       NULL, NULL,
+                       -- UpdatedAt is nullable and a legacy row may have neither, so the audit
+                       -- instant falls back through it to now rather than to a NULL insert.
+                       COALESCE(closed.[OccurredAt], c.[UpdatedAt], SYSUTCDATETIME())
+                FROM [BookingCommissions] c
+                CROSS APPLY (
+                    SELECT [Accrued] = SUM(x.[Amount]), [LastOn] = MAX(x.[AccruedOn])
+                    FROM [CommissionAccruals] x WHERE x.[CommissionId] = c.[Id]
+                ) m
+                OUTER APPLY (
+                    SELECT TOP (1) a.[OccurredAt],
+                           [ClosedOn] = dbo.CommissionAccrualBackfillDate(a.[OccurredAt], @Baseline)
+                    FROM [FinancialWorkflowAuditEntries] a
+                    WHERE a.[CommissionId] = c.[Id] AND a.[NewCommissionStatus] IN (2, 3, 4)
+                    ORDER BY a.[OccurredAt], a.[Id]
+                ) closed
+                WHERE c.[Status] IN (2, 3, 4) AND m.[Accrued] IS NOT NULL AND m.[Accrued] <> 0;
+            END
+            """;
+
+        /// <summary>
+        /// One place for "the Pakistan business date this happened on, never before the committed
+        /// opening balances" — used four times by the backfill and dropped again as soon as it is
+        /// done, so nothing outside this migration depends on it.
+        /// </summary>
+        private const string DateHelper = """
+            CREATE FUNCTION dbo.CommissionAccrualBackfillDate(@Utc datetime2, @Baseline date)
+            RETURNS date
+            AS
+            BEGIN
+                DECLARE @Business date = CAST(DATEADD(hour, 5, @Utc) AS date);
+                RETURN CASE WHEN @Baseline IS NOT NULL AND @Business < @Baseline
+                            THEN @Baseline ELSE @Business END;
+            END
             """;
     }
 }

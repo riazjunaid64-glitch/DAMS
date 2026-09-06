@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commissionActions, commissionRequestBody, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateRequestBody } from "./state";
+import { commissionActions, commissionAllocationPercent, commissionAttributionFor, commissionBasisFor, commissionRequestBody, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateRequestBody } from "./state";
 import type { Commission, Rebate } from "./types";
 
 describe("commission and rebate UI state", () => {
@@ -110,6 +110,61 @@ describe("commission and rebate update bodies", () => {
     expect(body.adjustmentAmount).toBe(0);
     expect(body.manualFixedAmount).toBe(1000);
     expect(body).not.toHaveProperty("concurrencyToken");
+  });
+
+  // The form offers three of the five bases. Substituting one of them for a stored
+  // ManuallyApprovedAmount turned a 10%-of-Rs-500,000 commission into 10% of the whole net sale
+  // price on an edit that only changed a note.
+  it("keeps a calculation basis the form cannot offer, and carries its amount with it", () => {
+    const manual = {
+      ...attributed, calculationType: "Percentage", percentageRate: 10,
+      calculationBasis: "ManuallyApprovedAmount", basisAmount: 500_000,
+    } as unknown as Commission;
+    const percentageForm = { ...form, calculationType: "Percentage" as const, percentageRate: "10" };
+
+    expect(commissionBasisFor(percentageForm, manual)).toBe("ManuallyApprovedAmount");
+    const body = commissionRequestBody(percentageForm, manual);
+    expect(body.manualCalculationBasis).toBe("ManuallyApprovedAmount");
+    expect(body.manualBasisAmount).toBe(500_000);
+
+    const manualRebate = {
+      calculationBasis: "ManuallyApprovedAmount", basisAmount: 400_000, method: "CreditNote",
+    } as unknown as Rebate;
+    const rebateForm = {
+      calculationType: "Percentage" as const, calculationBasis: "AgreedSalePrice" as const,
+      percentageRate: "5", fixedAmount: "", reason: "Goodwill", changeReason: "Typo",
+    };
+    const rebateBody = rebateRequestBody(rebateForm, manualRebate);
+    expect(rebateBody.calculationBasis).toBe("ManuallyApprovedAmount");
+    expect(rebateBody.manualBasisAmount).toBe(400_000);
+  });
+
+  it("still lets the operator change a basis the form does offer", () => {
+    const supported = {
+      ...attributed, calculationType: "Percentage", percentageRate: 2,
+      calculationBasis: "NetSalePriceAfterDiscount", basisAmount: 10_000_000,
+    } as unknown as Commission;
+    const changed = {
+      ...form, calculationType: "Percentage" as const, percentageRate: "2",
+      calculationBasis: "AgreedSalePrice" as const,
+    };
+    expect(commissionBasisFor(changed, supported)).toBe("AgreedSalePrice");
+    expect(commissionRequestBody(changed, supported).manualBasisAmount).toBeNull();
+  });
+
+  // An attribution belongs to one partner. Resubmitting it after an explicit partner change is what
+  // the server's ownership check rejects, so the save simply failed.
+  it("drops the attribution when the partner is deliberately changed", () => {
+    expect(commissionAttributionFor(form, attributed)).toBe(11);
+    expect(commissionAllocationPercent(form, attributed)).toBe(25);
+
+    const otherPartner = { ...form, partnerId: "8" };
+    expect(commissionAttributionFor(otherPartner, attributed)).toBeNull();
+    expect(commissionAllocationPercent(otherPartner, attributed)).toBe(100);
+    expect(commissionRequestBody(otherPartner, attributed).attributionId).toBeNull();
+
+    // A new commission never carries one.
+    expect(commissionAllocationPercent(form, null)).toBe(100);
   });
 
   it("keeps a rebate's adjustment, notes and method when it is edited", () => {

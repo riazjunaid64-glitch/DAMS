@@ -2939,6 +2939,163 @@ public sealed class SqlServerProductionInvariantTests
         await command.ExecuteNonQueryAsync();
     }
 
+    // The migration immediately before commission accruals, so a test can start from the exact
+    // state a real upgrade starts from and let this migration do the work.
+    private const string BeforeCommissionAccruals = "20260905212713_AddRebateCreditAllocations";
+
+    /// <summary>
+    /// The upgrade reconstructs each commission's HISTORY, not just its current balance.
+    /// <para>
+    /// Stamping today's final amount at the creation date would have been wrong in the two ways that
+    /// matter and invisible in both: a commission raised from 100,000 to 130,000 in a later month
+    /// would report 130,000 in the earlier one and nothing in the later, and one cancelled in a later
+    /// month would report no expense in the month it was actually agreed. Today's payable reconciles
+    /// either way, which is exactly why this asserts each PERIOD rather than the closing balance.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_RebuildsEachPeriodFromTheAuditHistory()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        }
+
+        // Three commissions on one booking, written into the OLD schema: one raised in September,
+        // one cancelled in September, one untouched — with the dated audit rows a real system would
+        // have left behind. NewCommissionStatus is what separates an EDIT adjustment from the one
+        // recorded as part of the original entry, which is the discriminator the backfill relies on.
+        await using (var seed = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Accrual History", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit { Project = project, UnitNumber = "H-1", UnitType = "Apartment", Price = 5_000_000m };
+            var customer = new Customer { FullName = "History Buyer", Phone = "03001110000" };
+            var booking = new Booking
+            {
+                BookingReference = "BK-HIST-1", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+                AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+                BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 8, 1)
+            };
+            // One partner each: a booking holds at most one live commission per partner.
+            var partners = Enumerable.Range(1, 3).Select(n => new ThirdPartyPartner
+            {
+                Name = $"History Broker {n}", PartnerType = "Broker", InternalCode = $"HB-{n}", IsActive = true
+            }).ToArray();
+            seed.AddRange(project, unit, customer, booking);
+            seed.ThirdPartyPartners.AddRange(partners);
+            await seed.SaveChangesAsync();
+
+            BookingCommission Commission(ThirdPartyPartner partner, decimal amount,
+                BookingCommissionStatus status, DateTime createdAt) => new()
+            {
+                BookingId = booking.Id, PartnerId = partner.Id, PartnerNameSnapshot = partner.Name,
+                PartnerTypeSnapshot = partner.PartnerType, PartnerInternalCodeSnapshot = partner.InternalCode,
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = amount, BasisAmount = 5_000_000m, CalculatedAmount = amount,
+                FinalAmount = amount, Status = status, CreatedAt = createdAt
+            };
+            var raised = Commission(partners[0], 130_000m, BookingCommissionStatus.Pending, new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc));
+            var cancelled = Commission(partners[1], 70_000m, BookingCommissionStatus.Cancelled, new DateTime(2026, 8, 6, 6, 0, 0, DateTimeKind.Utc));
+            var steady = Commission(partners[2], 40_000m, BookingCommissionStatus.Pending, new DateTime(2026, 8, 7, 6, 0, 0, DateTimeKind.Utc));
+            seed.BookingCommissions.AddRange(raised, cancelled, steady);
+            await seed.SaveChangesAsync();
+
+            FinancialWorkflowAuditEntry Entry(BookingCommission commission, FinancialWorkflowAction action,
+                decimal? previous, decimal? current, BookingCommissionStatus? newStatus, DateTime occurredAt) => new()
+            {
+                CommissionId = commission.Id, BookingId = booking.Id, Action = action,
+                PreviousAmount = previous, NewAmount = current, NewCommissionStatus = newStatus,
+                OccurredAt = occurredAt
+            };
+            seed.FinancialWorkflowAuditEntries.AddRange(
+                Entry(raised, FinancialWorkflowAction.CommissionCreated, null, 100_000m, null, new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(raised, FinancialWorkflowAction.CommissionAdjusted, 100_000m, 130_000m, BookingCommissionStatus.Pending, new DateTime(2026, 9, 10, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(cancelled, FinancialWorkflowAction.CommissionCreated, null, 70_000m, null, new DateTime(2026, 8, 6, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(cancelled, FinancialWorkflowAction.CommissionCancelled, 70_000m, 70_000m, BookingCommissionStatus.Cancelled, new DateTime(2026, 9, 12, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(steady, FinancialWorkflowAction.CommissionCreated, null, 40_000m, null, new DateTime(2026, 8, 7, 6, 0, 0, DateTimeKind.Utc)));
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.Database.MigrateAsync();
+        }
+
+        await using var context = new AppDbContext(options);
+        var accounts = new FinanceAccountService(context);
+        var finance = new FinanceService(context, new NullPrivateStorage(), accounts,
+            new WhtService(context, accounts), NullLogger<FinanceService>.Instance);
+
+        // August is the month all three were AGREED: 100,000 + 70,000 + 40,000. Not 130,000 for the
+        // first, and not zero for the cancelled one.
+        var august = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+        Assert.Equal(210_000m, Assert.Single(august.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+
+        // September holds only what happened in September: +30,000 raised, −70,000 released.
+        var september = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), new DateTime(2026, 9, 30));
+        Assert.Equal(-40_000m, Assert.Single(september.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+
+        // …and today's payable is still exactly what is owed: 130,000 + 40,000.
+        var rows = context.CommissionAccruals.AsNoTracking().ToList();
+        Assert.Equal(170_000m, rows.Sum(a => a.Amount));
+        Assert.Contains(rows, a => a.Kind == CommissionAccrualKind.Adjustment && a.Amount == 30_000m);
+        Assert.Contains(rows, a => a.Kind == CommissionAccrualKind.Release && a.Amount == -70_000m);
+        // No cutover correction was needed: the audit history explained every commission in full.
+        Assert.DoesNotContain(rows, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
+    }
+
+    /// <summary>
+    /// The upgrade refuses to adopt a Commission Payable that already carries an opening balance.
+    /// <para>
+    /// From this migration the payable is derived per commission, so an aggregate figure entered for
+    /// the same unpaid commissions is counted twice and can never be cleared: pay the commission in
+    /// full and the payout settles only its own accrual, leaving the opening amount owed for ever on
+    /// a sheet that still balances. Silently zeroing the accountant's figure is not a migration's
+    /// decision, so it stops the deployment instead.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_RefusesAnAccountThatAlreadyCarriesAnOpeningBalance()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        }
+
+        await using (var seed = new AppDbContext(options))
+        {
+            seed.FinanceAccounts.Add(new FinanceAccount
+            {
+                Name = "Commission Payable", Type = FinanceAccountType.Liability,
+                AccountHolderName = "Seven Ventures", OpeningBalance = 100_000m,
+                DisplayOrder = 517, IsActive = true
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            var refused = await Assert.ThrowsAnyAsync<SqlException>(() => db.Database.MigrateAsync());
+            Assert.Contains("counted twice", refused.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The refusal rolled back cleanly: no table, and the accountant's figure is untouched.
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'CommissionAccruals'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [FinanceAccounts] WHERE [Name] = N'Commission Payable' AND [OpeningBalance] = 100000"));
+    }
+
     /// <summary>
     /// The commission obligation is reported by the REAL provider, end to end.
     /// <para>

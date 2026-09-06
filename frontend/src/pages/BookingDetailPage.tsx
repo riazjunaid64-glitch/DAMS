@@ -89,6 +89,10 @@ interface InstallmentSchedule {
   scheduleTotal: number;
   schedulePaid: number;
   scheduleRemaining: number;
+  // What the customer owes that this plan does not demand — normally zero, positive only after a
+  // credit the plan was built smaller by is reversed. The payment service refuses a receipt while
+  // it stands, so the plan has to be regenerated first.
+  unscheduledBalance?: number;
   items: ScheduleItem[];
 }
 
@@ -189,6 +193,7 @@ export default function BookingDetailPage({ user }: Props) {
   // one can say so and offer a retry, instead of every tab showing the same page-level message.
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [paymentsError, setPaymentsError] = useState<string | null>(null);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("summary");
   // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
   // half-typed commission or a loaded audit page survives a trip to another tab.
@@ -355,14 +360,25 @@ export default function BookingDetailPage({ user }: Props) {
     }
   }, [bookingId]);
 
+  // Swallowing this failure left every payment form with an empty, required "Received In Account"
+  // selector and nothing on screen saying why — the operator could not record money and could not
+  // tell whether that was a rule or a fault.
   const loadFinanceAccounts = useCallback(async () => {
     try {
       const res = await api("/api/finance/accounts/options");
-      if (res.ok) setFinanceAccounts(await res.json());
+      if (!res.ok) throw new Error();
+      setFinanceAccounts(await res.json());
+      setAccountsError(null);
     } catch {
-      /* The form keeps its "required" validation if accounts cannot be loaded. */
+      setAccountsError("The list of finance accounts could not be loaded, so payments cannot be recorded.");
     }
   }, []);
+
+  // One Retry for the whole page: every one of these reads can fail on its own, and asking the
+  // operator to work out which button reloads which figure is not a recovery path.
+  const reload = useCallback(async () => {
+    await Promise.all([load(), loadFinanceAccounts()]);
+  }, [load, loadFinanceAccounts]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -602,16 +618,27 @@ export default function BookingDetailPage({ user }: Props) {
   // recognised sale still has a receivable, and an installment is the only way DAMS collects one,
   // so hiding the form here stranded it with no route to payment. It also folds in the booking
   // amount and the regenerate rules, which a status check silently skipped.
-  const canShowPlanForm = Boolean(schedule?.canGenerate);
-  const planLocked = schedule?.hasSchedule && !schedule.canRegenerate;
+  // A stale schedule must not drive actions. Generating or collecting against installment ids that
+  // were read before the last failed refresh is how an operator ends up recording money against a
+  // row the server has since replaced, so both are withdrawn until the schedule reloads.
+  const scheduleIsFresh = schedule !== null && scheduleError === null;
+  const canShowPlanForm = scheduleIsFresh && Boolean(schedule.canGenerate);
+  const planLocked = scheduleIsFresh && schedule.hasSchedule && !schedule.canRegenerate;
+  // Positive only when a credit the plan was built smaller by has been reversed. The payment service
+  // refuses a receipt while it stands, because that receipt would pin the plan and strand the amount.
+  const unscheduledBalance = scheduleIsFresh ? schedule.unscheduledBalance ?? 0 : 0;
   // Possession means the sale is recognised as revenue, and the backend refuses to restate the
   // terms it was recognised on. Showing them as editable would only produce a rejection.
   const termsFrozen = booking.status === "PossessionGiven";
 
   const netSalePrice = booking.agreedSalePrice - booking.discountAmount;
-  // NULL when the payment list did not arrive. Summing a list that was never fetched would report
-  // "Rs 0 collected" on a booking that has been paying for a year.
-  const amountCollected = payments === null ? null : payments.reduce((sum, p) => sum + p.amount, 0);
+  // NULL when the payment list did not arrive OR did not REFRESH. A stale list is fine to keep on
+  // screen as history, but its sum is not a current figure: record a payment, let the follow-up read
+  // fail, and yesterday's receipts would be added to today's booking and reported as Amount
+  // Collected — understating it by exactly the payment just taken.
+  const amountCollected = payments === null || paymentsError !== null
+    ? null
+    : payments.reduce((sum, p) => sum + p.amount, 0);
   const isCancelled = booking.status === "Cancelled";
   // Cancelling voids the sale, and Finance drops the booking from the receivable the moment it does
   // (FinanceService.OutstandingBookings). Reporting the unpaid balance here anyway would have this
@@ -629,6 +656,7 @@ export default function BookingDetailPage({ user }: Props) {
 
   const missingReads = [
     rebateCredits === null ? "The booking's rebate credits are missing from this response." : null,
+    accountsError,
     paymentsError,
     scheduleError,
   ].filter((m): m is string => m !== null);
@@ -717,7 +745,7 @@ export default function BookingDetailPage({ user }: Props) {
       {!loading && missingReads.length > 0 && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
           <span>{missingReads.join(" ")} The figures that depend on {missingReads.length > 1 ? "them" : "it"} are shown as “Unavailable” rather than as zero.</span>
-          <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+          <Button size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
         </div>
       )}
 
@@ -975,6 +1003,17 @@ export default function BookingDetailPage({ user }: Props) {
             </PanelCard>
           )}
 
+          {/* The plan no longer covers the balance — say so where the plan is, and name the repair.
+              Collection is withheld until then because the next receipt would lock the shortfall in. */}
+          {unscheduledBalance > 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+              This booking owes {formatMoney(unscheduledBalance)} more than the schedule below collects,
+              because a rebate credit the plan was built without has since been reversed. Regenerate the
+              installment plan for the current balance — payments are held until then, since taking one
+              would lock the plan with that amount uncollectable.
+            </div>
+          )}
+
           {/* Schedule table */}
           {schedule?.hasSchedule && schedule.items.length > 0 ? (
             <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
@@ -999,8 +1038,12 @@ export default function BookingDetailPage({ user }: Props) {
                     // Collection continues after possession: the unpaid balance is then an Accounts
                     // Receivable, and the backend accepts a receipt against it for exactly that reason.
                     // Only the two collectable states — a cancelled or completed booking takes neither.
+                    // Withheld while the plan is short of the balance: the payment service refuses
+                    // such a receipt, because taking it would pin the plan and leave the difference
+                    // uncollectable. The banner above says so and points at Regenerate.
                     const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
-                      && item.status !== "Paid" && item.remainingBalance > 0;
+                      && item.status !== "Paid" && item.remainingBalance > 0
+                      && unscheduledBalance <= 0;
                     return (
                     <tr key={item.id} className="border-b border-[var(--border)] transition-colors last:border-0 hover:bg-[var(--surface-glass-hover)]">
                       <td className="px-5 py-3.5 text-[var(--text-secondary)]">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
@@ -1035,7 +1078,7 @@ export default function BookingDetailPage({ user }: Props) {
             <PanelCard>
               <div className="px-5 py-8 text-center sm:px-6">
                 <p className="text-sm text-rose-400">{scheduleError}</p>
-                <Button className="mt-4" size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+                <Button className="mt-4" size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
               </div>
             </PanelCard>
           ) : (
@@ -1135,7 +1178,7 @@ export default function BookingDetailPage({ user }: Props) {
             <PanelCard>
               <div className="px-5 py-8 text-center sm:px-6">
                 <p className="text-sm text-rose-400">{paymentsError}</p>
-                <Button className="mt-4" size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+                <Button className="mt-4" size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
               </div>
             </PanelCard>
           ) : (

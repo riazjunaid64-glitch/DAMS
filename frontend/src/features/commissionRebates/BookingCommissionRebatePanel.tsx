@@ -5,17 +5,13 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
-import { commissionActions, commissionRequestBody, idempotencyKey, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateRequestBody, trapDialogKeys } from "./state";
+import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
 const evidenceAccept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,.xls,.xlsx";
 // Mirrors the directory's accepted partner types (CommissionRebateService.Directory).
 const partnerTypes=["Broker","Dealer","Agency","Referral Partner","Introducer","Marketing Partner","External Sales Agent","Other"];
-// Only the bases a booking screen can state in one line. The enum still carries the rest for
-// rule-driven commissions configured on the commission settings page.
-const commissionBases:CalculationBasis[]=["NetSalePriceAfterDiscount","AgreedSalePrice","AmountActuallyCollected"];
-const rebateBases:CalculationBasis[]=["AgreedSalePrice","NetSalePriceAfterDiscount"];
 const basisNames:Record<string,string>={AgreedSalePrice:"Sale Price",NetSalePriceAfterDiscount:"Net Sale Price",AmountActuallyCollected:"Amount Collected",BookingAmountReceived:"Booking Amount Received",ManuallyApprovedAmount:"Manually Approved Amount"};
 const calculationTypes=[{v:"FixedAmount",n:"Fixed Amount"},{v:"Percentage",n:"Percentage"}];
 const rebateMethods:RebateMethod[]=["OutstandingBalanceReduction","InstallmentAdjustment","CashOrBankPayment","CreditNote","Other"];
@@ -55,22 +51,37 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const loadMoreAudit=async()=>{if(!workspace)return;const rows=[...workspace.audit,...olderAudit];const beforeId=rows[rows.length-1]?.id;if(beforeId===undefined)return;setAuditBusy(true);setError(null);try{const page=await commissionRebateApi.bookingAudit(bookingId,beforeId,50);setOlderAudit(c=>[...c,...page.items]);setAuditHasMore(page.hasMore);}catch(x){setError(x instanceof Error?x.message:"Older audit history could not be loaded.");}finally{setAuditBusy(false);}};
   const active=workspace?.bookingStatus!=="Cancelled";
 
-  // Every amount the entry forms preview is derived from the same booking figures the server
-  // recalculates on save, so what the user reads before saving is what gets stored.
-  const basisValue=useCallback((basis:CalculationBasis)=>{
-    if(!workspace)return 0;
-    if(basis==="AgreedSalePrice")return workspace.agreedSalePrice;
-    if(basis==="NetSalePriceAfterDiscount")return workspace.netSalePrice;
-    if(basis==="AmountActuallyCollected")return workspace.amountCollected;
-    return 0;
+  // Every amount the entry forms preview is derived from the same booking figures — and the same
+  // basis, allocation and adjustment — the server recalculates on save, so what the user reads
+  // before saving is what gets stored. `stored` is the record's own basis amount, which is the only
+  // source for a basis the booking cannot value (ManuallyApprovedAmount).
+  const basisValue=useCallback((basis:CalculationBasis,stored?:number)=>{
+    if(basis==="AgreedSalePrice")return workspace?.agreedSalePrice??0;
+    if(basis==="NetSalePriceAfterDiscount")return workspace?.netSalePrice??0;
+    if(basis==="AmountActuallyCollected")return workspace?.amountCollected??0;
+    return stored??0;
   },[workspace]);
-  const preview=useCallback((type:CalculationType,basis:CalculationBasis,rate:string,fixed:string)=>{
-    const raw=type==="Percentage"?basisValue(basis)*Number(rate)/100:Number(fixed);
-    return Number.isFinite(raw)&&raw>0?Math.round(raw*100)/100:0;
-  },[basisValue]);
-  const commissionAmount=useMemo(()=>preview(commission.calculationType,commission.calculationBasis,commission.percentageRate,commission.fixedAmount),[commission,preview]);
-  const rebateAmount=useMemo(()=>preview(rebate.calculationType,rebate.calculationBasis,rebate.percentageRate,rebate.fixedAmount),[rebate,preview]);
-  const netAfterRebate=Math.max(0,(workspace?.netSalePrice??0)-rebateAmount);
+  const round=(value:number)=>Number.isFinite(value)&&value>0?Math.round(value*100)/100:0;
+  // The server multiplies a manual commission by the attribution's allocation share, so a preview
+  // that left it out promised Rs 1,000 on a quarter-share worth Rs 250.
+  const commissionAmount=useMemo(()=>{
+    const basis=commissionBasisFor(commission,editingCommission);
+    const raw=commission.calculationType==="Percentage"
+      ? basisValue(basis,editingCommission?.basisAmount)*Number(commission.percentageRate)/100
+      : Number(commission.fixedAmount);
+    return round(raw*commissionAllocationPercent(commission,editingCommission)/100);
+  },[commission,editingCommission,basisValue]);
+  // Calculated and final are different numbers once an adjustment is preserved, and the customer's
+  // remaining price follows the FINAL one.
+  const rebateAmount=useMemo(()=>{
+    const basis=rebateBasisFor(rebate,editingRebate);
+    return round(rebate.calculationType==="Percentage"
+      ? basisValue(basis,editingRebate?.basisAmount)*Number(rebate.percentageRate)/100
+      : Number(rebate.fixedAmount));
+  },[rebate,editingRebate,basisValue]);
+  const rebateAdjustment=editingRebate?.adjustmentAmount??0;
+  const rebateFinal=Math.max(0,Math.round((rebateAmount+rebateAdjustment)*100)/100);
+  const netAfterRebate=Math.max(0,(workspace?.netSalePrice??0)-rebateFinal);
   // A partner can hold one live commission per booking, so anyone already on the booking drops out
   // of the picker — the booking itself can carry as many partners as it needs.
   const partnerOptions=useMemo(()=>{
@@ -106,8 +117,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
 
   const openNewCommission=()=>{setEditingCommission(null);setCommission(emptyCommissionForm());setShowCommission(true);};
   const openNewRebate=()=>{setEditingRebate(null);setRebate(emptyRebateForm());setShowRebate(true);};
-  const editCommission=(value:Commission,changeReason:string)=>{setEditingCommission(value);setCommission({partnerId:String(value.partnerId),calculationType:value.calculationType,calculationBasis:commissionBases.includes(value.calculationBasis)?value.calculationBasis:"NetSalePriceAfterDiscount",percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",notes:value.manualReason??"",changeReason});setShowCommission(true);};
-  const editRebate=(value:Rebate,changeReason:string)=>{setEditingRebate(value);setRebate({calculationType:value.calculationType,calculationBasis:rebateBases.includes(value.calculationBasis)?value.calculationBasis:"AgreedSalePrice",percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",reason:value.reason,changeReason});setShowRebate(true);};
+  // The record's OWN basis is loaded, never substituted for one this form happens to list.
+  // Substituting used to change the money: a 10% commission on a manually approved Rs 500,000 was
+  // re-submitted as 10% of the whole net sale price by an edit that only changed a note.
+  const editCommission=(value:Commission,changeReason:string)=>{setEditingCommission(value);setCommission({partnerId:String(value.partnerId),calculationType:value.calculationType,calculationBasis:value.calculationBasis,percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",notes:value.manualReason??"",changeReason});setShowCommission(true);};
+  const editRebate=(value:Rebate,changeReason:string)=>{setEditingRebate(value);setRebate({calculationType:value.calculationType,calculationBasis:value.calculationBasis,percentageRate:value.percentageRate?.toString()??"",fixedAmount:value.fixedAmount?.toString()??"",reason:value.reason,changeReason});setShowRebate(true);};
   const editCommissionWithReason=(value:Commission)=>{const reason=window.prompt("Reason for correcting this commission")?.trim();if(!reason)return;editCommission(value,reason);};
   const editRebateWithReason=(value:Rebate)=>{const reason=window.prompt("Reason for correcting this rebate")?.trim();if(!reason)return;editRebate(value,reason);};
 
@@ -135,6 +149,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // save. Offering the rate and basis as editable inputs would show changes that are silently
   // discarded, so the card states what the rule says instead.
   const editingRuleCommission=!!editingCommission&&!editingCommission.isManual;
+  // A basis this form does not list is shown, not offered. It is carried back exactly as stored, so
+  // the operator can see what the amount is calculated on without the form quietly replacing it.
+  const commissionBasisLocked=!isEditableBasis(commission.calculationBasis,commissionBases);
+  const rebateBasisLocked=!isEditableBasis(rebate.calculationBasis,rebateBases);
+  const commissionAllocation=commissionAllocationPercent(commission,editingCommission);
 
   return <section className="space-y-6" aria-labelledby="commission-rebate-heading">
     <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -173,10 +192,16 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
             : percentCommission
               ? <div className="grid gap-4 sm:grid-cols-3">
                   <UnitField label="Percentage" required suffix="%" max="100" value={commission.percentageRate} onChange={v=>setCommission({...commission,percentageRate:v})}/>
-                  <BasisSelect label="Calculate On" value={commission.calculationBasis} options={commissionBases} onChange={v=>setCommission({...commission,calculationBasis:v})}/>
+                  {commissionBasisLocked
+                    ? <Readout label="Calculate On" value={`${basisNames[commission.calculationBasis]??prettyEnum(commission.calculationBasis)} · ${money(editingCommission?.basisAmount??0)}`}/>
+                    : <BasisSelect label="Calculate On" value={commission.calculationBasis} options={commissionBases} onChange={v=>setCommission({...commission,calculationBasis:v})}/>}
                   <Readout label="Calculated Commission" value={money(commissionAmount)} tone="accent"/>
                 </div>
               : <div className="grid gap-4 sm:grid-cols-3"><UnitField label="Amount" required prefix="Rs" value={commission.fixedAmount} onChange={v=>setCommission({...commission,fixedAmount:v})}/></div>}
+          {/* The two things the form carries but does not edit, stated rather than hidden: both
+              change the amount the server saves. */}
+          {commissionAllocation!==100&&<p className="text-xs text-[var(--text-muted)]">This partner's attribution allocates {commissionAllocation}% of the calculation, which the amount above already applies. Selecting a different partner drops the attribution and pays the full amount.</p>}
+          {(editingCommission?.adjustmentAmount??0)!==0&&<p className="text-xs text-[var(--text-muted)]">An agreed adjustment of {money(editingCommission!.adjustmentAmount)} is kept on this commission{editingCommission!.adjustmentReason?` (${editingCommission!.adjustmentReason})`:""}, so the final amount will be {money(Math.max(0,Math.round((commissionAmount+editingCommission!.adjustmentAmount)*100)/100))}.</p>}
           {!editingRuleCommission&&<Field label="Notes (optional)" as="textarea" placeholder="Add any notes about this commission (optional)" value={commission.notes} onChange={e=>setCommission({...commission,notes:e.target.value})}/>}
           <FormButtons busy={busy} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
         </form>
@@ -197,7 +222,9 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
             ? <div className="grid gap-4 sm:grid-cols-4">
                 <Segmented label="Rebate Type" value={rebate.calculationType} options={calculationTypes} onChange={v=>setRebate({...rebate,calculationType:v as CalculationType,percentageRate:"",fixedAmount:""})}/>
                 <UnitField label="Percentage" required suffix="%" max="100" value={rebate.percentageRate} onChange={v=>setRebate({...rebate,percentageRate:v})}/>
-                <BasisSelect label="Calculate On" value={rebate.calculationBasis} options={rebateBases} onChange={v=>setRebate({...rebate,calculationBasis:v})}/>
+                {rebateBasisLocked
+                  ? <Readout label="Calculate On" value={`${basisNames[rebate.calculationBasis]??prettyEnum(rebate.calculationBasis)} · ${money(editingRebate?.basisAmount??0)}`}/>
+                  : <BasisSelect label="Calculate On" value={rebate.calculationBasis} options={rebateBases} onChange={v=>setRebate({...rebate,calculationBasis:v})}/>}
                 <Field label="Reason (optional)" placeholder="Enter reason for rebate" value={rebate.reason} onChange={e=>setRebate({...rebate,reason:e.target.value})}/>
               </div>
             : <div className="grid gap-4 sm:grid-cols-3">
@@ -205,8 +232,12 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
                 <UnitField label="Amount" required prefix="Rs" value={rebate.fixedAmount} onChange={v=>setRebate({...rebate,fixedAmount:v})}/>
                 <Field label="Reason (optional)" placeholder="Enter reason for rebate" value={rebate.reason} onChange={e=>setRebate({...rebate,reason:e.target.value})}/>
               </div>}
-          <div className={`grid gap-4 ${percentRebate?"sm:grid-cols-2":""}`}>
+          {/* Calculated and final are the same number until an adjustment is preserved, and it is
+              the FINAL one the customer's remaining price follows — showing only the calculated one
+              misstated the price by exactly the adjustment. */}
+          <div className={`grid gap-4 ${percentRebate||rebateAdjustment!==0?"sm:grid-cols-2":""}`}>
             {percentRebate&&<Readout label="Calculated Rebate" value={money(rebateAmount)}/>}
+            {rebateAdjustment!==0&&<Readout label={`Rebate after agreed adjustment (${money(rebateAdjustment)})`} value={money(rebateFinal)} tone="accent"/>}
             <Readout label="Net Sale Price After Rebate" value={money(netAfterRebate)} tone="hero"/>
           </div>
           <FormButtons busy={busy} cancel={()=>{setShowRebate(false);setEditingRebate(null);}}/>

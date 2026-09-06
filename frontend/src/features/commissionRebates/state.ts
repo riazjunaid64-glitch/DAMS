@@ -46,6 +46,50 @@ export interface RebateFormState {
   changeReason: string;
 }
 
+// The bases the booking screen can state in one line. The enum carries five; these forms offer
+// three and two. Anything else — ManuallyApprovedAmount above all — is shown read-only and carried
+// back untouched, because substituting a form basis for it CHANGES THE AMOUNT: a 10% commission on
+// a manually approved Rs 500,000 became 10% of a Rs 10m net sale price.
+export const commissionBases: CalculationBasis[] = ["NetSalePriceAfterDiscount", "AgreedSalePrice", "AmountActuallyCollected"];
+export const rebateBases: CalculationBasis[] = ["AgreedSalePrice", "NetSalePriceAfterDiscount"];
+
+/** Whether this record's stored basis is one the form can offer at all. */
+export const isEditableBasis = (basis: CalculationBasis, supported: CalculationBasis[]) => supported.includes(basis);
+
+/**
+ * The basis the server will calculate on for this save — the single answer used by both the request
+ * body and the on-screen preview, so the operator cannot be shown one and have the other saved.
+ * A new record takes the form's; an edit keeps its own unless the operator could genuinely change
+ * it (percentage, and a basis this form lists) and did.
+ */
+export function commissionBasisFor(form: CommissionFormState, existing: Commission | null): CalculationBasis {
+  const percentage = form.calculationType === "Percentage";
+  if (!existing) return percentage ? form.calculationBasis : "NetSalePriceAfterDiscount";
+  return percentage && isEditableBasis(existing.calculationBasis, commissionBases)
+    ? form.calculationBasis
+    : existing.calculationBasis;
+}
+
+export function rebateBasisFor(form: RebateFormState, existing: Rebate | null): CalculationBasis {
+  const percentage = form.calculationType === "Percentage";
+  if (!existing) return percentage ? form.calculationBasis : "AgreedSalePrice";
+  return percentage && isEditableBasis(existing.calculationBasis, rebateBases)
+    ? form.calculationBasis
+    : existing.calculationBasis;
+}
+
+/**
+ * The allocation share the server will apply. An attribution belongs to ONE partner, so it survives
+ * an edit only while the partner is unchanged — resubmitting it after an explicit partner change is
+ * what the server's ownership check correctly rejects. Without an attribution the commission is
+ * calculated in full, which is what a newly chosen partner is owed.
+ */
+export const commissionAttributionFor = (form: CommissionFormState, existing: Commission | null) =>
+  existing && Number(form.partnerId) === existing.partnerId ? existing.attributionId ?? null : null;
+
+export const commissionAllocationPercent = (form: CommissionFormState, existing: Commission | null) =>
+  commissionAttributionFor(form, existing) === null ? 100 : existing!.allocationPercent;
+
 /// Both update endpoints REPLACE the whole record, so anything the form does not show still has to
 /// be sent back as it stands. Sending nulls instead re-derived the record from scratch: a commission
 /// lost its attribution and with it the allocation share that made a quarter-share Rs 250 rather than
@@ -56,19 +100,22 @@ export function commissionRequestBody(form: CommissionFormState, existing: Commi
   // The rule owns the figures on a rule-driven commission; the server recomputes them from the rule
   // and ignores anything sent here, so the form does not offer them either.
   const ruleDriven = !!existing && !existing.isManual;
+  const basis = commissionBasisFor(form, existing);
   return {
     partnerId: Number(form.partnerId),
-    attributionId: existing?.attributionId ?? null,
+    attributionId: commissionAttributionFor(form, existing),
     ruleId: existing?.ruleId ?? null,
     isManual: existing ? existing.isManual : true,
     manualReason: ruleDriven ? null : (form.notes.trim() || null),
     manualCalculationType: ruleDriven ? null : form.calculationType,
     // A fixed amount still records a basis so the saved commission reads back against the booking it
     // was agreed on. It never changes the amount.
-    manualCalculationBasis: ruleDriven ? null : (percentage ? form.calculationBasis : "NetSalePriceAfterDiscount"),
+    manualCalculationBasis: ruleDriven ? null : basis,
     manualPercentageRate: ruleDriven || !percentage ? null : Number(form.percentageRate),
     manualFixedAmount: ruleDriven || percentage ? null : Number(form.fixedAmount),
-    manualBasisAmount: null,
+    // ManuallyApprovedAmount has no booking figure behind it — the amount IS the basis — so it has
+    // to travel with the request or the server has nothing to calculate on.
+    manualBasisAmount: !ruleDriven && basis === "ManuallyApprovedAmount" ? existing?.basisAmount ?? null : null,
     manualEarningCondition: "ManualMilestone",
     minimumCollectionPercent: null,
     adjustmentAmount: existing?.adjustmentAmount ?? 0,
@@ -79,12 +126,13 @@ export function commissionRequestBody(form: CommissionFormState, existing: Commi
 
 export function rebateRequestBody(form: RebateFormState, existing: Rebate | null) {
   const percentage = form.calculationType === "Percentage";
+  const basis = rebateBasisFor(form, existing);
   return {
     calculationType: form.calculationType,
-    calculationBasis: percentage ? form.calculationBasis : "AgreedSalePrice",
+    calculationBasis: basis,
     percentageRate: percentage ? Number(form.percentageRate) : null,
     fixedAmount: percentage ? null : Number(form.fixedAmount),
-    manualBasisAmount: null,
+    manualBasisAmount: basis === "ManuallyApprovedAmount" ? existing?.basisAmount ?? null : null,
     adjustmentAmount: existing?.adjustmentAmount ?? 0,
     adjustmentReason: existing?.adjustmentReason ?? null,
     reason: form.reason.trim() || null,

@@ -407,6 +407,105 @@ public sealed class LongStandingFinanceDefectTests
     }
 
     /// <summary>
+    /// The reversal is allowed while the plan is rebuildable, so the COLLECTION is what waits for the
+    /// rebuild. Taking the next receipt first would pin the under-sized plan and reach the very dead
+    /// end the reversal guard exists to prevent — the same stranded principal, one ordering later.
+    /// </summary>
+    [Fact]
+    public async Task AfterReversingAnAbsorbedCredit_NoPaymentIsTakenUntilThePlanIsRebuilt()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, bookingAmount: 1_000_000m);
+        var service = CommissionRebates(context);
+        var applied = await ApplyCreditAsync(context, world.BookingId, 900_000m, service);
+        var rebate = Assert.Single(applied.Rebates);
+        var disbursement = Assert.Single(rebate.Disbursements);
+        await Installments(context).GenerateScheduleAsync(world.BookingId, Plan(10_000_000m, 3), 1);
+
+        await service.ReverseRebateDisbursementAsync(world.BookingId, rebate.Id, disbursement.Id,
+            new ReverseMoneyMovementDto { Amount = 400_000m, Reason = "Granted in error", IdempotencyKey = "rev-5" },
+            Actor);
+
+        // The plan now collects 8,100,000 while 8,500,000 is owed. The screen says so…
+        var shortOfBalance = await Installments(context).GetScheduleAsync(world.BookingId);
+        Assert.Equal(8_100_000m, shortOfBalance.ScheduleTotal);
+        Assert.Equal(400_000m, shortOfBalance.UnscheduledBalance);
+        Assert.True(shortOfBalance.CanRegenerate);
+
+        // …and no receipt is accepted against it, because that receipt would pin the plan.
+        var refusal = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Installments(context).RecordInstallmentPaymentAsync(world.BookingId, shortOfBalance.Items[0].Id,
+                new RecordInstallmentPaymentDto
+                {
+                    Amount = 100_000m, FinanceAccountId = world.Bank.Id,
+                    PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                }, 1));
+        Assert.Contains("Regenerate the installment plan", refusal.Message);
+        Assert.Empty(context.Payments.Where(p => p.Type == PaymentType.Installment).ToList());
+
+        // Regenerating repairs it, and collection resumes against a plan that adds up.
+        await Installments(context).GenerateScheduleAsync(world.BookingId, Plan(10_000_000m, 3, regenerate: true), 1);
+        var rebuilt = await Installments(context).GetScheduleAsync(world.BookingId);
+        Assert.Equal(8_500_000m, rebuilt.ScheduleTotal);
+        Assert.Equal(0m, rebuilt.UnscheduledBalance);
+        await Installments(context).RecordInstallmentPaymentAsync(world.BookingId, rebuilt.Items[0].Id,
+            new RecordInstallmentPaymentDto
+            {
+                Amount = 100_000m, FinanceAccountId = world.Bank.Id,
+                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+            }, 1);
+
+        // What the customer owes and what the plan can collect are the same number again.
+        var booking = await context.Bookings.AsNoTracking().SingleAsync();
+        var credits = await context.RebateDisbursements.AsNoTracking().SumAsync(d => d.Amount)
+            - await context.RebateDisbursementReversals.AsNoTracking().SumAsync(r => r.Amount);
+        var collected = await context.Payments.AsNoTracking().SumAsync(p => p.Amount);
+        var owed = booking.AgreedSalePrice - booking.DiscountAmount - collected - credits;
+        var settled = await Installments(context).GetScheduleAsync(world.BookingId);
+        Assert.Equal(owed, settled.ScheduleRemaining);
+    }
+
+    /// <summary>
+    /// Cancelling voids the sale, so there is no receivable to collect and no plan to rebuild. The
+    /// collectibility guard must stay out of that lifecycle entirely — otherwise a cancelled
+    /// booking's applied rebate is stuck in ReversalRequired for ever, unable to reach Reversed.
+    /// </summary>
+    [Fact]
+    public async Task ACancelledBookingsCredit_CanStillBeReversed_EvenWithAPinnedUnderSizedPlan()
+    {
+        await using var context = Context();
+        var world = await SeedAsync(context, bookingAmount: 1_000_000m);
+        var service = CommissionRebates(context);
+        var applied = await ApplyCreditAsync(context, world.BookingId, 900_000m, service);
+        var rebate = Assert.Single(applied.Rebates);
+        var disbursement = Assert.Single(rebate.Disbursements);
+        await Installments(context).GenerateScheduleAsync(world.BookingId, Plan(10_000_000m, 3), 1);
+        var schedule = await Installments(context).GetScheduleAsync(world.BookingId);
+        await Installments(context).RecordInstallmentPaymentAsync(world.BookingId, schedule.Items[0].Id,
+            new RecordInstallmentPaymentDto
+            {
+                Amount = 100_000m, FinanceAccountId = world.Bank.Id,
+                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+            }, 1);
+
+        // Cancel through the lifecycle the booking service uses, so the rebate reaches the state a
+        // real cancellation leaves it in.
+        await service.HandleBookingCancelledAsync(world.BookingId, "Buyer walked away", Actor);
+        var booking = await context.Bookings.SingleAsync();
+        booking.Status = BookingStatus.Cancelled;
+        await context.SaveChangesAsync();
+        Assert.Equal(CustomerRebateStatus.ReversalRequired,
+            (await context.CustomerRebates.AsNoTracking().SingleAsync()).Status);
+
+        var after = await service.ReverseRebateDisbursementAsync(world.BookingId, rebate.Id, disbursement.Id,
+            new ReverseMoneyMovementDto { Amount = 900_000m, Reason = "Recovered", IdempotencyKey = "rev-6" },
+            Actor);
+
+        Assert.Equal(CustomerRebateStatus.Reversed, Assert.Single(after.Rebates).Status);
+        Assert.Equal(900_000m, context.RebateDisbursementReversals.Sum(r => r.Amount));
+    }
+
+    /// <summary>
     /// A booking with no schedule at all has nothing to strand, so the guard stays out of the way.
     /// </summary>
     [Fact]

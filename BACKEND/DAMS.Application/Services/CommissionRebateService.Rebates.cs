@@ -444,12 +444,25 @@ namespace DAMS.Application.Services
         /// Regenerating the plan is the repair, so the reversal is only refused when the plan can no
         /// longer be regenerated — the same shape as
         /// <see cref="ReconcileBookingAmountMilestoneAsync"/>, which refuses a reversal that would
-        /// unwind the booking-amount milestone only once installment activity has begun.
+        /// unwind the booking-amount milestone only once installment activity has begun. While the
+        /// plan IS still rebuildable the shortfall is real but repairable, and
+        /// <c>InstallmentService.RecordInstallmentPaymentAsync</c> refuses to take the next receipt
+        /// until it has been repaired — otherwise that receipt would pin the plan and turn a
+        /// repairable state into the dead end this guard exists to prevent.
+        /// </para>
+        /// <para>
+        /// A CANCELLED booking is out of scope entirely. Cancelling voids the sale, so there is no
+        /// sale receivable left to collect and no plan to rebuild; the settlement is what the parties
+        /// still owe each other. Reversing the credit is how a cancelled booking's rebate reaches
+        /// Reversed, and refusing it here would strand the record in ReversalRequired for ever. This
+        /// is not a loosening of the possession/completion restriction above, which still stands.
         /// </para>
         /// </summary>
         private async Task EnsureRestoredDebtIsCollectableAsync(
             Booking booking, decimal reversalAmount, CancellationToken cancellationToken)
         {
+            if (booking.Status == BookingStatus.Cancelled) return;
+
             var scheduleTotal = await _context.Installments.AsNoTracking()
                 .Where(i => i.BookingId == booking.Id)
                 .SumAsync(i => (decimal?)i.Amount, cancellationToken) ?? 0m;
@@ -458,7 +471,11 @@ namespace DAMS.Application.Services
             var creditsAfterReversal = Money(
                 await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id, cancellationToken)
                 - reversalAmount);
-            var shortfall = BookingCreditPolicy.UncollectableShortfall(booking, scheduleTotal, creditsAfterReversal);
+            // Only what a reversed credit is responsible for — a plan that was already short for some
+            // other reason is a pre-existing condition this reversal did not create, and refusing on
+            // its account would block a correction that has nothing to do with it.
+            var shortfall = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
+                _context, booking, scheduleTotal, creditsAfterReversal, reversalAmount, cancellationToken);
             if (shortfall <= 0m) return;
             if (await BookingCreditPolicy.CanRegenerateScheduleAsync(_context, booking.Id, cancellationToken)) return;
 
