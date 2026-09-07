@@ -77,6 +77,14 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(cancellationToken);
             // Still owed to partners: the pending commissions, less whatever has already gone out
             // against them and plus anything since reversed.
+            //
+            // This is the MANAGEMENT view and it is deliberately not the same number as the Balance
+            // Sheet's Commission Payable. Both are built from the same facts and agree on every
+            // status but one: a ReversalRequired commission reads zero here and NEGATIVE on the
+            // sheet, because the money already paid on a void sale is recoverable from the partner.
+            // That amount is reported here on its own line instead, so the two reconcile exactly —
+            // sheet payable = PayableCommission − CommissionReversalRequired — rather than
+            // disagreeing. Everything else (Pending, Paid, Cancelled, Reversed) is identical.
             var payableCommission = Math.Max(0m,
                 (commissions?.PayableBase ?? 0m) - (payouts?.Pending ?? 0m) + (payoutReversals?.Pending ?? 0m));
             // Everything promised to customers that is still standing — cancelled and reversed
@@ -237,8 +245,17 @@ namespace DAMS.Application.Services
         {
             if (!_context.Database.IsRelational()) return await operation();
             var strategy = _context.Database.CreateExecutionStrategy();
+            var replaying = false;
             return await strategy.ExecuteAsync(async () =>
             {
+                // A transient fault rolls the attempt back in the DATABASE and nowhere else: the
+                // change tracker still holds everything it wrote, and EF fixup has already stitched
+                // those entities into the collections the guards read. So the retry measured itself
+                // against its own undone work — reversing a disbursement a second time reported
+                // "Reversal exceeds the disbursement balance of 0.00", because the reversal it was
+                // retrying was still counted against the balance it was checking.
+                if (replaying) _context.ChangeTracker.Clear();
+                replaying = true;
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
                 var result = await operation();
                 await transaction.CommitAsync(cancellationToken);

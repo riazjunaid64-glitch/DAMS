@@ -39,17 +39,20 @@ public sealed class FinanceDashboardIntegrityTests
         var summary = await service.GetSummaryAsync(null, PeriodStart, PeriodEnd);
         var breakdown = await service.GetCostBreakdownPageAsync(null, PeriodStart, PeriodEnd, 0, 200);
 
-        // 1,000,000 expenses + 200,000 commission − 50,000 reversal + 80,000 cash rebate
-        // − 30,000 reversal + 60,000 credit − 10,000 reversal + 50,000 interest + 500,000 asset.
-        Assert.Equal(1_800_000m, summary.TotalExpenses);
+        // 1,000,000 expenses + 200,000 commission ACCRUED + 80,000 cash rebate − 30,000 reversal
+        // + 60,000 credit − 10,000 reversal + 50,000 interest + 500,000 asset. The commission payout
+        // and its reversal are settlements of Commission Payable and cost nothing, so neither shows
+        // up here — the cost was taken when the commission was agreed.
+        Assert.Equal(1_850_000m, summary.TotalExpenses);
         Assert.Equal(summary.TotalExpenses, breakdown.Items.Sum(i => i.Amount));
         Assert.False(breakdown.HasMore);
-        Assert.Equal(9, breakdown.Items.Count);
+        Assert.Equal(8, breakdown.Items.Count);
 
         // Two kinds only, and reversals are the negative one — a row the reader has to know to
         // subtract by hand is a row that will be added instead.
         Assert.All(breakdown.Items, i => Assert.True(i.Kind is "cost" or "reduction", "unexpected kind: " + i.Kind));
-        Assert.Equal(-50_000m, Assert.Single(breakdown.Items, i => i.Label == "Commission payout reversal").Amount);
+        Assert.Equal(200_000m, Assert.Single(breakdown.Items, i => i.Label == "Partner commission").Amount);
+        Assert.DoesNotContain(breakdown.Items, i => i.Label.Contains("Commission payout"));
         Assert.Equal(500_000m, Assert.Single(breakdown.Items, i => i.Label.Contains("Server rack")).Amount);
         Assert.Equal(50_000m, Assert.Single(breakdown.Items, i => i.Label == "Loan Interest").Amount);
 
@@ -248,15 +251,18 @@ public sealed class FinanceDashboardIntegrityTests
         // Unfiltered, the period is profitable and Net Profit is reported.
         Assert.False(business.AccountFilterApplied);
         Assert.Equal(5_000_000m, business.TotalRevenue);
-        Assert.Equal(1_800_000m, business.TotalExpenses);
-        Assert.Equal(3_200_000m, business.NetProfit);
+        Assert.Equal(1_850_000m, business.TotalExpenses);
+        Assert.Equal(3_150_000m, business.NetProfit);
 
         // Filtered to the bank: the recognised sale is correctly absent (it never touched the bank),
         // the bank's own costs are all there — and NO profit figure is offered for the difference.
+        // The commission cost is not among them: it answers to Commission Payable, not to the bank
+        // the payout happened to leave from — the same way a retained cancellation answers to
+        // Customer Deposits and a non-cash credit to Customer Receivables.
         Assert.True(onTheBank.AccountFilterApplied);
         Assert.Equal(0m, onTheBank.TotalRevenue);
         Assert.Equal(0m, onTheBank.AutomaticRevenue);
-        Assert.Equal(1_750_000m, onTheBank.TotalExpenses);
+        Assert.Equal(1_600_000m, onTheBank.TotalExpenses);
         Assert.Null(onTheBank.NetProfit);
         // What the account CAN answer, in its place.
         Assert.NotNull(onTheBank.AccountNetMovement);
@@ -416,6 +422,9 @@ public sealed class FinanceDashboardIntegrityTests
         var sheet = await service.GetBalanceSheetAsync(null, asAt);
 
         // No committed baseline here, so the sheet's window runs from the beginning of the records.
+        // (This fixture has no customer deposit/receivable accounts, so the sheet is deliberately
+        // not balanced here — that is what DiagnoseImbalanceAsync reports, and this test is about
+        // the fixed-asset window rather than the accounting equation.)
         Assert.Null(sheet.RetainedProfitStart);
         // Scoped to THAT window: the 500,000 server rack bought in August is inside it.
         Assert.Equal(500_000m, sheet.UnpostedFixedAssetCharge);
@@ -474,6 +483,22 @@ public sealed class FinanceDashboardIntegrityTests
         var bank = new FinanceAccount { Name = "HBL", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
         var equipment = new FinanceAccount { Name = "Office Equipment", AccountHolderName = "DAMS", Type = FinanceAccountType.FixedAsset, IsActive = true };
         var loanAccount = new FinanceAccount { Name = "Term Loan", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability, IsActive = true };
+        // The commission's liability side. Without it the accrual below charges profit with nothing
+        // to credit and the sheet stops balancing — which is what DiagnoseImbalanceAsync reports,
+        // and not something a fixture should quietly rely on.
+        var commissionPayable = new FinanceAccount
+        {
+            Name = "Commission Payable", AccountHolderName = "DAMS", Type = FinanceAccountType.Liability,
+            SystemRole = FinanceSystemAccountRole.CommissionPayable, DisplayOrder = 517, IsActive = true
+        };
+        // A recognised sale is carried by Customer Receivables until its cash and credits clear it.
+        // The fixture deliberately creates such a sale below, so it needs the asset-side system
+        // account just as the commission accrual above needs its payable-side system account.
+        var customerReceivables = new FinanceAccount
+        {
+            Name = "Customer Receivables", AccountHolderName = "DAMS", Type = FinanceAccountType.Receivable,
+            SystemRole = FinanceSystemAccountRole.CustomerReceivables, DisplayOrder = 420, IsActive = true
+        };
         var project = new Project { ProjectName = "Dashboard Integrity", Location = "Karachi", CreatedById = 1 };
         var unit = new Unit { Project = project, UnitNumber = "U-1", UnitType = "Apartment", Price = 5_000_000m, Status = UnitStatus.Sold };
         var customer = new Customer { FullName = "Buyer", Phone = "03001112222", Status = CustomerStatus.Active };
@@ -485,7 +510,8 @@ public sealed class FinanceDashboardIntegrityTests
             BookingAmountReceived = 1_000_000m, BookingDate = new DateTime(2026, 7, 1)
         };
         var partner = new ThirdPartyPartner { Name = "Broker", PartnerType = "Broker", InternalCode = "BR-1" };
-        context.AddRange(bank, equipment, loanAccount, project, unit, customer, booking, partner);
+        context.AddRange(bank, equipment, loanAccount, commissionPayable, customerReceivables,
+            project, unit, customer, booking, partner);
         await context.SaveChangesAsync();
 
         // Recognised at possession — the credits below are only a cost once the sale is income.
@@ -516,6 +542,14 @@ public sealed class FinanceDashboardIntegrityTests
         context.AddRange(commission, rebate, loan);
         await context.SaveChangesAsync();
 
+        // The commission is a cost on the day it was AGREED. The payout below is a settlement of the
+        // payable it raises, and neither it nor its reversal is a cost — which is why the accrual is
+        // the only commission row in the expense total.
+        context.CommissionAccruals.Add(new CommissionAccrual
+        {
+            CommissionId = commission.Id, Amount = 200_000m, AccruedOn = new DateTime(2026, 8, 5),
+            Kind = CommissionAccrualKind.Recognition, RecordedAt = new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc)
+        });
         var payout = new CommissionPayout
         {
             CommissionId = commission.Id, FinanceAccountId = bank.Id, Amount = 200_000m,

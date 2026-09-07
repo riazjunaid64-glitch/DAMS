@@ -46,6 +46,184 @@ internal static class BookingCreditPolicy
             - booking.BookingAmountReceived - nonCashCredits - booking.PossessionAmount));
 
     /// <summary>
+    /// What the customer still owes that the installment schedule does NOT demand — the principal a
+    /// generated plan absorbed and that no later payment can reach.
+    /// <para>
+    /// The schedule is the only route DAMS has for collecting an installment balance, and a receipt
+    /// is capped by the installment it is recorded against. So whenever the plan totals less than
+    /// (net price − booking amount received − credits), the difference is debt with no collection
+    /// path: it blocks completion for ever while being invisible on the schedule.
+    /// </para>
+    /// <para>
+    /// The possession row is inside <paramref name="scheduleTotal"/>, so this deliberately does not
+    /// subtract <c>booking.PossessionAmount</c> as well — reading the plan's own total is what keeps
+    /// this from drifting away from the rows it is measuring.
+    /// </para>
+    /// </summary>
+    public static decimal UncollectableShortfall(Booking booking, decimal scheduleTotal, decimal nonCashCredits) =>
+        Money(Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount
+            - booking.BookingAmountReceived - nonCashCredits - scheduleTotal));
+
+    /// <summary>
+    /// How much of <see cref="UncollectableShortfall"/> a REVERSED credit is responsible for.
+    /// <para>
+    /// This is the number the reversal guard and the payment guard act on, and it is deliberately
+    /// narrower than the raw shortfall. A schedule can fail to total the balance for reasons that
+    /// have nothing to do with a rebate — a plan imported from another system, or one built by hand
+    /// against part of the balance — and refusing to collect on those would break bookings this
+    /// change has no business touching. Reversing a credit is the one thing that ADDS uncollectable
+    /// principal to a plan, so the responsibility is capped at what has been reversed: exactly the
+    /// shortfall when the plan was sound before, and only the reversal's own share when it was not.
+    /// </para>
+    /// <para><paramref name="pendingReversal"/> is a reversal about to be written but not yet saved,
+    /// so the guard that decides whether to allow it can count it.</para>
+    /// </summary>
+    public static async Task<decimal> UncollectableFromReversedCreditsAsync(
+        AppDbContext context,
+        Booking booking,
+        decimal scheduleTotal,
+        decimal nonCashCredits,
+        decimal pendingReversal = 0m,
+        CancellationToken cancellationToken = default)
+    {
+        var shortfall = UncollectableShortfall(booking, scheduleTotal, nonCashCredits);
+        if (shortfall <= 0m) return 0m;
+        var reversed = await context.RebateDisbursementReversals.AsNoTracking()
+            .Where(r => r.Disbursement.Rebate.BookingId == booking.Id
+                && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                    || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
+            .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
+        return Money(Math.Min(shortfall, Money(reversed + pendingReversal)));
+    }
+
+    /// <summary>
+    /// Whether this booking's installment plan can still be replaced. One implementation, because
+    /// two callers ask it for opposite reasons: the schedule service before it deletes and rebuilds
+    /// the rows, and the rebate service before it reverses a credit the existing plan was built
+    /// smaller by — a reversal that regenerating cannot repair is a reversal that strands the debt
+    /// (see <see cref="UncollectableShortfall"/>).
+    /// <para>A plan is pinned by anything the rebuild cannot legally take with it:</para>
+    /// <list type="bullet">
+    /// <item>an installment that is no longer Pending for a reason other than a booking-level credit
+    /// allocated onto it — those allocations are derived bookkeeping, discarded and rebuilt against
+    /// the new schedule;</item>
+    /// <item>a recorded installment payment — the receipt names a row that is about to be deleted;</item>
+    /// <item>ANY disbursement aimed at one of these installments, live or fully reversed. The
+    /// disbursement keeps its <c>InstallmentId</c> for ever (a reversal is a new row, never an edit
+    /// of the original) and that foreign key is <c>Restrict</c>, so deleting the installment fails in
+    /// the database. Testing only for a live balance let validation pass and the save blow up.</item>
+    /// </list>
+    /// </summary>
+    public static async Task<bool> CanRegenerateScheduleAsync(
+        AppDbContext context,
+        int bookingId,
+        CancellationToken cancellationToken = default)
+    {
+        var installments = await context.Installments.AsNoTracking()
+            .Where(i => i.BookingId == bookingId)
+            .Select(i => new { i.Id, i.Status })
+            .ToListAsync(cancellationToken);
+        if (installments.Count == 0) return false;
+
+        var creditedByAllocation = await context.RebateCreditAllocations.AsNoTracking()
+            .Where(a => a.Disbursement.Rebate.BookingId == bookingId)
+            .Select(a => a.InstallmentId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        if (installments.Any(i => i.Status != InstallmentStatus.Pending && !creditedByAllocation.Contains(i.Id)))
+            return false;
+
+        var hasInstallmentPayments = await context.Payments.AsNoTracking()
+            .AnyAsync(p => p.BookingId == bookingId && p.InstallmentId != null
+                && p.Type == PaymentType.Installment, cancellationToken);
+        if (hasInstallmentPayments) return false;
+
+        return !await context.RebateDisbursements.AsNoTracking()
+            .AnyAsync(d => d.Rebate.BookingId == bookingId && d.InstallmentId != null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Net credit sitting on each installment of the given bookings — a credit aimed straight at it,
+    /// less what has been reversed out, plus its share of any booking-level credit — keyed by
+    /// installment id. The set-based counterpart of <see cref="InstallmentCreditsAsync"/>, so a
+    /// booking projection and the schedule screen cannot report the same installment differently.
+    /// </summary>
+    public static async Task<Dictionary<int, decimal>> InstallmentCreditsByBookingAsync(
+        AppDbContext context,
+        IReadOnlyCollection<int> bookingIds,
+        CancellationToken cancellationToken = default)
+    {
+        var totals = new Dictionary<int, decimal>();
+        if (bookingIds.Count == 0) return totals;
+        var ids = bookingIds.Distinct().ToList();
+
+        var direct = await context.RebateDisbursements.AsNoTracking()
+            .Where(d => ids.Contains(d.Rebate.BookingId) && d.InstallmentId != null)
+            .GroupBy(d => d.InstallmentId!.Value)
+            .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(d => d.Amount) })
+            .ToListAsync(cancellationToken);
+        var reversed = await context.RebateDisbursementReversals.AsNoTracking()
+            .Where(r => ids.Contains(r.Disbursement.Rebate.BookingId) && r.Disbursement.InstallmentId != null)
+            .GroupBy(r => r.Disbursement.InstallmentId!.Value)
+            .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(r => r.Amount) })
+            .ToListAsync(cancellationToken);
+        var allocated = await context.RebateCreditAllocations.AsNoTracking()
+            .Where(a => ids.Contains(a.Disbursement.Rebate.BookingId))
+            .GroupBy(a => a.InstallmentId)
+            .Select(g => new { InstallmentId = g.Key, Amount = g.Sum(a => a.Amount) })
+            .ToListAsync(cancellationToken);
+
+        foreach (var row in direct)
+            totals[row.InstallmentId] = totals.GetValueOrDefault(row.InstallmentId) + row.Amount;
+        foreach (var row in reversed)
+            totals[row.InstallmentId] = totals.GetValueOrDefault(row.InstallmentId) - row.Amount;
+        foreach (var row in allocated)
+            totals[row.InstallmentId] = totals.GetValueOrDefault(row.InstallmentId) + row.Amount;
+        return totals;
+    }
+
+    /// <summary>
+    /// Net non-cash credit on each of the given bookings, keyed by booking id. The set-based
+    /// counterpart of <see cref="GetNonCashCreditsAsync"/> for the list and projection screens, which
+    /// must not issue one query per row.
+    /// </summary>
+    public static async Task<Dictionary<int, decimal>> NonCashCreditsByBookingAsync(
+        AppDbContext context,
+        IReadOnlyCollection<int> bookingIds,
+        CancellationToken cancellationToken = default)
+    {
+        var totals = new Dictionary<int, decimal>();
+        if (bookingIds.Count == 0) return totals;
+        var ids = bookingIds.Distinct().ToList();
+
+        var applied = await context.RebateDisbursements.AsNoTracking()
+            .Where(d => ids.Contains(d.Rebate.BookingId)
+                && (d.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || d.Method == CustomerRebateMethod.InstallmentAdjustment
+                    || d.Method == CustomerRebateMethod.CreditNote))
+            .GroupBy(d => d.Rebate.BookingId)
+            .Select(g => new { BookingId = g.Key, Amount = g.Sum(d => d.Amount) })
+            .ToListAsync(cancellationToken);
+        var reversed = await context.RebateDisbursementReversals.AsNoTracking()
+            .Where(r => ids.Contains(r.Disbursement.Rebate.BookingId)
+                && (r.Disbursement.Method == CustomerRebateMethod.OutstandingBalanceReduction
+                    || r.Disbursement.Method == CustomerRebateMethod.InstallmentAdjustment
+                    || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
+            .GroupBy(r => r.Disbursement.Rebate.BookingId)
+            .Select(g => new { BookingId = g.Key, Amount = g.Sum(r => r.Amount) })
+            .ToListAsync(cancellationToken);
+
+        foreach (var row in applied)
+            totals[row.BookingId] = totals.GetValueOrDefault(row.BookingId) + row.Amount;
+        foreach (var row in reversed)
+            totals[row.BookingId] = totals.GetValueOrDefault(row.BookingId) - row.Amount;
+        foreach (var key in totals.Keys.ToList())
+            totals[key] = Money(totals[key]);
+        return totals;
+    }
+
+    /// <summary>
     /// Lands every booking-level customer credit on the installment schedule, and brings each
     /// installment's status back in line with what now covers it.
     /// <para>

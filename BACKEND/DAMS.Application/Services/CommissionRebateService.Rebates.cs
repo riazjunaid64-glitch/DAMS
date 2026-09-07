@@ -30,8 +30,16 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
-            FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable for the same reason as <see cref="CreateCommissionAsync"/>: it
+        /// reads the booking to check it is still active, then writes against it. A rebate created
+        /// alongside a cancellation would otherwise survive on a cancelled sale, holding its one
+        /// live rebate slot and still reading as owed to the customer.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
+            FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => CreateRebateCoreAsync(bookingId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> CreateRebateCoreAsync(int bookingId, CreateCustomerRebateDto dto,
+            FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
@@ -92,8 +100,13 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
-            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable for the same reason as <see cref="CreateRebateAsync"/>.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => UpdateRebateCoreAsync(bookingId, rebateId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> UpdateRebateCoreAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var rebate = await _context.CustomerRebates.Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
                 .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
@@ -114,7 +127,16 @@ namespace DAMS.Application.Services
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
             var reason = Limited(dto.Reason, "Rebate reason", 2000)
                 ?? DescribeCalculation(dto.CalculationType, dto.PercentageRate, dto.FixedAmount, dto.CalculationBasis);
-            var basis = BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
+            // The edit form cannot offer a different value for a locked basis (BookingAmountReceived,
+            // AmountActuallyCollected, ManuallyApprovedAmount — see RebateRebasableBases), so it always
+            // resubmits the one already stored. Re-deriving the basis amount from today's booking in
+            // that case is what let a note-only edit silently move the obligation; freeze it instead
+            // whenever the basis did not change and is not one the operator could have actively
+            // re-picked.
+            var basis = rebate.CalculationBasis == dto.CalculationBasis
+                && !RebateRebasableBases.Contains(dto.CalculationBasis)
+                ? rebate.BasisAmount
+                : BasisAmount(booking, dto.CalculationBasis, dto.ManualBasisAmount);
             decimal calculated;
             if (dto.CalculationType == FinancialCalculationType.Percentage)
             {
@@ -159,8 +181,14 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
-            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable: cancelling reads what has already been given and decides against
+        /// that reading.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
+            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => ChangeRebateStatusCoreAsync(bookingId, rebateId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusCoreAsync(int bookingId, int rebateId,
+            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var rebate = await _context.CustomerRebates.Include(r => r.Booking).Include(r => r.Disbursements)
                 .ThenInclude(d => d.Reversals).Include(r => r.Evidence)
@@ -392,6 +420,8 @@ namespace DAMS.Application.Services
                     "This credit was applied to a completed or possession-given booking. Reopen the booking before reversing the credit.");
             var amount = Money(dto.Amount); var available = Money(disbursement.Amount - disbursement.Reversals.Sum(r => r.Amount));
             if (amount > available) throw new InvalidOperationException($"Reversal exceeds the disbursement balance of {available:0.00}.");
+            if (BookingCreditPolicy.IsNonCashCredit(disbursement.Method))
+                await EnsureRestoredDebtIsCollectableAsync(rebate.Booking, amount, cancellationToken);
             _context.RebateDisbursementReversals.Add(new RebateDisbursementReversal
             {
                 DisbursementId = disbursement.Id, Amount = amount, Reason = reason,
@@ -425,6 +455,64 @@ namespace DAMS.Application.Services
             }
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }, cancellationToken);
+
+        /// <summary>
+        /// Refuses a credit reversal that would put debt back on a booking the installment plan can
+        /// no longer collect.
+        /// <para>
+        /// A plan generated while the credit stood was built SMALLER by it —
+        /// <see cref="BookingCreditPolicy.RemainingInstallmentPool"/> takes the credit out of the
+        /// pool — so the principal now being restored was never given a row to sit on. Rebuilding
+        /// the allocation cannot put it back: an allocation only moves an existing installment's
+        /// balance, it cannot create one. And a receipt is capped by the installment it is recorded
+        /// against, so once the plan is pinned the restored amount has no collection path at all: it
+        /// silently blocks completion for ever while the schedule shows nothing owing.
+        /// </para>
+        /// <para>
+        /// Regenerating the plan is the repair, so the reversal is only refused when the plan can no
+        /// longer be regenerated — the same shape as
+        /// <see cref="ReconcileBookingAmountMilestoneAsync"/>, which refuses a reversal that would
+        /// unwind the booking-amount milestone only once installment activity has begun. While the
+        /// plan IS still rebuildable the shortfall is real but repairable, and
+        /// <c>InstallmentService.RecordInstallmentPaymentAsync</c> refuses to take the next receipt
+        /// until it has been repaired — otherwise that receipt would pin the plan and turn a
+        /// repairable state into the dead end this guard exists to prevent.
+        /// </para>
+        /// <para>
+        /// A CANCELLED booking is out of scope entirely. Cancelling voids the sale, so there is no
+        /// sale receivable left to collect and no plan to rebuild; the settlement is what the parties
+        /// still owe each other. Reversing the credit is how a cancelled booking's rebate reaches
+        /// Reversed, and refusing it here would strand the record in ReversalRequired for ever. This
+        /// is not a loosening of the possession/completion restriction above, which still stands.
+        /// </para>
+        /// </summary>
+        private async Task EnsureRestoredDebtIsCollectableAsync(
+            Booking booking, decimal reversalAmount, CancellationToken cancellationToken)
+        {
+            if (booking.Status == BookingStatus.Cancelled) return;
+
+            var scheduleTotal = await _context.Installments.AsNoTracking()
+                .Where(i => i.BookingId == booking.Id)
+                .SumAsync(i => (decimal?)i.Amount, cancellationToken) ?? 0m;
+            if (scheduleTotal <= 0m) return;
+
+            var creditsAfterReversal = Money(
+                await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id, cancellationToken)
+                - reversalAmount);
+            // Only what a reversed credit is responsible for — a plan that was already short for some
+            // other reason is a pre-existing condition this reversal did not create, and refusing on
+            // its account would block a correction that has nothing to do with it.
+            var shortfall = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
+                _context, booking, scheduleTotal, creditsAfterReversal, reversalAmount, cancellationToken);
+            if (shortfall <= 0m) return;
+            if (await BookingCreditPolicy.CanRegenerateScheduleAsync(_context, booking.Id, cancellationToken)) return;
+
+            throw new InvalidOperationException(
+                $"Reversing this credit puts {shortfall:0.00} back on the customer's balance, but the "
+                + "installment plan was generated without it and can no longer be regenerated, so there "
+                + "would be no way to collect it. Reverse the installment payments, or leave the credit "
+                + "in place and correct it another way.");
+        }
 
         private static void ValidateRebateMethod(RecordRebateDisbursementDto dto)
         {

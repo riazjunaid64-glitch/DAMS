@@ -6,6 +6,7 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import { formatFloor } from "../lib/floors.ts";
 import { bookingToApplicationForm } from "../utils/bookingToApplicationForm.ts";
 import {
   PLACEHOLDERS,
@@ -321,7 +322,7 @@ export default function CreateBookingPage({ user }: Props) {
           </div>
           {selectedUnit && (
             <div className="grid grid-cols-2 gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] p-4 sm:grid-cols-4">
-              <div><p className="text-xs text-[var(--text-muted)]">Floor</p><p className="font-medium text-[var(--text-primary)]">{selectedUnit.floorNumber}</p></div>
+              <div><p className="text-xs text-[var(--text-muted)]">Floor</p><p className="font-medium text-[var(--text-primary)]">{formatFloor(selectedUnit.floorNumber)}</p></div>
               <div><p className="text-xs text-[var(--text-muted)]">Size (sft)</p><p className="font-medium text-[var(--text-primary)]">{selectedUnit.size}</p></div>
               <div><p className="text-xs text-[var(--text-muted)]">List Price</p><p className="font-medium text-[var(--text-primary)]">{selectedUnit.price.toLocaleString()}</p></div>
               <div><p className="text-xs text-[var(--text-muted)]">Type</p><p className="font-medium text-[var(--text-primary)]">{selectedUnit.unitType}</p></div>

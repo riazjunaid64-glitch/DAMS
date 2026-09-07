@@ -31,6 +31,10 @@ interface BookingDetail {
   bookingAmountRequired: number;
   bookingAmountReceived: number;
   bookingAmountRemaining: number;
+  // Net non-cash rebate credits on this booking. Served by the booking endpoint itself, so it is
+  // known whenever the page has a booking at all, and it is the same figure the payment and
+  // schedule services measure their own limits against.
+  rebateCredits: number;
   totalInstallmentAmount: number;
   installmentPlanStartDate?: string | null;
   concurrencyToken: string;
@@ -85,6 +89,10 @@ interface InstallmentSchedule {
   scheduleTotal: number;
   schedulePaid: number;
   scheduleRemaining: number;
+  // What the customer owes that this plan does not demand — normally zero, positive only after a
+  // credit the plan was built smaller by is reversed. The payment service refuses a receipt while
+  // it stands, so the plan has to be regenerated first.
+  unscheduledBalance?: number;
   items: ScheduleItem[];
 }
 
@@ -171,17 +179,21 @@ export default function BookingDetailPage({ user }: Props) {
   const idempotency = useIdempotencyKeys();
 
   const [booking, setBooking] = useState<BookingDetail | null>(null);
+  // NULL means "not known", never "none" — for all three of these. Each is loaded by its own request
+  // and any of them can fail on its own, so a failure must read as a failure. Defaulting a missing
+  // list to empty is what let "No payments recorded yet" mean "the payments could not be fetched",
+  // on the very screen an operator uses to decide whether a customer has paid.
   const [schedule, setSchedule] = useState<InstallmentSchedule | null>(null);
-  const [payments, setPayments] = useState<BookingPayment[]>([]);
+  const [payments, setPayments] = useState<BookingPayment[] | null>(null);
   // Non-cash rebate credits reduce what the customer owes without any payment recording it, so the
   // Summary's price breakdown cannot be derived from the booking alone. Read from the workspace the
   // Commission & Rebate tab already uses, in the same parallel batch.
-  //
-  // NULL means "not known", never "none". A failed read that defaulted to zero would state as fact
-  // that no rebate has been given and would overstate Outstanding by exactly the credit — the same
-  // silent overstatement this release exists to remove. Every figure derived from it is withheld
-  // instead, and the page says so.
   const [rebateCredits, setRebateCredits] = useState<number | null>(null);
+  // Which of the dependent reads failed on the last load. Held per resource so the tab that owns
+  // one can say so and offer a retry, instead of every tab showing the same page-level message.
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [paymentsError, setPaymentsError] = useState<string | null>(null);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("summary");
   // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
   // half-typed commission or a loaded audit page survives a trip to another tab.
@@ -259,27 +271,20 @@ export default function BookingDetailPage({ user }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [bookRes, schedRes, payRes, creditRes] = await Promise.all([
+      // Each dependent read is caught on its own: a network failure on one must not abort the
+      // others, and must not be reported as the booking itself being unavailable.
+      const [bookRes, schedRes, payRes] = await Promise.all([
         api(`/api/Booking/${bookingId}`),
-        api(`/api/Booking/${bookingId}/installments`),
-        api(`/api/Booking/${bookingId}/payments`),
-        api(`/api/finance/commissions-rebates/bookings/${bookingId}`).catch(() => null),
+        api(`/api/Booking/${bookingId}/installments`).catch(() => null),
+        api(`/api/Booking/${bookingId}/payments`).catch(() => null),
       ]);
       if (!bookRes.ok) throw new Error("Booking not found");
 
-      // Parsed inside its own guard so a bad workspace response cannot abort the booking load: this
-      // is one display figure, and it must never be able to take the page down with it.
-      let credits: number | null = null;
-      if (creditRes?.ok) {
-        try {
-          credits = (await creditRes.json() as { rebateCredits?: number }).rebateCredits ?? 0;
-        } catch {
-          credits = null;
-        }
-      }
-      setRebateCredits(credits);
       const b: BookingDetail = await bookRes.json();
       setBooking(b);
+      // Read off the booking rather than from a second endpoint, so the one figure every balance on
+      // this page depends on cannot be the one that failed to arrive.
+      setRebateCredits(typeof b.rebateCredits === "number" ? b.rebateCredits : null);
 
       const derivedPercent =
         b.agreedSalePrice > 0 && b.bookingAmountRequired > 0
@@ -295,14 +300,39 @@ export default function BookingDetailPage({ user }: Props) {
         bookingAmountDueDate: "",
       });
 
-      if (payRes.ok) {
-        setPayments(await payRes.json());
+      // Parsed in its own guard for the same reason as the credits above, and the previous value is
+      // left alone on failure: showing yesterday's list under a visible warning beats replacing it
+      // with a confident "no payments".
+      let paymentRows: BookingPayment[] | null = null;
+      if (payRes?.ok) {
+        try {
+          paymentRows = await payRes.json() as BookingPayment[];
+        } catch {
+          paymentRows = null;
+        }
+      }
+      if (paymentRows) {
+        setPayments(paymentRows);
+        setPaymentsError(null);
+      } else {
+        setPaymentsError("The payment history could not be loaded.");
       }
 
-      if (schedRes.ok) {
-        const s: InstallmentSchedule = await schedRes.json();
-        setSchedule(s);
-        if (!s.hasSchedule) {
+      let s: InstallmentSchedule | null = null;
+      if (schedRes?.ok) {
+        try {
+          s = await schedRes.json() as InstallmentSchedule;
+        } catch {
+          s = null;
+        }
+      }
+      if (!s) {
+        setScheduleError("The installment schedule could not be loaded.");
+      } else {
+        const loaded = s;
+        setScheduleError(null);
+        setSchedule(loaded);
+        if (!loaded.hasSchedule) {
           setForm((prev) => ({
             ...prev,
             agreedSalePrice: String(b.agreedSalePrice),
@@ -312,13 +342,13 @@ export default function BookingDetailPage({ user }: Props) {
         } else {
           setForm((prev) => ({
             ...prev,
-            agreedSalePrice: String(s.agreedSalePrice),
-            discountPercent: String(s.discountPercent ?? 0),
-            frequency: s.frequency ?? "Monthly",
-            numberOfInstallments: String(s.numberOfInstallments ?? 12),
-            installmentStartDate: toDateInput(s.installmentStartDate),
-            possessionAmount: String(s.possessionAmount ?? 0),
-            possessionDueDate: toDateInput(s.possessionDueDate),
+            agreedSalePrice: String(loaded.agreedSalePrice),
+            discountPercent: String(loaded.discountPercent ?? 0),
+            frequency: loaded.frequency ?? "Monthly",
+            numberOfInstallments: String(loaded.numberOfInstallments ?? 12),
+            installmentStartDate: toDateInput(loaded.installmentStartDate),
+            possessionAmount: String(loaded.possessionAmount ?? 0),
+            possessionDueDate: toDateInput(loaded.possessionDueDate),
           }));
         }
       }
@@ -330,14 +360,25 @@ export default function BookingDetailPage({ user }: Props) {
     }
   }, [bookingId]);
 
+  // Swallowing this failure left every payment form with an empty, required "Received In Account"
+  // selector and nothing on screen saying why — the operator could not record money and could not
+  // tell whether that was a rule or a fault.
   const loadFinanceAccounts = useCallback(async () => {
     try {
       const res = await api("/api/finance/accounts/options");
-      if (res.ok) setFinanceAccounts(await res.json());
+      if (!res.ok) throw new Error();
+      setFinanceAccounts(await res.json());
+      setAccountsError(null);
     } catch {
-      /* The form keeps its "required" validation if accounts cannot be loaded. */
+      setAccountsError("The list of finance accounts could not be loaded, so payments cannot be recorded.");
     }
   }, []);
+
+  // One Retry for the whole page: every one of these reads can fail on its own, and asking the
+  // operator to work out which button reloads which figure is not a recovery path.
+  const reload = useCallback(async () => {
+    await Promise.all([load(), loadFinanceAccounts()]);
+  }, [load, loadFinanceAccounts]);
 
   useEffect(() => {
     if (isAdmin) {
@@ -346,18 +387,23 @@ export default function BookingDetailPage({ user }: Props) {
     }
   }, [isAdmin, load, loadFinanceAccounts]);
 
+  // Mirrors BookingCreditPolicy.RemainingInstallmentPool, credits included: the server builds the
+  // schedule out of (net price − booking amount received − credits − possession), so a preview that
+  // left the credits out promised installments larger than the ones about to be generated. NULL
+  // while the credits are unknown — a preview that is confidently wrong is worse than none.
   const previewPool = useMemo(() => {
+    if (rebateCredits === null) return null;
     const agreed = Number(form.agreedSalePrice) || 0;
     const possession = Number(form.possessionAmount) || 0;
     const received = booking?.bookingAmountReceived ?? 0;
     const discountPct = Math.min(100, Math.max(0, Number(form.discountPercent) || 0));
     const net = agreed - Math.round((agreed * discountPct) / 100 * 100) / 100;
-    return Math.max(0, net - received - possession);
-  }, [form.agreedSalePrice, form.possessionAmount, form.discountPercent, booking?.bookingAmountReceived]);
+    return Math.max(0, net - received - rebateCredits - possession);
+  }, [form.agreedSalePrice, form.possessionAmount, form.discountPercent, booking?.bookingAmountReceived, rebateCredits]);
 
   const previewPerInstallment = useMemo(() => {
     const n = Number(form.numberOfInstallments) || 0;
-    if (n <= 0 || previewPool <= 0) return 0;
+    if (previewPool === null || n <= 0 || previewPool <= 0) return 0;
     return Math.round((previewPool / n) * 100) / 100;
   }, [previewPool, form.numberOfInstallments]);
 
@@ -479,7 +525,10 @@ export default function BookingDetailPage({ user }: Props) {
 
   const openBookingPay = () => {
     setBookingPayError(null);
-    const remaining = booking ? booking.bookingAmountRequired - booking.bookingAmountReceived : 0;
+    // The credit-aware figure, not the raw requirement: a rebate has already settled part of the
+    // booking amount, and defaulting the form to the raw difference offered a payment the service
+    // would then refuse for exceeding the remaining balance.
+    const remaining = booking?.bookingAmountRemaining ?? 0;
     setBookingPayForm({
       amount: remaining > 0 ? String(remaining) : "",
       paymentMethod: "Cash",
@@ -569,27 +618,48 @@ export default function BookingDetailPage({ user }: Props) {
   // recognised sale still has a receivable, and an installment is the only way DAMS collects one,
   // so hiding the form here stranded it with no route to payment. It also folds in the booking
   // amount and the regenerate rules, which a status check silently skipped.
-  const canShowPlanForm = Boolean(schedule?.canGenerate);
-  const planLocked = schedule?.hasSchedule && !schedule.canRegenerate;
+  // A stale schedule must not drive actions. Generating or collecting against installment ids that
+  // were read before the last failed refresh is how an operator ends up recording money against a
+  // row the server has since replaced, so both are withdrawn until the schedule reloads.
+  const scheduleIsFresh = schedule !== null && scheduleError === null;
+  const canShowPlanForm = scheduleIsFresh && Boolean(schedule.canGenerate);
+  const planLocked = scheduleIsFresh && schedule.hasSchedule && !schedule.canRegenerate;
+  // Positive only when a credit the plan was built smaller by has been reversed. The payment service
+  // refuses a receipt while it stands, because that receipt would pin the plan and strand the amount.
+  const unscheduledBalance = scheduleIsFresh ? schedule.unscheduledBalance ?? 0 : 0;
   // Possession means the sale is recognised as revenue, and the backend refuses to restate the
   // terms it was recognised on. Showing them as editable would only produce a rejection.
   const termsFrozen = booking.status === "PossessionGiven";
 
   const netSalePrice = booking.agreedSalePrice - booking.discountAmount;
-  const amountCollected = payments.reduce((sum, p) => sum + p.amount, 0);
+  // NULL when the payment list did not arrive OR did not REFRESH. A stale list is fine to keep on
+  // screen as history, but its sum is not a current figure: record a payment, let the follow-up read
+  // fail, and yesterday's receipts would be added to today's booking and reported as Amount
+  // Collected — understating it by exactly the payment just taken.
+  const amountCollected = payments === null || paymentsError !== null
+    ? null
+    : payments.reduce((sum, p) => sum + p.amount, 0);
   const isCancelled = booking.status === "Cancelled";
   // Cancelling voids the sale, and Finance drops the booking from the receivable the moment it does
   // (FinanceService.OutstandingBookings). Reporting the unpaid balance here anyway would have this
   // screen claim a debt the ledger says does not exist; what the parties still owe each other is
   // the cancellation settlement, which the Summary tab shows.
   //
-  // NULL while the rebate credit is unknown: an Outstanding computed without it is wrong, and a
-  // wrong figure is worse than an absent one on a screen people collect money from.
+  // NULL while either input is unknown: an Outstanding computed without the rebate credit or
+  // without the receipts is wrong, and a wrong figure is worse than an absent one on a screen
+  // people collect money from.
   const outstandingAmount = isCancelled
     ? 0
-    : rebateCredits === null
+    : rebateCredits === null || amountCollected === null
       ? null
       : Math.max(0, netSalePrice - amountCollected - rebateCredits);
+
+  const missingReads = [
+    rebateCredits === null ? "The booking's rebate credits are missing from this response." : null,
+    accountsError,
+    paymentsError,
+    scheduleError,
+  ].filter((m): m is string => m !== null);
 
   return (
     <Container size="wide" className="py-8">
@@ -670,11 +740,12 @@ export default function BookingDetailPage({ user }: Props) {
       {/* Page-level, so a failure raised on one tab is not hidden by switching to another. */}
       {error && <div className="mb-6 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{error}</div>}
 
-      {/* Says which figures are missing and why, rather than letting them quietly read zero. */}
-      {rebateCredits === null && !loading && (
+      {/* Says which figures are missing and why, rather than letting them quietly read zero. One
+          banner listing every read that failed, because they share one Retry. */}
+      {!loading && missingReads.length > 0 && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          <span>Rebate credits could not be loaded, so Rebate Credits and Outstanding Amount are not shown.</span>
-          <Button size="sm" variant="outline" onClick={() => void load()}>Retry</Button>
+          <span>{missingReads.join(" ")} The figures that depend on {missingReads.length > 1 ? "them" : "it"} are shown as “Unavailable” rather than as zero.</span>
+          <Button size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
         </div>
       )}
 
@@ -710,7 +781,9 @@ export default function BookingDetailPage({ user }: Props) {
               <StatCard tone="gold" icon={<Icons.coins />} label="Booking Amount Remaining"
                 value={formatMoney(booking.bookingAmountRemaining)} />
               <StatCard tone="sky" icon={<Icons.calendar />} label="Installment Pool (preview)"
-                value={formatMoney(schedule?.installmentPool ?? previewPool)} />
+                value={schedule?.installmentPool !== undefined
+                  ? formatMoney(schedule.installmentPool)
+                  : previewPool === null ? "Unavailable" : formatMoney(previewPool)} />
             </div>
           </PanelCard>
 
@@ -723,7 +796,12 @@ export default function BookingDetailPage({ user }: Props) {
                   <DetailRow label={`Discount (${booking.discountPercent}%)`} value={`− ${formatAmount(booking.discountAmount)}`} />
                 )}
                 <DetailRow label="Net Sale Price" value={formatAmount(netSalePrice)} />
-                <DetailRow label="Amount Collected" value={formatAmount(amountCollected)} />
+                <DetailRow
+                  label="Amount Collected"
+                  value={amountCollected === null
+                    ? <span className="font-normal text-[var(--text-muted)]">Unavailable</span>
+                    : formatAmount(amountCollected)}
+                />
                 <DetailRow
                   label="Rebate Credits"
                   value={rebateCredits === null
@@ -889,9 +967,18 @@ export default function BookingDetailPage({ user }: Props) {
                 )}
 
                 <div className="sm:col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-                  <strong>Preview:</strong> {form.numberOfInstallments} installments × ~{formatMoney(previewPerInstallment)}
-                  {Number(form.possessionAmount) > 0 && ` + possession ${formatMoney(Number(form.possessionAmount))}`}
-                  {" "}(pool {formatMoney(previewPool)})
+                  {previewPool === null ? (
+                    <>
+                      <strong>Preview:</strong> unavailable — the rebate credits that come off the pool could not be
+                      loaded, and the schedule the server builds would not match what is shown here.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Preview:</strong> {form.numberOfInstallments} installments × ~{formatMoney(previewPerInstallment)}
+                      {Number(form.possessionAmount) > 0 && ` + possession ${formatMoney(Number(form.possessionAmount))}`}
+                      {" "}(pool {formatMoney(previewPool)})
+                    </>
+                  )}
                 </div>
 
                 {!planLocked && (
@@ -914,6 +1001,17 @@ export default function BookingDetailPage({ user }: Props) {
               )}
             </div>
             </PanelCard>
+          )}
+
+          {/* The plan no longer covers the balance — say so where the plan is, and name the repair.
+              Collection is withheld until then because the next receipt would lock the shortfall in. */}
+          {unscheduledBalance > 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+              This booking owes {formatMoney(unscheduledBalance)} more than the schedule below collects,
+              because a rebate credit the plan was built without has since been reversed. Regenerate the
+              installment plan for the current balance — payments are held until then, since taking one
+              would lock the plan with that amount uncollectable.
+            </div>
           )}
 
           {/* Schedule table */}
@@ -940,8 +1038,19 @@ export default function BookingDetailPage({ user }: Props) {
                     // Collection continues after possession: the unpaid balance is then an Accounts
                     // Receivable, and the backend accepts a receipt against it for exactly that reason.
                     // Only the two collectable states — a cancelled or completed booking takes neither.
-                    const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
-                      && item.status !== "Paid" && item.remainingBalance > 0;
+                    // Withheld while the plan is short of the balance: the payment service refuses
+                    // such a receipt, because taking it would pin the plan and leave the difference
+                    // uncollectable. The banner above says so and points at Regenerate.
+                    // scheduleIsFresh for the same reason the plan form uses it, and it is needed
+                    // HERE too: a failed refresh leaves the previous schedule on screen, so this
+                    // branch still renders — rows, amounts and installment ids all as they were
+                    // before whatever broke the reload. Collecting against one of those ids is how
+                    // money gets recorded against a row the server has since replaced. The banner
+                    // at the top of the page already says the read failed and offers a retry.
+                    const isPayable = scheduleIsFresh
+                      && (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
+                      && item.status !== "Paid" && item.remainingBalance > 0
+                      && unscheduledBalance <= 0;
                     return (
                     <tr key={item.id} className="border-b border-[var(--border)] transition-colors last:border-0 hover:bg-[var(--surface-glass-hover)]">
                       <td className="px-5 py-3.5 text-[var(--text-secondary)]">{item.type === "Possession" ? "—" : item.sequenceNumber}</td>
@@ -970,6 +1079,15 @@ export default function BookingDetailPage({ user }: Props) {
               </table>
               </div>
             </div>
+          ) : scheduleError ? (
+            // "No schedule" and "the schedule did not load" are different facts, and only one of
+            // them means the next step is to generate a plan.
+            <PanelCard>
+              <div className="px-5 py-8 text-center sm:px-6">
+                <p className="text-sm text-rose-400">{scheduleError}</p>
+                <Button className="mt-4" size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
+              </div>
+            </PanelCard>
           ) : (
             // A tab must always say something. Which message depends on why there is no schedule: the
             // form above is the next step when it is available, and the booking amount is when it is not.
@@ -998,7 +1116,9 @@ export default function BookingDetailPage({ user }: Props) {
               <StatCard tone="emerald" icon={<Icons.wallet />} label="Booking Amount Received"
                 value={`Rs ${formatMoney(booking.bookingAmountReceived)} / ${formatMoney(booking.bookingAmountRequired)}`} />
               <StatCard tone="gold" icon={<Icons.coins />} label="Amount Collected"
-                value={`Rs ${formatMoney(amountCollected)}`} />
+                value={amountCollected === null
+                  ? <span className="text-[var(--text-muted)]">Unavailable</span>
+                  : `Rs ${formatMoney(amountCollected)}`} />
               {/* Net of rebate credits: they settle the balance without any cash arriving, so leaving
                   them out would report the customer owing money a rebate has already cleared. */}
               <StatCard
@@ -1013,7 +1133,7 @@ export default function BookingDetailPage({ user }: Props) {
             </div>
           </PanelCard>
 
-          {payments.length > 0 ? (
+          {payments !== null && payments.length > 0 ? (
             <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)]">
               <div className="border-b border-[var(--border)] px-5 py-4 sm:px-6">
                 <h2 className="text-lg font-semibold text-[var(--text-heading)]">Payment History</h2>
@@ -1058,6 +1178,16 @@ export default function BookingDetailPage({ user }: Props) {
                 </table>
               </div>
             </div>
+          ) : paymentsError ? (
+            // "No payments" is a statement about the customer; a failed read is a statement about
+            // the network. Showing the first when the second happened is how an operator ends up
+            // collecting money that was already paid.
+            <PanelCard>
+              <div className="px-5 py-8 text-center sm:px-6">
+                <p className="text-sm text-rose-400">{paymentsError}</p>
+                <Button className="mt-4" size="sm" variant="outline" onClick={() => void reload()}>Retry</Button>
+              </div>
+            </PanelCard>
           ) : (
             <PanelCard>
               <EmptyState
@@ -1129,7 +1259,12 @@ export default function BookingDetailPage({ user }: Props) {
           <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--modal-bg)] p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-[var(--text-heading)]">Record Booking Amount Payment</h3>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
-              Required {formatMoney(booking.bookingAmountRequired)} · Received {formatMoney(booking.bookingAmountReceived)} · Remaining {formatMoney(booking.bookingAmountRemaining)}
+              Required {formatMoney(booking.bookingAmountRequired)} · Received {formatMoney(booking.bookingAmountReceived)}
+              {/* Named, so "Remaining" reads as the sum it is rather than as a figure that does not
+                  subtract. Without it a credit-covered booking showed Required 1,000,000, Received 0
+                  and Remaining 0 with nothing on screen to explain the gap. */}
+              {booking.rebateCredits > 0 && ` · Rebate credit ${formatMoney(booking.rebateCredits)}`}
+              {" · "}Remaining {formatMoney(booking.bookingAmountRemaining)}
             </p>
 
             {bookingPayError && <div className="mt-4 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">{bookingPayError}</div>}

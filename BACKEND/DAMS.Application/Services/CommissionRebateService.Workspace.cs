@@ -163,6 +163,11 @@ namespace DAMS.Application.Services
                 var previous = commission.Status;
                 commission.Status = NetPaid(commission) > 0m ? BookingCommissionStatus.ReversalRequired : BookingCommissionStatus.Cancelled;
                 commission.CancellationOrReversalReason = cleanReason; commission.UpdatedAt = DateTime.UtcNow;
+                // The sale is void, so the company no longer owes the commission on it — in BOTH
+                // outcomes. Cancelled simply ends; ReversalRequired ends too, and what has already
+                // been paid stops being a cost and becomes an amount recoverable from the partner,
+                // which is what the negative payable then says.
+                await ReleaseAccrualAsync(commission, actor, cleanReason, cancellationToken);
                 Audit(commission.Status == BookingCommissionStatus.ReversalRequired
                         ? FinancialWorkflowAction.CommissionReversalRequired : FinancialWorkflowAction.CommissionCancelled,
                     actor, commission.PartnerId, bookingId: bookingId, commissionId: commission.Id,
@@ -215,6 +220,17 @@ namespace DAMS.Application.Services
             IsPrimary = a.IsPrimary, AllocationPercent = a.AllocationPercent, AssignedAt = a.AssignedAt,
             ConcurrencyToken = Token(a.RowVersion)
         };
+        // A commission the company still owes something on: it is owed from entry (Pending) and
+        // fully settled at Paid. Cancelled, Reversed and ReversalRequired are closed — the company
+        // owes the partner nothing more, and anything already paid on a ReversalRequired record is
+        // reported as Recovery due, not as an unpaid balance. Same live/closed split as
+        // GetSummaryAsync's Accrued, so the card and the dashboard cannot disagree.
+        private static bool IsLive(BookingCommissionStatus status) =>
+            status is BookingCommissionStatus.Pending or BookingCommissionStatus.Paid;
+
+        private static bool IsLive(CustomerRebateStatus status) =>
+            status is CustomerRebateStatus.Pending or CustomerRebateStatus.Applied or CustomerRebateStatus.Paid;
+
         private static BookingCommissionDto MapCommission(BookingCommission c, string? bookingReference = null)
         {
             var paid = NetPaid(c);
@@ -229,7 +245,8 @@ namespace DAMS.Application.Services
                 CalculationType = c.CalculationType, PercentageRate = c.PercentageRate, FixedAmount = c.FixedAmount,
                 CalculationBasis = c.CalculationBasis, BasisAmount = c.BasisAmount, CalculatedAmount = c.CalculatedAmount,
                 AdjustmentAmount = c.AdjustmentAmount, AdjustmentReason = c.AdjustmentReason, FinalAmount = c.FinalAmount,
-                PaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(c.FinalAmount - paid)),
+                PaidAmount = paid,
+                OutstandingAmount = IsLive(c.Status) ? Math.Max(0m, Money(c.FinalAmount - paid)) : 0m,
                 RecoveryRequiredAmount = c.Status == BookingCommissionStatus.ReversalRequired ? paid : 0m,
                 Status = c.Status, CreatedAt = c.CreatedAt,
                 CancellationOrReversalReason = c.CancellationOrReversalReason,
@@ -254,7 +271,8 @@ namespace DAMS.Application.Services
                 PercentageRate = r.PercentageRate, FixedAmount = r.FixedAmount, CalculationBasis = r.CalculationBasis,
                 BasisAmount = r.BasisAmount, CalculatedAmount = r.CalculatedAmount, AdjustmentAmount = r.AdjustmentAmount,
                 AdjustmentReason = r.AdjustmentReason, FinalAmount = r.FinalAmount,
-                AppliedOrPaidAmount = paid, OutstandingAmount = Math.Max(0m, Money(r.FinalAmount - paid)),
+                AppliedOrPaidAmount = paid,
+                OutstandingAmount = IsLive(r.Status) ? Math.Max(0m, Money(r.FinalAmount - paid)) : 0m,
                 RecoveryRequiredAmount = r.Status == CustomerRebateStatus.ReversalRequired ? paid : 0m,
                 Reason = r.Reason, Method = r.Method, Status = r.Status, Notes = r.Notes, CreatedAt = r.CreatedAt,
                 CancellationOrReversalReason = r.CancellationOrReversalReason,

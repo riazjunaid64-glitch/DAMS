@@ -5,6 +5,7 @@ using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
+using DAMS.Application.DTOs.InstallmentDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
@@ -174,6 +175,845 @@ public sealed class SqlServerProductionInvariantTests
                 .SumAsync(p => p.Amount));
             Assert.Equal(BookingCommissionStatus.Pending,
                 (await db.BookingCommissions.FindAsync(commissionId))!.Status);
+        }
+    }
+
+    /// <summary>
+    /// InstallmentService had no transaction lock at all until it was given one to match
+    /// CommissionRebateService's money-moving methods: two concurrent installment payments, each
+    /// reading "100,000 is owed" before either commits, must not both be allowed to collect against
+    /// it. Mirrors MigrationsTransactionsAndConcurrentPayouts_PreserveProductionInvariants above,
+    /// which proves the same thing for a commission payout.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentInstallmentPayments_CannotTogetherOverpayTheSameInstallment()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId; int installmentId; int accountId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Concurrency", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "CX-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Concurrency Customer", Phone = "03001111111", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"CX-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m,
+                BookingDate = DateTime.UtcNow
+            };
+            var installment = new Installment
+            {
+                Booking = booking, SequenceNumber = 1, Type = InstallmentType.Regular,
+                DueDate = DateTime.UtcNow.AddMonths(1), Amount = 100_000m, Status = InstallmentStatus.Pending
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Concurrency Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, installment, account);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; installmentId = installment.Id; accountId = account.Id;
+        }
+
+        async Task<Exception?> PayAsync(string reference)
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                var service = new InstallmentService(context, new FinanceAccountService(context));
+                await service.RecordInstallmentPaymentAsync(bookingId, installmentId, new RecordInstallmentPaymentDto
+                {
+                    Amount = 70_000m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = reference
+                }, adminUserId: 901);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        // Each side believes the full 100,000 is available; together they ask for 140,000.
+        var outcomes = await Task.WhenAll(PayAsync("cx-payment-a"), PayAsync("cx-payment-b"));
+        Assert.Single(outcomes, error => error == null);
+        Assert.Single(outcomes, error => error is InvalidOperationException
+            && error.Message.Contains("remaining installment balance"));
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(70_000m, await verify.Payments.Where(p => p.InstallmentId == installmentId).SumAsync(p => p.Amount));
+        Assert.Equal(InstallmentStatus.PartiallyPaid, (await verify.Installments.FindAsync(installmentId))!.Status);
+    }
+
+    /// <summary>
+    /// The cross-flow half of the same gap: a schedule built while a non-cash rebate credit stood
+    /// is smaller by that credit, so reversing it is only safe while the schedule can still be
+    /// rebuilt — and an installment payment permanently pins the schedule the instant it lands
+    /// (Payment.InstallmentId is Restrict). Concurrently reversing the credit and paying the
+    /// installment it was covering must not let both through: that would strand the reversed
+    /// amount on a plan nothing can ever collect it with. Whichever side wins the race, the
+    /// invariant BookingCreditPolicy itself enforces — stranded is either zero or still
+    /// repairable — must hold once both requests have settled.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentCreditReversalAndInstallmentPayment_CannotStrandAnUncollectableBalance()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId; int rebateId; int disbursementId; int installmentId; int accountId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Credit Race", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "CR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Credit Race Customer", Phone = "03002222222", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"CR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m,
+                BookingDate = DateTime.UtcNow
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Credit Race Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, account);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; accountId = account.Id;
+
+            var rebates = new CommissionRebateService(db, new FinanceAccountService(db), new NullPrivateStorage());
+            var workspace = await rebates.CreateRebateAsync(bookingId, new CreateCustomerRebateDto
+            {
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = 200_000m, Reason = "Loyalty credit", Method = CustomerRebateMethod.OutstandingBalanceReduction
+            }, Actor);
+            var rebate = Assert.Single(workspace.Rebates);
+            rebateId = rebate.Id;
+            workspace = await rebates.RecordRebateDisbursementAsync(bookingId, rebateId, new RecordRebateDisbursementDto
+            {
+                Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = 200_000m, AppliedAt = DateTime.UtcNow,
+                IdempotencyKey = "seed-disbursement", RebateConcurrencyToken = rebate.ConcurrencyToken
+            }, Actor);
+            rebate = Assert.Single(workspace.Rebates);
+            Assert.Equal(CustomerRebateStatus.Applied, rebate.Status);
+            disbursementId = Assert.Single(rebate.Disbursements).Id;
+
+            // Pool = 1,000,000 net price - 100,000 booking amount - 200,000 credit = 700,000, all in
+            // one installment, built while the credit still stands.
+            var installments = new InstallmentService(db, new FinanceAccountService(db));
+            var schedule = await installments.GenerateScheduleAsync(bookingId, new GenerateInstallmentPlanDto
+            {
+                AgreedSalePrice = 1_000_000m, DiscountPercent = 0m, Frequency = InstallmentFrequency.Monthly,
+                NumberOfInstallments = 1, InstallmentStartDate = DateTime.UtcNow.AddMonths(1)
+            }, adminUserId: 901);
+            Assert.Equal(700_000m, schedule.ScheduleTotal);
+            installmentId = Assert.Single(schedule.Items).Id;
+        }
+
+        async Task<Exception?> ReverseAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                var service = new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage());
+                await service.ReverseRebateDisbursementAsync(bookingId, rebateId, disbursementId,
+                    new ReverseMoneyMovementDto { Amount = 200_000m, Reason = "Credit withdrawn", IdempotencyKey = "cr-reversal" }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        async Task<Exception?> PayAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                var service = new InstallmentService(context, new FinanceAccountService(context));
+                // Any amount pins the installment (Payment.InstallmentId is Restrict) — it does not
+                // need to pay the installment off to make the schedule unreformable.
+                await service.RecordInstallmentPaymentAsync(bookingId, installmentId, new RecordInstallmentPaymentDto
+                {
+                    Amount = 1_000m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = "cr-pin"
+                }, adminUserId: 901);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        var outcomes = await Task.WhenAll(ReverseAsync(), PayAsync());
+
+        // Whichever request lost the race must have lost it with the guard's own message, not some
+        // unrelated failure (a real deadlock that exhausted its retries, a translation error, etc.).
+        foreach (var error in outcomes)
+            if (error != null)
+                Assert.True(error is InvalidOperationException ioe && (ioe.Message.Contains("uncollectable")
+                        || ioe.Message.Contains("no way to collect it")),
+                    $"Unexpected failure shape: {error}");
+
+        await using var verify = new AppDbContext(options);
+        var finalBooking = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+        var scheduleTotal = await verify.Installments.Where(i => i.BookingId == bookingId)
+            .SumAsync(i => (decimal?)i.Amount) ?? 0m;
+        var finalCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(verify, bookingId);
+        var canRegenerate = await BookingCreditPolicy.CanRegenerateScheduleAsync(verify, bookingId);
+        var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
+            verify, finalBooking, scheduleTotal, finalCredits);
+        Assert.True(stranded == 0m || canRegenerate,
+            $"Stranded {stranded:0.00} on a schedule that cannot be regenerated — the reversed-credit guard was bypassed by the race.");
+    }
+
+    /// <summary>
+    /// Recording a customer payment runs inside a retrying execution strategy, and a commit whose
+    /// acknowledgement is lost on the way back looks exactly like a commit that never happened — so
+    /// the strategy replays the whole delegate. Replaying it used to take the money again: a second
+    /// Payment row under a second receipt number, with nothing on either to say they were one
+    /// intent. The endpoint's Idempotency-Key filter cannot see this; it guards the HTTP call from
+    /// outside, and this replay happens wholly within one such call.
+    /// <para>
+    /// Both payment paths are driven here through the seam the retry itself uses — the same attempt
+    /// key twice — because that is precisely what a replay is. Part payments on purpose: a replayed
+    /// FULL payment happens to be caught by the "already received"/"already paid" status guards,
+    /// which is what let this hide.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task ReplayingOnePaymentAttempt_TakesTheMoneyOnceNotTwice()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, installmentId, accountId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Replay", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "RP-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Replay Customer", Phone = "03002223333", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"RP-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            var installment = new Installment
+            {
+                Booking = booking, SequenceNumber = 1, Type = InstallmentType.Regular,
+                DueDate = DateTime.UtcNow.AddMonths(1), Amount = 100_000m, Status = InstallmentStatus.Pending
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Replay Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, installment, account);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; installmentId = installment.Id; accountId = account.Id;
+        }
+
+        const string bookingAttempt = "booking-amount-payment:replayed-attempt";
+        await using (var context = new AppDbContext(options))
+        {
+            var bookings = new BookingService(context, new CustomerService(context), new FinanceAccountService(context));
+            var dto = new RecordBookingAmountPaymentDto
+            {
+                Amount = 40_000m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                PaidAt = DateTime.UtcNow, PaymentReference = "rp-booking"
+            };
+            await bookings.RecordBookingAmountPaymentAsync(bookingId, dto, 901, bookingAttempt, CancellationToken.None);
+            await bookings.RecordBookingAmountPaymentAsync(bookingId, dto, 901, bookingAttempt, CancellationToken.None);
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var deposits = await verify.Payments
+                .Where(p => p.BookingId == bookingId && p.Type == PaymentType.BookingAmount).ToListAsync();
+            var deposit = Assert.Single(deposits);
+            Assert.Equal(40_000m, deposit.Amount);
+            Assert.Equal(bookingAttempt, deposit.IdempotencyKey);
+            // The booking's own running total is written by the same delegate, so a replay that
+            // wrote one payment twice would have doubled this too.
+            Assert.Equal(40_000m, (await verify.Bookings.SingleAsync(b => b.Id == bookingId)).BookingAmountReceived);
+        }
+
+        // Move it on to the stage installments can be collected in, without pretending a second
+        // payment arrived: this test is about how many rows one attempt writes.
+        await using (var advance = new AppDbContext(options))
+        {
+            var booking = await advance.Bookings.SingleAsync(b => b.Id == bookingId);
+            booking.BookingAmountReceived = 100_000m;
+            booking.Status = BookingStatus.PaymentPlanActive;
+            await advance.SaveChangesAsync();
+        }
+
+        const string installmentAttempt = "installment-payment:replayed-attempt";
+        await using (var context = new AppDbContext(options))
+        {
+            var installments = new InstallmentService(context, new FinanceAccountService(context));
+            var dto = new RecordInstallmentPaymentDto
+            {
+                Amount = 40_000m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                PaidAt = DateTime.UtcNow, PaymentReference = "rp-installment"
+            };
+            await installments.RecordInstallmentPaymentAsync(bookingId, installmentId, dto, 901, installmentAttempt);
+            var schedule = await installments.RecordInstallmentPaymentAsync(
+                bookingId, installmentId, dto, 901, installmentAttempt);
+            // The replay still answers with the truth about the schedule, not an error and not a
+            // doubled figure — the caller cannot tell it was replayed, which is the point.
+            Assert.Equal(40_000m, Assert.Single(schedule.Items).AmountPaid);
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var collected = await verify.Payments
+                .Where(p => p.BookingId == bookingId && p.Type == PaymentType.Installment).ToListAsync();
+            var installmentPayment = Assert.Single(collected);
+            Assert.Equal(40_000m, installmentPayment.Amount);
+            Assert.Equal(installmentAttempt, installmentPayment.IdempotencyKey);
+            Assert.Equal(InstallmentStatus.PartiallyPaid, (await verify.Installments.FindAsync(installmentId))!.Status);
+            // Two receipts for one payment is the visible symptom operators would have chased.
+            Assert.Equal(2, await verify.Payments.CountAsync(p => p.BookingId == bookingId && p.ReceiptNumber != null));
+        }
+    }
+
+    /// <summary>
+    /// Cancelling a booking releases the accrual of every commission it can SEE, inside its own
+    /// Serializable transaction. Creating a commission reads the booking to check it is still
+    /// active and then raises an expense and a payable on it — so unless both sides are serialized,
+    /// a commission created alongside a cancellation is simply never seen by the release, and the
+    /// cancelled sale carries a live commission expense and payable that nothing will ever clear.
+    /// <para>
+    /// Whichever side wins, the invariant is the same and is checked from the ledger itself: a
+    /// commission on a cancelled booking owes nothing.
+    /// </para>
+    /// <para>
+    /// End-to-end cover only. Like the terms-edit race, it does NOT prove the locking — the window
+    /// is a few milliseconds wide and this passes with the transaction removed.
+    /// <see cref="WritingCommissionsAndRebates_HappensInOneSerializableTransaction"/> is what pins that.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentCommissionCreationAndBookingCancellation_LeaveNothingAccruedOnACancelledSale()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, partnerId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Cancel Race", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "CR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Cancel Race Customer", Phone = "03001234567", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"CR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            var partner = new ThirdPartyPartner
+            {
+                Name = "Cancel Race Broker", PartnerType = "Broker", InternalCode = "CRB-1", IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, partner);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; partnerId = partner.Id;
+        }
+
+        async Task<Exception?> AddCommissionAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                await new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage())
+                    .CreateCommissionAsync(bookingId, new CreateBookingCommissionDto
+                    {
+                        PartnerId = partnerId, IsManual = true,
+                        ManualCalculationType = FinancialCalculationType.FixedAmount,
+                        ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                        ManualFixedAmount = 50_000m, ManualReason = "Agreed with the broker"
+                    }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        async Task<Exception?> CancelAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                var commissions = new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage());
+                await new BookingService(context, new CustomerService(context), new FinanceAccountService(context),
+                        commissionLifecycle: commissions)
+                    .CancelBookingAsync(bookingId, new CancelBookingDto
+                    {
+                        Reason = "Customer withdrew", RefundAmount = 0m, ExpectedCustomerCashReceived = 0m,
+                        IdempotencyKey = "cr-cancel"
+                    }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        await Task.WhenAll(AddCommissionAsync(), CancelAsync());
+
+        await using var verify = new AppDbContext(options);
+        var booked = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+        if (booked.Status != BookingStatus.Cancelled) return; // the cancellation lost the race outright
+
+        foreach (var commission in await verify.BookingCommissions.Where(c => c.BookingId == bookingId).ToListAsync())
+        {
+            var accrued = await verify.CommissionAccruals
+                .Where(a => a.CommissionId == commission.Id).SumAsync(a => (decimal?)a.Amount) ?? 0m;
+            Assert.True(accrued == 0m,
+                $"Commission {commission.Id} on a cancelled booking still owes {accrued:0.00} — "
+                + "it was created after the cancellation released everything it could see.");
+        }
+    }
+
+    /// <summary>
+    /// A payment carrying more decimal places than the money columns hold must settle the same
+    /// figure it banks.
+    /// <para>
+    /// The amount is stored in decimal(18,2) while the in-memory value keeps every place it was
+    /// sent with, and the milestone was decided on the in-memory one. So 99,999.996 against a
+    /// 100,000 installment banked 100,000.00 and then ruled the row only PARTLY paid, because
+    /// 99,999.996 is not >= 100,000. The remaining balance is zero from that moment on, so no
+    /// further payment can be taken: the installment — and the booking amount, on the other path —
+    /// is stuck short of a target it has already been paid, and no operator action can free it.
+    /// </para>
+    /// <para>Only a real database can show this: the in-memory provider keeps all six places.</para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task PaymentsCarryingExtraDecimalPlaces_SettleTheAmountTheyBank()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, installmentId, accountId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Rounding", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "RD-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Rounding Customer", Phone = "03008889999", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"RD-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            var installment = new Installment
+            {
+                Booking = booking, SequenceNumber = 1, Type = InstallmentType.Regular,
+                DueDate = DateTime.UtcNow.AddMonths(1), Amount = 100_000m, Status = InstallmentStatus.Pending
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Rounding Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, installment, account);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; installmentId = installment.Id; accountId = account.Id;
+        }
+
+        // The booking amount, paid to the last hundredth of a paisa.
+        await using (var context = new AppDbContext(options))
+            await new BookingService(context, new CustomerService(context), new FinanceAccountService(context))
+                .RecordBookingAmountPaymentAsync(bookingId, new RecordBookingAmountPaymentDto
+                {
+                    Amount = 99_999.996m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = "rd-booking"
+                }, adminUserId: 901);
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var booking = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+            Assert.Equal(100_000m, booking.BookingAmountReceived);
+            Assert.Equal(BookingStatus.PaymentPlanActive, booking.Status);
+            Assert.Equal(100_000m, await verify.Payments
+                .Where(p => p.BookingId == bookingId && p.Type == PaymentType.BookingAmount)
+                .SumAsync(p => p.Amount));
+        }
+
+        await using (var context = new AppDbContext(options))
+            await new InstallmentService(context, new FinanceAccountService(context))
+                .RecordInstallmentPaymentAsync(bookingId, installmentId, new RecordInstallmentPaymentDto
+                {
+                    Amount = 99_999.996m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = "rd-installment"
+                }, adminUserId: 901);
+
+        await using (var verify = new AppDbContext(options))
+        {
+            Assert.Equal(100_000m, await verify.Payments
+                .Where(p => p.InstallmentId == installmentId).SumAsync(p => p.Amount));
+            // The row banked its full amount, so it is settled — not left one thousandth short with
+            // no way to collect the difference.
+            Assert.Equal(InstallmentStatus.Paid, (await verify.Installments.FindAsync(installmentId))!.Status);
+        }
+    }
+
+    /// <summary>
+    /// A plan built from a possession amount carrying more decimal places than the column holds
+    /// must still total exactly what the customer owes.
+    /// <para>
+    /// The possession row is stored rounded while the installment pool is worked out from the
+    /// unrounded figure, so the rows together come to a paisa MORE than the balance: 100.005 is
+    /// banked as 100.01 and the pool still gives away the other 0.005. Every payment is capped at
+    /// the balance actually outstanding, so that last paisa can never be collected — the plan stays
+    /// one payment short for ever on a sale the customer has paid in full, and the sale cannot be
+    /// completed.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task APlanBuiltFromAnExtraDecimalPossessionAmount_TotalsExactlyWhatIsOwed()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Possession Rounding", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "PR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Possession Customer", Phone = "03003030303", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"PR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m, DiscountAmount = 0m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m, BookingDate = DateTime.UtcNow
+            };
+            db.AddRange(project, unit, customer, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+        }
+
+        await using (var context = new AppDbContext(options))
+            await new InstallmentService(context, new FinanceAccountService(context))
+                .GenerateScheduleAsync(bookingId, new GenerateInstallmentPlanDto
+                {
+                    AgreedSalePrice = 1_000_000m, DiscountPercent = 0m,
+                    Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 1,
+                    InstallmentStartDate = DateTime.UtcNow.AddMonths(1),
+                    PossessionAmount = 100.005m, PossessionDueDate = DateTime.UtcNow.AddMonths(6)
+                }, adminUserId: 901);
+
+        await using var verify = new AppDbContext(options);
+        // 1,000,000 net less the 100,000 already received: the plan may collect this and not a
+        // paisa more, or the sale can never be finished.
+        var owed = 900_000m;
+        var rows = await verify.Installments.Where(i => i.BookingId == bookingId).ToListAsync();
+        Assert.Equal(owed, rows.Sum(i => i.Amount));
+        Assert.Equal(100.01m, Assert.Single(rows, i => i.Type == InstallmentType.Possession).Amount);
+        Assert.Equal(owed, (await verify.Bookings.SingleAsync(b => b.Id == bookingId)).TotalInstallmentAmount);
+    }
+
+    /// <summary>
+    /// Editing the booking's financial terms refuses a net sale price below what the customer has
+    /// already settled in cash and rebate credits — otherwise the same concession is granted twice,
+    /// once off the balance and again off the price, and the receivable goes negative on a sale
+    /// nobody has paid off.
+    /// <para>
+    /// End-to-end cover for that guard while both sides run at once. It does NOT prove the locking:
+    /// the damaging interleaving is a write skew a few milliseconds wide, and this passes with the
+    /// transaction removed as readily as with it. <see cref="EditingBookingTerms_ReadsAndWritesInOneSerializableTransaction"/>
+    /// is what pins that; this is here to catch the guard's own logic breaking.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentTermsEditAndCreditApplication_CannotPriceTheSaleBelowWhatIsCredited()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, rebateId;
+        string rebateToken;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Terms Race", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "TR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Terms Customer", Phone = "03009990000", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"TR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 200_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            db.AddRange(project, unit, customer, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+
+            var rebates = new CommissionRebateService(db, new FinanceAccountService(db), new NullPrivateStorage());
+            var workspace = await rebates.CreateRebateAsync(bookingId, new CreateCustomerRebateDto
+            {
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = 300_000m, Reason = "Loyalty credit", Method = CustomerRebateMethod.OutstandingBalanceReduction
+            }, Actor);
+            var rebate = Assert.Single(workspace.Rebates);
+            rebateId = rebate.Id; rebateToken = rebate.ConcurrencyToken;
+        }
+
+        // Each side is legitimate against the state it can see: 300,000 of credit fits inside a
+        // 1,000,000 sale, and a 250,000 sale is above the nothing settled so far. Together they
+        // credit the customer more than the unit is being sold for.
+        async Task<Exception?> RepriceAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                await new BookingService(context, new CustomerService(context), new FinanceAccountService(context))
+                    .UpdateBookingFinancialsAsync(bookingId, new UpdateBookingFinancialsDto
+                    {
+                        AgreedSalePrice = 250_000m, DiscountPercent = 0m, BookingAmountRequired = 100_000m,
+                        BookingAmountDueDate = DateTime.UtcNow.AddMonths(1)
+                    }, adminUserId: 901);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        async Task<Exception?> CreditAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                await new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage())
+                    .RecordRebateDisbursementAsync(bookingId, rebateId, new RecordRebateDisbursementDto
+                    {
+                        Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = 300_000m,
+                        AppliedAt = DateTime.UtcNow, IdempotencyKey = "tr-credit",
+                        RebateConcurrencyToken = rebateToken
+                    }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        var outcomes = await Task.WhenAll(RepriceAsync(), CreditAsync());
+
+        await using var verify = new AppDbContext(options);
+        var finalBooking = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+        var credits = await BookingCreditPolicy.GetNonCashCreditsAsync(verify, bookingId);
+        var collected = await verify.Payments.Where(p => p.BookingId == bookingId)
+            .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+        var netSalePrice = finalBooking.AgreedSalePrice - finalBooking.DiscountAmount;
+        Assert.True(netSalePrice >= collected + credits,
+            $"Net sale price {netSalePrice:0.00} is below the {collected + credits:0.00} already settled — "
+            + "the price guard was bypassed by the race.");
+        // Both cannot have succeeded, and the one that failed must have failed on a guard or a
+        // serialization conflict, not on something unrelated.
+        Assert.Contains(outcomes, error => error != null);
+    }
+
+    /// <summary>
+    /// The terms edit reads what has already settled on the booking and then writes a price against
+    /// that reading. Two statements at READ COMMITTED leave a window between them in which a rebate
+    /// credit — applied under Serializable, like every other money path — can commit unseen, and the
+    /// guard that exists to refuse a price below the credits never sees the credit it should have
+    /// refused.
+    /// <para>
+    /// Asserted on the isolation level rather than by racing the two, because the window is a write
+    /// skew a few milliseconds wide: a race test passes with the transaction removed and proves
+    /// nothing. This fails the moment the wrapper goes.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task EditingBookingTerms_ReadsAndWritesInOneSerializableTransaction()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var recorder = new TransactionIsolationRecorder();
+        var options = OptionsWith(database.ConnectionString, recorder);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var context = new AppDbContext(options);
+        var project = new Project { ProjectName = "Isolation", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit
+        {
+            Project = project, UnitNumber = "IS-01", UnitType = "Apartment",
+            Price = 1_000_000m, Status = UnitStatus.Booked
+        };
+        var customer = new Customer { FullName = "Isolation Customer", Phone = "03005556666", Status = CustomerStatus.Active };
+        var booking = new Booking
+        {
+            BookingReference = $"IS-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+            Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+            BookingAmountRequired = 200_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+        };
+        context.AddRange(project, unit, customer, booking);
+        await context.SaveChangesAsync();
+
+        recorder.Started.Clear();
+        await new BookingService(context, new CustomerService(context), new FinanceAccountService(context))
+            .UpdateBookingFinancialsAsync(booking.Id, new UpdateBookingFinancialsDto
+            {
+                AgreedSalePrice = 800_000m, DiscountPercent = 0m, BookingAmountRequired = 150_000m,
+                BookingAmountDueDate = DateTime.UtcNow.AddMonths(1)
+            }, adminUserId: 901);
+
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+        var updated = await context.Bookings.AsNoTracking().SingleAsync(b => b.Id == booking.Id);
+        Assert.Equal(800_000m, updated.AgreedSalePrice);
+    }
+
+    /// <summary>
+    /// Creating and editing a commission or a rebate decides something from the booking — is it
+    /// still active, does this partner already hold one, what is it worth — and then writes money
+    /// against that reading. Every other money-moving method on this service already runs
+    /// Serializable; these did not, which is what let a commission be raised on a booking that was
+    /// being cancelled at the same moment, its expense and payable surviving a release that could
+    /// never have seen it.
+    /// <para>
+    /// Asserted on the isolation level because the race itself is a few milliseconds wide and a
+    /// timing test passes with the transaction removed.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task WritingCommissionsAndRebates_HappensInOneSerializableTransaction()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var recorder = new TransactionIsolationRecorder();
+        var options = OptionsWith(database.ConnectionString, recorder);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var context = new AppDbContext(options);
+        var project = new Project { ProjectName = "Isolated Writes", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit
+        {
+            Project = project, UnitNumber = "IW-01", UnitType = "Apartment",
+            Price = 1_000_000m, Status = UnitStatus.Booked
+        };
+        var customer = new Customer { FullName = "Isolated Customer", Phone = "03007070707", Status = CustomerStatus.Active };
+        var booking = new Booking
+        {
+            BookingReference = $"IW-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+            Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+            BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+        };
+        var partner = new ThirdPartyPartner
+        {
+            Name = "Isolated Broker", PartnerType = "Broker", InternalCode = "IWB-1", IsActive = true
+        };
+        context.AddRange(project, unit, customer, booking, partner);
+        await context.SaveChangesAsync();
+
+        var service = new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage());
+
+        recorder.Started.Clear();
+        var workspace = await service.CreateCommissionAsync(booking.Id, new CreateBookingCommissionDto
+        {
+            PartnerId = partner.Id, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.FixedAmount,
+            ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            ManualFixedAmount = 50_000m, ManualReason = "Agreed with the broker"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+        var commission = Assert.Single(workspace.Commissions);
+
+        recorder.Started.Clear();
+        await service.UpdateCommissionAsync(booking.Id, commission.Id, new UpdateBookingCommissionDto
+        {
+            PartnerId = partner.Id, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.FixedAmount,
+            ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            ManualFixedAmount = 60_000m, ManualReason = "Renegotiated",
+            ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Renegotiated"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+
+        recorder.Started.Clear();
+        var withRebate = await service.CreateRebateAsync(booking.Id, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 20_000m, Reason = "Goodwill", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+        var rebate = Assert.Single(withRebate.Rebates);
+
+        recorder.Started.Clear();
+        await service.UpdateRebateAsync(booking.Id, rebate.Id, new UpdateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 25_000m, Reason = "Goodwill", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+            ConcurrencyToken = rebate.ConcurrencyToken, ChangeReason = "Increased"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+
+        recorder.Started.Clear();
+        await service.ChangeRebateStatusAsync(booking.Id, rebate.Id, new RebateStatusChangeDto
+        {
+            TargetStatus = CustomerRebateStatus.Cancelled, Reason = "Withdrawn",
+            ConcurrencyToken = (await context.CustomerRebates.AsNoTracking()
+                .SingleAsync(r => r.Id == rebate.Id)).RowVersion is { Length: > 0 } v
+                ? Convert.ToBase64String(v) : null
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+    }
+
+    /// <summary>Every isolation level the code under test asked a transaction to start at.</summary>
+    private sealed class TransactionIsolationRecorder : DbTransactionInterceptor
+    {
+        public List<System.Data.IsolationLevel> Started { get; } = [];
+
+        public override InterceptionResult<DbTransaction> TransactionStarting(
+            DbConnection connection, TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result)
+        {
+            Started.Add(eventData.IsolationLevel);
+            return base.TransactionStarting(connection, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(
+            DbConnection connection, TransactionStartingEventData eventData,
+            InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default)
+        {
+            Started.Add(eventData.IsolationLevel);
+            return base.TransactionStartingAsync(connection, eventData, result, cancellationToken);
         }
     }
 
@@ -802,6 +1642,35 @@ public sealed class SqlServerProductionInvariantTests
     };
 
     /// <summary>
+    /// Inserts a payment the way the schema of the day would have, naming only the columns that
+    /// existed then.
+    /// <para>
+    /// A test that seeds a partially-migrated database through the EF model is seeding it through a
+    /// model that has run AHEAD of that database, and it breaks the day any column is added to
+    /// Payments — which is exactly what happened when the retry-attempt key arrived. Raw SQL is what
+    /// keeps a legacy fixture pinned to the schema it is meant to represent.
+    /// </para>
+    /// </summary>
+    private static Task SeedLegacyPaymentAsync(AppDbContext db, int bookingId, int? installmentId,
+        int financeAccountId, decimal amount, PaymentType type, DateTime paidAt) =>
+        db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO [Payments]
+                ([BookingId], [InstallmentId], [FinanceAccountId], [Type], [Amount], [PaymentMethod],
+                 [ReceiptNumber], [PaidAt], [CreatedAt])
+            VALUES (@bookingId, @installmentId, @accountId, @type, @amount, @method, @receipt, @paidAt, @paidAt);
+            """,
+            new SqlParameter("@bookingId", bookingId),
+            // Named parameters rather than positional: a NULL installment has no CLR type for EF to
+            // infer a store mapping from, and DBNull cannot be passed as a bare positional value.
+            new SqlParameter("@installmentId", (object?)installmentId ?? DBNull.Value),
+            new SqlParameter("@accountId", financeAccountId),
+            new SqlParameter("@type", (int)type),
+            new SqlParameter("@amount", amount),
+            new SqlParameter("@method", (int)PaymentMethod.BankTransfer),
+            new SqlParameter("@receipt", $"BF-{Guid.NewGuid():N}"[..12]),
+            new SqlParameter("@paidAt", paidAt));
+
+    /// <summary>
     /// The rebate-allocation backfill, run against a booking that already existed when the migration
     /// arrived. It only does work on real SQL Server — it is a T-SQL cursor, so no in-memory test can
     /// reach it — and it only does work on legacy rows, so the other migration tests here (which
@@ -862,24 +1731,16 @@ public sealed class SqlServerProductionInvariantTests
             var second = Row(2, new DateTime(2026, 3, 15));
             var third = Row(3, new DateTime(2026, 4, 15));
             db.Installments.AddRange(first, second, third);
-            db.Payments.Add(new Payment
-            {
-                BookingId = bookingId, FinanceAccountId = account.Id, Amount = 4_000_000m,
-                Type = PaymentType.BookingAmount, PaymentMethod = PaymentMethod.BankTransfer,
-                PaidAt = new DateTime(2026, 1, 15), ReceiptNumber = $"BF-{Guid.NewGuid():N}"[..12]
-            });
             await db.SaveChangesAsync();
             firstId = first.Id; secondId = second.Id; thirdId = third.Id;
+            await SeedLegacyPaymentAsync(db, bookingId, null, account.Id, 4_000_000m,
+                PaymentType.BookingAmount, new DateTime(2026, 1, 15));
 
             // The LAST installment is settled in full — the row that leaves a hole in the numbering.
             third.Status = InstallmentStatus.Paid;
             third.PaidAt = new DateTime(2026, 4, 15);
-            db.Payments.Add(new Payment
-            {
-                BookingId = bookingId, InstallmentId = thirdId, FinanceAccountId = account.Id, Amount = 2_000_000m,
-                Type = PaymentType.Installment, PaymentMethod = PaymentMethod.BankTransfer,
-                PaidAt = new DateTime(2026, 4, 15), ReceiptNumber = $"BF-{Guid.NewGuid():N}"[..12]
-            });
+            await SeedLegacyPaymentAsync(db, bookingId, thirdId, account.Id, 2_000_000m,
+                PaymentType.Installment, new DateTime(2026, 4, 15));
 
             // A 1,000,000 balance reduction the plan was never shrunk by: it names no installment,
             // and before the allocation table there was nowhere for it to land.
@@ -2125,7 +2986,7 @@ public sealed class SqlServerProductionInvariantTests
         await db.Database.MigrateAsync();
 
         var accounts = new FinanceAccountService(db);
-        // This also exercises all four system-role branches against the real provider.
+        // This also exercises every system-role branch against the real provider.
         await accounts.SetupClientChartAsync();
         await SeedDashboardVolumeAsync(db, firstProject: 1, projects: 8);
 
@@ -2938,6 +3799,658 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         await command.ExecuteNonQueryAsync();
     }
+
+    // The migration immediately before commission accruals, so a test can start from the exact
+    // state a real upgrade starts from and let this migration do the work.
+    private const string BeforeCommissionAccruals = "20260905212713_AddRebateCreditAllocations";
+
+    /// <summary>
+    /// The upgrade reconstructs each commission's HISTORY, not just its current balance.
+    /// <para>
+    /// Stamping today's final amount at the creation date would have been wrong in the two ways that
+    /// matter and invisible in both: a commission raised from 100,000 to 130,000 in a later month
+    /// would report 130,000 in the earlier one and nothing in the later, and one cancelled in a later
+    /// month would report no expense in the month it was actually agreed. Today's payable reconciles
+    /// either way, which is exactly why this asserts each PERIOD rather than the closing balance.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_RebuildsEachPeriodFromTheAuditHistory()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        }
+
+        // Three commissions on one booking, written into the OLD schema: one raised in September,
+        // one cancelled in September, one untouched — with the dated audit rows a real system would
+        // have left behind. NewCommissionStatus is what separates an EDIT adjustment from the one
+        // recorded as part of the original entry, which is the discriminator the backfill relies on.
+        await using (var seed = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Accrual History", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit { Project = project, UnitNumber = "H-1", UnitType = "Apartment", Price = 5_000_000m };
+            var customer = new Customer { FullName = "History Buyer", Phone = "03001110000" };
+            var booking = new Booking
+            {
+                BookingReference = "BK-HIST-1", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+                AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+                BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 8, 1)
+            };
+            // One partner each: a booking holds at most one live commission per partner.
+            var partners = Enumerable.Range(1, 3).Select(n => new ThirdPartyPartner
+            {
+                Name = $"History Broker {n}", PartnerType = "Broker", InternalCode = $"HB-{n}", IsActive = true
+            }).ToArray();
+            seed.AddRange(project, unit, customer, booking);
+            seed.ThirdPartyPartners.AddRange(partners);
+            await seed.SaveChangesAsync();
+
+            BookingCommission Commission(ThirdPartyPartner partner, decimal amount,
+                BookingCommissionStatus status, DateTime createdAt) => new()
+            {
+                BookingId = booking.Id, PartnerId = partner.Id, PartnerNameSnapshot = partner.Name,
+                PartnerTypeSnapshot = partner.PartnerType, PartnerInternalCodeSnapshot = partner.InternalCode,
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = amount, BasisAmount = 5_000_000m, CalculatedAmount = amount,
+                FinalAmount = amount, Status = status, CreatedAt = createdAt
+            };
+            var raised = Commission(partners[0], 130_000m, BookingCommissionStatus.Pending, new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc));
+            var cancelled = Commission(partners[1], 70_000m, BookingCommissionStatus.Cancelled, new DateTime(2026, 8, 6, 6, 0, 0, DateTimeKind.Utc));
+            var steady = Commission(partners[2], 40_000m, BookingCommissionStatus.Pending, new DateTime(2026, 8, 7, 6, 0, 0, DateTimeKind.Utc));
+            seed.BookingCommissions.AddRange(raised, cancelled, steady);
+            await seed.SaveChangesAsync();
+
+            FinancialWorkflowAuditEntry Entry(BookingCommission commission, FinancialWorkflowAction action,
+                decimal? previous, decimal? current, BookingCommissionStatus? newStatus, DateTime occurredAt) => new()
+            {
+                CommissionId = commission.Id, BookingId = booking.Id, Action = action,
+                PreviousAmount = previous, NewAmount = current, NewCommissionStatus = newStatus,
+                OccurredAt = occurredAt
+            };
+            seed.FinancialWorkflowAuditEntries.AddRange(
+                Entry(raised, FinancialWorkflowAction.CommissionCreated, null, 100_000m, null, new DateTime(2026, 8, 5, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(raised, FinancialWorkflowAction.CommissionAdjusted, 100_000m, 130_000m, BookingCommissionStatus.Pending, new DateTime(2026, 9, 10, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(cancelled, FinancialWorkflowAction.CommissionCreated, null, 70_000m, null, new DateTime(2026, 8, 6, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(cancelled, FinancialWorkflowAction.CommissionCancelled, 70_000m, 70_000m, BookingCommissionStatus.Cancelled, new DateTime(2026, 9, 12, 6, 0, 0, DateTimeKind.Utc)),
+                Entry(steady, FinancialWorkflowAction.CommissionCreated, null, 40_000m, null, new DateTime(2026, 8, 7, 6, 0, 0, DateTimeKind.Utc)));
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.Database.MigrateAsync();
+        }
+
+        await using var context = new AppDbContext(options);
+        var accounts = new FinanceAccountService(context);
+        var finance = new FinanceService(context, new NullPrivateStorage(), accounts,
+            new WhtService(context, accounts), NullLogger<FinanceService>.Instance);
+
+        // August is the month all three were AGREED: 100,000 + 70,000 + 40,000. Not 130,000 for the
+        // first, and not zero for the cancelled one.
+        var august = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 8, 1), new DateTime(2026, 8, 31));
+        Assert.Equal(210_000m, Assert.Single(august.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+
+        // September holds only what happened in September: +30,000 raised, −70,000 released.
+        var september = await finance.GetProfitAndLossAsync(null, new DateTime(2026, 9, 1), new DateTime(2026, 9, 30));
+        Assert.Equal(-40_000m, Assert.Single(september.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+
+        // …and today's payable is still exactly what is owed: 130,000 + 40,000.
+        var rows = context.CommissionAccruals.AsNoTracking().ToList();
+        Assert.Equal(170_000m, rows.Sum(a => a.Amount));
+        Assert.Contains(rows, a => a.Kind == CommissionAccrualKind.Adjustment && a.Amount == 30_000m);
+        Assert.Contains(rows, a => a.Kind == CommissionAccrualKind.Release && a.Amount == -70_000m);
+        // No cutover correction was needed: the audit history explained every commission in full.
+        Assert.DoesNotContain(rows, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
+    }
+
+    /// <summary>
+    /// Before the approval ladder was simplified, an approver could settle a commission or rebate at
+    /// an amount different from what it was calculated at — the payout's real target was
+    /// <c>ApprovedAmount ?? FinalAmount</c>. The migration that removed the ladder dropped
+    /// <c>ApprovedAmount</c> without folding it into <c>FinalAmount</c>, so a Paid commission from
+    /// that era can have a <c>FinalAmount</c> that does not match what was ever actually paid — the
+    /// exact defect this seeds directly against the pre-accrual schema, since nothing on today's
+    /// application code path can recreate it any more.
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_RestoresFinalAmountForRecordsAnOldApprovalOverrideSettledDifferently()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+
+        int bookingId, underApprovedId, overApprovedId, alreadyCorrectId, neverPaidId, rebateId;
+        await using (var seed = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Approval Override", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit { Project = project, UnitNumber = "AO-1", UnitType = "Apartment", Price = 5_000_000m };
+            var customer = new Customer { FullName = "Override Buyer", Phone = "03001112222" };
+            var booking = new Booking
+            {
+                BookingReference = "BK-OVERRIDE-1", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+                AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+                BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 7, 1)
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Override Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            var partners = Enumerable.Range(1, 4).Select(n => new ThirdPartyPartner
+            {
+                Name = $"Override Broker {n}", PartnerType = "Broker", InternalCode = $"OB-{n}", IsActive = true
+            }).ToArray();
+            seed.AddRange(project, unit, customer, booking, account);
+            seed.ThirdPartyPartners.AddRange(partners);
+            await seed.SaveChangesAsync();
+
+            BookingCommission Commission(ThirdPartyPartner partner, decimal finalAmount) => new()
+            {
+                BookingId = booking.Id, PartnerId = partner.Id, PartnerNameSnapshot = partner.Name,
+                PartnerTypeSnapshot = partner.PartnerType, PartnerInternalCodeSnapshot = partner.InternalCode,
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = finalAmount, BasisAmount = 5_000_000m, CalculatedAmount = finalAmount,
+                FinalAmount = finalAmount, Status = BookingCommissionStatus.Pending, CreatedAt = new DateTime(2026, 7, 5)
+            };
+            // Approved below the calculated figure: paid in full at 90,000, but FinalAmount was
+            // never told and still says 100,000.
+            var underApproved = Commission(partners[0], 100_000m); underApproved.Status = BookingCommissionStatus.Paid;
+            // Approved above the calculated figure: paid in full at 110,000 against a FinalAmount
+            // still reading 100,000 — the shape that produces a NEGATIVE payable.
+            var overApproved = Commission(partners[1], 100_000m); overApproved.Status = BookingCommissionStatus.Paid;
+            // A normal, never-overridden Paid commission: FinalAmount already matches its one
+            // payout. The control that proves the fix leaves ordinary records alone.
+            var alreadyCorrect = Commission(partners[2], 60_000m); alreadyCorrect.Status = BookingCommissionStatus.Paid;
+            // Still open — a partial historical payout here does not reveal the true target, so
+            // this must be left untouched no matter what its payouts total.
+            var neverPaid = Commission(partners[3], 40_000m);
+            seed.BookingCommissions.AddRange(underApproved, overApproved, alreadyCorrect, neverPaid);
+            await seed.SaveChangesAsync();
+            bookingId = booking.Id;
+            underApprovedId = underApproved.Id; overApprovedId = overApproved.Id;
+            alreadyCorrectId = alreadyCorrect.Id; neverPaidId = neverPaid.Id;
+
+            CommissionPayout Payout(BookingCommission commission, decimal amount) => new()
+            {
+                CommissionId = commission.Id, FinanceAccountId = account.Id, Amount = amount,
+                PaymentDate = new DateTime(2026, 7, 10), PaymentMethod = PaymentMethod.Cash,
+                IdempotencyKey = $"seed-payout-{commission.Id}", RecordedAt = new DateTime(2026, 7, 10)
+            };
+            seed.CommissionPayouts.AddRange(
+                Payout(underApproved, 90_000m), Payout(overApproved, 110_000m),
+                Payout(alreadyCorrect, 60_000m), Payout(neverPaid, 15_000m));
+
+            var rebate = new CustomerRebate
+            {
+                BookingId = booking.Id, CustomerId = customer.Id, CalculationType = FinancialCalculationType.FixedAmount,
+                FixedAmount = 50_000m, CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                BasisAmount = 5_000_000m, CalculatedAmount = 50_000m, FinalAmount = 50_000m,
+                Reason = "Loyalty rebate", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                Status = CustomerRebateStatus.Applied, CreatedAt = new DateTime(2026, 7, 5)
+            };
+            seed.CustomerRebates.Add(rebate);
+            await seed.SaveChangesAsync();
+            rebateId = rebate.Id;
+            seed.RebateDisbursements.Add(new RebateDisbursement
+            {
+                RebateId = rebate.Id, Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = 45_000m,
+                AppliedAt = new DateTime(2026, 7, 10), IdempotencyKey = "seed-disbursement",
+                RecordedAt = new DateTime(2026, 7, 10)
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var verify = new AppDbContext(options);
+        var under = await verify.BookingCommissions.SingleAsync(c => c.Id == underApprovedId);
+        Assert.Equal(90_000m, under.FinalAmount);
+        Assert.Equal(-10_000m, under.AdjustmentAmount);
+        Assert.Contains("Data correction", under.AdjustmentReason);
+
+        var over = await verify.BookingCommissions.SingleAsync(c => c.Id == overApprovedId);
+        Assert.Equal(110_000m, over.FinalAmount);
+        Assert.Equal(10_000m, over.AdjustmentAmount);
+
+        var correct = await verify.BookingCommissions.SingleAsync(c => c.Id == alreadyCorrectId);
+        Assert.Equal(60_000m, correct.FinalAmount);
+        Assert.Equal(0m, correct.AdjustmentAmount);
+        Assert.Null(correct.AdjustmentReason);
+
+        var open = await verify.BookingCommissions.SingleAsync(c => c.Id == neverPaidId);
+        Assert.Equal(40_000m, open.FinalAmount);
+        Assert.Equal(0m, open.AdjustmentAmount);
+        Assert.Null(open.AdjustmentReason);
+
+        var fixedRebate = await verify.CustomerRebates.SingleAsync(r => r.Id == rebateId);
+        Assert.Equal(45_000m, fixedRebate.FinalAmount);
+        Assert.Equal(-5_000m, fixedRebate.AdjustmentAmount);
+
+        // The backfill ran AFTER the correction, so each corrected commission's accrual — its own
+        // Recognition, since none of these has an audit trail — already equals what was truly paid.
+        // A correctly paid commission shows no remaining balance, and none goes negative.
+        Assert.Equal(90_000m, await verify.CommissionAccruals.Where(a => a.CommissionId == underApprovedId).SumAsync(a => a.Amount));
+        Assert.Equal(110_000m, await verify.CommissionAccruals.Where(a => a.CommissionId == overApprovedId).SumAsync(a => a.Amount));
+        Assert.Equal(60_000m, await verify.CommissionAccruals.Where(a => a.CommissionId == alreadyCorrectId).SumAsync(a => a.Amount));
+        // No cutover correction was needed for any of them post-fix: the corrected FinalAmount and
+        // the one Recognition row it produced already agree.
+        Assert.DoesNotContain(await verify.CommissionAccruals.Where(a => a.CommissionId == underApprovedId
+            || a.CommissionId == overApprovedId || a.CommissionId == alreadyCorrectId).ToListAsync(),
+            a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
+    }
+
+    /// <summary>
+    /// The reconstruction reads what settled NET of reversals, and reaches records that are still
+    /// open — in the period the decision was actually made.
+    /// <para>
+    /// Summing the payout rows alone counts a reversed payment as though it had stayed paid, so a
+    /// commission paid, partly reversed and re-paid was restored as an obligation bigger than
+    /// anything that ever left the bank: money still showing as owed on a commission that is square,
+    /// and no payout able to clear it.
+    /// </para>
+    /// <para>
+    /// A record still open was skipped altogether, on the grounds that a part payment cannot reveal
+    /// its target. True of the payouts — but not of the audit log, where the approval that SET the
+    /// target wrote it down. A commission calculated at 100,000, approved at 80,000 and paid 30,000
+    /// owes 50,000, and was left claiming 70,000.
+    /// </para>
+    /// <para>
+    /// The date matters as much as the amount: an approval that cut a commission in July belongs in
+    /// July. Reconstructed at cutover instead, it takes the cut out of the current period, so the
+    /// month that made the decision keeps overstating its profit for ever and today's understates
+    /// its own — while every current balance still reconciles and hides it.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_NetsReversalsAndRebuildsOpenRecordsFromTheDatedApprovalLog()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+
+        var agreed = new DateTime(2026, 7, 5, 9, 0, 0);
+        var approved = new DateTime(2026, 7, 20, 9, 0, 0);
+        var edited = new DateTime(2026, 7, 25, 9, 0, 0);
+        int repaidId, openApprovedId, editedAfterApprovalId, approvedBelowPaidId, openRebateId, reversedRebateId;
+
+        await using (var seed = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Net Of Reversals", Location = "Lahore", CreatedById = 1 };
+            var unit = new Unit { Project = project, UnitNumber = "NR-1", UnitType = "Apartment", Price = 5_000_000m };
+            var secondUnit = new Unit { Project = project, UnitNumber = "NR-2", UnitType = "Apartment", Price = 5_000_000m };
+            var customer = new Customer { FullName = "Net Buyer", Phone = "03004445555" };
+            Booking NewBooking(string reference, Unit on) => new()
+            {
+                BookingReference = reference, Customer = customer, Unit = on,
+                Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+                AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+                BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 7, 1)
+            };
+            var booking = NewBooking("BK-NETREV-1", unit);
+            // A second booking only because one live rebate per booking is a unique index, and this
+            // needs an open one and a settled one at the same time.
+            var secondBooking = NewBooking("BK-NETREV-2", secondUnit);
+            var account = new FinanceAccount
+            {
+                Name = "Reversal Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            var partners = Enumerable.Range(1, 4).Select(n => new ThirdPartyPartner
+            {
+                Name = $"Net Broker {n}", PartnerType = "Broker", InternalCode = $"NB-{n}", IsActive = true
+            }).ToArray();
+            seed.AddRange(project, unit, secondUnit, customer, booking, secondBooking, account);
+            seed.ThirdPartyPartners.AddRange(partners);
+            await seed.SaveChangesAsync();
+
+            BookingCommission Commission(ThirdPartyPartner partner, decimal finalAmount) => new()
+            {
+                BookingId = booking.Id, PartnerId = partner.Id, PartnerNameSnapshot = partner.Name,
+                PartnerTypeSnapshot = partner.PartnerType, PartnerInternalCodeSnapshot = partner.InternalCode,
+                CalculationType = FinancialCalculationType.FixedAmount,
+                CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                FixedAmount = finalAmount, BasisAmount = 5_000_000m, CalculatedAmount = finalAmount,
+                FinalAmount = finalAmount, Status = BookingCommissionStatus.Pending, CreatedAt = agreed
+            };
+            // Settled at 90,000 the hard way: 100,000 paid, 20,000 of it reversed, 10,000 re-paid.
+            // The payout rows sum to 110,000 and only the reversal says otherwise.
+            var repaid = Commission(partners[0], 100_000m); repaid.Status = BookingCommissionStatus.Paid;
+            // Open, part paid, and approved below its calculated figure. Only the log knows.
+            var openApproved = Commission(partners[1], 100_000m);
+            // Approved at 80,000, then EDITED to 120,000 — which cleared the override as it went, so
+            // the approval is stale evidence and FinalAmount is already right.
+            var editedAfterApproval = Commission(partners[2], 120_000m);
+            // Approved at 20,000 but 30,000 has already gone out. Nothing here can explain that, and
+            // trusting the approval would leave the partner owing money on an open commission.
+            var approvedBelowPaid = Commission(partners[3], 100_000m);
+            seed.BookingCommissions.AddRange(repaid, openApproved, editedAfterApproval, approvedBelowPaid);
+            await seed.SaveChangesAsync();
+            repaidId = repaid.Id; openApprovedId = openApproved.Id;
+            editedAfterApprovalId = editedAfterApproval.Id; approvedBelowPaidId = approvedBelowPaid.Id;
+
+            CommissionPayout Payout(BookingCommission commission, decimal amount, string suffix) => new()
+            {
+                CommissionId = commission.Id, FinanceAccountId = account.Id, Amount = amount,
+                PaymentDate = new DateTime(2026, 7, 10), PaymentMethod = PaymentMethod.Cash,
+                IdempotencyKey = $"net-payout-{commission.Id}-{suffix}", RecordedAt = new DateTime(2026, 7, 10)
+            };
+            var firstPayout = Payout(repaid, 100_000m, "a");
+            seed.CommissionPayouts.AddRange(firstPayout, Payout(repaid, 10_000m, "b"),
+                Payout(openApproved, 30_000m, "a"), Payout(approvedBelowPaid, 30_000m, "a"));
+            await seed.SaveChangesAsync();
+            seed.CommissionPayoutReversals.Add(new CommissionPayoutReversal
+            {
+                PayoutId = firstPayout.Id, Amount = 20_000m, Reason = "Overpaid in error",
+                IdempotencyKey = "net-reversal-a", ReversedAt = new DateTime(2026, 7, 12)
+            });
+
+            FinancialWorkflowAuditEntry Entry(int commissionId, FinancialWorkflowAction action,
+                decimal previous, decimal next, DateTime at, BookingCommissionStatus? status = null) => new()
+            {
+                CommissionId = commissionId, BookingId = booking.Id, CustomerId = customer.Id, Action = action,
+                PreviousAmount = previous, NewAmount = next, OccurredAt = at, NewCommissionStatus = status,
+                PerformedByName = "Legacy approver"
+            };
+            seed.FinancialWorkflowAuditEntries.AddRange(
+                Entry(openApproved.Id, FinancialWorkflowAction.CommissionCreated, 0m, 100_000m, agreed),
+                Entry(openApproved.Id, FinancialWorkflowAction.CommissionApproved, 100_000m, 80_000m, approved),
+                Entry(editedAfterApproval.Id, FinancialWorkflowAction.CommissionCreated, 0m, 100_000m, agreed),
+                Entry(editedAfterApproval.Id, FinancialWorkflowAction.CommissionApproved, 100_000m, 80_000m, approved),
+                // The edit: a status pair is what separates it from the adjustment written at entry.
+                Entry(editedAfterApproval.Id, FinancialWorkflowAction.CommissionAdjusted, 100_000m, 120_000m,
+                    edited, BookingCommissionStatus.Pending),
+                Entry(approvedBelowPaid.Id, FinancialWorkflowAction.CommissionApproved, 100_000m, 20_000m, approved));
+            await seed.SaveChangesAsync();
+
+            CustomerRebate Rebate(Booking on, decimal finalAmount, CustomerRebateStatus status) => new()
+            {
+                BookingId = on.Id, CustomerId = customer.Id, CalculationType = FinancialCalculationType.FixedAmount,
+                FixedAmount = finalAmount, CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                BasisAmount = 5_000_000m, CalculatedAmount = finalAmount, FinalAmount = finalAmount,
+                Reason = "Loyalty rebate", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                Status = status, CreatedAt = agreed
+            };
+            var openRebate = Rebate(booking, 50_000m, CustomerRebateStatus.Pending);
+            var reversedRebate = Rebate(secondBooking, 50_000m, CustomerRebateStatus.Applied);
+            seed.CustomerRebates.AddRange(openRebate, reversedRebate);
+            await seed.SaveChangesAsync();
+            openRebateId = openRebate.Id; reversedRebateId = reversedRebate.Id;
+
+            var reversedDisbursement = new RebateDisbursement
+            {
+                RebateId = reversedRebate.Id, Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                Amount = 45_000m, AppliedAt = new DateTime(2026, 7, 10), IdempotencyKey = "net-disbursement-b",
+                RecordedAt = new DateTime(2026, 7, 10)
+            };
+            seed.RebateDisbursements.AddRange(new RebateDisbursement
+            {
+                RebateId = openRebate.Id, Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                Amount = 10_000m, AppliedAt = new DateTime(2026, 7, 10), IdempotencyKey = "net-disbursement-a",
+                RecordedAt = new DateTime(2026, 7, 10)
+            }, reversedDisbursement);
+            await seed.SaveChangesAsync();
+            seed.RebateDisbursementReversals.Add(new RebateDisbursementReversal
+            {
+                DisbursementId = reversedDisbursement.Id, Amount = 5_000m, Reason = "Credit withdrawn",
+                IdempotencyKey = "net-disbursement-reversal", ReversedAt = new DateTime(2026, 7, 12)
+            });
+            seed.FinancialWorkflowAuditEntries.Add(new FinancialWorkflowAuditEntry
+            {
+                RebateId = openRebate.Id, BookingId = booking.Id, CustomerId = customer.Id,
+                Action = FinancialWorkflowAction.RebateApproved, PreviousAmount = 50_000m, NewAmount = 35_000m,
+                OccurredAt = approved, PerformedByName = "Legacy approver"
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var verify = new AppDbContext(options);
+
+        // 110,000 of payouts, 20,000 reversed: the obligation is the 90,000 that stayed paid.
+        var settledNet = await verify.BookingCommissions.SingleAsync(c => c.Id == repaidId);
+        Assert.Equal(90_000m, settledNet.FinalAmount);
+        Assert.Equal(-10_000m, settledNet.AdjustmentAmount);
+        Assert.Equal(90_000m, await verify.CommissionAccruals.Where(a => a.CommissionId == repaidId).SumAsync(a => a.Amount));
+
+        // Open and part paid: the approval names the target, leaving 50,000 owed rather than 70,000.
+        var open = await verify.BookingCommissions.SingleAsync(c => c.Id == openApprovedId);
+        Assert.Equal(80_000m, open.FinalAmount);
+        Assert.Equal(-20_000m, open.AdjustmentAmount);
+        Assert.Contains("Data correction", open.AdjustmentReason);
+
+        var openLedger = await verify.CommissionAccruals.Where(a => a.CommissionId == openApprovedId)
+            .OrderBy(a => a.AccruedOn).ToListAsync();
+        Assert.Equal(80_000m, openLedger.Sum(a => a.Amount));
+        // Recognised in full when it was agreed, cut on the day it was approved — not at cutover.
+        var recognition = Assert.Single(openLedger.Where(a => a.Kind == CommissionAccrualKind.Recognition));
+        Assert.Equal(100_000m, recognition.Amount);
+        Assert.Equal(agreed.Date, recognition.AccruedOn);
+        var cut = Assert.Single(openLedger.Where(a => a.Kind == CommissionAccrualKind.Adjustment));
+        Assert.Equal(-20_000m, cut.Amount);
+        Assert.Equal(approved.Date, cut.AccruedOn);
+        Assert.DoesNotContain(openLedger, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
+
+        // Edited after the decision: the edit recalculated the amount and cleared the override, so
+        // the AMOUNT must not be restated from the approval.
+        var reEdited = await verify.BookingCommissions.SingleAsync(c => c.Id == editedAfterApprovalId);
+        Assert.Equal(120_000m, reEdited.FinalAmount);
+        Assert.Equal(0m, reEdited.AdjustmentAmount);
+        Assert.Null(reEdited.AdjustmentReason);
+
+        // The HISTORY is a separate question, and the approval still happened. It cut the
+        // obligation in July and the edit raised it in August, so all three movements are dated
+        // where they were decided. Reading the edit's own PreviousAmount instead — the pre-override
+        // figure, because the edit had cleared the override — dropped the approval entirely: July
+        // kept reporting the uncut 100,000 and August moved by 20,000 rather than 40,000, while the
+        // total still came to 120,000 and hid both.
+        var editedLedger = await verify.CommissionAccruals.Where(a => a.CommissionId == editedAfterApprovalId)
+            .OrderBy(a => a.AccruedOn).ThenBy(a => a.Id).ToListAsync();
+        Assert.Equal(120_000m, editedLedger.Sum(a => a.Amount));
+        Assert.Collection(editedLedger,
+            first =>
+            {
+                Assert.Equal(100_000m, first.Amount);
+                Assert.Equal(agreed.Date, first.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Recognition, first.Kind);
+            },
+            cutInJuly =>
+            {
+                Assert.Equal(-20_000m, cutInJuly.Amount);
+                Assert.Equal(approved.Date, cutInJuly.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Adjustment, cutInJuly.Kind);
+            },
+            raisedInAugust =>
+            {
+                // From the 80,000 the approval left it at, not from the 100,000 the edit's own
+                // audit row claims it was moving from.
+                Assert.Equal(40_000m, raisedInAugust.Amount);
+                Assert.Equal(edited.Date, raisedInAugust.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Adjustment, raisedInAugust.Kind);
+            });
+        Assert.DoesNotContain(editedLedger, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
+
+        // More has gone out than the approval allows for. Unexplainable, so left exactly as found
+        // rather than restated into a negative payable.
+        var belowPaid = await verify.BookingCommissions.SingleAsync(c => c.Id == approvedBelowPaidId);
+        Assert.Equal(100_000m, belowPaid.FinalAmount);
+        Assert.Equal(0m, belowPaid.AdjustmentAmount);
+        Assert.Null(belowPaid.AdjustmentReason);
+
+        var openRebateRow = await verify.CustomerRebates.SingleAsync(r => r.Id == openRebateId);
+        Assert.Equal(35_000m, openRebateRow.FinalAmount);
+        Assert.Equal(-15_000m, openRebateRow.AdjustmentAmount);
+
+        var reversedRebateRow = await verify.CustomerRebates.SingleAsync(r => r.Id == reversedRebateId);
+        Assert.Equal(40_000m, reversedRebateRow.FinalAmount);
+        Assert.Equal(-10_000m, reversedRebateRow.AdjustmentAmount);
+    }
+
+    /// <summary>
+    /// The upgrade refuses to adopt a Commission Payable that already carries an opening balance.
+    /// <para>
+    /// From this migration the payable is derived per commission, so an aggregate figure entered for
+    /// the same unpaid commissions is counted twice and can never be cleared: pay the commission in
+    /// full and the payout settles only its own accrual, leaving the opening amount owed for ever on
+    /// a sheet that still balances. Silently zeroing the accountant's figure is not a migration's
+    /// decision, so it stops the deployment instead.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrualMigration_RefusesAnAccountThatAlreadyCarriesAnOpeningBalance()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        }
+
+        await using (var seed = new AppDbContext(options))
+        {
+            seed.FinanceAccounts.Add(new FinanceAccount
+            {
+                Name = "Commission Payable", Type = FinanceAccountType.Liability,
+                AccountHolderName = "Seven Ventures", OpeningBalance = 100_000m,
+                DisplayOrder = 517, IsActive = true
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+            var refused = await Assert.ThrowsAnyAsync<SqlException>(() => db.Database.MigrateAsync());
+            Assert.Contains("counted twice", refused.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The refusal rolled back cleanly: no table, and the accountant's figure is untouched.
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'CommissionAccruals'"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [FinanceAccounts] WHERE [Name] = N'Commission Payable' AND [OpeningBalance] = 100000"));
+    }
+
+    /// <summary>
+    /// The commission obligation is reported by the REAL provider, end to end.
+    /// <para>
+    /// The in-memory store evaluates in C# things SQL Server cannot translate at all, and every one
+    /// of these paths reaches through an accrual into its commission, booking, unit and project.
+    /// The account ledger is the sharpest of them: it is one UNION of a dozen projections, EF aligns
+    /// a union on the FIRST branch's bindings, and a mis-shaped branch fails only against SQL.
+    /// </para>
+    /// <para>
+    /// It also proves the accounting the ledger exists for: the commission is a cost the day it is
+    /// agreed, the payout settles Commission Payable rather than costing anything a second time, and
+    /// the Balance Sheet balances at both points.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task CommissionAccrual_IsReportedByTheRealProvider_AcrossPnlSheetTrialBalanceAndLedger()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync(commandTimeoutSeconds: 180);
+        var options = Options(database.ConnectionString);
+        await using var db = new AppDbContext(options);
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
+        await db.Database.MigrateAsync();
+        db.Database.SetCommandTimeout(TimeSpan.FromSeconds(30));
+
+        var accounts = new FinanceAccountService(db);
+        await accounts.SetupClientChartAsync();
+        var payable = await db.FinanceAccounts.AsNoTracking()
+            .SingleAsync(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable);
+        var bank = await db.FinanceAccounts.AsNoTracking()
+            .OrderBy(a => a.DisplayOrder).FirstAsync(a => a.Type == FinanceAccountType.Bank);
+
+        var project = new Project { ProjectName = "Accrual SQL", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit { Project = project, UnitNumber = "S-1", UnitType = "Apartment", Price = 5_000_000m };
+        var customer = new Customer { FullName = "SQL Buyer", Phone = "03007778888" };
+        var booking = new Booking
+        {
+            BookingReference = "BK-ACCRUAL-1", Customer = customer, Unit = unit,
+            Status = BookingStatus.PaymentPlanActive, Source = CustomerSource.Referral,
+            AgreedSalePrice = 5_000_000m, BookingAmountRequired = 500_000m,
+            BookingAmountReceived = 500_000m, BookingDate = new DateTime(2026, 7, 1)
+        };
+        var partner = new ThirdPartyPartner
+        {
+            Name = "SQL Broker", PartnerType = "Broker", InternalCode = "SQLBR-1", IsActive = true,
+            BankName = "Test Bank", AccountTitle = "SQL Broker", AccountNumber = "00123456789"
+        };
+        db.AddRange(project, unit, customer, booking, partner);
+        await db.SaveChangesAsync();
+
+        var service = new CommissionRebateService(db, accounts, new NullPrivateStorage());
+        var actor = new FinancialWorkflowActor(1, "SQL Admin");
+        var commission = Assert.Single((await service.CreateCommissionAsync(booking.Id,
+            new CreateBookingCommissionDto
+            {
+                PartnerId = partner.Id, IsManual = true,
+                ManualCalculationType = FinancialCalculationType.FixedAmount,
+                ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                ManualFixedAmount = 150_000m
+            }, actor)).Commissions);
+
+        var finance = new FinanceService(db, new NullPrivateStorage(), accounts,
+            new WhtService(db, accounts), NullLogger<FinanceService>.Instance);
+        var today = PakistanTime.Today;
+
+        var beforePayout = await finance.GetProfitAndLossAsync(null, today, today);
+        Assert.Equal(150_000m,
+            Assert.Single(beforePayout.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+        var sheetBefore = await finance.GetBalanceSheetAsync(null, today);
+        Assert.True(sheetBefore.IsBalanced, $"out by {sheetBefore.Imbalance}");
+        Assert.Equal(150_000m, PayableLine(sheetBefore));
+
+        await service.RecordPayoutAsync(booking.Id, commission.Id, new RecordCommissionPayoutDto
+        {
+            FinanceAccountId = bank.Id, Amount = 90_000m, PaymentDate = today,
+            PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-ACCRUAL-1",
+            IdempotencyKey = "sql-accrual-payout", CommissionConcurrencyToken = commission.ConcurrencyToken
+        }, actor);
+
+        // Paying it settles the payable and does not charge profit a second time.
+        var afterPayout = await finance.GetProfitAndLossAsync(null, today, today);
+        Assert.Equal(150_000m,
+            Assert.Single(afterPayout.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
+        var sheetAfter = await finance.GetBalanceSheetAsync(null, today);
+        Assert.True(sheetAfter.IsBalanced, $"out by {sheetAfter.Imbalance}");
+        Assert.Equal(60_000m, PayableLine(sheetAfter));
+
+        // Trial Balance, drill-down and the account ledger all translate and agree.
+        var trial = await finance.GetTrialBalanceAsync(null, today, 0);
+        var payableRow = Assert.Single(trial.Rows, r => r.AccountName == "Commission Payable");
+        // A liability is credit-normal, so the payable stands in the Credit column.
+        Assert.Equal(60_000m, payableRow.CreditBalances[^1]);
+        var drill = await finance.GetTrialBalanceDetailsAsync("E:commission-expense", null, today, today);
+        Assert.Equal(150_000m, drill.TotalDebit - drill.TotalCredit);
+        Assert.Single(drill.Rows);
+
+        var ledger = await accounts.GetTransactionLedgerSliceAsync(
+            payable.Id, null, today.AddYears(-1), today, 0, 50);
+        Assert.Contains(ledger.Items, i => i.Kind == "Commission accrued" && i.Amount == 150_000m);
+        Assert.Contains(ledger.Items, i => i.Kind == "Commission paid" && i.Amount == -90_000m);
+
+        var card = await accounts.GetByIdAsync(payable.Id);
+        Assert.Equal(60_000m, card.CurrentBalance);
+    }
+
+    private static decimal PayableLine(DTOs.FinanceDtos.BalanceSheetDto sheet) =>
+        sheet.LiabilityGroups.SelectMany(g => g.Lines)
+            .Where(l => l.Name == "Commission Payable").Sum(l => l.Amount);
 
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)

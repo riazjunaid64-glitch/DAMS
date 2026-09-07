@@ -799,6 +799,111 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
+    public async Task EditingACommission_OnALockedBookingAmountReceivedBasis_DoesNotSilentlyReprice()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateCommissionAsync(harness.BookingId, new CreateBookingCommissionDto
+        {
+            PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.Percentage,
+            ManualCalculationBasis = FinancialCalculationBasis.BookingAmountReceived, ManualPercentageRate = 10m
+        }, Actor);
+        var commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(100_000m, commission.BasisAmount);
+        Assert.Equal(10_000m, commission.FinalAmount);
+
+        // More of the booking amount arrives after the commission was agreed — exactly what makes
+        // BookingAmountReceived a moving target for anything that re-reads it later.
+        var booking = await harness.Context.Bookings.SingleAsync(b => b.Id == harness.BookingId);
+        booking.BookingAmountReceived = 250_000m;
+        await harness.Context.SaveChangesAsync();
+
+        // A note-only edit: same partner, same rate, the same basis the form shows read-only —
+        // nothing an operator would consider a calculation change.
+        workspace = await harness.Service.UpdateCommissionAsync(harness.BookingId, commission.Id,
+            new UpdateBookingCommissionDto
+            {
+                PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
+                ManualReason = "Typo fix in the note only.", ManualCalculationType = FinancialCalculationType.Percentage,
+                ManualCalculationBasis = FinancialCalculationBasis.BookingAmountReceived, ManualPercentageRate = 10m,
+                ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Fixed a typo in the note."
+            }, Actor);
+        commission = Assert.Single(workspace.Commissions);
+
+        // Frozen at what it was agreed against, not re-priced against the 250,000 now on the booking.
+        Assert.Equal(100_000m, commission.BasisAmount);
+        Assert.Equal(10_000m, commission.FinalAmount);
+    }
+
+    [Fact]
+    public async Task EditingARebate_OnALockedBookingAmountReceivedBasis_DoesNotSilentlyReprice()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.Percentage,
+            CalculationBasis = FinancialCalculationBasis.BookingAmountReceived, PercentageRate = 10m,
+            Reason = "Loyalty rebate", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+        Assert.Equal(100_000m, rebate.BasisAmount);
+        Assert.Equal(10_000m, rebate.FinalAmount);
+
+        var booking = await harness.Context.Bookings.SingleAsync(b => b.Id == harness.BookingId);
+        booking.BookingAmountReceived = 250_000m;
+        await harness.Context.SaveChangesAsync();
+
+        workspace = await harness.Service.UpdateRebateAsync(harness.BookingId, rebate.Id,
+            new UpdateCustomerRebateDto
+            {
+                CalculationType = FinancialCalculationType.Percentage,
+                CalculationBasis = FinancialCalculationBasis.BookingAmountReceived, PercentageRate = 10m,
+                Reason = "Loyalty rebate", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+                ConcurrencyToken = rebate.ConcurrencyToken, ChangeReason = "Fixed a typo in the note."
+            }, Actor);
+        rebate = Assert.Single(workspace.Rebates);
+
+        Assert.Equal(100_000m, rebate.BasisAmount);
+        Assert.Equal(10_000m, rebate.FinalAmount);
+    }
+
+    [Fact]
+    public async Task EditingACommission_OnAnEditableAmountActuallyCollectedBasis_StillTracksTheLatestCollections()
+    {
+        // The other side of the same fix: a basis the edit form DOES let the operator actively
+        // re-pick every time is meant to keep tracking live data, and must not get frozen too.
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateCommissionAsync(harness.BookingId, new CreateBookingCommissionDto
+        {
+            PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.Percentage,
+            ManualCalculationBasis = FinancialCalculationBasis.AmountActuallyCollected, ManualPercentageRate = 10m
+        }, Actor);
+        var commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(100_000m, commission.BasisAmount);
+
+        harness.Context.Payments.Add(new Payment
+        {
+            BookingId = harness.BookingId, Amount = 50_000m, Type = PaymentType.BookingAmount,
+            PaymentMethod = PaymentMethod.BankTransfer
+        });
+        await harness.Context.SaveChangesAsync();
+
+        workspace = await harness.Service.UpdateCommissionAsync(harness.BookingId, commission.Id,
+            new UpdateBookingCommissionDto
+            {
+                PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, IsManual = true,
+                ManualCalculationType = FinancialCalculationType.Percentage,
+                ManualCalculationBasis = FinancialCalculationBasis.AmountActuallyCollected, ManualPercentageRate = 10m,
+                ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Refreshing after the extra receipt."
+            }, Actor);
+        commission = Assert.Single(workspace.Commissions);
+
+        Assert.Equal(150_000m, commission.BasisAmount);
+        Assert.Equal(15_000m, commission.FinalAmount);
+    }
+
+    [Fact]
     public async Task CancelledRebate_CanBeSupersededByACorrectedReplacement()
     {
         await using var harness = await Harness.Create();
@@ -1134,12 +1239,16 @@ public sealed class CommissionRebateTests
         var reversal = Assert.Single(harness.Context.CommissionPayoutReversals.ToList());
         Assert.Equal(today, reversal.ReversedAt.Date);
 
-        // …and the reversal lands in the same day's P&L as the payout it corrects, netting to 60.
+        // …and today's P&L carries the commission the day it was AGREED, untouched by the payout or
+        // its reversal: both settle Commission Payable and neither is a cost. The payable itself
+        // moves with them — 19,000.01 accrued, 100 paid, 40 given back.
         var accounts = new FinanceAccountService(harness.Context);
         var finance = new FinanceService(harness.Context, new NoopAttachmentStorage(), accounts,
             new WhtService(harness.Context, accounts), NullLogger<FinanceService>.Instance);
         var pnl = await finance.GetProfitAndLossAsync(null, today, today);
-        Assert.Equal(60m, Assert.Single(pnl.ExpenseLines, l => l.Name == "Commission Payouts").Amount);
+        var accrued = Assert.Single(harness.Context.CommissionAccruals.ToList()).Amount;
+        Assert.Equal(commission.FinalAmount, accrued);
+        Assert.Equal(accrued, Assert.Single(pnl.ExpenseLines, l => l.Name == "Partner Commissions").Amount);
     }
 
     /// <summary>

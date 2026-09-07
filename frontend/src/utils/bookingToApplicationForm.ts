@@ -1,4 +1,5 @@
 import type { ApplicationFormData } from "../components/ApplicationForm.tsx";
+import { formatFloor } from "../lib/floors.ts";
 
 /** Format an ISO date as dd-Mon-yyyy (e.g. 07-Jun-2026). Empty string for missing dates. */
 export function formatDate(iso: string | null | undefined): string {
@@ -63,7 +64,7 @@ export function bookingToApplicationForm(b: BookingForForm): ApplicationFormData
     apartmentCategory: b.apartmentCategory || b.unitType || "",
     isCorner: b.isCorner ?? false,
     apartmentNumber: b.unitNumber ?? "",
-    floor: b.unitFloorNumber ?? "",
+    floor: b.unitFloorNumber != null ? formatFloor(b.unitFloorNumber) : "",
     size: b.unitSize ?? "",
     tower: b.tower ?? "",
 

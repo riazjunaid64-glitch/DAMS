@@ -424,29 +424,24 @@ namespace DAMS.Application.Services
                 }).ToListAsync(cancellationToken);
             }
 
-            if (accountKey == "E:commission-payouts")
+            if (accountKey == "E:commission-expense")
             {
-                var rows = await CommissionPayoutQuery(
+                return await CommissionAccrualQuery(
                         projectId, accumulationStart, toExclusive, null, false)
                     .Select(row => new TrialLedgerMovement
                     {
-                        RecordId = row.Id, Date = row.PaymentDate, PostedAt = row.RecordedAt,
+                        RecordId = row.Id, Date = row.AccruedOn, PostedAt = row.RecordedAt,
                         SourceOrder = 210,
-                        Description = "Commission payout - " + row.Commission.Partner.Name,
-                        Reference = row.PaymentReference,
-                        Debit = row.Amount, Credit = 0m
-                    }).ToListAsync(cancellationToken);
-                rows.AddRange(await CommissionReversalQuery(
-                        projectId, accumulationStart, toExclusive, null, false)
-                    .Select(row => new TrialLedgerMovement
-                    {
-                        RecordId = row.Id, Date = row.ReversedAt, PostedAt = row.ReversedAt,
-                        SourceOrder = 211,
-                        Description = "Commission reversal - " + row.Payout.Commission.Partner.Name,
+                        Description = (row.Kind == CommissionAccrualKind.Release
+                                ? "Commission released - "
+                                : row.Kind == CommissionAccrualKind.Adjustment
+                                    ? "Commission adjusted - "
+                                    : "Commission agreed - ")
+                            + row.Commission.Partner.Name,
                         Reference = row.Reason,
-                        Debit = 0m, Credit = row.Amount
-                    }).ToListAsync(cancellationToken));
-                return rows;
+                        Debit = row.Amount < 0m ? 0m : row.Amount,
+                        Credit = row.Amount < 0m ? -row.Amount : 0m
+                    }).ToListAsync(cancellationToken);
             }
 
             if (accountKey == "E:cash-rebates")
@@ -727,24 +722,17 @@ namespace DAMS.Application.Services
                         Amount = e.Amount,
                         Count = 1
                     }))
-                .Concat(CommissionPayoutQuery(projectId, from, toExclusive, null, false)
-                    .Select(p => new PnlAggregateRow
+                // Accrued, not paid: a commission is a cost of the sale on the day it is agreed. The
+                // payout that follows settles Commission Payable and never touches profit, so it is
+                // absent here by design — counting it as well would charge the same commission twice.
+                .Concat(CommissionAccrualQuery(projectId, from, toExclusive, null, false)
+                    .Select(a => new PnlAggregateRow
                     {
                         Source = PnlAggregateSource.Commission,
                         CategoryId = null,
-                        Name = "Commission Payouts",
+                        Name = "Partner Commissions",
                         Order = int.MaxValue - 1,
-                        Amount = p.Amount,
-                        Count = 1
-                    }))
-                .Concat(CommissionReversalQuery(projectId, from, toExclusive, null, false)
-                    .Select(r => new PnlAggregateRow
-                    {
-                        Source = PnlAggregateSource.Commission,
-                        CategoryId = null,
-                        Name = "Commission Payouts",
-                        Order = int.MaxValue - 1,
-                        Amount = -r.Amount,
+                        Amount = a.Amount,
                         Count = 1
                     }))
                 .Concat(CashRebateQuery(projectId, from, toExclusive, null, false)
@@ -863,7 +851,7 @@ namespace DAMS.Application.Services
         {
             PnlAggregateSource.RecognisedSale => "unit-sales",
             PnlAggregateSource.RetainedCancellation => "cancellation-retained",
-            PnlAggregateSource.Commission => "commission-payouts",
+            PnlAggregateSource.Commission => "commission-expense",
             PnlAggregateSource.CashRebate => "cash-rebates",
             PnlAggregateSource.NonCashCredit => "non-cash-credits",
             PnlAggregateSource.FixedAssetPurchase => "fixed-asset-purchases",
@@ -909,6 +897,26 @@ namespace DAMS.Application.Services
                 .Concat(_context.BookingCancellationRefunds.AsNoTracking()
                     .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
                     .Select(r => new AccountMovementRow { Id = r.FinanceAccountId, Amount = -r.Amount }));
+
+            // Commission Payable: raised when a commission is agreed, cleared when it is paid, put
+            // back by a payout reversal. The payout's CASH side is already above; this is the
+            // liability side that used to be missing entirely. Folded into the same UNION rather
+            // than summed on its own, so the snapshot still costs one command however many payables
+            // it has to derive.
+            var commissionPayableId = accounts
+                .Where(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable)
+                .Select(a => (int?)a.Id).FirstOrDefault();
+            if (commissionPayableId.HasValue)
+            {
+                var payableId = commissionPayableId.Value;
+                movementRows = movementRows
+                    .Concat(CommissionAccrualQuery(projectId, null, end, null, false)
+                        .Select(a => new AccountMovementRow { Id = payableId, Amount = a.Amount }))
+                    .Concat(CommissionPayoutQuery(projectId, null, end, null, false)
+                        .Select(p => new AccountMovementRow { Id = payableId, Amount = -p.Amount }))
+                    .Concat(CommissionReversalQuery(projectId, null, end, null, false)
+                        .Select(r => new AccountMovementRow { Id = payableId, Amount = r.Amount }));
+            }
 
             if (!projectId.HasValue)
             {
@@ -1118,6 +1126,14 @@ namespace DAMS.Application.Services
                     .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m));
             if (refundObligation != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable))
                 issues.Add($"No Customer Refunds Payable system account found; outstanding refund obligation of {refundObligation:N2} has nowhere to sit.");
+            var commissionObligationRows = CommissionAccrualQuery(projectId, null, end, null, false)
+                .Select(a => a.Amount)
+                .Concat(CommissionPayoutQuery(projectId, null, end, null, false).Select(p => -p.Amount))
+                .Concat(CommissionReversalQuery(projectId, null, end, null, false).Select(r => r.Amount));
+            var commissionObligation = Money(
+                await commissionObligationRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
+            if (commissionObligation != 0m && !snapshots.Any(s => s.SystemRole == FinanceSystemAccountRole.CommissionPayable))
+                issues.Add($"No Commission Payable system account found; {commissionObligation:N2} owed to partners has nowhere to sit.");
             // Reported, never created: a report must not write to the database as a side effect of
             // being read. Setting the account up is Finance ▸ Accounts ▸ chart setup's job.
             var (deposits, receivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);

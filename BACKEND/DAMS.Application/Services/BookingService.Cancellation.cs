@@ -47,8 +47,14 @@ namespace DAMS.Application.Services
             if (!_context.Database.IsRelational())
                 return await operation();
             var strategy = _context.Database.CreateExecutionStrategy();
+            var replaying = false;
             return await strategy.ExecuteAsync(async () =>
             {
+                // A transient fault rolls the attempt back in the DATABASE and nowhere else, so the
+                // retry would otherwise read the change tracker's copy of its own undone work and
+                // decide against that. Each replay starts from the database instead.
+                if (replaying) _context.ChangeTracker.Clear();
+                replaying = true;
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
                 var result = await operation();
                 await transaction.CommitAsync(cancellationToken);

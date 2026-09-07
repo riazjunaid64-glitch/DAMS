@@ -117,7 +117,11 @@ namespace DAMS.Application.Services
             if (bookingAmountRequired > netSalePrice)
                 throw new InvalidOperationException("Booking amount required cannot exceed the discounted sale price.");
 
-            var applicationAmountReceived = dto.ApplicationAmountReceived ?? 0m;
+            // Rounded on the way in for the same reason the two payment services round theirs: this
+            // becomes a Payment row AND the booking's received total, and a figure carrying more
+            // places than the column holds decides the milestone on a number the database will not
+            // keep — leaving a booking that has been paid in full still awaiting its booking amount.
+            var applicationAmountReceived = Money(dto.ApplicationAmountReceived ?? 0m);
             if (applicationAmountReceived < 0m)
                 throw new InvalidOperationException("Application amount received cannot be negative.");
             if (applicationAmountReceived > 0m && bookingAmountRequired <= 0m)
@@ -300,7 +304,14 @@ namespace DAMS.Application.Services
                 .Take(pageSize)
                 .ToListAsync();
 
-            var items = entities.Select(MapProjection).ToList();
+            // Installments are not loaded on the list, so only the booking-level credit is needed —
+            // it is what makes "Booking Amount Remaining" agree with what the payment service will
+            // actually accept.
+            var (creditsByBooking, _) = await LoadCreditsAsync(
+                entities.Select(b => b.Id).ToList(), includeInstallments: false);
+            var items = entities
+                .Select(b => MapProjection(b, creditsByBooking.GetValueOrDefault(b.Id)))
+                .ToList();
 
             return new BookingListDto
             {
@@ -313,7 +324,17 @@ namespace DAMS.Application.Services
 
         // CancelBookingAsync and PayCancellationRefundAsync live in BookingService.Cancellation.cs.
 
-        public async Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId)
+        /// <summary>
+        /// Serializable for the same reason <see cref="RecordBookingAmountPaymentAsync"/> is: the
+        /// guard below reads what payments and non-cash credits have already settled on this booking,
+        /// then writes a revised price against that reading. A credit applied or reversed in between
+        /// — both of those paths run Serializable already — would leave the new net sale price below
+        /// what has been credited, which is the exact double-concession the guard exists to refuse.
+        /// </summary>
+        public Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId) =>
+            SerializableAsync(() => UpdateBookingFinancialsCoreAsync(id, dto), CancellationToken.None);
+
+        private async Task<BookingResponseDto> UpdateBookingFinancialsCoreAsync(int id, UpdateBookingFinancialsDto dto)
         {
             var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
 
@@ -351,7 +372,8 @@ namespace DAMS.Application.Services
             // price below it would owe the customer a refund the sale has no way to express.
             var collected = await _context.Payments.Where(p => p.BookingId == booking.Id)
                 .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var settled = Money(collected + await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id));
+            var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+            var settled = Money(collected + bookingCredits);
             if (netSalePrice < settled)
                 throw new InvalidOperationException(
                     $"The revised net sale price of {netSalePrice:0.00} is below the {settled:0.00} already settled "
@@ -367,8 +389,14 @@ namespace DAMS.Application.Services
             booking.TotalInstallmentAmount = netSalePrice - dto.BookingAmountRequired;
             booking.UpdatedAt = DateTime.UtcNow;
 
-            // If terms now mean the booking amount is already covered, advance the workflow.
-            if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+            // If terms now mean the booking amount is already covered, advance the workflow. Covered
+            // means covered in CASH OR CREDIT: a non-cash credit substitutes for the cash the
+            // customer would otherwise pay, and RecordBookingAmountPaymentAsync already refuses to
+            // collect more than the effective requirement. Comparing against the raw requirement
+            // here left a credit-covered booking stuck in AwaitingBookingAmount with no payment the
+            // service would accept — the plan could never be generated and the sale never finished.
+            if (booking.BookingAmountReceived
+                >= BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits))
             {
                 var unit = await _context.Units.FirstOrDefaultAsync(u => u.Id == booking.UnitId);
                 booking.Status = BookingStatus.PaymentPlanActive;
@@ -386,97 +414,138 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id);
         }
 
-        public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId, CancellationToken cancellationToken = default)
+        public Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto,
+            int adminUserId, CancellationToken cancellationToken = default) =>
+            RecordBookingAmountPaymentAsync(bookingId, dto, adminUserId,
+                $"booking-amount-payment:{Guid.NewGuid():N}", cancellationToken);
+
+        /// <summary>
+        /// <paramref name="attemptKey"/> names this ONE attempt to take the money, created before
+        /// the retrying wrapper is entered so that every re-execution of the delegate carries the
+        /// same value. A commit whose acknowledgement was lost is indistinguishable from one that
+        /// never happened, so the execution strategy replays the delegate — and replaying blind
+        /// banks the customer's money twice under two receipt numbers. The endpoint's
+        /// <c>Idempotency-Key</c> filter cannot see this: it guards the HTTP call from outside, and
+        /// the replay happens wholly within one such call. So the attempt leaves its name on the row
+        /// and looks for that name first; finding it means the payment is already recorded.
+        /// </summary>
+        internal async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto,
+            int adminUserId, string attemptKey, CancellationToken cancellationToken)
         {
-            if (dto.Amount <= 0m)
-                throw new InvalidOperationException("Payment amount must be greater than zero.");
-            if (!dto.FinanceAccountId.HasValue)
-                throw new InvalidOperationException("Received In Account is required.");
-            await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
-            // A receipt date is a posting date: it decides which month took the money, and both the
-            // booking's own progress and every finance balance move the instant it is saved. So it
-            // takes the same bounds as an expense — never in the future, never before the committed
-            // opening balances.
-            var paidAt = await FinanceDateRules.ResolveInstantAsync(
-                _context, dto.PaidAt, "Payment date", cancellationToken);
-
-            var booking = await _context.Bookings
-                .Include(b => b.Unit)
-                .FirstOrDefaultAsync(b => b.Id == bookingId);
-
-            if (booking == null)
-                throw new InvalidOperationException("Booking not found.");
-
-            if (booking.Status == BookingStatus.Cancelled)
-                throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
-
-            if (booking.Status != BookingStatus.AwaitingBookingAmount)
-                throw new InvalidOperationException("Booking amount has already been fully received for this booking.");
-
-            if (booking.BookingAmountRequired <= 0m)
-                throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
-
-            var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
-            var netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount;
-            // Booking-level credits reduce the total owed, so the cash still required for the
-            // booking-amount milestone can never exceed the sale's remaining balance. Without this
-            // cap a credit larger than (net price - booking amount) would demand more cash than the
-            // sale allows, permanently deadlocking the booking in AwaitingBookingAmount.
-            var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits);
-            var totalCollected = await _context.Payments.Where(p => p.BookingId == booking.Id)
-                .SumAsync(p => (decimal?)p.Amount) ?? 0m;
-            var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
-            var remaining = Math.Max(0m, Math.Min(effectiveRequired - booking.BookingAmountReceived, overallRemaining));
-            if (dto.Amount > remaining)
-                throw new InvalidOperationException(
-                    $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
-
-            var payment = new Payment
+            // Serializable: this reads the booking's current cash-collected and non-cash-credit
+            // totals to decide what is still owed, then writes a payment against them — the same
+            // shape of check-then-write that RecordRebateDisbursementAsync and
+            // ReverseRebateDisbursementAsync already run under Serializable. Without matching
+            // isolation here, a concurrent credit application/reversal on the same booking could
+            // commit between this method's read and its write, settling the same balance twice.
+            var paymentId = await SerializableAsync(async () =>
             {
-                BookingId = booking.Id,
-                InstallmentId = null,
-                FinanceAccountId = dto.FinanceAccountId,
-                Type = PaymentType.BookingAmount,
-                Amount = dto.Amount,
-                PaymentMethod = dto.PaymentMethod,
-                PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
-                Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
-                RecordedByUserId = adminUserId,
-                PaidAt = paidAt,
-                CreatedAt = DateTime.UtcNow
-            };
+                var alreadyRecorded = await _context.Payments.AsNoTracking()
+                    .SingleOrDefaultAsync(p => p.IdempotencyKey == attemptKey, cancellationToken);
+                if (alreadyRecorded != null)
+                    return alreadyRecorded.Id;
 
-            _context.Payments.Add(payment);
+                // Rounded once and used for every comparison and every write below. The column is
+                // decimal(18,2), so a request carrying more places is stored rounded while the
+                // in-memory figure keeps them: 99,999.996 against a 100,000 requirement banks
+                // 100,000.00 and still reads as short of it, leaving the booking awaiting an
+                // amount it has been paid — and refusing any further payment, because the
+                // remaining balance it computes is now zero.
+                var amount = Money(dto.Amount);
+                if (amount <= 0m)
+                    throw new InvalidOperationException("Payment amount must be greater than zero.");
+                if (!dto.FinanceAccountId.HasValue)
+                    throw new InvalidOperationException("Received In Account is required.");
+                await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
+                // A receipt date is a posting date: it decides which month took the money, and both the
+                // booking's own progress and every finance balance move the instant it is saved. So it
+                // takes the same bounds as an expense — never in the future, never before the committed
+                // opening balances.
+                var paidAt = await FinanceDateRules.ResolveInstantAsync(
+                    _context, dto.PaidAt, "Payment date", cancellationToken);
 
-            booking.BookingAmountReceived += dto.Amount;
-            booking.UpdatedAt = DateTime.UtcNow;
+                var booking = await _context.Bookings
+                    .Include(b => b.Unit)
+                    .FirstOrDefaultAsync(b => b.Id == bookingId);
 
-            // Fully received (in cash, net of any booking-level credits) -> activate the payment
-            // plan stage and move the unit accordingly.
-            if (booking.BookingAmountReceived >= effectiveRequired)
-            {
-                booking.Status = BookingStatus.PaymentPlanActive;
-                booking.BookingAmountConfirmedDate = PakistanTime.Now;
-                booking.InstallmentPlanStartDate ??= PakistanTime.Now;
+                if (booking == null)
+                    throw new InvalidOperationException("Booking not found.");
 
-                booking.Unit.Status = UnitStatus.OnPaymentPlan;
-                booking.Unit.UpdatedAt = DateTime.UtcNow;
-            }
+                if (booking.Status == BookingStatus.Cancelled)
+                    throw new InvalidOperationException("Cannot record a payment against a cancelled booking.");
 
-            try
-            {
-                await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                throw new InvalidOperationException(
-                    "This booking was updated by another payment. No payment was recorded; reload and try again.");
-            }
+                if (booking.Status != BookingStatus.AwaitingBookingAmount)
+                    throw new InvalidOperationException("Booking amount has already been fully received for this booking.");
 
-            // The money is committed. Everything below is best-effort.
-            await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(payment.Id));
+                if (booking.BookingAmountRequired <= 0m)
+                    throw new InvalidOperationException("Set a booking amount required on this booking before recording payments.");
 
-            return await GetResponseAsync(booking.Id, cancellationToken);
+                var bookingCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, booking.Id);
+                var netSalePrice = booking.AgreedSalePrice - booking.DiscountAmount;
+                // Booking-level credits reduce the total owed, so the cash still required for the
+                // booking-amount milestone can never exceed the sale's remaining balance. Without this
+                // cap a credit larger than (net price - booking amount) would demand more cash than the
+                // sale allows, permanently deadlocking the booking in AwaitingBookingAmount.
+                var effectiveRequired = BookingCreditPolicy.EffectiveBookingAmountRequired(booking, bookingCredits);
+                var totalCollected = await _context.Payments.Where(p => p.BookingId == booking.Id)
+                    .SumAsync(p => (decimal?)p.Amount) ?? 0m;
+                var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
+                var remaining = Math.Max(0m, Math.Min(effectiveRequired - booking.BookingAmountReceived, overallRemaining));
+                if (amount > remaining)
+                    throw new InvalidOperationException(
+                        $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
+
+                var payment = new Payment
+                {
+                    BookingId = booking.Id,
+                    InstallmentId = null,
+                    FinanceAccountId = dto.FinanceAccountId,
+                    Type = PaymentType.BookingAmount,
+                    Amount = amount,
+                    PaymentMethod = dto.PaymentMethod,
+                    PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
+                    Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
+                    RecordedByUserId = adminUserId,
+                    IdempotencyKey = attemptKey,
+                    PaidAt = paidAt,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.Payments.Add(payment);
+
+                booking.BookingAmountReceived += amount;
+                booking.UpdatedAt = DateTime.UtcNow;
+
+                // Fully received (in cash, net of any booking-level credits) -> activate the payment
+                // plan stage and move the unit accordingly.
+                if (booking.BookingAmountReceived >= effectiveRequired)
+                {
+                    booking.Status = BookingStatus.PaymentPlanActive;
+                    booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                    booking.InstallmentPlanStartDate ??= PakistanTime.Now;
+
+                    booking.Unit.Status = UnitStatus.OnPaymentPlan;
+                    booking.Unit.UpdatedAt = DateTime.UtcNow;
+                }
+
+                try
+                {
+                    await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    throw new InvalidOperationException(
+                        "This booking was updated by another payment. No payment was recorded; reload and try again.");
+                }
+
+                return payment.Id;
+            }, cancellationToken);
+
+            // Raised only once the transaction above has actually committed, so a retried or rolled
+            // back attempt can never send a receipt for a payment that was not durably recorded.
+            await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(paymentId));
+
+            return await GetResponseAsync(bookingId, cancellationToken);
         }
 
         /// <summary>
@@ -762,12 +831,42 @@ namespace DAMS.Application.Services
                 .AsSplitQuery()
                 .FirstAsync(b => b.Id == id, cancellationToken);
 
-            return MapProjection(booking);
+            var (byBooking, byInstallment) = await LoadCreditsAsync([id], includeInstallments: true, cancellationToken);
+            return MapProjection(booking, byBooking.GetValueOrDefault(id), byInstallment);
         }
 
-        private static BookingResponseDto MapProjection(Booking b)
+        /// <summary>
+        /// Every non-cash credit figure a projection needs, for a whole page of bookings at once:
+        /// the booking-level total each one carries, and the net credit sitting on each of its
+        /// installments. Read as two set-based queries rather than per booking, so a page of twenty
+        /// does not become forty round trips.
+        /// </summary>
+        private async Task<(Dictionary<int, decimal> ByBooking, Dictionary<int, decimal> ByInstallment)>
+            LoadCreditsAsync(IReadOnlyCollection<int> bookingIds, bool includeInstallments,
+                CancellationToken cancellationToken = default)
         {
-            var installmentTotals = ComputeInstallmentTotals(b);
+            var byBooking = await BookingCreditPolicy.NonCashCreditsByBookingAsync(
+                _context, bookingIds, cancellationToken);
+            var byInstallment = includeInstallments
+                ? await BookingCreditPolicy.InstallmentCreditsByBookingAsync(_context, bookingIds, cancellationToken)
+                : new Dictionary<int, decimal>();
+            return (byBooking, byInstallment);
+        }
+
+        /// <param name="rebateCredits">
+        /// Required, with no default: a projection that quietly defaulted its credits to zero is the
+        /// defect this parameter exists to remove — it would report a balance the customer no longer
+        /// owes and offer a payment the service would refuse.
+        /// </param>
+        /// <param name="installmentCredits">
+        /// Optional, because the list query does not load installments at all and the per-installment
+        /// figures are then not computed from anything.
+        /// </param>
+        private static BookingResponseDto MapProjection(Booking b,
+            decimal rebateCredits, IReadOnlyDictionary<int, decimal>? installmentCredits = null)
+        {
+            var installmentTotals = ComputeInstallmentTotals(b,
+                installmentCredits ?? new Dictionary<int, decimal>());
 
             return new BookingResponseDto
             {
@@ -801,7 +900,9 @@ namespace DAMS.Application.Services
                 BookingAmountRequired = b.BookingAmountRequired,
                 BookingAmountReceived = b.BookingAmountReceived,
                 TotalInstallmentAmount = b.TotalInstallmentAmount,
-                InstallmentPaid = installmentTotals.Paid,
+                RebateCredits = rebateCredits,
+                InstallmentPaid = installmentTotals.Settled,
+                InstallmentCashReceived = installmentTotals.Cash,
                 InstallmentRemaining = installmentTotals.Remaining,
                 HasInstallmentSchedule = installmentTotals.HasSchedule,
                 BookingDate = b.BookingDate,
@@ -907,7 +1008,11 @@ namespace DAMS.Application.Services
                 .OrderByDescending(b => b.BookingDate)
                 .ToListAsync();
 
-            return entities.Select(b => SanitizeForClient(MapProjection(b))).ToList();
+            var ids = entities.Select(b => b.Id).ToList();
+            var (byBooking, byInstallment) = await LoadCreditsAsync(ids, includeInstallments: true);
+            return entities
+                .Select(b => SanitizeForClient(MapProjection(b, byBooking.GetValueOrDefault(b.Id), byInstallment)))
+                .ToList();
         }
 
         public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null)
@@ -935,11 +1040,26 @@ namespace DAMS.Application.Services
                                 || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)));
         }
 
-        private static (decimal Paid, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(Booking b)
+        /// <summary>
+        /// What the installment plan has been settled by and what it still demands.
+        /// <para>
+        /// Settled means cash OR credit, exactly as the schedule screen counts it
+        /// (<c>InstallmentService.GetPaidByInstallmentAsync</c>): a credit aimed at an installment,
+        /// and a booking-level credit's allocated share of one, close the row just as a receipt
+        /// does. Counting only cash here made the list and detail projections claim a balance the
+        /// schedule itself no longer showed, and the difference was the rebate.
+        /// </para>
+        /// <para>
+        /// The cash actually received stays its own figure so the two are never conflated:
+        /// <see cref="BookingResponseDto.InstallmentCashReceived"/> is what came through the bank.
+        /// </para>
+        /// </summary>
+        private static (decimal Cash, decimal Settled, decimal Remaining, bool HasSchedule) ComputeInstallmentTotals(
+            Booking b, IReadOnlyDictionary<int, decimal> installmentCredits)
         {
             var installments = b.Installments?.ToList() ?? new List<Installment>();
             if (installments.Count == 0)
-                return (0m, 0m, false);
+                return (0m, 0m, 0m, false);
 
             var paidByInstallment = (b.Payments ?? new List<Payment>())
                 .Where(p => p.InstallmentId.HasValue && p.Type == PaymentType.Installment)
@@ -947,10 +1067,12 @@ namespace DAMS.Application.Services
                 .ToDictionary(g => g.Key, g => g.Sum(p => p.Amount));
 
             var total = installments.Sum(i => i.Amount);
-            var paid = installments.Sum(i =>
+            var cash = installments.Sum(i =>
                 paidByInstallment.TryGetValue(i.Id, out var amount) ? amount : 0m);
+            var settled = Money(cash + installments.Sum(i =>
+                installmentCredits.TryGetValue(i.Id, out var credit) ? credit : 0m));
 
-            return (paid, Math.Max(0m, total - paid), true);
+            return (Money(cash), settled, Math.Max(0m, Money(total - settled)), true);
         }
 
         private static BookingResponseDto SanitizeForClient(BookingResponseDto dto)

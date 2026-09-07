@@ -30,6 +30,20 @@ namespace DAMS.Domain.Enums
         Reversed = 4
     }
 
+    /// <summary>Why a <see cref="Entities.CommissionAccrual"/> row exists. Reporting only ever sums
+    /// the signed amount; the kind is what makes the ledger readable.</summary>
+    public enum CommissionAccrualKind
+    {
+        /// <summary>The commission was agreed: the whole final amount becomes owed.</summary>
+        Recognition = 0,
+
+        /// <summary>A pending commission was corrected: the difference between old and new.</summary>
+        Adjustment = 1,
+
+        /// <summary>The obligation ended without being paid — cancelled, or voided with the booking.</summary>
+        Release = 2
+    }
+
     /// <summary>
     /// The rebate mirror of <see cref="BookingCommissionStatus"/>. It ends in Applied when it was
     /// given as a credit against what the customer owes, and in Paid when it was actually paid out.

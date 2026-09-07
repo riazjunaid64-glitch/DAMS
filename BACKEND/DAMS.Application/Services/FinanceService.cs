@@ -531,19 +531,24 @@ namespace DAMS.Application.Services
                     Label = e.Category
                 });
 
-            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(p => new NetProfitRow
+            // The obligation, split into the two directions the list understands: taking a
+            // commission on is a cost, releasing or reducing one gives that cost back. The payout
+            // itself is absent — it settles the payable and never touches profit.
+            var commissionAccrued = CommissionAccrualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Where(a => a.Amount > 0m)
+                .Select(a => new NetProfitRow
                 {
-                    SortId = p.Id, Date = p.PaymentDate, ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
-                    Kind = "expense", Amount = p.Amount, IsPayment = false, PaymentType = null,
+                    SortId = a.Id, Date = a.AccruedOn, ProjectName = a.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "expense", Amount = a.Amount, IsPayment = false, PaymentType = null,
                     InstallmentType = null, Label = "Partner commission"
                 });
-            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(r => new NetProfitRow
+            var commissionReleased = CommissionAccrualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Where(a => a.Amount < 0m)
+                .Select(a => new NetProfitRow
                 {
-                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
-                    Kind = "revenue", Amount = r.Amount, IsPayment = false, PaymentType = null,
-                    InstallmentType = null, Label = "Commission payout reversal"
+                    SortId = a.Id, Date = a.AccruedOn, ProjectName = a.Commission.Booking.Unit.Project.ProjectName,
+                    Kind = "revenue", Amount = -a.Amount, IsPayment = false, PaymentType = null,
+                    InstallmentType = null, Label = "Partner commission released"
                 });
             var rebatePayments = CashRebateQuery(projectId, fromValue, toExclusive, accountId, unassigned)
                 .Select(d => new NetProfitRow
@@ -613,8 +618,8 @@ namespace DAMS.Application.Services
                     InstallmentType = null, Label = "Fixed asset purchase — " + p.ItemName
                 });
 
-            var raw = await recognisedSales.Concat(manual).Concat(expenses).Concat(commissionPayouts)
-                .Concat(commissionReversals).Concat(rebatePayments).Concat(rebateReversals)
+            var raw = await recognisedSales.Concat(manual).Concat(expenses).Concat(commissionAccrued)
+                .Concat(commissionReleased).Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(loanInterest).Concat(retained)
                 .Concat(nonCashCredits).Concat(nonCashCreditReversals).Concat(assetPurchases)
                 .OrderByDescending(x => x.Date)
@@ -666,19 +671,23 @@ namespace DAMS.Application.Services
                     AttachmentFileSize = e.Attachment != null ? e.Attachment.FileSize : 0L,
                     AttachmentUploadedAt = e.Attachment != null ? e.Attachment.UploadedAt : (DateTime?)null
                 });
-            var commissionPayouts = CommissionPayoutQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(p => new CostRow
+            // Built from the obligation ledger, exactly as the Total Expenses card is. A payout is a
+            // payable settlement and is not a cost, so it is not listed under a cost heading.
+            var commissionAccrued = CommissionAccrualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Where(a => a.Amount > 0m)
+                .Select(a => new CostRow
                 {
-                    SortId = p.Id, Date = p.PaymentDate, ProjectName = p.Commission.Booking.Unit.Project.ProjectName,
-                    Source = "commission", Kind = "cost", Amount = p.Amount, ExpenseId = null, Label = "Partner commission",
+                    SortId = a.Id, Date = a.AccruedOn, ProjectName = a.Commission.Booking.Unit.Project.ProjectName,
+                    Source = "commission", Kind = "cost", Amount = a.Amount, ExpenseId = null, Label = "Partner commission",
                     AttachmentFileName = null, AttachmentContentType = null,
                     AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
-            var commissionReversals = CommissionReversalQuery(projectId, fromValue, toExclusive, accountId, unassigned)
-                .Select(r => new CostRow
+            var commissionReleased = CommissionAccrualQuery(projectId, fromValue, toExclusive, accountId, unassigned)
+                .Where(a => a.Amount < 0m)
+                .Select(a => new CostRow
                 {
-                    SortId = r.Id, Date = r.ReversedAt, ProjectName = r.Payout.Commission.Booking.Unit.Project.ProjectName,
-                    Source = "commission", Kind = "reduction", Amount = r.Amount, ExpenseId = null, Label = "Commission payout reversal",
+                    SortId = a.Id, Date = a.AccruedOn, ProjectName = a.Commission.Booking.Unit.Project.ProjectName,
+                    Source = "commission", Kind = "reduction", Amount = -a.Amount, ExpenseId = null, Label = "Partner commission released",
                     AttachmentFileName = null, AttachmentContentType = null,
                     AttachmentFileSize = 0L, AttachmentUploadedAt = (DateTime?)null
                 });
@@ -744,7 +753,7 @@ namespace DAMS.Application.Services
                     AttachmentUploadedAt = p.Attachment != null ? p.Attachment.UploadedAt : (DateTime?)null
                 });
 
-            var raw = await expenses.Concat(commissionPayouts).Concat(commissionReversals)
+            var raw = await expenses.Concat(commissionAccrued).Concat(commissionReleased)
                 .Concat(rebatePayments).Concat(rebateReversals)
                 .Concat(nonCashCredits).Concat(nonCashCreditReversals)
                 .Concat(loanInterest).Concat(assetPurchases)
@@ -1070,6 +1079,29 @@ namespace DAMS.Application.Services
             if (fromValue.HasValue) q = q.Where(t => t.Date >= fromValue.Value);
             if (toExclusive.HasValue) q = q.Where(t => t.Date < toExclusive.Value);
             if (accountId.HasValue) q = q.Where(t => t.FinanceAccountId == accountId.Value);
+            return q;
+        }
+
+        /// <summary>
+        /// The dated commission obligation: what the company took onto its books as owed to partners,
+        /// and what it later released. This — not the payout — is the commission expense.
+        /// <para>
+        /// A payout is a settlement of the payable, so it has no P&amp;L effect at all; the accrual
+        /// carries both the charge to profit and the credit to Commission Payable, which is why an
+        /// account filter here resolves to that liability account rather than to any bank.
+        /// </para>
+        /// </summary>
+        private IQueryable<CommissionAccrual> CommissionAccrualQuery(int? projectId, DateTime? fromValue,
+            DateTime? toExclusive, int? accountId, bool unassigned)
+        {
+            var q = _context.CommissionAccruals.AsNoTracking().AsQueryable();
+            if (projectId.HasValue) q = q.Where(a => a.Commission.Booking.Unit.ProjectId == projectId.Value);
+            if (fromValue.HasValue) q = q.Where(a => a.AccruedOn >= fromValue.Value);
+            if (toExclusive.HasValue) q = q.Where(a => a.AccruedOn < toExclusive.Value);
+            if (accountId.HasValue)
+                q = q.Where(_ => _context.FinanceAccounts.Any(a => a.Id == accountId.Value
+                    && a.SystemRole == FinanceSystemAccountRole.CommissionPayable));
+            else if (unassigned) q = q.Where(_ => false);
             return q;
         }
 

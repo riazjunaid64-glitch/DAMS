@@ -5,6 +5,7 @@ import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
 import TabLayout from "../lib/TabLayout.tsx";
+import { formatFloor } from "../lib/floors.ts";
 
 type Props = { user: User | null };
 
@@ -228,7 +229,7 @@ export default function MyProjectDetailPage({ user }: Props) {
                   {[
                     ["Project", booking.projectName],
                     ["Unit", `${booking.unitType} (${booking.unitNumber})`],
-                    ["Floor", String(booking.unitFloorNumber)],
+                    ["Floor", formatFloor(booking.unitFloorNumber)],
                     ["Size", `${formatMoney(booking.unitSize)} sq ft`],
                     ["Category", booking.apartmentCategory ?? "—"],
                     ["Tower / Block", booking.tower ?? "—"],

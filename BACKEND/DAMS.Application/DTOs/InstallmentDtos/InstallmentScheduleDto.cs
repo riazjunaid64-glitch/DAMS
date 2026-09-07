@@ -45,6 +45,14 @@ namespace DAMS.Application.DTOs.InstallmentDtos
 
         public decimal ScheduleRemaining { get; set; }
 
+        /// <summary>
+        /// What the customer owes that this schedule does NOT demand — normally zero. It becomes
+        /// positive when a credit the plan was built smaller by is reversed, and the plan has to be
+        /// regenerated before any further receipt can be taken (the payment service refuses one
+        /// while this is non-zero, because that receipt would pin the plan and strand the amount).
+        /// </summary>
+        public decimal UnscheduledBalance { get; set; }
+
         public List<InstallmentScheduleItemDto> Items { get; set; } = new();
     }
 }
