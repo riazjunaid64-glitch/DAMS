@@ -1,5 +1,5 @@
 import AppSelect from "../lib/AppSelect.tsx";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
@@ -9,6 +9,7 @@ import Field from "../lib/Field.tsx";
 import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
 import { BookingTabs, DetailRow, EmptyState, PanelCard, StatCard, TabPanel } from "../features/bookings/ui.tsx";
 import { Icons, th } from "../features/bookings/tokens.tsx";
+import { missingReadMessages, readBookingDetail } from "../features/bookings/detailReads.ts";
 import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
 import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
 import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
@@ -193,7 +194,13 @@ export default function BookingDetailPage({ user }: Props) {
   // one can say so and offer a retry, instead of every tab showing the same page-level message.
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [paymentsError, setPaymentsError] = useState<string | null>(null);
+  // The booking read's OWN freshness, kept apart from `error`: that one also carries the failure of
+  // every mutation on this page, so it cannot answer "are these figures current?".
+  const [bookingError, setBookingError] = useState<string | null>(null);
   const [accountsError, setAccountsError] = useState<string | null>(null);
+  // Reloads overlap — a payment's reload and a manual retry can be in flight together — and the
+  // slower one must not put its older answers on screen after the faster one.
+  const loadSequence = useRef(0);
   const [activeTab, setActiveTab] = useState("summary");
   // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
   // half-typed commission or a loaded audit page survives a trip to another tab.
@@ -266,79 +273,93 @@ export default function BookingDetailPage({ user }: Props) {
 
   const isAdmin = user?.role === "Admin";
 
-  const load = useCallback(async () => {
+  // Declared here, above the handlers, because submitting a form that was already open has to check
+  // the same freshness the button that opened it did. A reload can fail while the modal sits there.
+  //
+  // A stale schedule must not drive actions. Generating or collecting against installment ids that
+  // were read before the last failed refresh is how an operator ends up recording money against a
+  // row the server has since replaced, so both are withdrawn until the schedule reloads.
+  const scheduleIsFresh = schedule !== null && scheduleError === null;
+  // The booking carries the status, the agreed terms, the booking-amount balance and the rebate
+  // credits — every prerequisite a payment is checked against. A failed reload leaves all of them
+  // describing the booking as it was, so money actions are withdrawn exactly as they are for a
+  // failed schedule read.
+  const bookingIsFresh = bookingError === null;
+  const staleForPayment = "The booking's figures could not be refreshed, so this cannot be recorded "
+    + "against them. Retry the reload at the top of the page first.";
+
+  // notifyPanel=false when the Commission & Rebate panel itself asked for this reload: its mutation
+  // already answered with the whole workspace, so bumping the token only makes it re-read what it
+  // has. Everything else — a payment, a plan change, a status transition, an explicit retry — moved
+  // the booking under a panel that has no other way to find out.
+  const load = useCallback(async (notifyPanel = true) => {
     if (!bookingId) return;
+    const request = ++loadSequence.current;
     setLoading(true);
     setError(null);
     try {
-      // Each dependent read is caught on its own: a network failure on one must not abort the
-      // others, and must not be reported as the booking itself being unavailable.
-      const [bookRes, schedRes, payRes] = await Promise.all([
-        api(`/api/Booking/${bookingId}`),
-        api(`/api/Booking/${bookingId}/installments`).catch(() => null),
-        api(`/api/Booking/${bookingId}/payments`).catch(() => null),
-      ]);
-      if (!bookRes.ok) throw new Error("Booking not found");
+      // Every read stands or falls on its own, INCLUDING the booking — see detailReads.
+      const reads = await readBookingDetail<BookingDetail, InstallmentSchedule, BookingPayment[]>(bookingId, api);
+      // A newer reload started while this one was in flight; its answers are the current ones, and
+      // applying these on top of them would put an older generation back on screen.
+      if (request !== loadSequence.current) return;
 
-      const b: BookingDetail = await bookRes.json();
-      setBooking(b);
-      // Read off the booking rather than from a second endpoint, so the one figure every balance on
-      // this page depends on cannot be the one that failed to arrive.
-      setRebateCredits(typeof b.rebateCredits === "number" ? b.rebateCredits : null);
+      const b = reads.booking.value;
+      if (b) {
+        setBooking(b);
+        // Read off the booking rather than from a second endpoint, so the one figure every balance on
+        // this page depends on cannot be the one that failed to arrive.
+        setRebateCredits(typeof b.rebateCredits === "number" ? b.rebateCredits : null);
+        setBookingError(null);
 
-      const derivedPercent =
-        b.agreedSalePrice > 0 && b.bookingAmountRequired > 0
-          ? Math.round((b.bookingAmountRequired / b.agreedSalePrice) * 100)
-          : 0;
-      const isPreset = ["5", "10", "15", "20", "25", "30"].includes(String(derivedPercent));
-      setFinForm({
-        agreedSalePrice: String(b.agreedSalePrice || ""),
-        discountPercent: String(b.discountPercent ?? 0),
-        discountReason: "",
-        bookingPercent: b.bookingAmountRequired > 0 ? (isPreset ? String(derivedPercent) : "custom") : "10",
-        bookingAmountRequired: b.bookingAmountRequired ? String(b.bookingAmountRequired) : "",
-        bookingAmountDueDate: "",
-      });
-
-      // Parsed in its own guard for the same reason as the credits above, and the previous value is
-      // left alone on failure: showing yesterday's list under a visible warning beats replacing it
-      // with a confident "no payments".
-      let paymentRows: BookingPayment[] | null = null;
-      if (payRes?.ok) {
-        try {
-          paymentRows = await payRes.json() as BookingPayment[];
-        } catch {
-          paymentRows = null;
-        }
+        const derivedPercent =
+          b.agreedSalePrice > 0 && b.bookingAmountRequired > 0
+            ? Math.round((b.bookingAmountRequired / b.agreedSalePrice) * 100)
+            : 0;
+        const isPreset = ["5", "10", "15", "20", "25", "30"].includes(String(derivedPercent));
+        setFinForm({
+          agreedSalePrice: String(b.agreedSalePrice || ""),
+          discountPercent: String(b.discountPercent ?? 0),
+          discountReason: "",
+          bookingPercent: b.bookingAmountRequired > 0 ? (isPreset ? String(derivedPercent) : "custom") : "10",
+          bookingAmountRequired: b.bookingAmountRequired ? String(b.bookingAmountRequired) : "",
+          bookingAmountDueDate: "",
+        });
+      } else {
+        // The rows already on screen stay as history, but nothing derived from them is current any
+        // more — including the credits, which ride on this same response. Clearing them is what makes
+        // Outstanding read "Unavailable" instead of a confident figure built from a stale credit.
+        setBookingError(reads.booking.error);
+        setRebateCredits(null);
       }
+
+      // The previous list is left alone on failure: showing yesterday's receipts under a visible
+      // warning beats replacing them with a confident "no payments".
+      const paymentRows = reads.payments.value;
       if (paymentRows) {
         setPayments(paymentRows);
         setPaymentsError(null);
       } else {
-        setPaymentsError("The payment history could not be loaded.");
+        setPaymentsError(reads.payments.error);
       }
 
-      let s: InstallmentSchedule | null = null;
-      if (schedRes?.ok) {
-        try {
-          s = await schedRes.json() as InstallmentSchedule;
-        } catch {
-          s = null;
-        }
-      }
+      const s = reads.schedule.value;
       if (!s) {
-        setScheduleError("The installment schedule could not be loaded.");
+        setScheduleError(reads.schedule.error);
       } else {
         const loaded = s;
         setScheduleError(null);
         setSchedule(loaded);
         if (!loaded.hasSchedule) {
-          setForm((prev) => ({
-            ...prev,
-            agreedSalePrice: String(b.agreedSalePrice),
-            discountPercent: String(b.discountPercent ?? 0),
-            installmentStartDate: toDateInput(b.installmentPlanStartDate) || pakistanToday(),
-          }));
+          // Seeded from the booking, so it is only seeded when the booking arrived with it.
+          if (b) {
+            setForm((prev) => ({
+              ...prev,
+              agreedSalePrice: String(b.agreedSalePrice),
+              discountPercent: String(b.discountPercent ?? 0),
+              installmentStartDate: toDateInput(b.installmentPlanStartDate) || pakistanToday(),
+            }));
+          }
         } else {
           setForm((prev) => ({
             ...prev,
@@ -352,13 +373,16 @@ export default function BookingDetailPage({ user }: Props) {
           }));
         }
       }
-      setDataVersion((v) => v + 1);
-    } catch {
-      setError("Unable to load booking.");
+      if (notifyPanel) setDataVersion((v) => v + 1);
     } finally {
-      setLoading(false);
+      // Only the reload still current owns the loading flag; a superseded one leaves it alone.
+      if (request === loadSequence.current) setLoading(false);
     }
   }, [bookingId]);
+
+  // The panel's own mutations answer with the workspace, so its reload of the page must not come
+  // back at it as a fresh read of the same data.
+  const handlePanelChanged = useCallback(() => { void load(false); }, [load]);
 
   // Swallowing this failure left every payment form with an empty, required "Received In Account"
   // selector and nothing on screen saying why — the operator could not record money and could not
@@ -456,6 +480,12 @@ export default function BookingDetailPage({ user }: Props) {
   const handleRecordPayment = async (e: FormEvent) => {
     e.preventDefault();
     if (!payTarget) return;
+    // The modal can be open while a reload fails underneath it, and this row's id, balance and the
+    // booking's status were all read before that happened.
+    if (!scheduleIsFresh || !bookingIsFresh) {
+      setPayError(staleForPayment);
+      return;
+    }
     if (!payForm.financeAccountId) {
       setPayError("Select the account this payment was received in.");
       return;
@@ -542,6 +572,12 @@ export default function BookingDetailPage({ user }: Props) {
 
   const handleRecordBookingPay = async (e: FormEvent) => {
     e.preventDefault();
+    // The amount this form offers is the booking's remaining balance, credits included — a figure
+    // that came from the response the reload failed to replace.
+    if (!bookingIsFresh) {
+      setBookingPayError(staleForPayment);
+      return;
+    }
     if (!bookingPayForm.financeAccountId) {
       setBookingPayError("Select the account this payment was received in.");
       return;
@@ -608,7 +644,7 @@ export default function BookingDetailPage({ user }: Props) {
   if (!booking) {
     return (
       <Container className="py-16 text-center">
-        <p className="text-rose-400">{error ?? "Booking not found."}</p>
+        <p className="text-rose-400">{bookingError ?? error ?? "Booking not found."}</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate("/confirmed-bookings")}>Back</Button>
       </Container>
     );
@@ -618,10 +654,6 @@ export default function BookingDetailPage({ user }: Props) {
   // recognised sale still has a receivable, and an installment is the only way DAMS collects one,
   // so hiding the form here stranded it with no route to payment. It also folds in the booking
   // amount and the regenerate rules, which a status check silently skipped.
-  // A stale schedule must not drive actions. Generating or collecting against installment ids that
-  // were read before the last failed refresh is how an operator ends up recording money against a
-  // row the server has since replaced, so both are withdrawn until the schedule reloads.
-  const scheduleIsFresh = schedule !== null && scheduleError === null;
   const canShowPlanForm = scheduleIsFresh && Boolean(schedule.canGenerate);
   const planLocked = scheduleIsFresh && schedule.hasSchedule && !schedule.canRegenerate;
   // Positive only when a credit the plan was built smaller by has been reversed. The payment service
@@ -654,12 +686,13 @@ export default function BookingDetailPage({ user }: Props) {
       ? null
       : Math.max(0, netSalePrice - amountCollected - rebateCredits);
 
-  const missingReads = [
-    rebateCredits === null ? "The booking's rebate credits are missing from this response." : null,
+  const missingReads = missingReadMessages({
+    bookingError,
+    creditsMissing: rebateCredits === null,
     accountsError,
     paymentsError,
     scheduleError,
-  ].filter((m): m is string => m !== null);
+  });
 
   return (
     <Container size="wide" className="py-8">
@@ -837,7 +870,7 @@ export default function BookingDetailPage({ user }: Props) {
                 </Button>
                 <Button
                   size="sm"
-                  disabled={booking.bookingAmountRequired <= 0 || booking.bookingAmountRemaining <= 0}
+                  disabled={!bookingIsFresh || booking.bookingAmountRequired <= 0 || booking.bookingAmountRemaining <= 0}
                   onClick={openBookingPay}
                 >
                   Record Payment
@@ -1047,7 +1080,7 @@ export default function BookingDetailPage({ user }: Props) {
                     // before whatever broke the reload. Collecting against one of those ids is how
                     // money gets recorded against a row the server has since replaced. The banner
                     // at the top of the page already says the read failed and offers a retry.
-                    const isPayable = scheduleIsFresh
+                    const isPayable = scheduleIsFresh && bookingIsFresh
                       && (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
                       && item.status !== "Paid" && item.remainingBalance > 0
                       && unscheduledBalance <= 0;
@@ -1203,8 +1236,17 @@ export default function BookingDetailPage({ user }: Props) {
       <TabPanel id="commission" active={activeTab} visited={visitedTabs}>
         {/* A rebate credit changes the customer's balance, can settle installments and can move the
             booking's own status, so every other tab's figures go stale the moment one is applied.
-            `load` is stable (useCallback on bookingId), so this cannot loop. */}
-        <BookingCommissionRebatePanel bookingId={bookingId} onChanged={load} refreshToken={dataVersion} />
+            `handlePanelChanged` is stable (useCallback on load), so this cannot loop — and it
+            reloads WITHOUT bumping the token, because the panel's mutation already answered with
+            the workspace that a bump would only make it fetch again.
+            The schedule is passed down rather than read twice: this page already holds it. */}
+        <BookingCommissionRebatePanel
+          bookingId={bookingId}
+          onChanged={handlePanelChanged}
+          refreshToken={dataVersion}
+          installments={schedule?.items ?? []}
+          installmentsFresh={scheduleIsFresh}
+        />
       </TabPanel>
 
       {/* Record installment payment modal */}

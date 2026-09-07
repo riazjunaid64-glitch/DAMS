@@ -174,6 +174,31 @@ export const prettyEnum = (value:string) => value.replace(/([a-z])([A-Z])/g,"$1 
 export const isPendingStatus = (status:string) => status === "Pending";
 export const money = (value:number) => `Rs ${value.toLocaleString("en-PK",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
+/**
+ * What the commission form says about an adjustment it is carrying but not editing.
+ *
+ * The final amount is only predictable where this form holds every input the server uses. For a
+ * MANUAL commission it does — rate, basis and allocation are all on screen, and the server adds the
+ * adjustment to exactly what they produce. For a RULE-DRIVEN one it does not: the server picks the
+ * rule, applies it, and clamps the result to the rule's minimum and maximum before the adjustment
+ * goes on. Predicting from the visible rate anyway promised Rs 11,000 on a commission a Rs 25,000
+ * rule minimum settles at Rs 26,000 — and did it directly beneath a readout correctly saying the
+ * amount would be recalculated on save. Say what is known instead of guessing what is not.
+ */
+export const commissionAdjustmentNote = (
+  existing: { adjustmentAmount: number; adjustmentReason: string | null } | null,
+  ruleDriven: boolean,
+  calculatedAmount: number,
+): string | null => {
+  const adjustment = existing?.adjustmentAmount ?? 0;
+  if (!existing || adjustment === 0) return null;
+  const because = existing.adjustmentReason ? ` (${existing.adjustmentReason})` : "";
+  const opening = `An agreed adjustment of ${money(adjustment)} is kept on this commission${because}`;
+  if (ruleDriven) return `${opening}, and is added to whatever the rule works out to.`;
+  const final = Math.max(0, Math.round((calculatedAmount + adjustment) * 100) / 100);
+  return `${opening}, so the final amount will be ${money(final)}.`;
+};
+
 // One implementation, in lib/idempotency, because every screen that records money needs it — not
 // just commissions and rebates. Re-exported so this module keeps its existing callers.
 export { newIdempotencyKey as idempotencyKey } from "../../lib/idempotency";

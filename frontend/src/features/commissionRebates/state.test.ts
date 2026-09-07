@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commissionActions, commissionAllocationPercent, commissionAttributionFor, commissionBases, commissionBasisFor, commissionRequestBody, commissionRuleFor, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateBases, rebateRequestBody, usesStoredBasisAmount } from "./state";
+import { commissionActions, commissionAdjustmentNote, commissionAllocationPercent, commissionAttributionFor, commissionBases, commissionBasisFor, commissionRequestBody, commissionRuleFor, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateBases, rebateRequestBody, usesStoredBasisAmount } from "./state";
 import type { Commission, Rebate } from "./types";
 
 describe("commission and rebate UI state", () => {
@@ -226,5 +226,53 @@ describe("commission and rebate update bodies", () => {
     expect(created.adjustmentAmount).toBe(0);
     expect(created.notes).toBeNull();
     expect(created.method).toBe("OutstandingBalanceReduction");
+  });
+
+  /**
+   * The commission form carries an adjustment it does not edit, and used to promise what the final
+   * amount would be. That promise is only knowable for a MANUAL commission. For a rule-driven one
+   * the server picks the rule and clamps its result to the rule's minimum and maximum first — none
+   * of which the form has — so the sentence confidently named a figure the save would never produce,
+   * directly under a readout correctly saying the amount would be recalculated.
+   */
+  it("promises a final amount only where the form knows every input", () => {
+    const adjusted = { adjustmentAmount: 1_000, adjustmentReason: "Agreed uplift" };
+
+    // A 10% rule on Rs 100,000 previews Rs 10,000 here, but the rule's Rs 25,000 minimum means the
+    // server settles it at Rs 26,000. No partner change is needed to reproduce this.
+    const ruleNote = commissionAdjustmentNote(adjusted, true, 10_000);
+    expect(ruleNote).not.toBeNull();
+    expect(ruleNote).toContain("Rs 1,000.00");
+    expect(ruleNote).toContain("Agreed uplift");
+    expect(ruleNote).not.toContain("final amount will be");
+    // Neither the figure it used to promise nor the one the server would actually produce.
+    expect(ruleNote).not.toContain("Rs 11,000.00");
+    expect(ruleNote).not.toContain("Rs 26,000.00");
+
+    // Same for a rule commission being re-pointed at another partner: 10% of Rs 1,000,000 shows as
+    // Rs 100,000 while the new partner's 5% rule would settle it at Rs 50,000.
+    const repricedNote = commissionAdjustmentNote(adjusted, true, 100_000);
+    expect(repricedNote).not.toContain("Rs 101,000.00");
+    expect(repricedNote).toBe(ruleNote);
+
+    // A manual commission keeps the prediction: rate, basis and allocation are all on this form,
+    // and the server adds the adjustment to exactly what they produce.
+    const manualNote = commissionAdjustmentNote(adjusted, false, 10_000);
+    expect(manualNote).toContain("the final amount will be Rs 11,000.00");
+  });
+
+  it("says nothing about an adjustment that is not there", () => {
+    expect(commissionAdjustmentNote(null, false, 10_000)).toBeNull();
+    expect(commissionAdjustmentNote({ adjustmentAmount: 0, adjustmentReason: null }, false, 10_000)).toBeNull();
+    expect(commissionAdjustmentNote({ adjustmentAmount: 0, adjustmentReason: null }, true, 10_000)).toBeNull();
+  });
+
+  it("handles a negative adjustment the way the server does — never below zero", () => {
+    const reduced = { adjustmentAmount: -12_000, adjustmentReason: "Overpaid last quarter" };
+
+    // Manual: the server clamps the final amount at zero, so the preview must too.
+    expect(commissionAdjustmentNote(reduced, false, 10_000)).toContain("the final amount will be Rs 0.00");
+    // And a reduction reads as a kept adjustment, not as a positive one.
+    expect(commissionAdjustmentNote(reduced, false, 10_000)).toContain("Rs -12,000.00");
   });
 });
