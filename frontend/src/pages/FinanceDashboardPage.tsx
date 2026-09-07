@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
@@ -1473,60 +1473,65 @@ export default function FinanceDashboardPage({ user }: Props) {
 
   return (
     <>
-      {/* Header */}
-      <div className="fin-page fin-page--head py-6 sm:py-8">
-        <div>
-          <h1 className="fin-dashboard-title">Finance Overview</h1>
-          <div className="fin-filters">
-            <div className="fin-periods">
-              {PERIODS.map((preset) => {
-                // A financial-year chip is offered only once the client's year start is known.
-                // Until then it could neither name nor filter the right months.
-                const needsFinancialYear = preset === "year" || preset === "lastYear";
-                const unavailable = needsFinancialYear && financialYearStartMonth === null;
-                return (
-                  <button
-                    key={preset}
-                    type="button"
-                    disabled={unavailable}
-                    title={unavailable
-                      ? (financialYearFailed
-                        ? "The financial year setting could not be loaded, so this range cannot be applied."
-                        : "Loading the configured financial year…")
-                      : undefined}
-                    onClick={() => applyPeriod(preset)}
-                    className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""} ${unavailable ? "opacity-50" : ""}`}
-                  >
-                    {financePeriodLabel(preset, financialYearStartMonth)}
-                  </button>
-                );
-              })}
-            </div>
-            {financialYearFailed && (
-              <p role="alert" className="w-full text-xs text-amber-300">
+      {/* Header. `fin-head` makes this the size container everything inside responds to:
+          the sidebar is 15rem, takes real layout space and collapses, so the window is
+          not what decides how much room the filter row and the cards actually have. */}
+      <div className="fin-page fin-page--head fin-head py-6 sm:py-8">
+        <h1 className="fin-dashboard-title">Finance Overview</h1>
+        <div className="fin-filters">
+          <div className="fin-periods">
+            {PERIODS.map((preset) => {
+              // A financial-year chip is offered only once the client's year start is known.
+              // Until then it could neither name nor filter the right months.
+              const needsFinancialYear = preset === "year" || preset === "lastYear";
+              const unavailable = needsFinancialYear && financialYearStartMonth === null;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={unavailable}
+                  title={unavailable
+                    ? (financialYearFailed
+                      ? "The financial year setting could not be loaded, so this range cannot be applied."
+                      : "Loading the configured financial year…")
+                    : undefined}
+                  onClick={() => applyPeriod(preset)}
+                  className={`fin-pill ${activePeriod === preset ? "fin-pill--active" : ""} ${unavailable ? "opacity-50" : ""}`}
+                >
+                  {financePeriodLabel(preset, financialYearStartMonth)}
+                </button>
+              );
+            })}
+          </div>
+          {financialYearFailed && (
+            <div role="alert" className="fin-notice fin-notice--gold mt-3">
+              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body">
                 Financial year setting unavailable — use a custom From/To range.
               </p>
-            )}
+            </div>
+          )}
 
-            <div className="fin-filter-panel">
-              <div className="fin-controls">
-                <div className="fin-field fin-field--wide">
-                  <span className="fin-field__label">Project</span>
-                  <AppSelect value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
-                    <option value="">All Projects</option>
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.projectName}</option>
-                    ))}
-                  </AppSelect>
-                </div>
-                <div className="fin-field fin-field--wide">
-                  <span className="fin-field__label">Account</span>
-                  <AppSelect value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
-                    <option value="">All Accounts</option>
-                    {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
-                    <option value="unassigned">Unassigned</option>
-                  </AppSelect>
-                </div>
+          <div className="fin-filter-panel">
+            <div className="fin-controls">
+              <div className="fin-field">
+                <span className="fin-field__label">Project</span>
+                <AppSelect value={draftProjectId} onChange={(e) => setDraftProjectId(e.target.value)} className="fin-control" aria-label="Project">
+                  <option value="">All Projects</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.projectName}</option>
+                  ))}
+                </AppSelect>
+              </div>
+              <div className="fin-field">
+                <span className="fin-field__label">Account</span>
+                <AppSelect value={draftAccountFilter} onChange={(e) => setDraftAccountFilter(e.target.value)} className="fin-control" aria-label="Account">
+                  <option value="">All Accounts</option>
+                  {financeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.isActive ? "" : " (Inactive)"}</option>)}
+                  <option value="unassigned">Unassigned</option>
+                </AppSelect>
+              </div>
               <div className="fin-field">
                 <span className="fin-field__label">From</span>
                 <input type="date" value={draftFromDate} onChange={(e) => setDraftFromDate(e.target.value)} className="fin-control fin-control--date" />
@@ -1535,55 +1540,66 @@ export default function FinanceDashboardPage({ user }: Props) {
                 <span className="fin-field__label">To</span>
                 <input type="date" value={draftToDate} onChange={(e) => setDraftToDate(e.target.value)} className="fin-control fin-control--date" />
               </div>
-              <button type="button" className="fin-apply" onClick={applyFilters} disabled={!!draftRangeError}>
-                <IconRefresh />
-                Apply
-              </button>
-              {(draftFromDate || draftToDate || draftProjectId || draftAccountFilter) && (
-                <button type="button" className="fin-clear" onClick={() => { setDraftProjectId(""); setDraftAccountFilter(""); setDraftFromDate(""); setDraftToDate(""); }}>
-                  Clear
+              {/* One grid cell, so the optional Clear never spills into a column of its own. */}
+              <div className="fin-actions">
+                <button type="button" className="fin-apply" onClick={applyFilters} disabled={!!draftRangeError}>
+                  <IconRefresh />
+                  Apply
                 </button>
-              )}
+                {(draftFromDate || draftToDate || draftProjectId || draftAccountFilter) && (
+                  <button type="button" className="fin-clear" onClick={() => { setDraftProjectId(""); setDraftAccountFilter(""); setDraftFromDate(""); setDraftToDate(""); }}>
+                    Clear
+                  </button>
+                )}
               </div>
             </div>
-
-            {/* A half-open or backwards range is refused rather than interpreted. It used to be
-                accepted by the totals and re-read as "all time" (or as the financial year) by the
-                charts, so the screen answered two questions at once without saying so. */}
-            {draftRangeError && (
-              <p role="alert" className="mt-3 text-xs text-amber-300">
-                {draftRangeError}
-              </p>
-            )}
           </div>
 
-          {/* Summary cards */}
-          <div className="fin-summary-grid">
-            {summaryCards.map((card) => {
-              const active = card.view != null && view === card.view;
-              // Account Net Movement has no drill-down of its own — it is cash movement, not a list
-              // of records — so that card is not a button pretending to open something.
-              return (
-                <button
-                  key={card.label}
-                  type="button"
-                  disabled={card.view == null}
-                  onClick={() => { if (card.view != null) focusView(card.view); }}
-                  style={{ borderBottomColor: card.underline }}
-                  className={`fin-summary-card group ${
-                    card.view == null ? "cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:border-[var(--border-hover)]"
-                  } ${active ? "ring-2 ring-[var(--accent)]" : ""}`}
-                >
-                  <span className={`fin-summary-icon fin-summary-icon--${card.underline.slice(1)}`} aria-hidden="true">
-                    <SummaryIcon label={card.label} />
-                  </span>
-                  <span className="fin-summary-copy">
-                    <span className="fin-summary-label">{card.label}</span>
-                    {card.note && <span className="fin-summary-note">{card.note}</span>}
+          {/* A half-open or backwards range is refused rather than interpreted. It used to be
+              accepted by the totals and re-read as "all time" (or as the financial year) by the
+              charts, so the screen answered two questions at once without saying so. */}
+          {draftRangeError && (
+            <div role="alert" className="fin-notice fin-notice--gold mt-3">
+              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body">{draftRangeError}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Summary cards */}
+        <div className="fin-summary-grid">
+          {summaryCards.map((card) => {
+            const active = card.view != null && view === card.view;
+            // Account Net Movement has no drill-down of its own — it is cash movement, not a list
+            // of records — so that card is not a button pretending to open something.
+            return (
+              <button
+                key={card.label}
+                type="button"
+                disabled={card.view == null}
+                onClick={() => { if (card.view != null) focusView(card.view); }}
+                // One accent per card, declared once: the bottom rule and the icon tint both read
+                // it, so a card can no longer be underlined in one colour and badged in another.
+                style={{ borderBottomColor: card.underline, "--fin-card-accent": card.underline } as CSSProperties}
+                className={`fin-summary-card group ${
+                  card.view == null ? "cursor-default" : "cursor-pointer hover:-translate-y-0.5 hover:border-[var(--border-hover)]"
+                } ${active ? "ring-2 ring-[var(--accent)]" : ""}`}
+              >
+                <span className="fin-summary-icon" aria-hidden="true">
+                  <SummaryIcon label={card.label} />
+                </span>
+                <span className="fin-summary-copy">
+                  <span className="fin-summary-label">{card.label}</span>
                   <span className={`fin-summary-value ${
                     summaryError ? "text-[var(--text-muted)]" : card.valueColor}`}>
                     {summaryLoading ? "…" : summaryError ? "—" : <ShortAmount value={card.value} />}
                   </span>
+                  {/* Under the amount, not above it. Only three of the seven cards carry a stamp,
+                      and while it sat between the label and the figure it pushed those three
+                      figures down a line — so no two cards in a row lined up. It still qualifies
+                      the number it follows, and now every value in a row sits on one line. */}
+                  {card.note && <span className="fin-summary-note">{card.note}</span>}
                   {/* The short figure above is rounded, and two rounded cards do not subtract to a
                       third: read alone, Revenue minus Expenses would not equal Net Profit. So the
                       exact amount is printed here on every card — not left to a hover, which is
@@ -1594,16 +1610,28 @@ export default function FinanceDashboardPage({ user }: Props) {
                       Full amount: {exactAmount(card.value)}
                     </span>
                   )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+                </span>
+              </button>
+            );
+          })}
+        </div>
 
+        {/* Everything the cards cannot say on their own, in one stack rather than as four
+            differently-spaced paragraphs: a failed load, the account filter that changes what
+            the figures mean, the assets already counted inside Expenses, and the tax that is
+            inside them but still in the bank. Each states what it is, the figure, and the one
+            action to take about it. */}
+        <div className="fin-notices">
           {summaryError && !summaryLoading && (
-            <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/[0.08] px-5 py-4 text-sm text-rose-200">
-              {summaryError}{" "}
-              <button className="underline" onClick={() => void loadSummary()}>Retry</button>
+            <div role="alert" className="fin-notice fin-notice--rose">
+              <span className="fin-notice__icon" aria-hidden="true"><IconAlert /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <span className="fin-notice__title">Totals unavailable</span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body">{summaryError}</p>
+              <button type="button" className="fin-notice__action" onClick={() => void loadSummary()}>
+                Retry
+              </button>
             </div>
           )}
 
@@ -1612,56 +1640,87 @@ export default function FinanceDashboardPage({ user }: Props) {
               belongs to no account and simply is not here. Saying so is the difference between a
               filtered list and a wrong total. */}
           {summary && accountSelected && (
-            <p className="mt-3 text-xs text-amber-300/90">
-              Entries on this account only — not the period's revenue, cost or profit. Sales move no
-              cash, so they sit on no account and Net Profit is not reported here.{" "}
-              <button type="button" className="underline hover:text-amber-200" onClick={() => { setAccountFilter(""); setDraftAccountFilter(""); }}>
+            <div className="fin-notice fin-notice--gold">
+              <span className="fin-notice__icon" aria-hidden="true"><IconFilter /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <span className="fin-notice__title">Account filter applied</span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body">
+                Entries on this account only — not the period's revenue, cost or profit. Sales move
+                no cash, so they sit on no account and Net Profit is not reported here.
+              </p>
+              <button type="button" className="fin-notice__action" onClick={() => { setAccountFilter(""); setDraftAccountFilter(""); }}>
                 Clear the account filter
               </button>
-            </p>
+            </div>
           )}
 
-          {/* Spelled out rather than left to be inferred: the same amount appears in two cards, and a
-              reader who assumes those are separate totals will double-count the period's spending. */}
+          {/* Spelled out rather than left to be inferred: the same amount appears in two cards, and
+              a reader who assumes those are separate totals will double-count the period's
+              spending. */}
           {summary && !accountSelected && summary.totalAssetPurchases > 0 && (
-            <p className="mt-2 text-xs text-sky-300/90">
-              Total Expenses already includes the {formatMoney(summary.totalAssetPurchases)} of fixed
-              assets — don't add them on top.{" "}
-              <Link to="/finance/reports" className="underline hover:text-sky-200">See Reports</Link>
-            </p>
+            <div className="fin-notice fin-notice--sky">
+              <span className="fin-notice__icon" aria-hidden="true"><IconAsset /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <span className="fin-notice__title">Fixed assets already counted</span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body">
+                Total Expenses already includes the{" "}
+                <span className="fin-notice__value">{formatMoney(summary.totalAssetPurchases)}</span>
+                {" "}of fixed assets — don't add them on top.
+              </p>
+              <Link to="/finance/reports" className="fin-notice__action">
+                See Reports <span aria-hidden="true">→</span>
+              </Link>
+            </div>
           )}
 
           {summary && summary.whtWithheld > 0 && (
-            <p className="mt-2 text-xs text-amber-300/90">
-              Expenses are gross: {formatMoney(summary.whtWithheld)} was withheld, still in the bank
-              and owed to FBR.{" "}
-              <Link to="/finance/settings" className="underline hover:text-amber-200">View WHT payable</Link>
-            </p>
-          )}
-
-          {summary && summary.accountCurrentBalance != null && (
-            <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Balance{(fromDate || toDate) ? " (to period end)" : ""}</p>
-                <p className={`text-lg font-bold ${summary.accountCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{formatMoney(summary.accountCurrentBalance)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Opening Balance</p>
-                <p className="text-sm font-semibold text-[var(--text-primary)]">{formatMoney(summary.accountOpeningBalance ?? 0)}</p>
-              </div>
-              {/* Cash movement, not profit: expenses count at what actually left the account and
-                  FBR deposits count too. The two diverge as soon as any tax is withheld. */}
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Net Movement{(fromDate || toDate) ? " (period)" : ""}</p>
-                <p className={`text-sm font-semibold ${(summary.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.accountNetMovement ?? 0)}</p>
-              </div>
+            <div className="fin-notice fin-notice--gold">
+              <span className="fin-notice__icon" aria-hidden="true"><IconBank /></span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <span className="fin-notice__title">WHT payable to FBR</span>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              <p className="fin-notice__body fin-notice__body--fit">
+                <span className="fin-notice__value">{formatMoney(summary.whtWithheld)}</span> pending deposit
+              </p>
+              <span className="fin-notice__rule" aria-hidden="true" />
+              {/* The gross-vs-net caveat travels with the figure it qualifies, so the reader is
+                  told why Expenses is larger than the cash that left the bank at the moment they
+                  are looking at the amount that explains the difference. */}
+              <span className="fin-notice__hint">
+                <IconInfo />
+                Expense totals include withheld tax
+              </span>
+              <Link to="/finance/settings" className="fin-notice__action">
+                View WHT payable <span aria-hidden="true">→</span>
+              </Link>
             </div>
           )}
         </div>
+
+        {summary && summary.accountCurrentBalance != null && (
+          <div className="fin-balance">
+            <div className="fin-balance__item">
+              <span className="fin-balance__label">Current Balance{(fromDate || toDate) ? " (to period end)" : ""}</span>
+              <span className={`fin-balance__value fin-balance__value--lead ${summary.accountCurrentBalance >= 0 ? "text-emerald-400" : "text-rose-400"}`}>{formatMoney(summary.accountCurrentBalance)}</span>
+            </div>
+            <div className="fin-balance__item">
+              <span className="fin-balance__label">Opening Balance</span>
+              <span className="fin-balance__value">{formatMoney(summary.accountOpeningBalance ?? 0)}</span>
+            </div>
+            {/* Cash movement, not profit: expenses count at what actually left the account and
+                FBR deposits count too. The two diverge as soon as any tax is withheld. */}
+            <div className="fin-balance__item">
+              <span className="fin-balance__label">Net Movement{(fromDate || toDate) ? " (period)" : ""}</span>
+              <span className={`fin-balance__value ${(summary.accountNetMovement ?? 0) >= 0 ? "text-indigo-400" : "text-rose-400"}`}>{formatMoney(summary.accountNetMovement ?? 0)}</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Content */}
-      <div className="fin-page py-8">
+      <div className="fin-page fin-body py-8">
         {/* Actions. No heading: the selected card above already names what the table is showing,
             and a title repeating it was a line of furniture rather than information. */}
         {/* Centred rather than flush right: justify-content applies to each wrapped line on its own,
@@ -1711,9 +1770,13 @@ export default function FinanceDashboardPage({ user }: Props) {
             chart reads as the whole business. Without that filter the axis already states the range
             it covers, so the caption only earns its place when it says something the chart cannot. */}
         {chartData && chartData.series.length > 0 && accountSelected && (
-          <p className="mt-6 text-xs text-amber-300/90">
-            Scoped to the selected account, exactly as the figures above are.
-          </p>
+          <div className="fin-notice fin-notice--gold mt-6">
+            <span className="fin-notice__icon" aria-hidden="true"><IconFilter /></span>
+            <span className="fin-notice__rule" aria-hidden="true" />
+            <p className="fin-notice__body">
+              Scoped to the selected account, exactly as the figures above are.
+            </p>
+          </div>
         )}
         <FinanceCharts data={chartData} loading={summaryLoading} formatMoney={formatMoney} />
       </div>
@@ -2056,7 +2119,7 @@ function FormInput({ label, value, onChange, type = "text" }: { label: string; v
   );
 }
 
-type FinanceIconType = "revenue" | "expense" | "asset" | "deposits" | "profit" | "outstanding" | "overdue" | "report" | "partners" | "loan" | "cash" | "settings" | "categories" | "commission" | "plus" | "minus" | "refresh";
+type FinanceIconType = "revenue" | "expense" | "asset" | "deposits" | "profit" | "outstanding" | "overdue" | "report" | "partners" | "loan" | "cash" | "settings" | "categories" | "commission" | "plus" | "minus" | "refresh" | "filter" | "info" | "alert";
 
 function FinanceIcon({ type }: { type: FinanceIconType }) {
   const common = { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
@@ -2078,6 +2141,9 @@ function FinanceIcon({ type }: { type: FinanceIconType }) {
     case "plus": return <svg {...common}><path d="M12 5v14M5 12h14" /></svg>;
     case "minus": return <svg {...common}><path d="M5 12h14" /></svg>;
     case "refresh": return <svg {...common}><path d="M20 11a8 8 0 0 0-14.8-3L3 10" /><path d="M3 5v5h5M4 13a8 8 0 0 0 14.8 3L21 14" /><path d="M21 19v-5h-5" /></svg>;
+    case "filter": return <svg {...common}><path d="M3 5h18l-7 8.2V20l-4 1.5v-8.3Z" /></svg>;
+    case "info": return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 11.5v4.5M12 8h.01" /></svg>;
+    case "alert": return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5M12 16h.01" /></svg>;
   }
 }
 
@@ -2096,6 +2162,11 @@ function IconCommission() { return <FinanceIcon type="commission" />; }
 function IconPlus() { return <FinanceIcon type="plus" />; }
 function IconAsset() { return <FinanceIcon type="asset" />; }
 function IconMinus() { return <FinanceIcon type="minus" />; }
+function IconFilter() { return <FinanceIcon type="filter" />; }
+function IconInfo() { return <FinanceIcon type="info" />; }
+function IconAlert() { return <FinanceIcon type="alert" />; }
+/** The WHT bar's badge. Same building the Customer Deposits card uses — both are money held. */
+function IconBank() { return <FinanceIcon type="deposits" />; }
 
 function IconPencil() {
   return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>;

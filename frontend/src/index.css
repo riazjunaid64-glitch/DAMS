@@ -3125,7 +3125,12 @@ h1, h2, h3, h4, h5, h6 {
 }
 .fin-page--head { border-bottom: 1px solid var(--border); }
 
-/* Finance overview header */
+/* ─── Finance overview header ─────────────────────────────────────────────────
+   One authoritative definition per class. These rules used to be split across two
+   blocks, and the second one silently turned the filter grid back into a flex row,
+   which is why the selects, the date fields and the Apply button each ended up at a
+   different width, height and corner radius. Everything here belongs to the Finance
+   Overview page; .fin-page (shared with Loans) is defined above. */
 .fin-dashboard-title {
   margin: 0 0 1.6rem;
   color: var(--text-heading);
@@ -3133,54 +3138,267 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 800;
   letter-spacing: -0.035em;
 }
+
+/* Period chips. A tray that wraps, not a five-across segmented control: the chips
+   name the range they apply — "This Year (Jul 2025 - Jun 2026)" — so their widths are
+   nothing like each other, and forcing five equal columns pushed the long labels
+   straight out of their own pill. Each chip is now as wide as its label and drops to
+   the next line when the row runs out, at any width, with no breakpoint involved. */
 .fin-filters { display: block; }
 .fin-periods {
   display: flex;
-  width: 100%;
-  justify-content: space-between;
-  gap: 0.25rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
   padding: 0.35rem;
-  border-radius: 9999px;
+  border: 1px solid var(--border);
+  border-radius: 1.15rem;
+  background: rgba(255, 255, 255, 0.02);
 }
-.fin-pill { flex: 1 1 0; min-width: 0; padding: 0.68rem 0.7rem; white-space: nowrap; }
+.fin-pill {
+  flex: 0 1 auto;
+  /* No min-width:0 — the automatic minimum is what stops a chip shrinking inside its
+     own text. The cap and the ellipsis are the last resort for a phone too narrow to
+     hold even one chip, where the alternative is the page itself scrolling. */
+  max-width: 100%;
+  padding: 0.6rem 1.1rem;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--app-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.fin-pill:hover { color: var(--app-text); }
+.fin-pill:disabled { cursor: not-allowed; }
+.fin-pill--active {
+  background: linear-gradient(180deg, #9a7729, #6f5518);
+  color: #fdf6e6;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+/* Filter panel: a real grid, so the four fields and the two buttons share one
+   baseline instead of each taking its own intrinsic width. */
 .fin-filter-panel {
-  margin-top: 1.6rem;
+  margin-top: 1.5rem;
   padding: 1.3rem 1.45rem;
   border: 1px solid var(--border);
   border-radius: 1.1rem;
   background: rgba(255, 255, 255, 0.025);
 }
-.fin-controls { width: 100%; display: grid; grid-template-columns: minmax(170px, 1.15fr) minmax(170px, 1.15fr) minmax(150px, .75fr) minmax(150px, .75fr) auto; align-items: end; gap: 0.9rem; }
-.fin-field { min-width: 0; }
-.fin-field--wide .fin-control { width: 100%; }
-.fin-control { width: 100%; border-radius: 0.7rem; padding: 0.72rem 1rem; }
-.fin-field__label { padding-left: 0.05rem; color: var(--app-text-muted); }
-.fin-apply, .fin-clear { height: 2.65rem; border: 1px solid var(--gold); border-radius: 0.7rem; cursor: pointer; font-weight: 700; }
+.fin-controls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1.2fr) minmax(150px, 0.8fr) minmax(150px, 0.8fr) auto;
+  align-items: end;
+  gap: 0.9rem;
+}
+.fin-field { display: flex; min-width: 0; flex-direction: column; gap: 0.4rem; }
+.fin-field__label {
+  padding-left: 0.15rem;
+  color: var(--app-text-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+/* Shared by AppSelect (a span that resets its own box and draws the trigger inside
+   it) and by the two date inputs, so only the width is common to both. The input
+   skin below deliberately mirrors .app-select__trigger — same height, same radius,
+   same focus ring — because the two sit side by side in one row. */
+.fin-control { width: 100%; }
+input.fin-control {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  min-height: 2.75rem;
+  padding: 0.68rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: linear-gradient(180deg, rgba(25, 23, 18, 0.98), rgba(16, 15, 12, 0.98));
+  color: var(--app-text);
+  font-size: 0.82rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color-scheme: dark;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+input.fin-control:hover { border-color: rgba(203, 169, 92, 0.65); }
+input.fin-control:focus {
+  outline: none;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(203, 169, 92, 0.35), 0 0 18px rgba(203, 169, 92, 0.24);
+}
+
+/* Apply + Clear are one grid cell, so Clear appearing never pushes a sixth column
+   into a five-column template. */
+.fin-actions { display: flex; align-items: flex-end; gap: 0.6rem; }
+.fin-apply, .fin-clear {
+  min-height: 2.75rem;
+  border: 1px solid var(--gold);
+  border-radius: 0.75rem;
+  cursor: pointer;
+  font-weight: 700;
+}
 .fin-apply { display: inline-flex; align-items: center; justify-content: center; gap: 0.55rem; min-width: 8.5rem; padding: 0 1.25rem; background: linear-gradient(135deg, #e8c86e, #cba95c); color: #17140d; }
 .fin-apply:hover { filter: brightness(1.08); }
 .fin-apply:disabled { cursor: not-allowed; opacity: .45; }
 .fin-apply svg { width: 1.2rem; height: 1.2rem; }
-.fin-clear { padding: 0 0.85rem; border-color: var(--border); background: transparent; color: var(--app-text-muted); }
+.fin-clear { padding: 0 1rem; border-color: var(--border); background: transparent; color: var(--app-text-muted); }
 .fin-clear:hover { color: var(--app-text); border-color: var(--border-hover); }
 
-.fin-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.15rem; margin-top: 1.35rem; }
-.fin-summary-card { position: relative; display: flex; min-width: 0; align-items: flex-start; gap: 1rem; min-height: 8.2rem; overflow: hidden; padding: 1.35rem 1.25rem 1.2rem; border: 1px solid var(--border); border-bottom: 3px solid; border-radius: 1rem; background: var(--bg-card); color: inherit; text-align: left; transition: transform .18s ease, border-color .18s ease; }
+/* Summary cards. The accent arrives from the card data as --fin-card-accent, so the
+   icon tint and the bottom rule are always the same colour — they used to come from
+   two separate lists and had drifted apart on five of the seven cards. */
+.fin-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+.fin-summary-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.95rem;
+  min-height: 8.2rem;
+  overflow: hidden;
+  padding: 1.25rem 1.2rem 1.15rem;
+  border: 1px solid var(--border);
+  border-bottom: 3px solid;
+  border-radius: 1rem;
+  background: var(--bg-card);
+  color: inherit;
+  text-align: left;
+  /* Tailwind v4 lifts the card with the `translate` property, not `transform`, so that
+     is what has to be transitioned — the hover used to jump. */
+  transition: translate .18s ease, border-color .18s ease;
+}
 .fin-summary-card:disabled { opacity: 1; }
-.fin-summary-icon { display: inline-flex; width: 3.35rem; height: 3.35rem; flex: 0 0 3.35rem; align-items: center; justify-content: center; border-radius: 50%; color: currentColor; }
-.fin-summary-icon svg { width: 1.65rem; height: 1.65rem; }
-.fin-summary-icon--34d399 { background: rgba(16, 185, 75, .22); color: #31e88a; }
-.fin-summary-icon--fb7185 { background: rgba(225, 37, 69, .25); color: #ff5573; }
-.fin-summary-icon--38bdf8 { background: rgba(245, 158, 11, .22); color: #fbbd19; }
-.fin-summary-icon--a78bfa { background: rgba(46, 93, 205, .28); color: #6f9aff; }
-.fin-summary-icon--cba95c { background: rgba(125, 48, 184, .3); color: #b875ff; }
-.fin-summary-icon--818cf8 { background: rgba(11, 157, 161, .25); color: #43d9d4; }
-.fin-summary-icon--60a5fa { background: rgba(245, 158, 11, .22); color: #ffb511; }
-.fin-summary-icon--6b7280 { background: rgba(245, 158, 11, .22); color: #ffb511; }
-.fin-summary-copy { display: flex; min-width: 0; flex-direction: column; padding-top: 0.1rem; }
-.fin-summary-label { color: var(--app-text-muted); font-size: .98rem; line-height: 1.25; }
-.fin-summary-note { margin-top: .12rem; color: var(--app-text-muted); font-size: .7rem; opacity: .62; }
-.fin-summary-value { margin-top: .45rem; color: var(--app-text); font-size: clamp(1.2rem, 1.8vw, 1.55rem); font-weight: 800; line-height: 1.15; white-space: normal; overflow-wrap: anywhere; }
-.fin-summary-full { margin-top: .35rem; color: var(--app-text-muted); font-size: .7rem; line-height: 1.25; opacity: .72; }
+.fin-summary-icon {
+  display: inline-flex;
+  width: 3rem;
+  height: 3rem;
+  flex: 0 0 3rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fin-card-accent, var(--gold)) 18%, transparent);
+  color: var(--fin-card-accent, var(--gold));
+}
+.fin-summary-icon svg { width: 1.5rem; height: 1.5rem; }
+.fin-summary-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; }
+.fin-summary-label { color: var(--app-text-muted); font-size: .9rem; font-weight: 600; line-height: 1.3; }
+.fin-summary-note { margin-top: .3rem; color: var(--app-text-dim); font-size: .68rem; line-height: 1.3; }
+.fin-summary-value { margin-top: .5rem; color: var(--app-text); font-size: clamp(1.2rem, 1.8vw, 1.55rem); font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; overflow-wrap: anywhere; }
+.fin-summary-full { margin-top: .3rem; color: var(--app-text-muted); font-size: .69rem; line-height: 1.35; opacity: .8; overflow-wrap: anywhere; }
+
+/* Notices. Every caveat under the cards — an account filter narrowing them, assets
+   already counted inside Expenses, tax withheld but not yet deposited, a failed
+   load — is the same kind of message, so they share one bar: what it is, the figure,
+   the caveat, and the one place to go about it. Tone only changes the accent. */
+.fin-notices { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 1.1rem; }
+/* Nothing to say is not the same as a gap under the cards. */
+.fin-notices:empty { display: none; }
+.fin-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--fin-notice-border);
+  border-radius: 0.9rem;
+  background: var(--fin-notice-bg);
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.fin-notice--gold {
+  --fin-notice-accent: #e0c583;
+  --fin-notice-border: rgba(203, 169, 92, 0.28);
+  --fin-notice-border-strong: rgba(203, 169, 92, 0.5);
+  --fin-notice-chip: rgba(203, 169, 92, 0.16);
+  --fin-notice-bg: linear-gradient(90deg, rgba(203, 169, 92, 0.10), rgba(203, 169, 92, 0.03));
+}
+.fin-notice--sky {
+  --fin-notice-accent: #7dd3fc;
+  --fin-notice-border: rgba(56, 189, 248, 0.26);
+  --fin-notice-border-strong: rgba(56, 189, 248, 0.48);
+  --fin-notice-chip: rgba(56, 189, 248, 0.16);
+  --fin-notice-bg: linear-gradient(90deg, rgba(56, 189, 248, 0.09), rgba(56, 189, 248, 0.025));
+}
+.fin-notice--rose {
+  --fin-notice-accent: #fda4af;
+  --fin-notice-border: rgba(244, 63, 94, 0.3);
+  --fin-notice-border-strong: rgba(244, 63, 94, 0.5);
+  --fin-notice-chip: rgba(244, 63, 94, 0.16);
+  --fin-notice-bg: linear-gradient(90deg, rgba(244, 63, 94, 0.10), rgba(244, 63, 94, 0.03));
+}
+.fin-notice__icon {
+  display: inline-flex;
+  width: 2.15rem;
+  height: 2.15rem;
+  flex: 0 0 2.15rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--fin-notice-chip);
+  color: var(--fin-notice-accent);
+}
+.fin-notice__icon svg { width: 1.15rem; height: 1.15rem; }
+.fin-notice__rule { width: 1px; flex: 0 0 1px; align-self: stretch; min-height: 1.55rem; background: var(--fin-notice-border); }
+.fin-notice__title { color: var(--fin-notice-accent); font-weight: 700; white-space: nowrap; }
+.fin-notice__body { flex: 1 1 18rem; min-width: 0; margin: 0; }
+/* The WHT bar states a figure rather than a sentence, so its text keeps its own
+   width and the empty space falls before the action instead of after the amount. */
+.fin-notice__body--fit { flex: 0 1 auto; }
+.fin-notice__value { color: var(--app-text); font-weight: 700; }
+/* Standing alone rather than inside a sentence, the WHT figure is the thing being
+   reported, so it is sized like one. */
+.fin-notice__body--fit .fin-notice__value { font-size: 0.88rem; }
+.fin-notice__hint { display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; color: var(--app-text-dim); font-size: 0.74rem; }
+.fin-notice__hint svg { width: 0.95rem; height: 0.95rem; flex: 0 0 auto; }
+.fin-notice__action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+  padding: 0.48rem 0.9rem;
+  border: 1px solid var(--fin-notice-border-strong);
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--fin-notice-accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.fin-notice__action:hover { background: var(--fin-notice-chip); border-color: var(--fin-notice-accent); }
+
+/* Account balance strip — three readings of one account, so they share one box and
+   are separated by rules rather than by guessed-at gaps. */
+.fin-balance {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 1.1rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--bg-card);
+}
+.fin-balance__item { display: flex; min-width: 0; flex-direction: column; gap: 0.3rem; padding: 0.9rem 1.1rem; border-left: 1px solid var(--border); }
+.fin-balance__item:first-child { border-left: 0; }
+.fin-balance__label { color: var(--app-text-muted); font-size: 0.64rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.fin-balance__value { color: var(--app-text); font-size: 0.95rem; font-weight: 700; overflow-wrap: anywhere; }
+.fin-balance__value--lead { font-size: 1.15rem; }
+
 .fin-quick-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .75rem; margin-bottom: 1.35rem; }
 .fin-quick-action { display: inline-flex; min-height: 3.25rem; flex: 1 1 10rem; max-width: 15rem; align-items: center; justify-content: center; gap: .7rem; padding: .75rem 1rem; border: 1px solid var(--border); border-radius: .85rem; background: transparent; color: var(--app-text); font-size: .9rem; font-weight: 600; text-decoration: none; cursor: pointer; }
 .fin-quick-action svg { width: 1.35rem; height: 1.35rem; flex: 0 0 auto; color: var(--gold); }
@@ -3333,20 +3551,59 @@ h1, h2, h3, h4, h5, h6 {
   .account-detail-metric:nth-child(4) { border-top: 1px solid var(--border); }
 }
 
-@media (max-width: 1100px) {
+/* Sized by the content column, not by the window. The sidebar is 15rem wide, takes
+   real layout space and can be collapsed, so the same window leaves this page 240px
+   wider or narrower — a viewport breakpoint was wrong in both directions at once:
+   the five-column filter row overflowed with the sidebar open, and the cards stayed
+   two-up after it was closed. `.fin-head` and `.fin-body` are the two containers,
+   and the queries below are unnamed so each rule resolves against whichever of them
+   holds the element. The modals are siblings of both, so nothing fixed is contained. */
+.fin-head, .fin-body { container-type: inline-size; }
+
+@container (max-width: 1240px) {
+  .fin-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 1040px) {
   .fin-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .fin-apply { width: 100%; }
-  .fin-clear { width: fit-content; }
+  /* The buttons take a row of their own here, but they keep their own size and sit
+     under the fields they commit — stretched across the panel, Apply read as a
+     banner rather than as a button. */
+  .fin-actions { grid-column: 1 / -1; justify-content: flex-end; }
+  .fin-balance { grid-template-columns: 1fr 1fr; }
+  .fin-balance__item:nth-child(3) { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border); }
+}
+@container (max-width: 880px) {
   .fin-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 640px) {
-  .fin-periods { overflow-x: auto; justify-content: flex-start; }
-  .fin-pill { flex: 0 0 auto; }
+/* Below this a notice cannot hold one line, so the rules come out and it becomes a
+   badge with a stack beside it: title, figure, caveat and action all start on the
+   same left edge instead of the text running back under the icon. */
+@container (max-width: 860px) {
+  .fin-notice {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem 0.75rem;
+  }
+  .fin-notice__icon { grid-column: 1; grid-row: 1; }
+  .fin-notice__title,
+  .fin-notice__body,
+  .fin-notice__hint,
+  .fin-notice__action { grid-column: 2; }
+  .fin-notice__rule { display: none; }
+  .fin-notice__action { justify-self: start; margin-left: 0; }
+}
+@container (max-width: 560px) {
   .fin-filter-panel { padding: 1rem; }
   .fin-controls { grid-template-columns: 1fr; }
+  /* One column wide, Apply is the row, so it takes it. */
+  .fin-apply { flex: 1 1 auto; }
   .fin-summary-grid { grid-template-columns: 1fr; }
   .fin-summary-card { min-height: 7.3rem; }
   .fin-quick-action { max-width: none; flex-basis: calc(50% - .75rem); }
+  .fin-balance { grid-template-columns: 1fr; }
+  .fin-balance__item { border-left: 0; border-top: 1px solid var(--border); }
+  .fin-balance__item:first-child { border-top: 0; }
 }
 
 /* Row action icon buttons (Edit / Delete) — replaces plain text links. */
@@ -3368,80 +3625,4 @@ h1, h2, h3, h4, h5, h6 {
   color: #fb7185;
   background: rgba(244, 63, 94, 0.12);
   border-color: rgba(244, 63, 94, 0.4);
-}
-
-/* ─── Finance filter bar: period pills (left) + controls (right) ─── */
-.fin-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-.fin-periods {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0.3rem;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.02);
-}
-.fin-pill {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  padding: 0.5rem 1.3rem;
-  border-radius: 9999px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--app-text-muted);
-  transition: color 0.15s, background 0.15s;
-}
-.fin-pill:hover { color: var(--app-text); }
-.fin-pill--active {
-  background: linear-gradient(180deg, #9a7729, #6f5518);
-  color: #fdf6e6;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
-}
-
-.fin-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-}
-.fin-control {
-  -webkit-appearance: none;
-  appearance: none;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  background-color: var(--bg-card);
-  color: var(--app-text);
-  padding: 0.62rem 1.1rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  color-scheme: dark;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.fin-control:hover { border-color: var(--border-hover); }
-.fin-control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
-select.fin-control {
-  padding-right: 2.4rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23a89b7e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.95rem center;
-}
-.fin-control--date { font-weight: 500; }
-.fin-field { display: inline-flex; flex-direction: column; gap: 0.35rem; }
-.fin-field__label {
-  padding-left: 0.2rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--app-text-muted);
 }
