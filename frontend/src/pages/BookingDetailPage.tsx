@@ -10,6 +10,7 @@ import BookingCommissionRebatePanel from "../features/commissionRebates/BookingC
 import { BookingTabs, DetailRow, EmptyState, PanelCard, StatCard, TabPanel } from "../features/bookings/ui.tsx";
 import { Icons, th } from "../features/bookings/tokens.tsx";
 import { missingReadMessages, readBookingDetail } from "../features/bookings/detailReads.ts";
+import { createPanelRefreshSignal, type PanelRefreshSignal } from "../features/bookings/refreshCoordination.ts";
 import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
 import CancellationDialog from "../features/bookingCancellation/CancellationDialog.tsx";
 import type { CancellationSettlement } from "../features/bookingCancellation/types.ts";
@@ -201,6 +202,11 @@ export default function BookingDetailPage({ user }: Props) {
   // Reloads overlap — a payment's reload and a manual retry can be in flight together — and the
   // slower one must not put its older answers on screen after the faster one.
   const loadSequence = useRef(0);
+  // ...but discarding a superseded reload's ANSWERS must not also discard its message to the panel.
+  // Constructed eagerly so the ref is never null and nothing below depends on narrowing holding
+  // across a closure boundary. useRef keeps only the first one; the rest are three closures a
+  // render, which is not worth a lazy-init dance on a page that re-renders on typing.
+  const panelRefresh = useRef<PanelRefreshSignal>(createPanelRefreshSignal());
   const [activeTab, setActiveTab] = useState("summary");
   // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
   // half-typed commission or a loaded audit page survives a trip to another tab.
@@ -295,6 +301,10 @@ export default function BookingDetailPage({ user }: Props) {
   const load = useCallback(async (notifyPanel = true) => {
     if (!bookingId) return;
     const request = ++loadSequence.current;
+    // Recorded at the START, because a reload that turns out to have been superseded returns
+    // without delivering anything — and the message it was carrying must not go with it. See
+    // createPanelRefreshSignal for the sequence that used to lose it.
+    panelRefresh.current.reloadStarted(notifyPanel);
     setLoading(true);
     setError(null);
     try {
@@ -373,7 +383,9 @@ export default function BookingDetailPage({ user }: Props) {
           }));
         }
       }
-      if (notifyPanel) setDataVersion((v) => v + 1);
+      // Delivers whatever is owed, which may have been recorded by an earlier reload this one
+      // superseded — that reload's answers are stale, its message is not.
+      if (panelRefresh.current.deliver()) setDataVersion((v) => v + 1);
     } finally {
       // Only the reload still current owns the loading flag; a superseded one leaves it alone.
       if (request === loadSequence.current) setLoading(false);

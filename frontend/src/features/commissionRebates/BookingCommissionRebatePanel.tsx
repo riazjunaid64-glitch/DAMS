@@ -5,6 +5,7 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
+import { mutationSnapshotIsCurrent } from "../bookings/refreshCoordination";
 import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionAdjustmentNote, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount, commissionRuleFor } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
@@ -56,6 +57,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // on the first visit and then only when this panel adds a partner itself — a payment recorded on
   // another tab changes the workspace, not the list of brokers.
   const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const wantOptions=!optionsLoaded.current;const [w,p,a]=await Promise.all([commissionRebateApi.workspace(bookingId),wantOptions?commissionRebateApi.partners("",true,0,100):null,wantOptions?api("/api/finance/accounts/options"):null]);let accountOptions:FinanceAccountOption[]|null=null;if(a){if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");accountOptions=await a.json() as FinanceAccountOption[];}if(request!==loadSequence.current)return;setWorkspace(w);if(p)setPartners(p.items);if(accountOptions)setAccounts(accountOptions);optionsLoaded.current=true;setStale(false);}catch(x){if(request===loadSequence.current){setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");setStale(true);}}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
+  // The token counts external changes, so it is also how a mutation in flight finds out the booking
+  // moved underneath it. Mirrored into a ref because a closure created before the change captures
+  // the old value, and it is the value at COMPLETION that decides whether the response is current.
+  const externalChanges=useRef(refreshToken);
+  useEffect(()=>{externalChanges.current=refreshToken;},[refreshToken]);
   // refreshToken is a re-run trigger, not an input to the read: the page bumps it whenever
   // something other than this panel moves the booking while it sits mounted behind another tab.
   useEffect(()=>{void load();},[load,refreshToken]);
@@ -126,7 +132,12 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // and its payments. A commission is money owed to a partner and appears in none of those, so
   // announcing one only re-fetches three endpoints that cannot come back any different. Defaulting
   // to true keeps a forgotten call site merely wasteful rather than stale.
-  const execute=async(operation:()=>Promise<BookingWorkspace>,affectsBooking=true)=>{setBusy(true);setError(null);try{setWorkspace(await operation());if(affectsBooking)onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
+  // The response is a snapshot of the workspace as it stood when the SERVER handled the mutation.
+  // Pinning the screen to it saves a read, but only while nothing else moved the booking meanwhile:
+  // a payment landing from another tab refreshes this panel to Rs 12,000, and then a slow rebate
+  // response would quietly put Rs 10,000 back. When that happens the snapshot is abandoned and the
+  // workspace re-read, which is the one case worth spending the request on.
+  const execute=async(operation:()=>Promise<BookingWorkspace>,affectsBooking=true)=>{setBusy(true);setError(null);const seenAtStart=externalChanges.current;try{const result=await operation();if(mutationSnapshotIsCurrent(seenAtStart,externalChanges.current))setWorkspace(result);else await load();if(affectsBooking)onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
 
   const savePartner=async(e:FormEvent)=>{e.preventDefault();setBusy(true);setError(null);
     try{
