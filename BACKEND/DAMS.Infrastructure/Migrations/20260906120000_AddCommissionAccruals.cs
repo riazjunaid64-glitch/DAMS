@@ -28,10 +28,13 @@ namespace DAMS.Infrastructure.Migrations
     /// while the P&amp;L window excluded it, and the sheet would go out by exactly that amount.
     /// </para>
     /// <para>
-    /// Before any of that: <see cref="RestoreLostApprovalOverrides"/> fixes the small set of
-    /// pre-simplification records whose <c>FinalAmount</c> is not what was actually paid, because an
-    /// earlier migration dropped the approval override that had settled them at a different figure.
-    /// The backfill below reads <c>FinalAmount</c> as gospel, so this runs first.
+    /// Before any of that: <see cref="RestoreLostApprovalOverrides"/> fixes the pre-simplification
+    /// records whose <c>FinalAmount</c> is not what they are really worth, because an earlier
+    /// migration dropped the approval override that had settled them at a different figure. It
+    /// reads what actually settled (net of reversals) for a closed record and the audited approval
+    /// decision for one still open. The backfill below reads <c>FinalAmount</c> as gospel, so this
+    /// runs first — and it hands the backfill the approval dates, so a decision made in one period
+    /// is not reported in another.
     /// </para>
     /// </summary>
     public partial class AddCommissionAccruals : Migration
@@ -159,6 +162,8 @@ namespace DAMS.Infrastructure.Migrations
             migrationBuilder.Sql(DateHelper);
             migrationBuilder.Sql(Backfill);
             migrationBuilder.Sql("DROP FUNCTION dbo.CommissionAccrualBackfillDate;");
+            migrationBuilder.Sql(
+                "IF OBJECT_ID('tempdb..#ApprovalOverride') IS NOT NULL DROP TABLE #ApprovalOverride;");
 
             // Postcondition: if a chart exists, the role must be held. Anything else means the
             // payable this migration exists to create has no account to sit in.
@@ -208,54 +213,161 @@ namespace DAMS.Infrastructure.Migrations
         /// number: a fully paid commission would accrue a permanent non-zero balance — remaining if
         /// the override was lower than the calculated figure, negative if it was higher.
         /// </para>
-        /// <para>
-        /// <c>ApprovedAmount</c> itself cannot be recovered — the column is gone with no data kept —
-        /// but a record in a terminal, fully-settled state does not need it: a commission only
+        /// <para>Two independent pieces of evidence are read, and which one governs depends on the
+        /// state of the record:</para>
+        /// <list type="number">
+        /// <item><b>What actually settled</b>, for a record in a terminal state. A commission only
         /// reaches Paid, and a rebate only reaches Applied or Paid, when its payouts or disbursements
-        /// summed to exactly its outstanding target AT THAT TIME, and neither status ever accepts
-        /// another payout or disbursement afterwards. Today's payout/disbursement total is therefore
-        /// still exact for these records, whatever <c>FinalAmount</c> says. Records still open
-        /// (Pending) are left alone: a partial payout does not reveal what the full target was, and
-        /// nothing here can safely guess it.
+        /// covered its outstanding target exactly, and neither status ever accepts another movement
+        /// afterwards — so the money that moved IS the target. It is counted NET OF REVERSALS, the
+        /// same figure the application's own <c>NetPaid</c>/<c>NetDisbursed</c> report: a commission
+        /// paid 100,000, reversed 20,000 and re-paid 20,000 has settled 100,000, and summing the
+        /// payout rows alone would restore it as a 120,000 obligation that can never be cleared.</item>
+        /// <item><b>What the last approval decided</b>, for a record still open. A part payment says
+        /// nothing about the target, and this is where the earlier version of this correction gave
+        /// up — but the decision itself was audited: the approval wrote
+        /// <c>NewAmount = ApprovedAmount ?? FinalAmount</c> against <c>PreviousAmount</c>, so the
+        /// override that was dropped from the column survives in the log with the date it was made.
+        /// An approved-at-80,000 commission with 30,000 paid is left owing 50,000, not 70,000.</item>
+        /// </list>
+        /// <para>
+        /// An approval is ignored where a later EDIT recalculated the amount, because that path set
+        /// <c>ApprovedAmount = null</c> as it went: <c>FinalAmount</c> is then already correct. The
+        /// reconstructed target is also never allowed BELOW what has already gone out — a record
+        /// whose payouts exceed its own approval cannot be explained from here, and inventing a
+        /// negative payable for it would be worse than leaving it alone.
         /// </para>
         /// <para>
         /// Applied as a signed adjustment, not a silent overwrite of <c>FinalAmount</c>, so the
-        /// correction is self-documenting on a record nothing will ever edit again. Idempotent on its
-        /// own terms: once corrected, the total matches and the <c>WHERE</c> clause no longer selects
-        /// the row, so re-running this migration's SQL a second time (it never is, but the backfill
-        /// beside it uses the same property) changes nothing further.
+        /// correction is self-documenting. Idempotent on its own terms: once corrected, the target
+        /// matches and the <c>WHERE</c> clause no longer selects the row.
+        /// </para>
+        /// <para>
+        /// <c>#ApprovalOverride</c> is deliberately left in place for <see cref="Backfill"/>, which
+        /// needs the same rows to date the movement in the period the approver made it rather than
+        /// at cutover. Deriving that predicate twice would let the money and the period disagree.
         /// </para>
         /// </summary>
         private const string RestoreLostApprovalOverrides = """
+            IF OBJECT_ID('tempdb..#ApprovalOverride') IS NOT NULL DROP TABLE #ApprovalOverride;
+            SELECT c.[Id],
+                   [Approved] = approval.[NewAmount],
+                   [ApprovalDelta] = approval.[NewAmount] - approval.[PreviousAmount],
+                   [ApprovedAt] = approval.[OccurredAt],
+                   [ApprovedByUserId] = approval.[PerformedByUserId],
+                   [ApprovedByName] = approval.[PerformedByName],
+                   [Target] = CASE
+                       WHEN c.[Status] = 1 AND settled.[HasPayouts] = 1 AND settled.[Net] > 0
+                           THEN settled.[Net]
+                       WHEN approval.[NewAmount] > 0 AND approval.[NewAmount] >= settled.[Net]
+                           THEN approval.[NewAmount]
+                       ELSE NULL
+                   END,
+                   -- Which evidence the target came from, so the correction says the true thing
+                   -- even for a record whose status and payouts disagree.
+                   [Source] = CASE
+                       WHEN c.[Status] = 1 AND settled.[HasPayouts] = 1 AND settled.[Net] > 0
+                           THEN 'settled' ELSE 'approval'
+                   END
+            INTO #ApprovalOverride
+            FROM [BookingCommissions] c
+            CROSS APPLY (
+                -- Two independent aggregates, never a join: a payout carrying two partial reversals
+                -- would be duplicated by the fan-out and its own amount counted twice.
+                SELECT [HasPayouts] = CASE WHEN EXISTS (
+                           SELECT 1 FROM [CommissionPayouts] p WHERE p.[CommissionId] = c.[Id])
+                           THEN 1 ELSE 0 END,
+                       [Net] = ISNULL((SELECT SUM(p.[Amount]) FROM [CommissionPayouts] p
+                                       WHERE p.[CommissionId] = c.[Id]), 0)
+                             - ISNULL((SELECT SUM(rv.[Amount]) FROM [CommissionPayoutReversals] rv
+                                       JOIN [CommissionPayouts] p2 ON p2.[Id] = rv.[PayoutId]
+                                       WHERE p2.[CommissionId] = c.[Id]), 0)
+            ) settled
+            OUTER APPLY (
+                SELECT TOP (1) a.[NewAmount], a.[PreviousAmount], a.[OccurredAt],
+                       a.[PerformedByUserId], a.[PerformedByName]
+                FROM [FinancialWorkflowAuditEntries] a
+                WHERE a.[CommissionId] = c.[Id] AND a.[Action] = 12 -- CommissionApproved
+                  AND a.[NewAmount] IS NOT NULL AND a.[PreviousAmount] IS NOT NULL
+                  AND a.[NewAmount] <> a.[PreviousAmount]
+                  -- An edit after the decision recalculated the amount and cleared the override with
+                  -- it, so FinalAmount already says what the record is worth.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM [FinancialWorkflowAuditEntries] e
+                      WHERE e.[CommissionId] = c.[Id] AND e.[Action] = 10 -- CommissionAdjusted
+                        AND e.[NewCommissionStatus] IS NOT NULL -- only the edit path passes a status pair
+                        AND (e.[OccurredAt] > a.[OccurredAt]
+                             OR (e.[OccurredAt] = a.[OccurredAt] AND e.[Id] > a.[Id])))
+                ORDER BY a.[OccurredAt] DESC, a.[Id] DESC
+            ) approval;
+
             UPDATE c
-            SET c.AdjustmentAmount = c.AdjustmentAmount + (paid.[Total] - c.[FinalAmount]),
-                c.[FinalAmount] = paid.[Total],
-                c.AdjustmentReason = LEFT(
+            SET c.[AdjustmentAmount] = c.[AdjustmentAmount] + (o.[Target] - c.[FinalAmount]),
+                c.[FinalAmount] = o.[Target],
+                c.[AdjustmentReason] = LEFT(
                     (CASE WHEN c.[AdjustmentReason] IS NULL THEN N'' ELSE c.[AdjustmentReason] + N' ' END)
-                    + N'Data correction (commission accrual migration, 2026-09-06): restored the amount actually paid, lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
+                    + N'Data correction (commission accrual migration, 2026-09-06): restored the '
+                    + CASE WHEN o.[Source] = 'settled' THEN N'amount actually paid, net of reversals'
+                           ELSE N'amount the last approval settled this at' END
+                    + N', lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
                     2000),
                 c.[UpdatedAt] = SYSUTCDATETIME()
             FROM [BookingCommissions] c
-            CROSS APPLY (
-                SELECT [Total] = SUM(p.[Amount]) FROM [CommissionPayouts] p WHERE p.[CommissionId] = c.[Id]
-            ) paid
-            WHERE c.[Status] = 1 -- Paid: the one commission status a payout can never follow.
-              AND paid.[Total] IS NOT NULL AND paid.[Total] <> c.[FinalAmount];
+            JOIN #ApprovalOverride o ON o.[Id] = c.[Id]
+            WHERE o.[Target] IS NOT NULL AND o.[Target] <> c.[FinalAmount];
 
+            -- Rebates take the same two-source correction. No temp table: they have no accrual
+            -- ledger, so nothing downstream needs to know WHEN the decision was made.
             UPDATE r
-            SET r.AdjustmentAmount = r.AdjustmentAmount + (paid.[Total] - r.[FinalAmount]),
-                r.[FinalAmount] = paid.[Total],
-                r.AdjustmentReason = LEFT(
+            SET r.[AdjustmentAmount] = r.[AdjustmentAmount] + (t.[Target] - r.[FinalAmount]),
+                r.[FinalAmount] = t.[Target],
+                r.[AdjustmentReason] = LEFT(
                     (CASE WHEN r.[AdjustmentReason] IS NULL THEN N'' ELSE r.[AdjustmentReason] + N' ' END)
-                    + N'Data correction (commission accrual migration, 2026-09-06): restored the amount actually disbursed, lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
+                    + N'Data correction (commission accrual migration, 2026-09-06): restored the '
+                    + CASE WHEN t.[Source] = 'settled' THEN N'amount actually disbursed, net of reversals'
+                           ELSE N'amount the last approval settled this at' END
+                    + N', lost when the pre-approval-ladder ApprovedAmount column was dropped without migrating its value.',
                     2000),
                 r.[UpdatedAt] = SYSUTCDATETIME()
             FROM [CustomerRebates] r
             CROSS APPLY (
-                SELECT [Total] = SUM(d.[Amount]) FROM [RebateDisbursements] d WHERE d.[RebateId] = r.[Id]
-            ) paid
-            WHERE r.[Status] IN (1, 2) -- Applied, Paid: a rebate's two fully-disbursed terminal states.
-              AND paid.[Total] IS NOT NULL AND paid.[Total] <> r.[FinalAmount];
+                SELECT [HasDisbursements] = CASE WHEN EXISTS (
+                           SELECT 1 FROM [RebateDisbursements] d WHERE d.[RebateId] = r.[Id])
+                           THEN 1 ELSE 0 END,
+                       [Net] = ISNULL((SELECT SUM(d.[Amount]) FROM [RebateDisbursements] d
+                                       WHERE d.[RebateId] = r.[Id]), 0)
+                             - ISNULL((SELECT SUM(rv.[Amount]) FROM [RebateDisbursementReversals] rv
+                                       JOIN [RebateDisbursements] d2 ON d2.[Id] = rv.[DisbursementId]
+                                       WHERE d2.[RebateId] = r.[Id]), 0)
+            ) settled
+            OUTER APPLY (
+                SELECT TOP (1) a.[NewAmount], a.[PreviousAmount]
+                FROM [FinancialWorkflowAuditEntries] a
+                WHERE a.[RebateId] = r.[Id] AND a.[Action] = 24 -- RebateApproved
+                  AND a.[NewAmount] IS NOT NULL AND a.[PreviousAmount] IS NOT NULL
+                  AND a.[NewAmount] <> a.[PreviousAmount]
+                  AND NOT EXISTS (
+                      SELECT 1 FROM [FinancialWorkflowAuditEntries] e
+                      WHERE e.[RebateId] = r.[Id] AND e.[Action] = 35 -- RebateAdjusted
+                        AND e.[NewRebateStatus] IS NOT NULL
+                        AND (e.[OccurredAt] > a.[OccurredAt]
+                             OR (e.[OccurredAt] = a.[OccurredAt] AND e.[Id] > a.[Id])))
+                ORDER BY a.[OccurredAt] DESC, a.[Id] DESC
+            ) approval
+            CROSS APPLY (
+                SELECT [Target] = CASE
+                    WHEN r.[Status] IN (1, 2) AND settled.[HasDisbursements] = 1 AND settled.[Net] > 0
+                        THEN settled.[Net] -- Applied, Paid: a rebate's two fully-disbursed states.
+                    WHEN approval.[NewAmount] > 0 AND approval.[NewAmount] >= settled.[Net]
+                        THEN approval.[NewAmount]
+                    ELSE NULL
+                END,
+                [Source] = CASE
+                    WHEN r.[Status] IN (1, 2) AND settled.[HasDisbursements] = 1 AND settled.[Net] > 0
+                        THEN 'settled' ELSE 'approval'
+                END
+            ) t
+            WHERE t.[Target] IS NOT NULL AND t.[Target] <> r.[FinalAmount];
             """;
 
         /// <summary>
@@ -268,7 +380,7 @@ namespace DAMS.Infrastructure.Migrations
         /// agreed in August and cancelled in September would show no August expense at all. Current
         /// balances would still reconcile while both periods were wrong.
         /// </para>
-        /// <para>Three sources, all of them already dated and already immutable:</para>
+        /// <para>Four sources, all of them already dated and already immutable:</para>
         /// <list type="number">
         /// <item><b>Recognition</b> — the <c>CommissionCreated</c> audit row's <c>NewAmount</c>, which
         /// is the final amount as first agreed (it already includes any adjustment made at entry).</item>
@@ -276,6 +388,10 @@ namespace DAMS.Infrastructure.Migrations
         /// (<c>NewAmount − PreviousAmount</c>). The adjustment written AT creation is excluded by an
         /// exact structural test, not a guess: only the edit path passes a status pair, so a
         /// creation-time adjustment has <c>NewCommissionStatus</c> NULL and an edit has it set.</item>
+        /// <item><b>Approval override</b> — the difference a pre-simplification approver decided,
+        /// on the day they decided it, from the rows
+        /// <see cref="RestoreLostApprovalOverrides"/> already identified. Without it that difference
+        /// is real but undated, and lands at cutover instead of in the period it belongs to.</item>
         /// <item><b>Release</b> — the whole accrued balance, reversed on the first date the record
         /// moved to Cancelled / ReversalRequired / Reversed.</item>
         /// </list>
@@ -352,7 +468,31 @@ namespace DAMS.Infrastructure.Migrations
                       WHERE o.[CommissionId] = a.[CommissionId] AND o.[Action] = 8
                         AND o.[NewAmount] IS NOT NULL);
 
-                -- 3. Cutover correction, only where the log does not add up to the record. Dated
+                -- 3. The approval override, on the day the approver decided it. Its value is
+                -- already inside FinalAmount (RestoreLostApprovalOverrides put it there), so
+                -- without this the whole difference falls through to step 4 and is dated at
+                -- cutover: a decision that cut a commission in June would land in September's
+                -- expense, and both periods would be wrong while the balance still reconciled.
+                INSERT INTO [CommissionAccruals]
+                    ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
+                     [RecordedByUserId], [RecordedByName], [RecordedAt])
+                SELECT o.[Id], o.[ApprovalDelta],
+                       dbo.CommissionAccrualBackfillDate(o.[ApprovedAt], @Baseline),
+                       1, @Note, o.[ApprovedByUserId], o.[ApprovedByName], o.[ApprovedAt]
+                FROM #ApprovalOverride o
+                WHERE o.[ApprovalDelta] IS NOT NULL AND o.[ApprovalDelta] <> 0
+                  -- Only where the approval is what the record's amount was reconstructed FROM. A
+                  -- terminal record settled at something else is explained by its payouts, not by
+                  -- this decision, and step 4 dates that remainder honestly at cutover instead.
+                  AND o.[Target] = o.[Approved]
+                  -- Same guard as step 2: with no CommissionCreated row, step 1 fell back to
+                  -- today's FinalAmount, which ALREADY contains this override.
+                  AND EXISTS (
+                      SELECT 1 FROM [FinancialWorkflowAuditEntries] created
+                      WHERE created.[CommissionId] = o.[Id] AND created.[Action] = 8
+                        AND created.[NewAmount] IS NOT NULL);
+
+                -- 4. Cutover correction, only where the log does not add up to the record. Dated
                 -- today rather than dressed up as history.
                 INSERT INTO [CommissionAccruals]
                     ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],
@@ -367,7 +507,7 @@ namespace DAMS.Infrastructure.Migrations
                 ) m
                 WHERE c.[FinalAmount] - ISNULL(m.[Accrued], 0) <> 0;
 
-                -- 4. Release: a closed record owes nothing from the day it closed. Never dated before
+                -- 5. Release: a closed record owes nothing from the day it closed. Never dated before
                 -- the movements it reverses, so no intermediate period can show a negative payable.
                 INSERT INTO [CommissionAccruals]
                     ([CommissionId], [Amount], [AccruedOn], [Kind], [Reason],

@@ -320,7 +320,17 @@ namespace DAMS.Application.Services
 
         // CancelBookingAsync and PayCancellationRefundAsync live in BookingService.Cancellation.cs.
 
-        public async Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId)
+        /// <summary>
+        /// Serializable for the same reason <see cref="RecordBookingAmountPaymentAsync"/> is: the
+        /// guard below reads what payments and non-cash credits have already settled on this booking,
+        /// then writes a revised price against that reading. A credit applied or reversed in between
+        /// — both of those paths run Serializable already — would leave the new net sale price below
+        /// what has been credited, which is the exact double-concession the guard exists to refuse.
+        /// </summary>
+        public Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId) =>
+            SerializableAsync(() => UpdateBookingFinancialsCoreAsync(id, dto), CancellationToken.None);
+
+        private async Task<BookingResponseDto> UpdateBookingFinancialsCoreAsync(int id, UpdateBookingFinancialsDto dto)
         {
             var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
 
@@ -400,7 +410,23 @@ namespace DAMS.Application.Services
             return await GetResponseAsync(booking.Id);
         }
 
-        public async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto, int adminUserId, CancellationToken cancellationToken = default)
+        public Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto,
+            int adminUserId, CancellationToken cancellationToken = default) =>
+            RecordBookingAmountPaymentAsync(bookingId, dto, adminUserId,
+                $"booking-amount-payment:{Guid.NewGuid():N}", cancellationToken);
+
+        /// <summary>
+        /// <paramref name="attemptKey"/> names this ONE attempt to take the money, created before
+        /// the retrying wrapper is entered so that every re-execution of the delegate carries the
+        /// same value. A commit whose acknowledgement was lost is indistinguishable from one that
+        /// never happened, so the execution strategy replays the delegate — and replaying blind
+        /// banks the customer's money twice under two receipt numbers. The endpoint's
+        /// <c>Idempotency-Key</c> filter cannot see this: it guards the HTTP call from outside, and
+        /// the replay happens wholly within one such call. So the attempt leaves its name on the row
+        /// and looks for that name first; finding it means the payment is already recorded.
+        /// </summary>
+        internal async Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto,
+            int adminUserId, string attemptKey, CancellationToken cancellationToken)
         {
             // Serializable: this reads the booking's current cash-collected and non-cash-credit
             // totals to decide what is still owed, then writes a payment against them — the same
@@ -410,7 +436,19 @@ namespace DAMS.Application.Services
             // commit between this method's read and its write, settling the same balance twice.
             var paymentId = await SerializableAsync(async () =>
             {
-                if (dto.Amount <= 0m)
+                var alreadyRecorded = await _context.Payments.AsNoTracking()
+                    .SingleOrDefaultAsync(p => p.IdempotencyKey == attemptKey, cancellationToken);
+                if (alreadyRecorded != null)
+                    return alreadyRecorded.Id;
+
+                // Rounded once and used for every comparison and every write below. The column is
+                // decimal(18,2), so a request carrying more places is stored rounded while the
+                // in-memory figure keeps them: 99,999.996 against a 100,000 requirement banks
+                // 100,000.00 and still reads as short of it, leaving the booking awaiting an
+                // amount it has been paid — and refusing any further payment, because the
+                // remaining balance it computes is now zero.
+                var amount = Money(dto.Amount);
+                if (amount <= 0m)
                     throw new InvalidOperationException("Payment amount must be greater than zero.");
                 if (!dto.FinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required.");
@@ -464,6 +502,7 @@ namespace DAMS.Application.Services
                     PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                     Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                     RecordedByUserId = adminUserId,
+                    IdempotencyKey = attemptKey,
                     PaidAt = paidAt,
                     CreatedAt = DateTime.UtcNow
                 };

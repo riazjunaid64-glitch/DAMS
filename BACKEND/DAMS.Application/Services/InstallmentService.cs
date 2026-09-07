@@ -70,12 +70,48 @@ namespace DAMS.Application.Services
             return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits, stranded);
         }
 
-        public async Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
-            int bookingId, int installmentId, RecordInstallmentPaymentDto dto, int adminUserId)
+        public Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
+            int bookingId, int installmentId, RecordInstallmentPaymentDto dto, int adminUserId) =>
+            RecordInstallmentPaymentAsync(bookingId, installmentId, dto, adminUserId,
+                $"installment-payment:{Guid.NewGuid():N}");
+
+        /// <summary>
+        /// <paramref name="attemptKey"/> names this ONE attempt to take the money, and is created
+        /// before <see cref="SerializableAsync"/> is entered so that every re-execution of the
+        /// delegate carries the same value.
+        /// <para>
+        /// The execution strategy retries the whole delegate on a transient fault, and a commit that
+        /// reached the server before its acknowledgement was lost is exactly that: indistinguishable,
+        /// from here, from a commit that never happened. Replaying blind writes the payment a second
+        /// time under a second receipt number, and neither the operator nor the customer sees it.
+        /// The <c>Idempotency-Key</c> filter on the endpoint cannot help — it guards the HTTP call
+        /// from outside, in its own scope, and this replay happens wholly inside one such call.
+        /// </para>
+        /// <para>
+        /// So the attempt leaves its name on the row it writes, and looks for that name before
+        /// writing: finding it means the first execution did commit, and the only thing left to do
+        /// is report the schedule it produced.
+        /// </para>
+        /// </summary>
+        internal async Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
+            int bookingId, int installmentId, RecordInstallmentPaymentDto dto, int adminUserId, string attemptKey)
         {
             var (schedule, paymentId) = await SerializableAsync(async () =>
             {
-                if (dto.Amount <= 0m)
+                var alreadyRecorded = await _context.Payments.AsNoTracking()
+                    .SingleOrDefaultAsync(p => p.IdempotencyKey == attemptKey);
+                if (alreadyRecorded != null)
+                    return (await GetScheduleAsync(bookingId), alreadyRecorded.Id);
+
+                // Rounded once, here, and used for every comparison and every write below. The
+                // column is decimal(18,2), so a request carrying more places is stored rounded
+                // while the in-memory figure keeps them: a receipt for 99,999.996 against a
+                // 100,000 installment banks 100,000.00 and then decides the row is only PARTLY
+                // paid, because 99,999.996 is not >= 100,000. The remaining balance is zero from
+                // that moment, so no further payment can be taken and the installment — and with
+                // it the sale — is stuck part-paid for ever.
+                var amount = Money(dto.Amount);
+                if (amount <= 0m)
                     throw new InvalidOperationException("Payment amount must be greater than zero.");
                 if (!dto.FinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required.");
@@ -127,7 +163,7 @@ namespace DAMS.Application.Services
                 await EnsureScheduleCoversTheBalanceAsync(booking, rebateCredits);
                 var overallRemaining = Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - totalCollected - rebateCredits);
                 remaining = Math.Min(remaining, overallRemaining);
-                if (dto.Amount > remaining)
+                if (amount > remaining)
                     throw new InvalidOperationException(
                         $"Payment exceeds the remaining installment balance. Remaining is {remaining:0.00}.");
 
@@ -137,18 +173,19 @@ namespace DAMS.Application.Services
                     InstallmentId = installment.Id,
                     FinanceAccountId = dto.FinanceAccountId,
                     Type = PaymentType.Installment,
-                    Amount = dto.Amount,
+                    Amount = amount,
                     PaymentMethod = dto.PaymentMethod,
                     PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                     Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                     RecordedByUserId = adminUserId,
+                    IdempotencyKey = attemptKey,
                     PaidAt = paidAt,
                     CreatedAt = DateTime.UtcNow
                 };
 
                 _context.Payments.Add(payment);
 
-                var newPaid = alreadyPaid + dto.Amount;
+                var newPaid = alreadyPaid + amount;
                 if (newPaid >= installment.Amount)
                 {
                     installment.Status = InstallmentStatus.Paid;
@@ -243,6 +280,10 @@ namespace DAMS.Application.Services
 
         private Task<decimal> ValidInstallmentCreditsAsync(int installmentId) =>
             BookingCreditPolicy.InstallmentCreditsAsync(_context, installmentId);
+
+        // What the money columns can actually hold. Same rounding as everywhere else money is
+        // decided in this codebase, so a figure compared here is the figure that gets stored.
+        private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
         // Globally unique sequential receipt number, e.g. RCP-000001.
         private async Task<string> GenerateReceiptNumberAsync()

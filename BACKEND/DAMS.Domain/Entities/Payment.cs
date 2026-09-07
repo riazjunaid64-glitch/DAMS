@@ -26,6 +26,11 @@ namespace DAMS.Domain.Entities
         // Unique human-readable receipt number assigned at creation (e.g. RCP-000001).
         public string? ReceiptNumber { get; set; }
 
+        // Identifies the one attempt that wrote this row, so a re-execution of the same attempt
+        // recognises its own committed work instead of taking the money again. Nullable because
+        // every payment recorded before this existed has no answer, and none can be given one.
+        public string? IdempotencyKey { get; set; }
+
         // Optional free-text note recorded by the admin against this payment.
         public string? Notes { get; set; }
 

@@ -493,9 +493,15 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(p => p.PaymentReference).HasMaxLength(500);
                 entity.Property(p => p.ReceiptNumber).HasMaxLength(20);
                 entity.Property(p => p.Notes).HasMaxLength(1000);
+                entity.Property(p => p.IdempotencyKey).HasMaxLength(80);
                 entity.HasIndex(p => p.ReceiptNumber)
                       .IsUnique()
                       .HasFilter("[ReceiptNumber] IS NOT NULL");
+                // UNIQUE is the point, not a lookup: it is what makes a replayed attempt fail loudly
+                // if it ever got past the check-then-insert instead of quietly banking the money twice.
+                entity.HasIndex(p => p.IdempotencyKey)
+                      .IsUnique()
+                      .HasFilter("[IdempotencyKey] IS NOT NULL");
                 entity.HasIndex(p => p.BookingId);
                 entity.HasIndex(p => p.InstallmentId);
                 entity.HasIndex(p => new { p.BookingId, p.Type });
