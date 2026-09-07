@@ -242,10 +242,16 @@ namespace DAMS.Application.Services
 
             var openingDate = await OpeningDateAsync(cancellationToken);
 
-            // Looking the row up first both validates the opaque key and gives the exact identity
-            // against which the closing detail must reconcile.
-            var summary = await GetTrialBalanceAsync(projectId, toDate, 0, cancellationToken);
-            var summaryRow = summary.Rows.SingleOrDefault(row => row.AccountKey == accountKey)
+            // The expected position of this one row, calculated first: it validates the opaque key and
+            // gives the exact identity the closing detail must reconcile against. It is deliberately
+            // NOT derived from the ledger below — the two are built from different queries so that the
+            // check at the end of this method is a real one — but it no longer costs a whole Trial
+            // Balance to obtain. See BuildTrialBalanceRowAsync.
+            if (!TryParseTrialBalanceKey(accountKey, out var parsedKey))
+                throw new InvalidOperationException(
+                    "The selected Trial Balance account is not available for these filters.");
+            var summaryRow = await BuildTrialBalanceRowAsync(
+                    parsedKey, projectId, toDate, openingDate, cancellationToken)
                 ?? throw new InvalidOperationException(
                     "The selected Trial Balance account is not available for these filters.");
 
