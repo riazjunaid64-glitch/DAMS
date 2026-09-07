@@ -57,6 +57,22 @@ export const rebateBases: CalculationBasis[] = ["AgreedSalePrice", "NetSalePrice
 export const isEditableBasis = (basis: CalculationBasis, supported: CalculationBasis[]) => supported.includes(basis);
 
 /**
+ * Whether the server will keep this record's STORED basis amount instead of re-deriving it from
+ * today's booking — its own rule (CommissionRebasableBases / RebateRebasableBases), which is these
+ * same two lists.
+ *
+ * The preview has to ask this or it shows a number the save will not produce. A rebate agreed on
+ * AmountActuallyCollected is the case that bites: the form cannot offer that basis, so the server
+ * freezes the amount collected when it was agreed, while a preview reading the live figure promised
+ * 10% of everything collected since. Preview Rs 25,000, save Rs 10,000, no warning either way.
+ */
+export const usesStoredBasisAmount = (
+  basis: CalculationBasis,
+  existingBasis: CalculationBasis | null | undefined,
+  supported: CalculationBasis[],
+) => !!existingBasis && basis === existingBasis && !supported.includes(basis);
+
+/**
  * The basis the server will calculate on for this save — the single answer used by both the request
  * body and the on-screen preview, so the operator cannot be shown one and have the other saved.
  * A new record takes the form's; an edit keeps its own unless the operator could genuinely change
@@ -90,6 +106,17 @@ export const commissionAttributionFor = (form: CommissionFormState, existing: Co
 export const commissionAllocationPercent = (form: CommissionFormState, existing: Commission | null) =>
   commissionAttributionFor(form, existing) === null ? 100 : existing!.allocationPercent;
 
+/**
+ * The rule the server should calculate on. A rule belongs to the partner it was picked for, so it
+ * survives an edit only while the partner is unchanged — exactly like the attribution above.
+ * Resubmitting the previous partner's rule after a partner change either fails the server's own
+ * "does not apply to this booking and partner" check, or, where the rule is broad enough to match
+ * both, quietly pays the new partner on the old one's terms and skips the ranking that would have
+ * chosen the right rule for them. Sending null is what asks for that ranking.
+ */
+export const commissionRuleFor = (form: CommissionFormState, existing: Commission | null) =>
+  existing && Number(form.partnerId) === existing.partnerId ? existing.ruleId ?? null : null;
+
 /// Both update endpoints REPLACE the whole record, so anything the form does not show still has to
 /// be sent back as it stands. Sending nulls instead re-derived the record from scratch: a commission
 /// lost its attribution and with it the allocation share that made a quarter-share Rs 250 rather than
@@ -104,7 +131,7 @@ export function commissionRequestBody(form: CommissionFormState, existing: Commi
   return {
     partnerId: Number(form.partnerId),
     attributionId: commissionAttributionFor(form, existing),
-    ruleId: existing?.ruleId ?? null,
+    ruleId: commissionRuleFor(form, existing),
     isManual: existing ? existing.isManual : true,
     manualReason: ruleDriven ? null : (form.notes.trim() || null),
     manualCalculationType: ruleDriven ? null : form.calculationType,

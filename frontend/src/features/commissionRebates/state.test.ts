@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commissionActions, commissionAllocationPercent, commissionAttributionFor, commissionBasisFor, commissionRequestBody, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateRequestBody } from "./state";
+import { commissionActions, commissionAllocationPercent, commissionAttributionFor, commissionBases, commissionBasisFor, commissionRequestBody, commissionRuleFor, idempotencyKey, isPendingStatus, money, prettyEnum, rebateActions, rebateBases, rebateRequestBody, usesStoredBasisAmount } from "./state";
 import type { Commission, Rebate } from "./types";
 
 describe("commission and rebate UI state", () => {
@@ -165,6 +165,44 @@ describe("commission and rebate update bodies", () => {
 
     // A new commission never carries one.
     expect(commissionAllocationPercent(form, null)).toBe(100);
+  });
+
+  // A rule belongs to the partner it was chosen for. Carrying it across a partner change either
+  // fails the server's "does not apply to this booking and partner" check, or pays the new partner
+  // on the old one's terms — and skips the ranking that would have found the right rule for them.
+  it("drops the rule when the partner is deliberately changed", () => {
+    const ruleDriven = {
+      id: 4, partnerId: 7, attributionId: null, ruleId: 42, isManual: false,
+      allocationPercent: 100, adjustmentAmount: 0, adjustmentReason: null,
+      calculationBasis: "NetSalePriceAfterDiscount", basisAmount: 1_000_000, concurrencyToken: "tok",
+    } as unknown as Commission;
+
+    expect(commissionRuleFor(form, ruleDriven)).toBe(42);
+    expect(commissionRequestBody(form, ruleDriven).ruleId).toBe(42);
+
+    const otherPartner = { ...form, partnerId: "8" };
+    expect(commissionRuleFor(otherPartner, ruleDriven)).toBeNull();
+    expect(commissionRequestBody(otherPartner, ruleDriven).ruleId).toBeNull();
+
+    // A new commission has no rule to carry, so the server ranks one for the partner chosen.
+    expect(commissionRuleFor(form, null)).toBeNull();
+  });
+
+  // The preview and the save have to agree about WHICH basis amount is used, or the operator reads
+  // one number and stores another. The server re-derives only for a basis the form can re-pick.
+  it("previews the stored basis amount for a basis the form cannot re-pick", () => {
+    // A rebate on AmountActuallyCollected: not in rebateBases, so the server keeps what was agreed.
+    expect(usesStoredBasisAmount("AmountActuallyCollected", "AmountActuallyCollected", rebateBases)).toBe(true);
+    // The same basis on a COMMISSION is offered by that form, so the server re-derives it and the
+    // preview must follow the live figure.
+    expect(usesStoredBasisAmount("AmountActuallyCollected", "AmountActuallyCollected", commissionBases)).toBe(false);
+    // Never frozen where the operator genuinely re-picked the basis...
+    expect(usesStoredBasisAmount("AgreedSalePrice", "AmountActuallyCollected", rebateBases)).toBe(false);
+    // ...and never for a new record, which has no stored amount to freeze.
+    expect(usesStoredBasisAmount("AmountActuallyCollected", null, rebateBases)).toBe(false);
+    // ManuallyApprovedAmount is in neither list: the amount IS the basis, always its own.
+    expect(usesStoredBasisAmount("ManuallyApprovedAmount", "ManuallyApprovedAmount", commissionBases)).toBe(true);
+    expect(usesStoredBasisAmount("ManuallyApprovedAmount", "ManuallyApprovedAmount", rebateBases)).toBe(true);
   });
 
   it("keeps a rebate's adjustment, notes and method when it is edited", () => {

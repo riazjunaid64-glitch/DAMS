@@ -117,7 +117,11 @@ namespace DAMS.Application.Services
             if (bookingAmountRequired > netSalePrice)
                 throw new InvalidOperationException("Booking amount required cannot exceed the discounted sale price.");
 
-            var applicationAmountReceived = dto.ApplicationAmountReceived ?? 0m;
+            // Rounded on the way in for the same reason the two payment services round theirs: this
+            // becomes a Payment row AND the booking's received total, and a figure carrying more
+            // places than the column holds decides the milestone on a number the database will not
+            // keep — leaving a booking that has been paid in full still awaiting its booking amount.
+            var applicationAmountReceived = Money(dto.ApplicationAmountReceived ?? 0m);
             if (applicationAmountReceived < 0m)
                 throw new InvalidOperationException("Application amount received cannot be negative.");
             if (applicationAmountReceived > 0m && bookingAmountRequired <= 0m)
@@ -487,7 +491,7 @@ namespace DAMS.Application.Services
                     .SumAsync(p => (decimal?)p.Amount) ?? 0m;
                 var overallRemaining = Math.Max(0m, netSalePrice - totalCollected - bookingCredits);
                 var remaining = Math.Max(0m, Math.Min(effectiveRequired - booking.BookingAmountReceived, overallRemaining));
-                if (dto.Amount > remaining)
+                if (amount > remaining)
                     throw new InvalidOperationException(
                         $"Payment exceeds the remaining booking amount. Remaining is {remaining:0.00}.");
 
@@ -497,7 +501,7 @@ namespace DAMS.Application.Services
                     InstallmentId = null,
                     FinanceAccountId = dto.FinanceAccountId,
                     Type = PaymentType.BookingAmount,
-                    Amount = dto.Amount,
+                    Amount = amount,
                     PaymentMethod = dto.PaymentMethod,
                     PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
                     Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
@@ -509,7 +513,7 @@ namespace DAMS.Application.Services
 
                 _context.Payments.Add(payment);
 
-                booking.BookingAmountReceived += dto.Amount;
+                booking.BookingAmountReceived += amount;
                 booking.UpdatedAt = DateTime.UtcNow;
 
                 // Fully received (in cash, net of any booking-level credits) -> activate the payment

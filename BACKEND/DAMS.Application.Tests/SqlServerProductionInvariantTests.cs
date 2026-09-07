@@ -495,6 +495,94 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// A payment carrying more decimal places than the money columns hold must settle the same
+    /// figure it banks.
+    /// <para>
+    /// The amount is stored in decimal(18,2) while the in-memory value keeps every place it was
+    /// sent with, and the milestone was decided on the in-memory one. So 99,999.996 against a
+    /// 100,000 installment banked 100,000.00 and then ruled the row only PARTLY paid, because
+    /// 99,999.996 is not >= 100,000. The remaining balance is zero from that moment on, so no
+    /// further payment can be taken: the installment — and the booking amount, on the other path —
+    /// is stuck short of a target it has already been paid, and no operator action can free it.
+    /// </para>
+    /// <para>Only a real database can show this: the in-memory provider keeps all six places.</para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task PaymentsCarryingExtraDecimalPlaces_SettleTheAmountTheyBank()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, installmentId, accountId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Rounding", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "RD-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Rounding Customer", Phone = "03008889999", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"RD-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            var installment = new Installment
+            {
+                Booking = booking, SequenceNumber = 1, Type = InstallmentType.Regular,
+                DueDate = DateTime.UtcNow.AddMonths(1), Amount = 100_000m, Status = InstallmentStatus.Pending
+            };
+            var account = new FinanceAccount
+            {
+                Name = "Rounding Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, installment, account);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; installmentId = installment.Id; accountId = account.Id;
+        }
+
+        // The booking amount, paid to the last hundredth of a paisa.
+        await using (var context = new AppDbContext(options))
+            await new BookingService(context, new CustomerService(context), new FinanceAccountService(context))
+                .RecordBookingAmountPaymentAsync(bookingId, new RecordBookingAmountPaymentDto
+                {
+                    Amount = 99_999.996m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = "rd-booking"
+                }, adminUserId: 901);
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var booking = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+            Assert.Equal(100_000m, booking.BookingAmountReceived);
+            Assert.Equal(BookingStatus.PaymentPlanActive, booking.Status);
+            Assert.Equal(100_000m, await verify.Payments
+                .Where(p => p.BookingId == bookingId && p.Type == PaymentType.BookingAmount)
+                .SumAsync(p => p.Amount));
+        }
+
+        await using (var context = new AppDbContext(options))
+            await new InstallmentService(context, new FinanceAccountService(context))
+                .RecordInstallmentPaymentAsync(bookingId, installmentId, new RecordInstallmentPaymentDto
+                {
+                    Amount = 99_999.996m, FinanceAccountId = accountId, PaymentMethod = PaymentMethod.Cash,
+                    PaidAt = DateTime.UtcNow, PaymentReference = "rd-installment"
+                }, adminUserId: 901);
+
+        await using (var verify = new AppDbContext(options))
+        {
+            Assert.Equal(100_000m, await verify.Payments
+                .Where(p => p.InstallmentId == installmentId).SumAsync(p => p.Amount));
+            // The row banked its full amount, so it is settled — not left one thousandth short with
+            // no way to collect the difference.
+            Assert.Equal(InstallmentStatus.Paid, (await verify.Installments.FindAsync(installmentId))!.Status);
+        }
+    }
+
+    /// <summary>
     /// Editing the booking's financial terms refuses a net sale price below what the customer has
     /// already settled in cash and rebate credits — otherwise the same concession is granted twice,
     /// once off the balance and again off the price, and the receivable goes negative on a sale

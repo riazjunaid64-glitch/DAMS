@@ -5,7 +5,7 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
-import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys } from "./state";
+import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -20,10 +20,11 @@ const paymentMethods=["Cash","BankTransfer","Cheque","Online"].map(v=>({v,n:pret
 // rebate, nor its partner's one live commission.
 const closedStatuses=["Cancelled","Reversed"];
 
-// onChanged fires after any action that moves money on this booking. A rebate credit changes what
-// the customer owes, can settle installments, and can move the booking's own status — none of which
+// onChanged fires after an action that changes what the CUSTOMER owes. A rebate credit does: it
+// moves the booking's own figures, can settle installments, and can move its status — none of which
 // this panel owns — so the page around it has to be told rather than left showing figures that were
-// true a moment ago.
+// true a moment ago. A commission does not: it is money owed to a partner and appears nowhere in
+// the booking, so announcing one only makes the page re-read three endpoints unchanged. See execute.
 //
 // refreshToken is the other direction: the panel stays mounted while other tabs are used, so a
 // payment recorded elsewhere would otherwise leave its "Amount collected" — and the installment list
@@ -31,7 +32,7 @@ const closedStatuses=["Cancelled","Reversed"];
 // token whenever it reloads, and the panel reads everything again.
 export default function BookingCommissionRebatePanel({bookingId,onChanged,refreshToken=0}:{bookingId:number;onChanged?:()=>void;refreshToken?:number}){
   const [workspace,setWorkspace]=useState<BookingWorkspace|null>(null),[partners,setPartners]=useState<Partner[]>([]),[accounts,setAccounts]=useState<FinanceAccountOption[]>([]),[installments,setInstallments]=useState<InstallmentOption[]>([]);
-  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null),[showAudit,setShowAudit]=useState(false);
+  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null),[showAudit,setShowAudit]=useState(false),[stale,setStale]=useState(false);
   const [olderAudit,setOlderAudit]=useState<AuditEntry[]>([]),[auditHasMore,setAuditHasMore]=useState(false),[auditBusy,setAuditBusy]=useState(false);
   const [showCommission,setShowCommission]=useState(false),[showRebate,setShowRebate]=useState(false),[showPartner,setShowPartner]=useState(false);
   const [payoutFor,setPayoutFor]=useState<Commission|null>(null),[disburseFor,setDisburseFor]=useState<Rebate|null>(null),[editingCommission,setEditingCommission]=useState<Commission|null>(null),[editingRebate,setEditingRebate]=useState<Rebate|null>(null);
@@ -41,7 +42,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const [payout,setPayout]=useState({financeAccountId:"",amount:"",paymentDate:pakistanToday(),paymentMethod:"BankTransfer",paymentReference:"",notes:"",idempotencyKey:idempotencyKey("commission-payout")});
   const [disbursement,setDisbursement]=useState({method:"OutstandingBalanceReduction" as RebateMethod,amount:"",appliedAt:pakistanToday(),financeAccountId:"",installmentId:"",paymentMethod:"BankTransfer",reference:"",notes:"",idempotencyKey:idempotencyKey("rebate-disbursement")});
   const reversalKeys=useRef(new Map<string,string>()),loadSequence=useRef(0);
-  const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const [w,p,a,s]=await Promise.all([commissionRebateApi.workspace(bookingId),commissionRebateApi.partners("",true,0,100),api("/api/finance/accounts/options"),api(`/api/Booking/${bookingId}/installments`)]);if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");if(!s.ok)throw await apiError(s,"The installment schedule could not be loaded.");const accountOptions=await a.json() as FinanceAccountOption[];const schedule=await s.json() as {items:InstallmentOption[]};if(request!==loadSequence.current)return;setWorkspace(w);setPartners(p.items);setAccounts(accountOptions);setInstallments(schedule.items);}catch(x){if(request===loadSequence.current)setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
+  const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const [w,p,a,s]=await Promise.all([commissionRebateApi.workspace(bookingId),commissionRebateApi.partners("",true,0,100),api("/api/finance/accounts/options"),api(`/api/Booking/${bookingId}/installments`)]);if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");if(!s.ok)throw await apiError(s,"The installment schedule could not be loaded.");const accountOptions=await a.json() as FinanceAccountOption[];const schedule=await s.json() as {items:InstallmentOption[]};if(request!==loadSequence.current)return;setWorkspace(w);setPartners(p.items);setAccounts(accountOptions);setInstallments(schedule.items);setStale(false);}catch(x){if(request===loadSequence.current){setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");setStale(true);}}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
   // refreshToken is a re-run trigger, not an input to the read: the page bumps it whenever the
   // booking moves under this panel while it sits mounted behind another tab.
   useEffect(()=>{void load();},[load,refreshToken]);
@@ -50,16 +51,26 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   useEffect(()=>{setOlderAudit([]);setAuditHasMore(workspace?.hasMoreAudit??false);},[workspace]);
   const loadMoreAudit=async()=>{if(!workspace)return;const rows=[...workspace.audit,...olderAudit];const beforeId=rows[rows.length-1]?.id;if(beforeId===undefined)return;setAuditBusy(true);setError(null);try{const page=await commissionRebateApi.bookingAudit(bookingId,beforeId,50);setOlderAudit(c=>[...c,...page.items]);setAuditHasMore(page.hasMore);}catch(x){setError(x instanceof Error?x.message:"Older audit history could not be loaded.");}finally{setAuditBusy(false);}};
   const active=workspace?.bookingStatus!=="Cancelled";
+  // A refresh that failed leaves every figure on screen describing the booking as it was BEFORE
+  // whatever broke the refresh. Reading them is harmless; ACTING on them is not — paying an
+  // outstanding amount that has since moved, or editing a record someone else has already changed,
+  // is exactly what the concurrency tokens then reject with a message nobody can act on. So
+  // everything that moves money stays locked until a reload succeeds.
+  const locked=busy||stale;
 
   // Every amount the entry forms preview is derived from the same booking figures — and the same
   // basis, allocation and adjustment — the server recalculates on save, so what the user reads
-  // before saving is what gets stored. `stored` is the record's own basis amount, which is the only
-  // source for a basis the booking cannot value (ManuallyApprovedAmount).
-  const basisValue=useCallback((basis:CalculationBasis,stored?:number)=>{
+  // before saving is what gets stored. That includes WHICH basis amount: for an existing record on
+  // a basis this form cannot re-pick, the server keeps the stored one, so reading the live booking
+  // figure here would preview a number the save never produces (see usesStoredBasisAmount).
+  const basisValue=useCallback((basis:CalculationBasis,existing:{calculationBasis:CalculationBasis;basisAmount:number}|null,supported:CalculationBasis[])=>{
+    if(usesStoredBasisAmount(basis,existing?.calculationBasis,supported))return existing?.basisAmount??0;
     if(basis==="AgreedSalePrice")return workspace?.agreedSalePrice??0;
     if(basis==="NetSalePriceAfterDiscount")return workspace?.netSalePrice??0;
     if(basis==="AmountActuallyCollected")return workspace?.amountCollected??0;
-    return stored??0;
+    // ManuallyApprovedAmount and BookingAmountReceived: no form offers them, so an existing record
+    // is already frozen above and a new one cannot reach here.
+    return existing?.basisAmount??0;
   },[workspace]);
   const round=(value:number)=>Number.isFinite(value)&&value>0?Math.round(value*100)/100:0;
   // The server multiplies a manual commission by the attribution's allocation share, so a preview
@@ -67,7 +78,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const commissionAmount=useMemo(()=>{
     const basis=commissionBasisFor(commission,editingCommission);
     const raw=commission.calculationType==="Percentage"
-      ? basisValue(basis,editingCommission?.basisAmount)*Number(commission.percentageRate)/100
+      ? basisValue(basis,editingCommission,commissionBases)*Number(commission.percentageRate)/100
       : Number(commission.fixedAmount);
     return round(raw*commissionAllocationPercent(commission,editingCommission)/100);
   },[commission,editingCommission,basisValue]);
@@ -76,7 +87,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const rebateAmount=useMemo(()=>{
     const basis=rebateBasisFor(rebate,editingRebate);
     return round(rebate.calculationType==="Percentage"
-      ? basisValue(basis,editingRebate?.basisAmount)*Number(rebate.percentageRate)/100
+      ? basisValue(basis,editingRebate,rebateBases)*Number(rebate.percentageRate)/100
       : Number(rebate.fixedAmount));
   },[rebate,editingRebate,basisValue]);
   const rebateAdjustment=editingRebate?.adjustmentAmount??0;
@@ -90,7 +101,13 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   },[partners,workspace?.commissions,commission.partnerId]);
   const liveRebate=workspace?.rebates.some(r=>!closedStatuses.includes(r.status))??false;
 
-  const execute=async(operation:()=>Promise<BookingWorkspace>)=>{setBusy(true);setError(null);try{setWorkspace(await operation());onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
+  // The mutation already answers with the whole workspace, so nothing here re-reads it. onChanged
+  // is the OTHER cost: it reloads the page around this panel, three more requests. A rebate earns
+  // them — it changes what the customer owes, and with it the booking's figures, its installments
+  // and its payments. A commission is money owed to a partner and appears in none of those, so
+  // announcing one only re-fetches three endpoints that cannot come back any different. Defaulting
+  // to true keeps a forgotten call site merely wasteful rather than stale.
+  const execute=async(operation:()=>Promise<BookingWorkspace>,affectsBooking=true)=>{setBusy(true);setError(null);try{setWorkspace(await operation());if(affectsBooking)onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
 
   const savePartner=async(e:FormEvent)=>{e.preventDefault();setBusy(true);setError(null);
     try{
@@ -107,7 +124,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
     const existing=editingCommission;
     const body=commissionRequestBody(commission,existing);
     const result=existing?await commissionRebateApi.updateCommission(bookingId,existing.id,body):await commissionRebateApi.createCommission(bookingId,body);
-    setShowCommission(false);setEditingCommission(null);return result;});};
+    setShowCommission(false);setEditingCommission(null);return result;},false);};
 
   const saveRebate=async(e:FormEvent)=>{e.preventDefault();await execute(async()=>{
     const existing=editingRebate;
@@ -127,15 +144,15 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
 
   // Cancelling is the only status a person still sets by hand: a commission is pending from the
   // moment it is entered, and the payouts move it to Paid on their own.
-  const cancelCommission=async(c:Commission)=>{const reason=window.prompt(`Reason for cancelling the commission for ${c.partnerName}`)?.trim();if(!reason)return;await execute(()=>commissionRebateApi.commissionStatus(bookingId,c.id,{targetStatus:"Cancelled",reason,concurrencyToken:c.concurrencyToken}));};
+  const cancelCommission=async(c:Commission)=>{const reason=window.prompt(`Reason for cancelling the commission for ${c.partnerName}`)?.trim();if(!reason)return;await execute(()=>commissionRebateApi.commissionStatus(bookingId,c.id,{targetStatus:"Cancelled",reason,concurrencyToken:c.concurrencyToken}),false);};
   const cancelRebate=async(r:Rebate)=>{const reason=window.prompt("Reason for cancelling this rebate")?.trim();if(!reason)return;await execute(()=>commissionRebateApi.rebateStatus(bookingId,r.id,{targetStatus:"Cancelled",reason,concurrencyToken:r.concurrencyToken}));};
-  const recordPayout=async(e:FormEvent)=>{e.preventDefault();if(!payoutFor)return;await execute(async()=>{const result=await commissionRebateApi.payout(bookingId,payoutFor.id,{financeAccountId:Number(payout.financeAccountId),amount:Number(payout.amount),paymentDate:payout.paymentDate,paymentMethod:payout.paymentMethod,paymentReference:payout.paymentReference||null,idempotencyKey:payout.idempotencyKey,notes:payout.notes||null,commissionConcurrencyToken:payoutFor.concurrencyToken});setPayoutFor(null);return result;});};
+  const recordPayout=async(e:FormEvent)=>{e.preventDefault();if(!payoutFor)return;await execute(async()=>{const result=await commissionRebateApi.payout(bookingId,payoutFor.id,{financeAccountId:Number(payout.financeAccountId),amount:Number(payout.amount),paymentDate:payout.paymentDate,paymentMethod:payout.paymentMethod,paymentReference:payout.paymentReference||null,idempotencyKey:payout.idempotencyKey,notes:payout.notes||null,commissionConcurrencyToken:payoutFor.concurrencyToken});setPayoutFor(null);return result;},false);};
   const recordDisbursement=async(e:FormEvent)=>{e.preventDefault();if(!disburseFor)return;await execute(async()=>{const cash=disbursement.method==="CashOrBankPayment",installment=disbursement.method==="InstallmentAdjustment";const result=await commissionRebateApi.disburseRebate(bookingId,disburseFor.id,{method:disbursement.method,amount:Number(disbursement.amount),appliedAt:disbursement.appliedAt,financeAccountId:cash?Number(disbursement.financeAccountId):null,installmentId:installment?Number(disbursement.installmentId):null,paymentMethod:cash?disbursement.paymentMethod:null,reference:disbursement.reference||null,idempotencyKey:disbursement.idempotencyKey,notes:disbursement.notes||null,rebateConcurrencyToken:disburseFor.concurrencyToken});setDisburseFor(null);return result;});};
   const openPayout=(c:Commission)=>{setPayoutFor(c);setPayout({financeAccountId:"",amount:String(c.outstandingAmount),paymentDate:pakistanToday(),paymentMethod:"BankTransfer",paymentReference:"",notes:"",idempotencyKey:idempotencyKey(`commission-${c.id}`)});};
   // The delivery method is locked by the first disbursement, so an already-started rebate opens on
   // the method it is being applied with and cannot switch mid-way.
   const openDisbursement=(r:Rebate)=>{setDisburseFor(r);setDisbursement({method:r.disbursements.length>0?r.method:"OutstandingBalanceReduction",amount:String(r.outstandingAmount),appliedAt:pakistanToday(),financeAccountId:"",installmentId:"",paymentMethod:"BankTransfer",reference:"",notes:"",idempotencyKey:idempotencyKey(`rebate-${r.id}`)});};
-  const reversePayout=async(c:Commission,payoutId:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`commission:${payoutId}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`commission-reversal-${payoutId}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reversePayout(bookingId,c.id,payoutId,{amount,reason,idempotencyKey:key})))reversalKeys.current.delete(operation);};
+  const reversePayout=async(c:Commission,payoutId:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`commission:${payoutId}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`commission-reversal-${payoutId}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reversePayout(bookingId,c.id,payoutId,{amount,reason,idempotencyKey:key}),false))reversalKeys.current.delete(operation);};
   const reverseDisbursement=async(r:Rebate,id:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`rebate:${id}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`rebate-reversal-${id}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reverseDisbursement(bookingId,r.id,id,{amount,reason,idempotencyKey:key})))reversalKeys.current.delete(operation);};
   const upload=async(ownerType:string,ownerId:number,file:File|null)=>{if(!file)return;setBusy(true);setError(null);try{await commissionRebateApi.uploadEvidence(ownerType,ownerId,file);await load();}catch(x){setError(x instanceof Error?x.message:"Evidence could not be uploaded.");}finally{setBusy(false);}};
 
@@ -164,10 +181,14 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
       <Mini label="Booking status" value={prettyEnum(workspace.bookingStatus)} tone="sky" icon={<Icons.pulse/>}/>
     </div>
     {error&&<p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
+    {stale&&<p role="status" className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-300">
+      These figures could not be refreshed, so they may no longer match the booking. Actions stay locked until they load.
+      <Button size="sm" variant="outline" disabled={busy} onClick={()=>void load()}>Try again</Button>
+    </p>}
 
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
       <SectionHeader id="commission-rebate-heading" title="Partner commissions" blurb="Each commission stays Pending until it is fully paid, then becomes Paid on its own."
-        action={<Button size="sm" variant="outline" disabled={!active||busy||showCommission} onClick={openNewCommission}>+ Add Commission</Button>}/>
+        action={<Button size="sm" variant="outline" disabled={!active||locked||showCommission} onClick={openNewCommission}>+ Add Commission</Button>}/>
       {showCommission&&<EntryCard title={editingCommission?"Edit commission":"Commission entry"} index={editingCommission?workspace.commissions.findIndex(c=>c.id===editingCommission.id)+1:workspace.commissions.length+1}>
         <form onSubmit={saveCommission} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -203,18 +224,18 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
           {commissionAllocation!==100&&<p className="text-xs text-[var(--text-muted)]">This partner's attribution allocates {commissionAllocation}% of the calculation, which the amount above already applies. Selecting a different partner drops the attribution and pays the full amount.</p>}
           {(editingCommission?.adjustmentAmount??0)!==0&&<p className="text-xs text-[var(--text-muted)]">An agreed adjustment of {money(editingCommission!.adjustmentAmount)} is kept on this commission{editingCommission!.adjustmentReason?` (${editingCommission!.adjustmentReason})`:""}, so the final amount will be {money(Math.max(0,Math.round((commissionAmount+editingCommission!.adjustmentAmount)*100)/100))}.</p>}
           {!editingRuleCommission&&<Field label="Notes (optional)" as="textarea" placeholder="Add any notes about this commission (optional)" value={commission.notes} onChange={e=>setCommission({...commission,notes:e.target.value})}/>}
-          <FormButtons busy={busy} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
+          <FormButtons busy={locked} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
         </form>
       </EntryCard>}
       <div className="mt-5 space-y-4">
         {workspace.commissions.length===0&&!showCommission?<Empty text="No partner commissions on this booking yet."/>
-          :workspace.commissions.map((c,i)=><CommissionCard key={c.id} value={c} index={i+1} busy={busy} cancel={()=>void cancelCommission(c)} edit={()=>editCommissionWithReason(c)} pay={()=>openPayout(c)} reverse={(id,amount)=>void reversePayout(c,id,amount)} upload={f=>void upload("Commission",c.id,f)} uploadMovement={(id,f)=>void upload("CommissionPayout",id,f)} onEvidenceError={setError}/>)}
+          :workspace.commissions.map((c,i)=><CommissionCard key={c.id} value={c} index={i+1} busy={locked} cancel={()=>void cancelCommission(c)} edit={()=>editCommissionWithReason(c)} pay={()=>openPayout(c)} reverse={(id,amount)=>void reversePayout(c,id,amount)} upload={f=>void upload("Commission",c.id,f)} uploadMovement={(id,f)=>void upload("CommissionPayout",id,f)} onEvidenceError={setError}/>)}
       </div>
     </div>
 
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
       <SectionHeader title="Rebates" blurb="A rebate stays Pending until it has all reached the customer."
-        action={<Button size="sm" variant="outline" disabled={!active||busy||showRebate||liveRebate} onClick={openNewRebate}>+ Add Rebate</Button>}/>
+        action={<Button size="sm" variant="outline" disabled={!active||locked||showRebate||liveRebate} onClick={openNewRebate}>+ Add Rebate</Button>}/>
       {liveRebate&&!showRebate&&<p className="mt-3 text-xs text-[var(--text-muted)]">A booking carries one live rebate. Cancel or reverse the one below before adding another.</p>}
       {showRebate&&<EntryCard title={editingRebate?"Edit rebate":"Rebate entry"} index={editingRebate?workspace.rebates.findIndex(r=>r.id===editingRebate.id)+1:workspace.rebates.length+1}>
         <form onSubmit={saveRebate} className="space-y-4">
@@ -240,12 +261,12 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
             {rebateAdjustment!==0&&<Readout label={`Rebate after agreed adjustment (${money(rebateAdjustment)})`} value={money(rebateFinal)} tone="accent"/>}
             <Readout label="Net Sale Price After Rebate" value={money(netAfterRebate)} tone="hero"/>
           </div>
-          <FormButtons busy={busy} cancel={()=>{setShowRebate(false);setEditingRebate(null);}}/>
+          <FormButtons busy={locked} cancel={()=>{setShowRebate(false);setEditingRebate(null);}}/>
         </form>
       </EntryCard>}
       <div className="mt-5 space-y-4">
         {workspace.rebates.length===0&&!showRebate?<Empty text="No rebate on this booking yet."/>
-          :workspace.rebates.map((r,i)=><RebateCard key={r.id} value={r} index={i+1} netSalePrice={workspace.netSalePrice} busy={busy} cancel={()=>void cancelRebate(r)} edit={()=>editRebateWithReason(r)} disburse={()=>openDisbursement(r)} reverse={(id,amount)=>void reverseDisbursement(r,id,amount)} upload={f=>void upload("Rebate",r.id,f)} uploadMovement={(id,f)=>void upload("RebateDisbursement",id,f)} onEvidenceError={setError}/>)}
+          :workspace.rebates.map((r,i)=><RebateCard key={r.id} value={r} index={i+1} netSalePrice={workspace.netSalePrice} busy={locked} cancel={()=>void cancelRebate(r)} edit={()=>editRebateWithReason(r)} disburse={()=>openDisbursement(r)} reverse={(id,amount)=>void reverseDisbursement(r,id,amount)} upload={f=>void upload("Rebate",r.id,f)} uploadMovement={(id,f)=>void upload("RebateDisbursement",id,f)} onEvidenceError={setError}/>)}
       </div>
     </div>
 
@@ -260,11 +281,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
         <Select label="Type" value={partnerForm.partnerType} set={v=>setPartnerForm({...partnerForm,partnerType:v})} options={partnerTypes.map(v=>({v,n:v}))}/>
         <Field label="Phone" placeholder="0300-1234567" value={partnerForm.phone} onChange={e=>setPartnerForm({...partnerForm,phone:e.target.value})}/>
         <Field label="Email (optional)" type="email" placeholder="Enter email address" value={partnerForm.email} onChange={e=>setPartnerForm({...partnerForm,email:e.target.value})}/>
-        <FormButtons busy={busy} cancel={()=>setShowPartner(false)} submitText="Save Partner"/>
+        <FormButtons busy={locked} cancel={()=>setShowPartner(false)} submitText="Save Partner"/>
       </form>
     </Dialog>}
 
-    {payoutFor&&<Dialog title={`Pay ${payoutFor.partnerName}`} close={()=>!busy&&setPayoutFor(null)}><form onSubmit={recordPayout} className="space-y-3"><p className="text-sm text-[var(--text-muted)]">Remaining {money(payoutFor.outstandingAmount)}. The selected finance account will record an outgoing transaction.</p><Select label="Finance account" required value={payout.financeAccountId} set={v=>setPayout({...payout,financeAccountId:v})} options={[{v:"",n:"Select account"},...accounts.map(a=>({v:String(a.id),n:`${a.name} · ${a.accountHolderName}`}))]}/><Field label="Amount" required type="number" min="0.01" max={payoutFor.outstandingAmount} step="0.01" value={payout.amount} onChange={e=>setPayout({...payout,amount:e.target.value})}/><Field label="Payment date" required type="date" max={pakistanToday()} value={payout.paymentDate} onChange={e=>setPayout({...payout,paymentDate:e.target.value})}/><Select label="Method" value={payout.paymentMethod} set={v=>setPayout({...payout,paymentMethod:v})} options={paymentMethods}/><Field label="Reference" required={payout.paymentMethod!=="Cash"} value={payout.paymentReference} onChange={e=>setPayout({...payout,paymentReference:e.target.value})}/><Field label="Notes" value={payout.notes} onChange={e=>setPayout({...payout,notes:e.target.value})}/><FormButtons busy={busy} cancel={()=>setPayoutFor(null)}/></form></Dialog>}
+    {payoutFor&&<Dialog title={`Pay ${payoutFor.partnerName}`} close={()=>!busy&&setPayoutFor(null)}><form onSubmit={recordPayout} className="space-y-3"><p className="text-sm text-[var(--text-muted)]">Remaining {money(payoutFor.outstandingAmount)}. The selected finance account will record an outgoing transaction.</p><Select label="Finance account" required value={payout.financeAccountId} set={v=>setPayout({...payout,financeAccountId:v})} options={[{v:"",n:"Select account"},...accounts.map(a=>({v:String(a.id),n:`${a.name} · ${a.accountHolderName}`}))]}/><Field label="Amount" required type="number" min="0.01" max={payoutFor.outstandingAmount} step="0.01" value={payout.amount} onChange={e=>setPayout({...payout,amount:e.target.value})}/><Field label="Payment date" required type="date" max={pakistanToday()} value={payout.paymentDate} onChange={e=>setPayout({...payout,paymentDate:e.target.value})}/><Select label="Method" value={payout.paymentMethod} set={v=>setPayout({...payout,paymentMethod:v})} options={paymentMethods}/><Field label="Reference" required={payout.paymentMethod!=="Cash"} value={payout.paymentReference} onChange={e=>setPayout({...payout,paymentReference:e.target.value})}/><Field label="Notes" value={payout.notes} onChange={e=>setPayout({...payout,notes:e.target.value})}/><FormButtons busy={locked} cancel={()=>setPayoutFor(null)}/></form></Dialog>}
 
     {disburseFor&&<Dialog title="Apply or pay rebate" close={()=>!busy&&setDisburseFor(null)}>
       <form onSubmit={recordDisbursement} className="space-y-3">
@@ -278,7 +299,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
         {disbursement.method==="InstallmentAdjustment"&&<Select label="Installment" required value={disbursement.installmentId} set={v=>setDisbursement({...disbursement,installmentId:v})} options={[{v:"",n:"Select installment"},...installments.filter(i=>i.remainingBalance>0).map(i=>({v:String(i.id),n:`${i.type} ${i.sequenceNumber} · ${money(i.remainingBalance)}`}))]}/>}
         <Field label="Reference" required={disbursement.method==="CreditNote"||(cashDisbursement&&disbursement.paymentMethod!=="Cash")} value={disbursement.reference} onChange={e=>setDisbursement({...disbursement,reference:e.target.value})}/>
         <Field label={disbursement.method==="Other"?"Method explanation":"Notes"} required={disbursement.method==="Other"} value={disbursement.notes} onChange={e=>setDisbursement({...disbursement,notes:e.target.value})}/>
-        <FormButtons busy={busy} cancel={()=>setDisburseFor(null)}/>
+        <FormButtons busy={locked} cancel={()=>setDisburseFor(null)}/>
       </form>
     </Dialog>}
   </section>;
