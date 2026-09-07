@@ -245,8 +245,17 @@ namespace DAMS.Application.Services
         {
             if (!_context.Database.IsRelational()) return await operation();
             var strategy = _context.Database.CreateExecutionStrategy();
+            var replaying = false;
             return await strategy.ExecuteAsync(async () =>
             {
+                // A transient fault rolls the attempt back in the DATABASE and nowhere else: the
+                // change tracker still holds everything it wrote, and EF fixup has already stitched
+                // those entities into the collections the guards read. So the retry measured itself
+                // against its own undone work — reversing a disbursement a second time reported
+                // "Reversal exceeds the disbursement balance of 0.00", because the reversal it was
+                // retrying was still counted against the balance it was checking.
+                if (replaying) _context.ChangeTracker.Clear();
+                replaying = true;
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
                 var result = await operation();
                 await transaction.CommitAsync(cancellationToken);

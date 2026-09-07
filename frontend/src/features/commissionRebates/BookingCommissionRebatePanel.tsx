@@ -5,7 +5,7 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
-import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount } from "./state";
+import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount, commissionRuleFor } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -154,7 +154,9 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const openDisbursement=(r:Rebate)=>{setDisburseFor(r);setDisbursement({method:r.disbursements.length>0?r.method:"OutstandingBalanceReduction",amount:String(r.outstandingAmount),appliedAt:pakistanToday(),financeAccountId:"",installmentId:"",paymentMethod:"BankTransfer",reference:"",notes:"",idempotencyKey:idempotencyKey(`rebate-${r.id}`)});};
   const reversePayout=async(c:Commission,payoutId:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`commission:${payoutId}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`commission-reversal-${payoutId}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reversePayout(bookingId,c.id,payoutId,{amount,reason,idempotencyKey:key}),false))reversalKeys.current.delete(operation);};
   const reverseDisbursement=async(r:Rebate,id:number,available:number)=>{const value=window.prompt(`Amount to reverse (maximum ${available.toFixed(2)})`,available.toFixed(2));if(value===null)return;const amount=Number(value);if(!Number.isFinite(amount)||amount<=0){setError("Enter a valid reversal amount greater than zero.");return;}const reason=window.prompt("Reversal reason")?.trim();if(!reason)return;const operation=`rebate:${id}:${amount}:${reason}`;const key=reversalKeys.current.get(operation)??idempotencyKey(`rebate-reversal-${id}`);reversalKeys.current.set(operation,key);if(await execute(()=>commissionRebateApi.reverseDisbursement(bookingId,r.id,id,{amount,reason,idempotencyKey:key})))reversalKeys.current.delete(operation);};
-  const upload=async(ownerType:string,ownerId:number,file:File|null)=>{if(!file)return;setBusy(true);setError(null);try{await commissionRebateApi.uploadEvidence(ownerType,ownerId,file);await load();}catch(x){setError(x instanceof Error?x.message:"Evidence could not be uploaded.");}finally{setBusy(false);}};
+  const upload=async(ownerType:string,ownerId:number,file:File|null)=>{if(!file)return;setBusy(true);setError(null);try{await commissionRebateApi.uploadEvidence(ownerType,ownerId,file);// Only the workspace gained a row. Reloading everything re-read the partner directory, the
+    // finance accounts and the installment schedule as well, none of which an attachment can move.
+    setWorkspace(await commissionRebateApi.workspace(bookingId));}catch(x){setError(x instanceof Error?x.message:"Evidence could not be uploaded.");}finally{setBusy(false);}};
 
   if(loading)return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-8 text-center text-sm text-[var(--text-muted)]">Loading commissions and rebates…</section>;
   if(!workspace)return <section className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-300">{error??"Commission workspace unavailable."}<button className="ml-3 underline" onClick={()=>void load()}>Retry</button></section>;
@@ -166,6 +168,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // save. Offering the rate and basis as editable inputs would show changes that are silently
   // discarded, so the card states what the rule says instead.
   const editingRuleCommission=!!editingCommission&&!editingCommission.isManual;
+  // A rule-driven commission is worth whatever rule the SERVER ranks highest for its partner. Pick a
+  // different partner and the stored figure describes the old partner's rule, while the save
+  // re-ranks and can come out at something else entirely — so the form stops asserting an amount it
+  // cannot know. commissionRuleFor draws the same line for the request body.
+  const ruleCommissionRepriced=editingRuleCommission&&commissionRuleFor(commission,editingCommission)===null;
   // A basis this form does not list is shown, not offered. It is carried back exactly as stored, so
   // the operator can see what the amount is calculated on without the form quietly replacing it.
   const commissionBasisLocked=!isEditableBasis(commission.calculationBasis,commissionBases);
@@ -206,9 +213,11 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
           </div>
           {editingRuleCommission
             ? <div className="grid gap-4 sm:grid-cols-2">
-                <Readout label="Set by rule" value={editingCommission!.ruleNameSnapshot??describe(editingCommission!.calculationType,editingCommission!.percentageRate,editingCommission!.fixedAmount,editingCommission!.calculationBasis)}/>
-                <Readout label="Commission" value={money(editingCommission!.finalAmount)} tone="accent"/>
-                <p className="sm:col-span-2 text-xs text-[var(--text-muted)]">This commission follows a commission rule, so the rule decides the amount. Changing the partner re-applies the rule; edit the rule itself to change the figures.</p>
+                <Readout label="Set by rule" value={ruleCommissionRepriced?"Chosen for the new partner on save":editingCommission!.ruleNameSnapshot??describe(editingCommission!.calculationType,editingCommission!.percentageRate,editingCommission!.fixedAmount,editingCommission!.calculationBasis)}/>
+                <Readout label="Commission" value={ruleCommissionRepriced?"Recalculated on save":money(editingCommission!.finalAmount)} tone="accent"/>
+                <p className="sm:col-span-2 text-xs text-[var(--text-muted)]">{ruleCommissionRepriced
+                  ?"The rule belongs to the partner it was chosen for, so this commission will be re-ranked against the new partner's rules and may come out at a different figure. Save to see it."
+                  :"This commission follows a commission rule, so the rule decides the amount. Changing the partner re-applies the rule; edit the rule itself to change the figures."}</p>
               </div>
             : percentCommission
               ? <div className="grid gap-4 sm:grid-cols-3">

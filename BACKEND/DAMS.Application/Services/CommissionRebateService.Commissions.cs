@@ -33,8 +33,20 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId,
-            CreateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Serializable, like every other method here that decides something from the booking and
+        /// then writes money against it. This one reads the booking to check it is still active and
+        /// then raises an expense and a payable on it. Cancelling the booking releases the accrual
+        /// of every commission it can SEE, in its own Serializable transaction — so without matching
+        /// isolation a commission created alongside a cancellation is simply never seen, and the
+        /// cancelled sale keeps a live commission expense and payable that nothing will ever release.
+        /// </summary>
+        public Task<BookingCommissionRebateWorkspaceDto> CreateCommissionAsync(int bookingId,
+            CreateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => CreateCommissionCoreAsync(bookingId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> CreateCommissionCoreAsync(int bookingId,
+            CreateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
@@ -93,8 +105,14 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
-            UpdateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable for the same reason as <see cref="CreateCommissionAsync"/>: it
+        /// reads the booking's state and then moves the obligation against it.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
+            UpdateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => UpdateCommissionCoreAsync(bookingId, commissionId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionCoreAsync(int bookingId, int commissionId,
+            UpdateBookingCommissionDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var commission = await _context.BookingCommissions
                 .Include(c => c.Payouts).ThenInclude(p => p.Reversals)
@@ -163,8 +181,14 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> ChangeCommissionStatusAsync(int bookingId, int commissionId,
-            CommissionStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable: cancelling reads what has been paid and releases the accrual
+        /// against that reading.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> ChangeCommissionStatusAsync(int bookingId, int commissionId,
+            CommissionStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => ChangeCommissionStatusCoreAsync(bookingId, commissionId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> ChangeCommissionStatusCoreAsync(int bookingId, int commissionId,
+            CommissionStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var commission = await _context.BookingCommissions.Include(c => c.Booking)
                 .Include(c => c.Payouts).ThenInclude(p => p.Reversals)

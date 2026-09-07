@@ -43,8 +43,15 @@ namespace DAMS.Application.Services
             if (!_context.Database.IsRelational())
                 return await operation();
             var strategy = _context.Database.CreateExecutionStrategy();
+            var replaying = false;
             return await strategy.ExecuteAsync(async () =>
             {
+                // A transient fault rolls the attempt back in the DATABASE and nowhere else, so the
+                // retry would otherwise read the change tracker's copy of its own undone work and
+                // decide against that. Starting each replay from the database is what makes the
+                // attemptKey check above the only thing that carries across one.
+                if (replaying) _context.ChangeTracker.Clear();
+                replaying = true;
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 var result = await operation();
                 await transaction.CommitAsync();
@@ -350,13 +357,20 @@ namespace DAMS.Application.Services
                             "Schedule cannot be regenerated because installment payments exist or installments are no longer all pending.");
                 }
 
-                var possessionAmount = dto.PossessionAmount;
+                // Rounded to what the money columns hold before anything is derived from them, so
+                // the plan is built entirely in figures the database can keep. A possession amount
+                // of 100.005 is stored as 100.01 while the pool is worked out from 100.005, and the
+                // rows then total a paisa MORE than the customer owes: the last installment can
+                // never be settled — every payment is capped at the balance actually outstanding —
+                // so the plan stays short of completion on a sale that has been paid in full.
+                var agreedSalePrice = Money(dto.AgreedSalePrice);
+                var possessionAmount = Money(dto.PossessionAmount);
                 if (possessionAmount > 0m && !dto.PossessionDueDate.HasValue)
                     throw new InvalidOperationException("Possession due date is required when a possession amount is set.");
 
                 // Discount is a percentage of the agreed sale price; the customer only owes the net price.
-                var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
-                var netSalePrice = dto.AgreedSalePrice - discountAmount;
+                var discountAmount = Math.Round(agreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
+                var netSalePrice = agreedSalePrice - discountAmount;
 
                 // A schedule may be built after possession — that is the only route DAMS has for
                 // collecting a recognised receivable — but it must not RESTATE the sale it is collecting.
@@ -377,7 +391,7 @@ namespace DAMS.Application.Services
                     .FirstOrDefaultAsync();
                 var isRecognised = recognisedNetSale.HasValue;
                 if (isRecognised
-                    && (dto.AgreedSalePrice != booking.AgreedSalePrice || discountAmount != booking.DiscountAmount))
+                    && (agreedSalePrice != booking.AgreedSalePrice || discountAmount != booking.DiscountAmount))
                     throw new InvalidOperationException(
                         $"This sale was recognised at possession on agreed terms of {booking.AgreedSalePrice:0.00} "
                         + $"less {booking.DiscountAmount:0.00} discount — a net {recognisedNetSale!.Value:0.00} — and "
@@ -410,7 +424,7 @@ namespace DAMS.Application.Services
                 // keeps the other two commercial fields from being silently overwritten with nothing.
                 if (!isRecognised)
                 {
-                    booking.AgreedSalePrice = dto.AgreedSalePrice;
+                    booking.AgreedSalePrice = agreedSalePrice;
                     booking.DiscountPercent = dto.DiscountPercent;
                     booking.DiscountAmount = discountAmount;
                     booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
@@ -424,7 +438,7 @@ namespace DAMS.Application.Services
                 booking.InstallmentPlanGeneratedByUserId = adminUserId;
                 booking.UpdatedAt = DateTime.UtcNow;
 
-                var installments = BuildInstallmentRows(booking.Id, dto, installmentPool);
+                var installments = BuildInstallmentRows(booking.Id, dto, installmentPool, possessionAmount);
                 _context.Installments.AddRange(installments);
 
                 booking.TotalInstallmentAmount = installments.Sum(i => i.Amount);
@@ -461,11 +475,12 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Possession amount cannot be negative.");
         }
 
-        private static List<Installment> BuildInstallmentRows(int bookingId, GenerateInstallmentPlanDto dto, decimal installmentPool)
+        private static List<Installment> BuildInstallmentRows(int bookingId, GenerateInstallmentPlanDto dto,
+            decimal installmentPool, decimal possessionAmount)
         {
             var rows = new List<Installment>();
 
-            if (dto.PossessionAmount > 0m)
+            if (possessionAmount > 0m)
             {
                 rows.Add(new Installment
                 {
@@ -473,7 +488,7 @@ namespace DAMS.Application.Services
                     SequenceNumber = 0,
                     Type = InstallmentType.Possession,
                     DueDate = dto.PossessionDueDate!.Value.Date,
-                    Amount = dto.PossessionAmount,
+                    Amount = possessionAmount,
                     Status = InstallmentStatus.Pending,
                     Notes = "Possession payment"
                 });

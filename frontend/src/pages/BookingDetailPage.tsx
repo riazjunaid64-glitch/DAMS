@@ -1041,7 +1041,14 @@ export default function BookingDetailPage({ user }: Props) {
                     // Withheld while the plan is short of the balance: the payment service refuses
                     // such a receipt, because taking it would pin the plan and leave the difference
                     // uncollectable. The banner above says so and points at Regenerate.
-                    const isPayable = (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
+                    // scheduleIsFresh for the same reason the plan form uses it, and it is needed
+                    // HERE too: a failed refresh leaves the previous schedule on screen, so this
+                    // branch still renders — rows, amounts and installment ids all as they were
+                    // before whatever broke the reload. Collecting against one of those ids is how
+                    // money gets recorded against a row the server has since replaced. The banner
+                    // at the top of the page already says the read failed and offers a retry.
+                    const isPayable = scheduleIsFresh
+                      && (booking.status === "PaymentPlanActive" || booking.status === "PossessionGiven")
                       && item.status !== "Paid" && item.remainingBalance > 0
                       && unscheduledBalance <= 0;
                     return (

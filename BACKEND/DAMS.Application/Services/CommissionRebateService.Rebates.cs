@@ -30,8 +30,16 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
-            FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable for the same reason as <see cref="CreateCommissionAsync"/>: it
+        /// reads the booking to check it is still active, then writes against it. A rebate created
+        /// alongside a cancellation would otherwise survive on a cancelled sale, holding its one
+        /// live rebate slot and still reading as owed to the customer.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> CreateRebateAsync(int bookingId, CreateCustomerRebateDto dto,
+            FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => CreateRebateCoreAsync(bookingId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> CreateRebateCoreAsync(int bookingId, CreateCustomerRebateDto dto,
+            FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
@@ -92,8 +100,13 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
-            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable for the same reason as <see cref="CreateRebateAsync"/>.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> UpdateRebateAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => UpdateRebateCoreAsync(bookingId, rebateId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> UpdateRebateCoreAsync(int bookingId, int rebateId,
+            UpdateCustomerRebateDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var rebate = await _context.CustomerRebates.Include(r => r.Disbursements).ThenInclude(d => d.Reversals)
                 .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
@@ -168,8 +181,14 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
-        public async Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
-            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default)
+        /// <summary>Serializable: cancelling reads what has already been given and decides against
+        /// that reading.</summary>
+        public Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusAsync(int bookingId, int rebateId,
+            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken = default) =>
+            SerializableAsync(() => ChangeRebateStatusCoreAsync(bookingId, rebateId, dto, actor, cancellationToken), cancellationToken);
+
+        private async Task<BookingCommissionRebateWorkspaceDto> ChangeRebateStatusCoreAsync(int bookingId, int rebateId,
+            RebateStatusChangeDto dto, FinancialWorkflowActor actor, CancellationToken cancellationToken)
         {
             var rebate = await _context.CustomerRebates.Include(r => r.Booking).Include(r => r.Disbursements)
                 .ThenInclude(d => d.Reversals).Include(r => r.Evidence)

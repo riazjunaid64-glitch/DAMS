@@ -495,6 +495,107 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// Cancelling a booking releases the accrual of every commission it can SEE, inside its own
+    /// Serializable transaction. Creating a commission reads the booking to check it is still
+    /// active and then raises an expense and a payable on it — so unless both sides are serialized,
+    /// a commission created alongside a cancellation is simply never seen by the release, and the
+    /// cancelled sale carries a live commission expense and payable that nothing will ever clear.
+    /// <para>
+    /// Whichever side wins, the invariant is the same and is checked from the ledger itself: a
+    /// commission on a cancelled booking owes nothing.
+    /// </para>
+    /// <para>
+    /// End-to-end cover only. Like the terms-edit race, it does NOT prove the locking — the window
+    /// is a few milliseconds wide and this passes with the transaction removed.
+    /// <see cref="WritingCommissionsAndRebates_HappensInOneSerializableTransaction"/> is what pins that.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task ConcurrentCommissionCreationAndBookingCancellation_LeaveNothingAccruedOnACancelledSale()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId, partnerId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Cancel Race", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "CR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.Booked
+            };
+            var customer = new Customer { FullName = "Cancel Race Customer", Phone = "03001234567", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"CR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+            };
+            var partner = new ThirdPartyPartner
+            {
+                Name = "Cancel Race Broker", PartnerType = "Broker", InternalCode = "CRB-1", IsActive = true
+            };
+            db.AddRange(project, unit, customer, booking, partner);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id; partnerId = partner.Id;
+        }
+
+        async Task<Exception?> AddCommissionAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                await new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage())
+                    .CreateCommissionAsync(bookingId, new CreateBookingCommissionDto
+                    {
+                        PartnerId = partnerId, IsManual = true,
+                        ManualCalculationType = FinancialCalculationType.FixedAmount,
+                        ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+                        ManualFixedAmount = 50_000m, ManualReason = "Agreed with the broker"
+                    }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        async Task<Exception?> CancelAsync()
+        {
+            try
+            {
+                await using var context = new AppDbContext(options);
+                var commissions = new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage());
+                await new BookingService(context, new CustomerService(context), new FinanceAccountService(context),
+                        commissionLifecycle: commissions)
+                    .CancelBookingAsync(bookingId, new CancelBookingDto
+                    {
+                        Reason = "Customer withdrew", RefundAmount = 0m, ExpectedCustomerCashReceived = 0m,
+                        IdempotencyKey = "cr-cancel"
+                    }, Actor);
+                return null;
+            }
+            catch (Exception ex) { return ex; }
+        }
+
+        await Task.WhenAll(AddCommissionAsync(), CancelAsync());
+
+        await using var verify = new AppDbContext(options);
+        var booked = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
+        if (booked.Status != BookingStatus.Cancelled) return; // the cancellation lost the race outright
+
+        foreach (var commission in await verify.BookingCommissions.Where(c => c.BookingId == bookingId).ToListAsync())
+        {
+            var accrued = await verify.CommissionAccruals
+                .Where(a => a.CommissionId == commission.Id).SumAsync(a => (decimal?)a.Amount) ?? 0m;
+            Assert.True(accrued == 0m,
+                $"Commission {commission.Id} on a cancelled booking still owes {accrued:0.00} — "
+                + "it was created after the cancellation released everything it could see.");
+        }
+    }
+
+    /// <summary>
     /// A payment carrying more decimal places than the money columns hold must settle the same
     /// figure it banks.
     /// <para>
@@ -580,6 +681,67 @@ public sealed class SqlServerProductionInvariantTests
             // no way to collect the difference.
             Assert.Equal(InstallmentStatus.Paid, (await verify.Installments.FindAsync(installmentId))!.Status);
         }
+    }
+
+    /// <summary>
+    /// A plan built from a possession amount carrying more decimal places than the column holds
+    /// must still total exactly what the customer owes.
+    /// <para>
+    /// The possession row is stored rounded while the installment pool is worked out from the
+    /// unrounded figure, so the rows together come to a paisa MORE than the balance: 100.005 is
+    /// banked as 100.01 and the pool still gives away the other 0.005. Every payment is capped at
+    /// the balance actually outstanding, so that last paisa can never be collected — the plan stays
+    /// one payment short for ever on a sale the customer has paid in full, and the sale cannot be
+    /// completed.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task APlanBuiltFromAnExtraDecimalPossessionAmount_TotalsExactlyWhatIsOwed()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Possession Rounding", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "PR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Possession Customer", Phone = "03003030303", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"PR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m, DiscountAmount = 0m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m, BookingDate = DateTime.UtcNow
+            };
+            db.AddRange(project, unit, customer, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+        }
+
+        await using (var context = new AppDbContext(options))
+            await new InstallmentService(context, new FinanceAccountService(context))
+                .GenerateScheduleAsync(bookingId, new GenerateInstallmentPlanDto
+                {
+                    AgreedSalePrice = 1_000_000m, DiscountPercent = 0m,
+                    Frequency = InstallmentFrequency.Monthly, NumberOfInstallments = 1,
+                    InstallmentStartDate = DateTime.UtcNow.AddMonths(1),
+                    PossessionAmount = 100.005m, PossessionDueDate = DateTime.UtcNow.AddMonths(6)
+                }, adminUserId: 901);
+
+        await using var verify = new AppDbContext(options);
+        // 1,000,000 net less the 100,000 already received: the plan may collect this and not a
+        // paisa more, or the sale can never be finished.
+        var owed = 900_000m;
+        var rows = await verify.Installments.Where(i => i.BookingId == bookingId).ToListAsync();
+        Assert.Equal(owed, rows.Sum(i => i.Amount));
+        Assert.Equal(100.01m, Assert.Single(rows, i => i.Type == InstallmentType.Possession).Amount);
+        Assert.Equal(owed, (await verify.Bookings.SingleAsync(b => b.Id == bookingId)).TotalInstallmentAmount);
     }
 
     /// <summary>
@@ -735,6 +897,103 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
         var updated = await context.Bookings.AsNoTracking().SingleAsync(b => b.Id == booking.Id);
         Assert.Equal(800_000m, updated.AgreedSalePrice);
+    }
+
+    /// <summary>
+    /// Creating and editing a commission or a rebate decides something from the booking — is it
+    /// still active, does this partner already hold one, what is it worth — and then writes money
+    /// against that reading. Every other money-moving method on this service already runs
+    /// Serializable; these did not, which is what let a commission be raised on a booking that was
+    /// being cancelled at the same moment, its expense and payable surviving a release that could
+    /// never have seen it.
+    /// <para>
+    /// Asserted on the isolation level because the race itself is a few milliseconds wide and a
+    /// timing test passes with the transaction removed.
+    /// </para>
+    /// </summary>
+    [SqlServerFact]
+    public async Task WritingCommissionsAndRebates_HappensInOneSerializableTransaction()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var recorder = new TransactionIsolationRecorder();
+        var options = OptionsWith(database.ConnectionString, recorder);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var context = new AppDbContext(options);
+        var project = new Project { ProjectName = "Isolated Writes", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit
+        {
+            Project = project, UnitNumber = "IW-01", UnitType = "Apartment",
+            Price = 1_000_000m, Status = UnitStatus.Booked
+        };
+        var customer = new Customer { FullName = "Isolated Customer", Phone = "03007070707", Status = CustomerStatus.Active };
+        var booking = new Booking
+        {
+            BookingReference = $"IW-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+            Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+            BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
+        };
+        var partner = new ThirdPartyPartner
+        {
+            Name = "Isolated Broker", PartnerType = "Broker", InternalCode = "IWB-1", IsActive = true
+        };
+        context.AddRange(project, unit, customer, booking, partner);
+        await context.SaveChangesAsync();
+
+        var service = new CommissionRebateService(context, new FinanceAccountService(context), new NullPrivateStorage());
+
+        recorder.Started.Clear();
+        var workspace = await service.CreateCommissionAsync(booking.Id, new CreateBookingCommissionDto
+        {
+            PartnerId = partner.Id, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.FixedAmount,
+            ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            ManualFixedAmount = 50_000m, ManualReason = "Agreed with the broker"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+        var commission = Assert.Single(workspace.Commissions);
+
+        recorder.Started.Clear();
+        await service.UpdateCommissionAsync(booking.Id, commission.Id, new UpdateBookingCommissionDto
+        {
+            PartnerId = partner.Id, IsManual = true,
+            ManualCalculationType = FinancialCalculationType.FixedAmount,
+            ManualCalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            ManualFixedAmount = 60_000m, ManualReason = "Renegotiated",
+            ConcurrencyToken = commission.ConcurrencyToken, ChangeReason = "Renegotiated"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+
+        recorder.Started.Clear();
+        var withRebate = await service.CreateRebateAsync(booking.Id, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 20_000m, Reason = "Goodwill", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+        var rebate = Assert.Single(withRebate.Rebates);
+
+        recorder.Started.Clear();
+        await service.UpdateRebateAsync(booking.Id, rebate.Id, new UpdateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 25_000m, Reason = "Goodwill", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+            ConcurrencyToken = rebate.ConcurrencyToken, ChangeReason = "Increased"
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
+
+        recorder.Started.Clear();
+        await service.ChangeRebateStatusAsync(booking.Id, rebate.Id, new RebateStatusChangeDto
+        {
+            TargetStatus = CustomerRebateStatus.Cancelled, Reason = "Withdrawn",
+            ConcurrencyToken = (await context.CustomerRebates.AsNoTracking()
+                .SingleAsync(r => r.Id == rebate.Id)).RowVersion is { Length: > 0 } v
+                ? Convert.ToBase64String(v) : null
+        }, Actor);
+        Assert.Contains(System.Data.IsolationLevel.Serializable, recorder.Started);
     }
 
     /// <summary>Every isolation level the code under test asked a transaction to start at.</summary>
@@ -3985,14 +4244,43 @@ public sealed class SqlServerProductionInvariantTests
         Assert.DoesNotContain(openLedger, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
 
         // Edited after the decision: the edit recalculated the amount and cleared the override, so
-        // the approval must not be replayed on top of it.
+        // the AMOUNT must not be restated from the approval.
         var reEdited = await verify.BookingCommissions.SingleAsync(c => c.Id == editedAfterApprovalId);
         Assert.Equal(120_000m, reEdited.FinalAmount);
         Assert.Equal(0m, reEdited.AdjustmentAmount);
         Assert.Null(reEdited.AdjustmentReason);
-        var editedLedger = await verify.CommissionAccruals.Where(a => a.CommissionId == editedAfterApprovalId).ToListAsync();
+
+        // The HISTORY is a separate question, and the approval still happened. It cut the
+        // obligation in July and the edit raised it in August, so all three movements are dated
+        // where they were decided. Reading the edit's own PreviousAmount instead — the pre-override
+        // figure, because the edit had cleared the override — dropped the approval entirely: July
+        // kept reporting the uncut 100,000 and August moved by 20,000 rather than 40,000, while the
+        // total still came to 120,000 and hid both.
+        var editedLedger = await verify.CommissionAccruals.Where(a => a.CommissionId == editedAfterApprovalId)
+            .OrderBy(a => a.AccruedOn).ThenBy(a => a.Id).ToListAsync();
         Assert.Equal(120_000m, editedLedger.Sum(a => a.Amount));
-        Assert.DoesNotContain(editedLedger, a => a.Amount == -20_000m);
+        Assert.Collection(editedLedger,
+            first =>
+            {
+                Assert.Equal(100_000m, first.Amount);
+                Assert.Equal(agreed.Date, first.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Recognition, first.Kind);
+            },
+            cutInJuly =>
+            {
+                Assert.Equal(-20_000m, cutInJuly.Amount);
+                Assert.Equal(approved.Date, cutInJuly.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Adjustment, cutInJuly.Kind);
+            },
+            raisedInAugust =>
+            {
+                // From the 80,000 the approval left it at, not from the 100,000 the edit's own
+                // audit row claims it was moving from.
+                Assert.Equal(40_000m, raisedInAugust.Amount);
+                Assert.Equal(edited.Date, raisedInAugust.AccruedOn);
+                Assert.Equal(CommissionAccrualKind.Adjustment, raisedInAugust.Kind);
+            });
+        Assert.DoesNotContain(editedLedger, a => a.Reason != null && a.Reason.StartsWith("Cutover correction"));
 
         // More has gone out than the approval allows for. Unexplainable, so left exactly as found
         // rather than restated into a negative payable.
