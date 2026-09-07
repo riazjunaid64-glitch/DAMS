@@ -5,7 +5,8 @@ import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { apiError, commissionRebateApi } from "./api";
 import { Icons } from "../bookings/tokens.tsx";
-import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount, commissionRuleFor } from "./state";
+import { mutationSnapshotIsCurrent } from "../bookings/refreshCoordination";
+import { commissionActions, commissionAllocationPercent, commissionBases, commissionBasisFor, commissionAdjustmentNote, commissionRequestBody, idempotencyKey, isEditableBasis, isPendingStatus, money, pakistanToday, prettyEnum, rebateActions, rebateBases, rebateBasisFor, rebateRequestBody, trapDialogKeys, usesStoredBasisAmount, commissionRuleFor } from "./state";
 import type { AuditEntry, BookingWorkspace, CalculationBasis, CalculationType, Commission, FinanceAccountOption, InstallmentOption, Partner, Rebate, RebateMethod } from "./types";
 
 const input="w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2.5 text-sm text-[var(--text-primary)] disabled:opacity-60";
@@ -27,11 +28,21 @@ const closedStatuses=["Cancelled","Reversed"];
 // the booking, so announcing one only makes the page re-read three endpoints unchanged. See execute.
 //
 // refreshToken is the other direction: the panel stays mounted while other tabs are used, so a
-// payment recorded elsewhere would otherwise leave its "Amount collected" — and the installment list
-// its disbursement form offers — describing a booking that has since moved on. The page bumps the
-// token whenever it reloads, and the panel reads everything again.
-export default function BookingCommissionRebatePanel({bookingId,onChanged,refreshToken=0}:{bookingId:number;onChanged?:()=>void;refreshToken?:number}){
-  const [workspace,setWorkspace]=useState<BookingWorkspace|null>(null),[partners,setPartners]=useState<Partner[]>([]),[accounts,setAccounts]=useState<FinanceAccountOption[]>([]),[installments,setInstallments]=useState<InstallmentOption[]>([]);
+// payment recorded elsewhere would otherwise leave its "Amount collected" describing a booking that
+// has since moved on. The page bumps the token when something OTHER than this panel moved the
+// booking. It deliberately does not bump it for this panel's own mutations: those already answered
+// with the whole workspace, so re-reading it is an echo — that echo, plus the page's own reload,
+// is what turned one rebate into seven follow-up GETs.
+//
+// installments come from the page rather than from a second read of the same endpoint the page has
+// already made. installmentsFresh is that read's freshness: a disbursement targets an installment
+// by id, so offering ids from a schedule that failed to refresh is how a credit lands on a row the
+// server has since replaced.
+// Both installment props are REQUIRED, not defaulted: a caller that forgot them would get an empty
+// installment picker and a rebate that silently cannot be placed on the plan, with nothing on screen
+// saying why. Owning the read means supplying it.
+export default function BookingCommissionRebatePanel({bookingId,onChanged,refreshToken=0,installments,installmentsFresh}:{bookingId:number;onChanged?:()=>void;refreshToken?:number;installments:InstallmentOption[];installmentsFresh:boolean}){
+  const [workspace,setWorkspace]=useState<BookingWorkspace|null>(null),[partners,setPartners]=useState<Partner[]>([]),[accounts,setAccounts]=useState<FinanceAccountOption[]>([]);
   const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null),[showAudit,setShowAudit]=useState(false),[stale,setStale]=useState(false);
   const [olderAudit,setOlderAudit]=useState<AuditEntry[]>([]),[auditHasMore,setAuditHasMore]=useState(false),[auditBusy,setAuditBusy]=useState(false);
   const [showCommission,setShowCommission]=useState(false),[showRebate,setShowRebate]=useState(false),[showPartner,setShowPartner]=useState(false);
@@ -41,11 +52,22 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   const [partnerForm,setPartnerForm]=useState({...emptyPartnerForm()});
   const [payout,setPayout]=useState({financeAccountId:"",amount:"",paymentDate:pakistanToday(),paymentMethod:"BankTransfer",paymentReference:"",notes:"",idempotencyKey:idempotencyKey("commission-payout")});
   const [disbursement,setDisbursement]=useState({method:"OutstandingBalanceReduction" as RebateMethod,amount:"",appliedAt:pakistanToday(),financeAccountId:"",installmentId:"",paymentMethod:"BankTransfer",reference:"",notes:"",idempotencyKey:idempotencyKey("rebate-disbursement")});
-  const reversalKeys=useRef(new Map<string,string>()),loadSequence=useRef(0);
-  const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const [w,p,a,s]=await Promise.all([commissionRebateApi.workspace(bookingId),commissionRebateApi.partners("",true,0,100),api("/api/finance/accounts/options"),api(`/api/Booking/${bookingId}/installments`)]);if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");if(!s.ok)throw await apiError(s,"The installment schedule could not be loaded.");const accountOptions=await a.json() as FinanceAccountOption[];const schedule=await s.json() as {items:InstallmentOption[]};if(request!==loadSequence.current)return;setWorkspace(w);setPartners(p.items);setAccounts(accountOptions);setInstallments(schedule.items);setStale(false);}catch(x){if(request===loadSequence.current){setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");setStale(true);}}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
-  // refreshToken is a re-run trigger, not an input to the read: the page bumps it whenever the
-  // booking moves under this panel while it sits mounted behind another tab.
+  const reversalKeys=useRef(new Map<string,string>()),loadSequence=useRef(0),optionsLoaded=useRef(false);
+  // The directory lists do not move when the booking does. Partners and finance accounts are read
+  // on the first visit and then only when this panel adds a partner itself — a payment recorded on
+  // another tab changes the workspace, not the list of brokers.
+  const load=useCallback(async()=>{const request=++loadSequence.current;setLoading(true);setError(null);try{const wantOptions=!optionsLoaded.current;const [w,p,a]=await Promise.all([commissionRebateApi.workspace(bookingId),wantOptions?commissionRebateApi.partners("",true,0,100):null,wantOptions?api("/api/finance/accounts/options"):null]);let accountOptions:FinanceAccountOption[]|null=null;if(a){if(!a.ok)throw await apiError(a,"Finance account options could not be loaded.");accountOptions=await a.json() as FinanceAccountOption[];}if(request!==loadSequence.current)return;setWorkspace(w);if(p)setPartners(p.items);if(accountOptions)setAccounts(accountOptions);optionsLoaded.current=true;setStale(false);}catch(x){if(request===loadSequence.current){setError(x instanceof Error?x.message:"Commission and rebate details could not be loaded.");setStale(true);}}finally{if(request===loadSequence.current)setLoading(false);}},[bookingId]);
+  // The token counts external changes, so it is also how a mutation in flight finds out the booking
+  // moved underneath it. Mirrored into a ref because a closure created before the change captures
+  // the old value, and it is the value at COMPLETION that decides whether the response is current.
+  const externalChanges=useRef(refreshToken);
+  useEffect(()=>{externalChanges.current=refreshToken;},[refreshToken]);
+  // refreshToken is a re-run trigger, not an input to the read: the page bumps it whenever
+  // something other than this panel moves the booking while it sits mounted behind another tab.
   useEffect(()=>{void load();},[load,refreshToken]);
+  // Reloading this panel alone cannot fix a schedule the PAGE failed to read, so Try again asks for
+  // both. onChanged is what reloads the page's reads; it does not echo back into this panel.
+  const retry=useCallback(()=>{void load();if(!installmentsFresh)onChanged?.();},[load,installmentsFresh,onChanged]);
   // The workspace inlines only the newest audit preview; reset any appended older pages whenever it
   // reloads, then pull older rows on demand with the keyset endpoint (beforeId = oldest row shown).
   useEffect(()=>{setOlderAudit([]);setAuditHasMore(workspace?.hasMoreAudit??false);},[workspace]);
@@ -56,7 +78,10 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // outstanding amount that has since moved, or editing a record someone else has already changed,
   // is exactly what the concurrency tokens then reject with a message nobody can act on. So
   // everything that moves money stays locked until a reload succeeds.
-  const locked=busy||stale;
+  // installmentsFresh is part of this for the same reason the panel's own failed read is: a rebate
+  // can be disbursed onto an installment, and the ids it would offer came from the page's last
+  // successful schedule read.
+  const locked=busy||stale||!installmentsFresh;
 
   // Every amount the entry forms preview is derived from the same booking figures — and the same
   // basis, allocation and adjustment — the server recalculates on save, so what the user reads
@@ -107,7 +132,12 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // and its payments. A commission is money owed to a partner and appears in none of those, so
   // announcing one only re-fetches three endpoints that cannot come back any different. Defaulting
   // to true keeps a forgotten call site merely wasteful rather than stale.
-  const execute=async(operation:()=>Promise<BookingWorkspace>,affectsBooking=true)=>{setBusy(true);setError(null);try{setWorkspace(await operation());if(affectsBooking)onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
+  // The response is a snapshot of the workspace as it stood when the SERVER handled the mutation.
+  // Pinning the screen to it saves a read, but only while nothing else moved the booking meanwhile:
+  // a payment landing from another tab refreshes this panel to Rs 12,000, and then a slow rebate
+  // response would quietly put Rs 10,000 back. When that happens the snapshot is abandoned and the
+  // workspace re-read, which is the one case worth spending the request on.
+  const execute=async(operation:()=>Promise<BookingWorkspace>,affectsBooking=true)=>{setBusy(true);setError(null);const seenAtStart=externalChanges.current;try{const result=await operation();if(mutationSnapshotIsCurrent(seenAtStart,externalChanges.current))setWorkspace(result);else await load();if(affectsBooking)onChanged?.();return true;}catch(x){setError(x instanceof Error?x.message:"Financial action could not be completed.");return false;}finally{setBusy(false);}};
 
   const savePartner=async(e:FormEvent)=>{e.preventDefault();setBusy(true);setError(null);
     try{
@@ -173,6 +203,7 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
   // re-ranks and can come out at something else entirely — so the form stops asserting an amount it
   // cannot know. commissionRuleFor draws the same line for the request body.
   const ruleCommissionRepriced=editingRuleCommission&&commissionRuleFor(commission,editingCommission)===null;
+  const adjustmentNote=commissionAdjustmentNote(editingCommission,editingRuleCommission,commissionAmount);
   // A basis this form does not list is shown, not offered. It is carried back exactly as stored, so
   // the operator can see what the amount is calculated on without the form quietly replacing it.
   const commissionBasisLocked=!isEditableBasis(commission.calculationBasis,commissionBases);
@@ -188,9 +219,9 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
       <Mini label="Booking status" value={prettyEnum(workspace.bookingStatus)} tone="sky" icon={<Icons.pulse/>}/>
     </div>
     {error&&<p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300">{error}</p>}
-    {stale&&<p role="status" className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-300">
-      These figures could not be refreshed, so they may no longer match the booking. Actions stay locked until they load.
-      <Button size="sm" variant="outline" disabled={busy} onClick={()=>void load()}>Try again</Button>
+    {(stale||!installmentsFresh)&&<p role="status" className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-300">
+      {stale?"These figures could not be refreshed, so they may no longer match the booking.":"The booking's installment schedule could not be refreshed, so a credit cannot be placed on it."} Actions stay locked until they load.
+      <Button size="sm" variant="outline" disabled={busy} onClick={retry}>Try again</Button>
     </p>}
 
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-5 sm:p-6">
@@ -231,7 +262,9 @@ export default function BookingCommissionRebatePanel({bookingId,onChanged,refres
           {/* The two things the form carries but does not edit, stated rather than hidden: both
               change the amount the server saves. */}
           {commissionAllocation!==100&&<p className="text-xs text-[var(--text-muted)]">This partner's attribution allocates {commissionAllocation}% of the calculation, which the amount above already applies. Selecting a different partner drops the attribution and pays the full amount.</p>}
-          {(editingCommission?.adjustmentAmount??0)!==0&&<p className="text-xs text-[var(--text-muted)]">An agreed adjustment of {money(editingCommission!.adjustmentAmount)} is kept on this commission{editingCommission!.adjustmentReason?` (${editingCommission!.adjustmentReason})`:""}, so the final amount will be {money(Math.max(0,Math.round((commissionAmount+editingCommission!.adjustmentAmount)*100)/100))}.</p>}
+          {/* Built in state.ts, where the rule that decides whether a final amount can be promised
+              at all is testable on its own. See commissionAdjustmentNote. */}
+          {adjustmentNote&&<p className="text-xs text-[var(--text-muted)]">{adjustmentNote}</p>}
           {!editingRuleCommission&&<Field label="Notes (optional)" as="textarea" placeholder="Add any notes about this commission (optional)" value={commission.notes} onChange={e=>setCommission({...commission,notes:e.target.value})}/>}
           <FormButtons busy={locked} cancel={()=>{setShowCommission(false);setEditingCommission(null);}}/>
         </form>

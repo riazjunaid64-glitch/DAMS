@@ -356,15 +356,12 @@ public sealed class SqlServerProductionInvariantTests
         }
 
         var outcomes = await Task.WhenAll(ReverseAsync(), PayAsync());
+        var (reversalError, paymentError) = (outcomes[0], outcomes[1]);
 
-        // Whichever request lost the race must have lost it with the guard's own message, not some
-        // unrelated failure (a real deadlock that exhausted its retries, a translation error, etc.).
-        foreach (var error in outcomes)
-            if (error != null)
-                Assert.True(error is InvalidOperationException ioe && (ioe.Message.Contains("uncollectable")
-                        || ioe.Message.Contains("no way to collect it")),
-                    $"Unexpected failure shape: {error}");
-
+        // EVERYTHING is read before ANYTHING is asserted. This test failed once, intermittently, and
+        // could not be diagnosed afterwards: the exception-shape check came first, so an unexpected
+        // failure ended the run on its message alone and nothing recorded what the database actually
+        // held at that moment. Re-running over the evidence is not an investigation.
         await using var verify = new AppDbContext(options);
         var finalBooking = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
         var scheduleTotal = await verify.Installments.Where(i => i.BookingId == bookingId)
@@ -373,8 +370,80 @@ public sealed class SqlServerProductionInvariantTests
         var canRegenerate = await BookingCreditPolicy.CanRegenerateScheduleAsync(verify, bookingId);
         var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
             verify, finalBooking, scheduleTotal, finalCredits);
+        var receipts = await verify.Payments
+            .Where(p => p.BookingId == bookingId && p.Type == PaymentType.Installment)
+            .Select(p => new { p.Id, p.Amount, p.InstallmentId }).ToListAsync();
+        var reversals = await verify.RebateDisbursementReversals
+            .Where(rv => rv.DisbursementId == disbursementId)
+            .Select(rv => new { rv.Id, rv.Amount }).ToListAsync();
+        var installment = await verify.Installments.SingleAsync(i => i.Id == installmentId);
+
+        static string Describe(Exception? ex)
+        {
+            if (ex == null) return "COMMITTED";
+            var inner = ex.InnerException;
+            var sqlNumber = inner is SqlException sql ? $" [SQL error {sql.Number}]"
+                : ex is SqlException outer ? $" [SQL error {outer.Number}]" : "";
+            return $"{ex.GetType().Name}: {ex.Message}{sqlNumber}"
+                + (inner != null ? $" <- {inner.GetType().Name}: {inner.Message}" : "");
+        }
+
+        // Attached to every assertion below, so a failure of ANY kind arrives with the persisted
+        // financial state that produced it rather than only the exception that surfaced.
+        var evidence = string.Join(Environment.NewLine,
+            $"  reversal:     {Describe(reversalError)}",
+            $"  payment:      {Describe(paymentError)}",
+            $"  receipts:     {receipts.Count} [{string.Join(", ", receipts.Select(r => $"#{r.Id} {r.Amount:0.00} on installment {r.InstallmentId}"))}]",
+            $"  reversals:    {reversals.Count} [{string.Join(", ", reversals.Select(r => $"#{r.Id} {r.Amount:0.00}"))}]",
+            $"  net credits:  {finalCredits:0.00}",
+            $"  schedule:     {scheduleTotal:0.00} total, installment {installmentId} is {installment.Status} "
+                + $"({receipts.Where(r => r.InstallmentId == installmentId).Sum(r => r.Amount):0.00} "
+                + $"received of {installment.Amount:0.00})",
+            $"  regenerate:   {(canRegenerate ? "allowed" : "blocked")}, stranded {stranded:0.00}",
+            $"  booking:      {finalBooking.Status}");
+
+        // Whichever request lost the race must have lost it with the guard's own message, not some
+        // unrelated failure (a real deadlock that exhausted its retries, a translation error, etc.).
+        foreach (var error in outcomes)
+            if (error != null)
+                Assert.True(error is InvalidOperationException ioe && (ioe.Message.Contains("uncollectable")
+                        || ioe.Message.Contains("no way to collect it")),
+                    $"Unexpected failure shape.{Environment.NewLine}{evidence}");
+
+        // Exactly one of them may commit, and one of them MUST. Both succeeding means the guards did
+        // not see each other — the write skew this fixture exists to catch. Both failing is not a
+        // safe outcome either: it means neither side got through, which is what an exhausted deadlock
+        // retry looks like, and the safety assertion below would pass on it vacuously.
+        Assert.True((reversalError == null) ^ (paymentError == null),
+            $"Expected exactly one of the two operations to commit.{Environment.NewLine}{evidence}");
+
+        // And the side that committed must be there in the money, not merely un-rejected.
+        if (paymentError == null)
+        {
+            Assert.True(receipts.Count == 1 && receipts[0].Amount == 1_000m,
+                $"The payment reported success but is not in the ledger.{Environment.NewLine}{evidence}");
+            Assert.True(reversals.Count == 0,
+                $"The reversal was rejected yet persisted.{Environment.NewLine}{evidence}");
+            // Its own guard rejected the reversal because this receipt pinned the smaller plan.
+            Assert.Equal(200_000m, finalCredits);
+        }
+        else
+        {
+            Assert.True(reversals.Count == 1 && reversals[0].Amount == 200_000m,
+                $"The reversal reported success but is not in the ledger.{Environment.NewLine}{evidence}");
+            Assert.True(receipts.Count == 0,
+                $"The payment was rejected yet persisted.{Environment.NewLine}{evidence}");
+            // The credit is gone, so the debt it was absorbing is back and the plan is short of it —
+            // which is exactly why regeneration has to remain available.
+            Assert.Equal(0m, finalCredits);
+            Assert.True(canRegenerate,
+                $"The reversal restored a debt the plan cannot collect and left no way to rebuild it."
+                + $"{Environment.NewLine}{evidence}");
+        }
+
         Assert.True(stranded == 0m || canRegenerate,
-            $"Stranded {stranded:0.00} on a schedule that cannot be regenerated — the reversed-credit guard was bypassed by the race.");
+            $"Stranded {stranded:0.00} on a schedule that cannot be regenerated — the reversed-credit "
+            + $"guard was bypassed by the race.{Environment.NewLine}{evidence}");
     }
 
     /// <summary>
@@ -509,6 +578,14 @@ public sealed class SqlServerProductionInvariantTests
     /// is a few milliseconds wide and this passes with the transaction removed.
     /// <see cref="WritingCommissionsAndRebates_HappensInOneSerializableTransaction"/> is what pins that.
     /// </para>
+    /// <para>
+    /// The cancellation MUST happen for any of this to mean anything. An earlier version of this
+    /// test omitted the booking's RowVersion, so every run was rejected with "The booking version is
+    /// missing" and returned green having exercised nothing — a test that cannot fail is worse than
+    /// no test, because it is counted as cover. Both outcomes are therefore inspected, a genuine
+    /// concurrency rejection is retried against a refreshed version rather than accepted, and the
+    /// final state is asserted unconditionally.
+    /// </para>
     /// </summary>
     [SqlServerFact]
     public async Task ConcurrentCommissionCreationAndBookingCancellation_LeaveNothingAccruedOnACancelledSale()
@@ -519,6 +596,7 @@ public sealed class SqlServerProductionInvariantTests
             await db.Database.MigrateAsync();
 
         int bookingId, partnerId;
+        string bookingVersion;
         await using (var db = new AppDbContext(options))
         {
             var project = new Project { ProjectName = "Cancel Race", Location = "Karachi", CreatedById = 1 };
@@ -541,6 +619,8 @@ public sealed class SqlServerProductionInvariantTests
             db.AddRange(project, unit, customer, booking, partner);
             await db.SaveChangesAsync();
             bookingId = booking.Id; partnerId = partner.Id;
+            // SQL Server fills RowVersion on insert, and cancellation refuses to run without it.
+            bookingVersion = Convert.ToBase64String(booking.RowVersion);
         }
 
         async Task<Exception?> AddCommissionAsync()
@@ -561,7 +641,7 @@ public sealed class SqlServerProductionInvariantTests
             catch (Exception ex) { return ex; }
         }
 
-        async Task<Exception?> CancelAsync()
+        async Task<Exception?> CancelAsync(string version, string key)
         {
             try
             {
@@ -572,26 +652,67 @@ public sealed class SqlServerProductionInvariantTests
                     .CancelBookingAsync(bookingId, new CancelBookingDto
                     {
                         Reason = "Customer withdrew", RefundAmount = 0m, ExpectedCustomerCashReceived = 0m,
-                        IdempotencyKey = "cr-cancel"
+                        IdempotencyKey = key, ConcurrencyToken = version
                     }, Actor);
                 return null;
             }
             catch (Exception ex) { return ex; }
         }
 
-        await Task.WhenAll(AddCommissionAsync(), CancelAsync());
+        var outcomes = await Task.WhenAll(AddCommissionAsync(), CancelAsync(bookingVersion, "cr-cancel"));
+        var (creationError, cancellationError) = (outcomes[0], outcomes[1]);
+
+        // Losing the race is a legitimate outcome for the CREATION — the booking really was cancelled
+        // out from under it, and that is the message the operator should see. Any other failure means
+        // the scenario did not run as written, so it is surfaced instead of being counted as a pass.
+        if (creationError != null)
+            Assert.True(creationError.Message.Contains("Cancelled bookings cannot", StringComparison.OrdinalIgnoreCase),
+                $"The commission creation failed for an unexpected reason: {creationError}");
+
+        // Losing the race is NOT an acceptable outcome for the cancellation: this test exists to
+        // check what the cancellation leaves behind, so it has to actually happen. A version conflict
+        // is the one rejection the race can legitimately produce, and the operator's answer to it is
+        // to refresh and cancel again — so that is what happens here, once, before giving up.
+        if (cancellationError != null)
+        {
+            bool alreadyCancelled;
+            await using (var refresh = new AppDbContext(options))
+            {
+                var current = await refresh.Bookings.AsNoTracking().SingleAsync(b => b.Id == bookingId);
+                bookingVersion = Convert.ToBase64String(current.RowVersion);
+                alreadyCancelled = current.Status == BookingStatus.Cancelled;
+            }
+            // Same key, because this is the same cancellation: a retry that reached a committed
+            // attempt is answered from the idempotency record rather than cancelling twice.
+            var retryError = alreadyCancelled ? null : await CancelAsync(bookingVersion, "cr-cancel");
+            Assert.True(retryError == null,
+                $"The booking could not be cancelled, so this test never reached the invariant it exists to check.{Environment.NewLine}"
+                + $"First attempt: {cancellationError}{Environment.NewLine}Retry: {retryError}");
+        }
 
         await using var verify = new AppDbContext(options);
         var booked = await verify.Bookings.SingleAsync(b => b.Id == bookingId);
-        if (booked.Status != BookingStatus.Cancelled) return; // the cancellation lost the race outright
+        Assert.Equal(BookingStatus.Cancelled, booked.Status);
 
-        foreach (var commission in await verify.BookingCommissions.Where(c => c.BookingId == bookingId).ToListAsync())
+        // Whichever side committed first, the cancelled sale must end up owing this partner nothing.
+        // If the creation won, the release saw it and closed it; if the cancellation won, the
+        // creation was refused and there is nothing to close. A commission left OPEN here is the
+        // exact defect: one that slipped past the release's read and kept its expense and payable.
+        var commissionRows = await verify.BookingCommissions.Where(c => c.BookingId == bookingId).ToListAsync();
+        if (creationError == null)
+            Assert.NotEmpty(commissionRows);
+
+        foreach (var commission in commissionRows)
         {
             var accrued = await verify.CommissionAccruals
                 .Where(a => a.CommissionId == commission.Id).SumAsync(a => (decimal?)a.Amount) ?? 0m;
             Assert.True(accrued == 0m,
                 $"Commission {commission.Id} on a cancelled booking still owes {accrued:0.00} — "
                 + "it was created after the cancellation released everything it could see.");
+            // Nothing was ever paid out here, so the release has no recovery to record: every
+            // commission on this booking must be closed outright.
+            Assert.True(commission.Status == BookingCommissionStatus.Cancelled,
+                $"Commission {commission.Id} on a cancelled booking is still {commission.Status}.");
         }
     }
 
