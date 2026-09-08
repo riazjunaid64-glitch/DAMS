@@ -108,6 +108,13 @@ namespace DAMS.Application.DTOs.FinanceDtos
         public decimal CurrentBalance { get; set; }
     }
 
+    public sealed class FinanceAccountsPageDto
+    {
+        public List<FinanceAccountResponseDto> Items { get; set; } = [];
+        public bool HasMore { get; set; }
+        public FinanceAccountsOverviewDto Overview { get; set; } = new();
+    }
+
     public sealed class FinanceAccountsOverviewDto
     {
         public int ActiveAccounts { get; set; }

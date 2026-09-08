@@ -17,6 +17,41 @@ namespace DAMS.Application.Services
             string? search, FinanceAccountType? type, string? holder, bool? isActive,
             int skip, int take, CancellationToken cancellationToken = default)
         {
+            var rows = await LoadAccountsAsync(
+                FilterAccounts(search, type, holder, isActive)
+                    .OrderByDescending(a => a.IsActive).ThenBy(a => a.Name)
+                    .Skip(skip).Take(take + 1),
+                cancellationToken);
+            return new PagedResult<FinanceAccountResponseDto>
+            {
+                Items = rows.Take(take).ToList(),
+                HasMore = rows.Count > take
+            };
+        }
+
+        public async Task<FinanceAccountsPageDto> GetPageWithOverviewAsync(
+            string? search, FinanceAccountType? type, string? holder, bool? isActive,
+            int skip, int take, CancellationToken cancellationToken = default)
+        {
+            // Keep filtering and ordering in the database so its string/collation semantics
+            // remain identical to GetPageAsync. The overview covers every account, including
+            // accounts outside this page, but each account's balance is calculated only once.
+            var pageIds = await FilterAccounts(search, type, holder, isActive)
+                .OrderByDescending(a => a.IsActive).ThenBy(a => a.Name)
+                .Skip(skip).Take(take + 1).Select(a => a.Id).ToListAsync(cancellationToken);
+            var accounts = await LoadAccountsAsync(_context.FinanceAccounts.AsNoTracking(), cancellationToken);
+            var accountsById = accounts.ToDictionary(a => a.Id);
+            return new FinanceAccountsPageDto
+            {
+                Items = pageIds.Take(take).Where(accountsById.ContainsKey).Select(id => accountsById[id]).ToList(),
+                HasMore = pageIds.Count > take,
+                Overview = BuildOverview(accounts)
+            };
+        }
+
+        private IQueryable<FinanceAccount> FilterAccounts(
+            string? search, FinanceAccountType? type, string? holder, bool? isActive)
+        {
             var query = _context.FinanceAccounts.AsNoTracking().AsQueryable();
             if (!string.IsNullOrWhiteSpace(search))
             {
@@ -30,15 +65,7 @@ namespace DAMS.Application.Services
             if (!string.IsNullOrWhiteSpace(holder)) query = query.Where(a => a.AccountHolderName == holder.Trim());
             if (isActive.HasValue) query = query.Where(a => a.IsActive == isActive.Value);
 
-            var rows = await LoadAccountsAsync(
-                query.OrderByDescending(a => a.IsActive).ThenBy(a => a.Name)
-                    .Skip(skip).Take(take + 1),
-                cancellationToken);
-            return new PagedResult<FinanceAccountResponseDto>
-            {
-                Items = rows.Take(take).ToList(),
-                HasMore = rows.Count > take
-            };
+            return query;
         }
 
         public Task<List<FinanceAccountOptionDto>> GetOptionsAsync(bool includeInactive, bool cashLikeOnly = true, FinanceAccountType? type = null, CancellationToken cancellationToken = default) =>
@@ -76,7 +103,7 @@ namespace DAMS.Application.Services
         {
             var slice = await QueryTransactionLedgerAsync(
                 id, projectId, from, to, skip, take, newestFirst: true,
-                includeOpeningEvent: false, cancellationToken);
+                includeOpeningEvent: false, calculateBalances: false, cancellationToken);
             return new PagedResult<FinanceAccountTransactionDto>
             {
                 Items = slice.Items,
@@ -88,11 +115,11 @@ namespace DAMS.Application.Services
             int id, int? projectId, DateTime from, DateTime to, int skip, int take,
             CancellationToken cancellationToken = default) =>
             QueryTransactionLedgerAsync(id, projectId, from, to, skip, take,
-                newestFirst: false, includeOpeningEvent: true, cancellationToken);
+                newestFirst: false, includeOpeningEvent: true, calculateBalances: true, cancellationToken);
 
         private async Task<FinanceAccountLedgerSliceDto> QueryTransactionLedgerAsync(
             int id, int? projectId, DateTime? from, DateTime? to, int skip, int take,
-            bool newestFirst, bool includeOpeningEvent, CancellationToken cancellationToken)
+            bool newestFirst, bool includeOpeningEvent, bool calculateBalances, CancellationToken cancellationToken)
         {
             var account = await _context.FinanceAccounts.AsNoTracking().Where(a => a.Id == id)
                 .Select(a => new
@@ -555,7 +582,7 @@ namespace DAMS.Application.Services
             var baseline = await FinanceDateRules.BaselineAsync(_context, cancellationToken);
 
             var openingNormalBalance = 0m;
-            if (from.HasValue)
+            if (calculateBalances && from.HasValue)
             {
                 var priorRows = allRows.Where(row => row.Date < from.Value);
                 if (baseline.HasValue)
@@ -585,8 +612,11 @@ namespace DAMS.Application.Services
             if (baseline.HasValue)
                 periodRows = periodRows.Where(row => row.Date >= baseline.Value.Date);
 
-            var periodMovement = await periodRows.SumAsync(
-                row => (decimal?)row.Amount, cancellationToken) ?? 0m;
+            // The account history only consumes the requested rows and HasMore. Reports also
+            // need balances over the complete range; keep those aggregates on the report path.
+            var periodMovement = calculateBalances
+                ? await periodRows.SumAsync(row => (decimal?)row.Amount, cancellationToken) ?? 0m
+                : 0m;
             var openingFallsInsidePeriod = includeOpeningEvent && !projectId.HasValue
                 && baseline.HasValue && from.HasValue && to.HasValue
                 && account.OpeningBalance != 0m
@@ -602,7 +632,7 @@ namespace DAMS.Application.Services
                     .ThenBy(row => row.PostedAt)
                     .ThenBy(row => row.SourceOrder)
                     .ThenBy(row => row.RecordId);
-            var movementBeforePage = skip == 0
+            var movementBeforePage = !calculateBalances || skip == 0
                 ? 0m
                 : await ordered.Take(skip).SumAsync(row => (decimal?)row.Amount, cancellationToken) ?? 0m;
             var probeTake = take == int.MaxValue ? int.MaxValue : take + 1;
@@ -653,6 +683,11 @@ namespace DAMS.Application.Services
         public async Task<FinanceAccountsOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default)
         {
             var accounts = await LoadAccountsAsync(_context.FinanceAccounts.AsNoTracking(), cancellationToken);
+            return BuildOverview(accounts);
+        }
+
+        private static FinanceAccountsOverviewDto BuildOverview(List<FinanceAccountResponseDto> accounts)
+        {
             return new FinanceAccountsOverviewDto
             {
                 ActiveAccounts = accounts.Count(a => a.IsActive),

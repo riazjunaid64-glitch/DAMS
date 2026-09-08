@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
+import { readFinanceAccountsPage } from "../features/finance/accountPageReads";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 
@@ -47,38 +48,25 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
   const [form,setForm]=useState<Form|null>(null), [saving,setSaving]=useState(false), [error,setError]=useState<string|null>(null);
   const [selected,setSelected]=useState<Account|null>(null), [transactions,setTransactions]=useState<Transaction[]>([]);
   const [overview,setOverview]=useState<Overview|null>(null);
-  const accountsRequest=useRef(0), overviewRequest=useRef(0);
-  const accountsController=useRef<AbortController|null>(null), overviewController=useRef<AbortController|null>(null);
+  const accountsRequest=useRef(0), overviewLoaded=useRef(false);
+  const accountsController=useRef<AbortController|null>(null);
   const accountsDebounceTimer=useRef<number|null>(null);
 
-  const loadOverview=useCallback(async()=>{
-    overviewController.current?.abort();
-    const controller=new AbortController();overviewController.current=controller;
-    const request=++overviewRequest.current;
-    try{
-      const r=await api("/api/finance/accounts/overview",{signal:controller.signal});
-      if(!r.ok)return;
-      const next=await r.json() as Overview;
-      if(!controller.signal.aborted&&request===overviewRequest.current)setOverview(next);
-    }catch{/* Summary cards retain their last successful values. */}
-    finally{if(overviewController.current===controller)overviewController.current=null;}
-  },[]);
-
-  const loadAccounts=useCallback(async()=>{
+  const loadAccounts=useCallback(async(refreshOverview=false)=>{
     accountsController.current?.abort();
     const controller=new AbortController();accountsController.current=controller;
     const request=++accountsRequest.current;
     setLoading(true);
     try{
-      const p=new URLSearchParams({take:"200"});
-      if(search)p.set("search",search);
-      if(status!=="all")p.set("isActive",String(status==="active"));
-      if(typeFilter)p.set("type",typeFilter);
-      if(holderFilter)p.set("holder",holderFilter);
-      const r=await api(`/api/finance/accounts?${p}`,{signal:controller.signal});
-      if(!r.ok)throw new Error("Accounts could not be loaded.");
-      const next=(await r.json()).items as Account[];
-      if(!controller.signal.aborted&&request===accountsRequest.current)setAccounts(next);
+      // Until a combined load succeeds, replacing an aborted initial request must still
+      // fetch the global overview. Later filter changes only need the filtered account page.
+      const next=await readFinanceAccountsPage<Account,Overview>(
+        {search,status,typeFilter,holderFilter},refreshOverview||!overviewLoaded.current,
+        path=>api(path,{signal:controller.signal}));
+      if(!controller.signal.aborted&&request===accountsRequest.current){
+        setAccounts(next.items);
+        if(next.overview){setOverview(next.overview);overviewLoaded.current=true;}
+      }
     }catch{
       if(!controller.signal.aborted&&request===accountsRequest.current)setAccounts([]);
     }finally{
@@ -89,8 +77,9 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
 
   const refresh=useCallback(async()=>{
     if(accountsDebounceTimer.current!==null){window.clearTimeout(accountsDebounceTimer.current);accountsDebounceTimer.current=null;}
-    await Promise.all([loadAccounts(),loadOverview()]);
-  },[loadAccounts,loadOverview]);
+    overviewLoaded.current=false;
+    await loadAccounts(true);
+  },[loadAccounts]);
 
   useEffect(()=>{
     if(user?.role!=="Admin"){navigate("/");return;}
@@ -98,11 +87,6 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
     accountsDebounceTimer.current=timer;
     return()=>{window.clearTimeout(timer);if(accountsDebounceTimer.current===timer)accountsDebounceTimer.current=null;accountsController.current?.abort();};
   },[user,navigate,loadAccounts]);
-  useEffect(()=>{
-    if(user?.role!=="Admin")return;
-    void loadOverview();
-    return()=>overviewController.current?.abort();
-  },[user,loadOverview]);
   const openDetail=async(a:Account)=>{setSelected(a);setTransactions([]);try{const [detail,tx]=await Promise.all([api(`/api/finance/accounts/${a.id}`),api(`/api/finance/accounts/${a.id}/transactions?take=200`)]);if(detail.ok)setSelected(await detail.json());if(tx.ok)setTransactions((await tx.json()).items);}catch{/* Empty history is shown with a safe fallback. */}};
   const save=async()=>{ if(!form||saving)return; setError(null); if(!form.name.trim()||!form.accountHolderName.trim()){setError("Account name and account holder are required.");return;} const opening=Number(form.openingBalance); if(!Number.isFinite(opening)){setError("Enter a valid opening balance.");return;} setSaving(true); try { const body={name:form.name.trim(),type:Number(form.type),accountHolderName:form.accountHolderName.trim(),openingBalance:opening,ledgerCode:form.ledgerCode.trim()||null,displayOrder:Number(form.displayOrder)||0,bankOrWalletName:form.bankOrWalletName.trim()||null,description:form.description.trim()||null,concurrencyToken:form.concurrencyToken}; const r=await api(form.id?`/api/finance/accounts/${form.id}`:"/api/finance/accounts",{method:form.id?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok){const d=await r.json().catch(()=>null);throw new Error(d?.message??"Account could not be saved.");} setForm(null);await refresh(); } catch(saveError) { setError(saveError instanceof Error?saveError.message:"Account could not be saved. Check your connection and try again."); } finally { setSaving(false); } };
   const edit=(a:Account)=>setForm({id:a.id,name:a.name,type:String(typeValue(a.type)),accountHolderName:a.accountHolderName,openingBalance:String(a.openingBalance),ledgerCode:a.ledgerCode??"",displayOrder:String(a.displayOrder),bankOrWalletName:a.bankOrWalletName??"",description:a.description??"",concurrencyToken:a.concurrencyToken,isSystemAccount:a.isSystemAccount});
