@@ -242,10 +242,16 @@ namespace DAMS.Application.Services
 
             var openingDate = await OpeningDateAsync(cancellationToken);
 
-            // Looking the row up first both validates the opaque key and gives the exact identity
-            // against which the closing detail must reconcile.
-            var summary = await GetTrialBalanceAsync(projectId, toDate, 0, cancellationToken);
-            var summaryRow = summary.Rows.SingleOrDefault(row => row.AccountKey == accountKey)
+            // The expected position of this one row, calculated first: it validates the opaque key and
+            // gives the exact identity the closing detail must reconcile against. It is deliberately
+            // NOT derived from the ledger below — the two are built from different queries so that the
+            // check at the end of this method is a real one — but it no longer costs a whole Trial
+            // Balance to obtain. See BuildTrialBalanceRowAsync.
+            if (!TryParseTrialBalanceKey(accountKey, out var parsedKey))
+                throw new InvalidOperationException(
+                    "The selected Trial Balance account is not available for these filters.");
+            var summaryRow = await BuildTrialBalanceRowAsync(
+                    parsedKey, projectId, toDate, openingDate, cancellationToken)
                 ?? throw new InvalidOperationException(
                     "The selected Trial Balance account is not available for these filters.");
 
@@ -859,43 +865,48 @@ namespace DAMS.Application.Services
             _ => (row.CategoryId.HasValue ? row.CategoryId.Value.ToString() : "U") + ":" + row.Name
         };
 
-        private async Task<List<AccountSnapshot>> AccountSnapshotsAsync(int? projectId, DateTime asAt, DateTime? openingDate, CancellationToken cancellationToken)
+        private async Task<List<AccountSnapshot>> AccountSnapshotsAsync(int? projectId, DateTime asAt, DateTime? openingDate,
+            CancellationToken cancellationToken, int? accountId = null)
         {
             var end = asAt.Date.AddDays(1);
-            var accounts = await _context.FinanceAccounts.AsNoTracking().OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name)
+            var accounts = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => !accountId.HasValue || a.Id == accountId.Value)
+                .OrderBy(a => a.DisplayOrder).ThenBy(a => a.Name)
                 .Select(a => new AccountSnapshot { Id = a.Id, Name = a.Name, LedgerCode = a.LedgerCode, Type = a.Type,
                     SystemRole = a.SystemRole,
                     DisplayOrder = a.DisplayOrder, Balance = !projectId.HasValue && (!openingDate.HasValue || openingDate <= asAt) ? a.OpeningBalance : 0m })
                 .ToListAsync(cancellationToken);
+            if (accounts.Count == 0) return accounts;
             // Every ordinary account movement is emitted with its final sign, then SQL Server reads
             // and groups the sources in one UNION ALL command. The previous implementation issued a
             // separate command for each table even though the application only needed one number per
             // account from all of them.
-            var movementRows = PaymentsQuery(projectId, null, end).Where(p => p.FinanceAccountId != null)
+            var movementRows = PaymentsQuery(projectId, null, end, accountId).Where(p => p.FinanceAccountId != null)
                 .Select(p => new AccountMovementRow { Id = p.FinanceAccountId!.Value, Amount = p.Amount })
-                .Concat(ManualQuery(projectId, null, end).Where(r => r.FinanceAccountId != null)
+                .Concat(ManualQuery(projectId, null, end, accountId).Where(r => r.FinanceAccountId != null)
                     .Select(r => new AccountMovementRow { Id = r.FinanceAccountId!.Value, Amount = r.Amount }))
-                .Concat(ExpenseQuery(projectId, null, end).Where(e => e.FinanceAccountId != null)
+                .Concat(ExpenseQuery(projectId, null, end, accountId).Where(e => e.FinanceAccountId != null)
                     .Select(e => new AccountMovementRow { Id = e.FinanceAccountId!.Value, Amount = -(e.Amount - e.WhtAmount) }));
             // A purchase moves two accounts: cash falls by the net paid, the asset account rises by
             // the gross, and the gap between them is the withheld tax, which lands on the payable
             // below. That is what balances the CASH side. The charge the same purchase makes against
             // profit has no counter-entry anywhere — the asset account itself is never written down.
             movementRows = movementRows
-                .Concat(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .Concat(AssetPurchaseQuery(projectId, null, end, null, accountId, false)
                     .Select(p => new AccountMovementRow { Id = p.FinanceAccountId, Amount = -(p.Amount - p.WhtAmount) }))
-                .Concat(AssetPurchaseQuery(projectId, null, end, null, null, false)
+                .Concat(AssetPurchaseQuery(projectId, null, end, accountId, null, false)
                     .Select(p => new AccountMovementRow { Id = p.AssetAccountId, Amount = p.Amount }))
-                .Concat(CommissionPayoutQuery(projectId, null, end, null, false)
+                .Concat(CommissionPayoutQuery(projectId, null, end, accountId, false)
                     .Select(p => new AccountMovementRow { Id = p.FinanceAccountId, Amount = -p.Amount }))
-                .Concat(CommissionReversalQuery(projectId, null, end, null, false)
+                .Concat(CommissionReversalQuery(projectId, null, end, accountId, false)
                     .Select(r => new AccountMovementRow { Id = r.Payout.FinanceAccountId, Amount = r.Amount }))
-                .Concat(CashRebateQuery(projectId, null, end, null, false).Where(d => d.FinanceAccountId != null)
+                .Concat(CashRebateQuery(projectId, null, end, accountId, false).Where(d => d.FinanceAccountId != null)
                     .Select(d => new AccountMovementRow { Id = d.FinanceAccountId!.Value, Amount = -d.Amount }))
-                .Concat(CashRebateReversalQuery(projectId, null, end, null, false).Where(r => r.Disbursement.FinanceAccountId != null)
+                .Concat(CashRebateReversalQuery(projectId, null, end, accountId, false).Where(r => r.Disbursement.FinanceAccountId != null)
                     .Select(r => new AccountMovementRow { Id = r.Disbursement.FinanceAccountId!.Value, Amount = r.Amount }))
                 .Concat(_context.BookingCancellationRefunds.AsNoTracking()
-                    .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
+                    .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value)
+                        && (!accountId.HasValue || r.FinanceAccountId == accountId.Value))
                     .Select(r => new AccountMovementRow { Id = r.FinanceAccountId, Amount = -r.Amount }));
 
             // Commission Payable: raised when a commission is agreed, cleared when it is paid, put
@@ -921,35 +932,41 @@ namespace DAMS.Application.Services
             if (!projectId.HasValue)
             {
                 movementRows = movementRows
-                    .Concat(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
+                    .Concat(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end
+                        && (!accountId.HasValue || d.FinanceAccountId == accountId.Value))
                         .Select(d => new AccountMovementRow { Id = d.FinanceAccountId, Amount = -d.Amount }))
                     .Concat(_context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.FinanceAccountId != null
+                        && (!accountId.HasValue || t.FinanceAccountId == accountId.Value)
                         && (t.Type == CapitalTransactionType.Contribution || t.Type == CapitalTransactionType.Withdrawal))
                         .Select(t => new AccountMovementRow
                         {
                             Id = t.FinanceAccountId!.Value,
                             Amount = t.Type == CapitalTransactionType.Contribution ? t.Amount : -t.Amount
                         }))
-                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end
+                        && (!accountId.HasValue || t.FinanceAccountId == accountId.Value))
                         .Select(t => new AccountMovementRow
                         {
                             Id = t.FinanceAccountId,
                             Amount = t.Type == LoanTransactionType.Drawdown
                                 ? t.PrincipalAmount : -(t.PrincipalAmount + t.InterestAmount)
                         }))
-                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end)
+                    .Concat(_context.LoanTransactions.AsNoTracking().Where(t => t.Date < end
+                        && (!accountId.HasValue || t.Loan.FinanceAccountId == accountId.Value))
                         .Select(t => new AccountMovementRow
                         {
                             Id = t.Loan.FinanceAccountId,
                             Amount = t.Type == LoanTransactionType.Drawdown ? t.PrincipalAmount : -t.PrincipalAmount
                         }))
-                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end
+                        && (!accountId.HasValue || t.StaffFinanceAccountId == accountId.Value))
                         .Select(t => new AccountMovementRow
                         {
                             Id = t.StaffFinanceAccountId,
                             Amount = t.Type == StaffCashMovementType.FundsGiven ? t.Amount : -t.Amount
                         }))
-                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end)
+                    .Concat(_context.StaffCashTransfers.AsNoTracking().Where(t => t.Date < end
+                        && (!accountId.HasValue || t.CounterpartyFinanceAccountId == accountId.Value))
                         .Select(t => new AccountMovementRow
                         {
                             Id = t.CounterpartyFinanceAccountId,
@@ -959,8 +976,9 @@ namespace DAMS.Application.Services
 
             var movements = await SumByAccount(movementRows.GroupBy(row => row.Id)
                 .Select(group => new AccountAmount(group.Key, group.Sum(row => row.Amount))), cancellationToken);
-            var capitalPartner = !projectId.HasValue
+            var capitalPartner = !projectId.HasValue && (!accountId.HasValue || accounts.Any(a => a.Type == FinanceAccountType.Capital))
                 ? await _context.CapitalTransactions.AsNoTracking().Where(t => t.Date < end && t.CapitalPartner.FinanceAccountId != null)
+                    .Where(t => !accountId.HasValue || t.CapitalPartner.FinanceAccountId == accountId.Value)
                     .GroupBy(t => new { Id = t.CapitalPartner.FinanceAccountId!.Value, t.Type }).Select(g => new { g.Key.Id, g.Key.Type, Amount = g.Sum(t => t.Amount) }).ToListAsync(cancellationToken)
                 : [];
             var whtRows = ExpenseQuery(projectId, null, end).Select(e => e.WhtAmount)
@@ -970,7 +988,9 @@ namespace DAMS.Application.Services
                 whtRows = whtRows.Concat(_context.WhtDeposits.AsNoTracking().Where(d => d.DepositDate < end)
                     .Select(d => -d.Amount));
             }
-            var whtPayable = Money(await whtRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
+            var whtPayable = !accountId.HasValue || accounts.Any(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
+                ? Money(await whtRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m)
+                : 0m;
             // Customer Refunds Payable: created out of the customer deposit at cancellation,
             // cleared when the cash is actually paid out. Both sides are booking-scoped, so —
             // unlike WHT deposits — they can be filtered by project.
@@ -979,8 +999,17 @@ namespace DAMS.Application.Services
                 .Concat(_context.BookingCancellationRefunds.AsNoTracking()
                     .Where(r => r.PaidAt < end && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
                     .Select(r => -r.Amount));
-            var refundPayable = Money(await refundPayableRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
-            var (customerDeposits, customerReceivables) = await CustomerBalancesAsync(projectId, end, cancellationToken);
+            var refundPayable = !accountId.HasValue || accounts.Any(a => a.SystemRole == FinanceSystemAccountRole.CustomerRefundPayable)
+                ? Money(await refundPayableRows.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m)
+                : 0m;
+            // These balances are derived from booking events, not a payment's cash account. Only
+            // selected system accounts need them; a report without an account filter still reads all.
+            var customerDeposits = !accountId.HasValue || accounts.Any(a => a.SystemRole == FinanceSystemAccountRole.CustomerDeposits)
+                ? await CustomerDepositBalanceAsync(projectId, end, cancellationToken)
+                : 0m;
+            var customerReceivables = !accountId.HasValue || accounts.Any(a => a.SystemRole == FinanceSystemAccountRole.CustomerReceivables)
+                ? await CustomerReceivableBalanceAsync(projectId, end, cancellationToken)
+                : 0m;
 
             foreach (var account in accounts)
             {
@@ -1030,6 +1059,14 @@ namespace DAMS.Application.Services
         private async Task<(decimal Deposits, decimal Receivables)> CustomerBalancesAsync(
             int? projectId, DateTime? end, CancellationToken cancellationToken)
         {
+            var deposits = await CustomerDepositBalanceAsync(projectId, end, cancellationToken);
+            var receivables = await CustomerReceivableBalanceAsync(projectId, end, cancellationToken);
+            return (deposits, receivables);
+        }
+
+        private async Task<decimal> CustomerReceivableBalanceAsync(
+            int? projectId, DateTime? end, CancellationToken cancellationToken)
+        {
             // "Recognised by the cut-off" and "cancelled by the cut-off". Written as two separate
             // queryables rather than one expression with a sentinel date, because a sentinel would
             // have to be compared against a `date` column and SQL Server's conversion rules at the
@@ -1043,8 +1080,6 @@ namespace DAMS.Application.Services
                     .Where(p => p.Booking.SaleRecognition!.RecognitionDate < end.Value);
             }
 
-            var deposits = await CustomerDepositBalanceAsync(projectId, end, cancellationToken);
-
             // Keep every source as a signed row until SQL Server has combined and summed it. This
             // preserves the accounting equation while replacing four independent round trips with
             // one UNION ALL aggregate.
@@ -1053,8 +1088,7 @@ namespace DAMS.Application.Services
                 .Concat(NonCashCreditQuery(projectId, null, end).Select(d => -d.Amount))
                 .Concat(NonCashCreditReversalQuery(projectId, null, end).Select(r => r.Amount));
 
-            return (deposits,
-                Money(await receivables.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m));
+            return Money(await receivables.SumAsync(amount => (decimal?)amount, cancellationToken) ?? 0m);
         }
 
         /// <summary>

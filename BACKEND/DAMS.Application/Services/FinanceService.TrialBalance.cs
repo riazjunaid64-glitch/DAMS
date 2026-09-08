@@ -31,8 +31,9 @@ namespace DAMS.Application.Services
                 }).ToListAsync(cancellationToken);
 
             var accountDeltas = await LoadTrialAccountDeltasAsync(
-                projectId, finalEnd, templates, cancellationToken);
-            var pnlDeltas = await LoadTrialPnlDeltasAsync(projectId, finalEnd, cancellationToken);
+                projectId, finalEnd, templates, TrialSourceScope.Everything, cancellationToken);
+            var pnlDeltas = await LoadTrialPnlDeltasAsync(
+                projectId, finalEnd, TrialSourceScope.Everything, cancellationToken);
             await AddCustomerTrialDeltasAsync(
                 projectId, finalEnd, templates, pnlDeltas, accountDeltas, cancellationToken);
             AddCommissionPayableTrialDeltas(
@@ -139,10 +140,25 @@ namespace DAMS.Application.Services
             return result;
         }
 
+        /// <summary>
+        /// Every account-side source, in one place, for whichever accounts <paramref name="accounts"/>
+        /// holds. The Trial Balance passes all of them; a Details request passes only the row it was
+        /// asked for, and <paramref name="scope"/> then narrows each query to that account in SQL and
+        /// skips the sources that cannot reach it.
+        /// <para>
+        /// Two properties keep the narrowed load honest. Each filter is a predicate on the very column
+        /// the group is already keyed by — never a restatement of an accounting rule — and the
+        /// role-driven fan-ins (withheld tax to Tax Payable, refunds to Customer Refund Payable,
+        /// payouts to Commission Payable) still read their id lists out of <paramref name="accounts"/>.
+        /// A single-account load therefore takes the same branches the full report takes for that
+        /// account, and a source added here reaches both callers.
+        /// </para>
+        /// </summary>
         private async Task<List<TrialAccountDelta>> LoadTrialAccountDeltasAsync(
             int? projectId,
             DateTime finalEnd,
             IReadOnlyList<AccountSnapshot> accounts,
+            TrialSourceScope scope,
             CancellationToken cancellationToken)
         {
             var deltas = new List<TrialAccountDelta>();
@@ -153,7 +169,44 @@ namespace DAMS.Application.Services
             var commissionPayableIds = accounts.Where(a => a.SystemRole == FinanceSystemAccountRole.CommissionPayable)
                 .Select(a => a.Id).ToArray();
 
-            deltas.AddRange(await PaymentsQuery(projectId, null, finalEnd)
+            // A capital account's balance is folded from the partner-transaction source alone, and every
+            // other account's from the rest — the fold reads one bucket or the other, never both, so a
+            // targeted load reads only the bucket its account will actually be paid out of.
+            var normal = scope.Wants(TrialAccountDeltaKind.Normal);
+            var capitalPartner = scope.Wants(TrialAccountDeltaKind.CapitalPartner);
+            var onlyId = scope.AccountId;
+            // A source that fans INTO the requested account has to be read whole: a Tax Payable row is
+            // built from the tax withheld on every expense, not from the expenses paid out of itself.
+            // Where the requested account is not that fan-in target, the id narrows the source in SQL.
+            var expenseId = taxAccountIds.Length > 0 ? null : onlyId;
+            var commissionId = commissionPayableIds.Length > 0 ? null : onlyId;
+            var refundId = refundAccountIds.Length > 0 ? null : onlyId;
+
+            // Read first, and on its own, so that everything after it is the Normal-kind half and a
+            // capital account can leave the whole of it unread.
+            if (capitalPartner && !projectId.HasValue)
+            {
+                deltas.AddRange(await _context.CapitalTransactions.AsNoTracking()
+                    .Where(t => t.Date < finalEnd && t.CapitalPartner.FinanceAccountId != null
+                        && (onlyId == null || t.CapitalPartner.FinanceAccountId == onlyId))
+                    .GroupBy(t => new
+                    {
+                        AccountId = t.CapitalPartner.FinanceAccountId!.Value,
+                        t.Date,
+                        t.Type
+                    }).Select(g => new TrialAccountDelta
+                    {
+                        AccountId = g.Key.AccountId,
+                        Date = g.Key.Date,
+                        Amount = g.Sum(t => t.Amount)
+                            * (g.Key.Type == CapitalTransactionType.Withdrawal
+                                || g.Key.Type == CapitalTransactionType.LossShare ? -1m : 1m),
+                        Kind = TrialAccountDeltaKind.CapitalPartner
+                    }).ToListAsync(cancellationToken));
+            }
+            if (!normal) return deltas;
+
+            deltas.AddRange(await PaymentsQuery(projectId, null, finalEnd, onlyId)
                 .Where(p => p.FinanceAccountId != null)
                 .GroupBy(p => new { AccountId = p.FinanceAccountId!.Value, p.PaidAt })
                 .Select(g => new TrialAccountDelta
@@ -164,7 +217,7 @@ namespace DAMS.Application.Services
                     Kind = TrialAccountDeltaKind.Normal
                 }).ToListAsync(cancellationToken));
 
-            deltas.AddRange(await ManualQuery(projectId, null, finalEnd)
+            deltas.AddRange(await ManualQuery(projectId, null, finalEnd, onlyId)
                 .Where(r => r.FinanceAccountId != null)
                 .GroupBy(r => new { AccountId = r.FinanceAccountId!.Value, r.Date })
                 .Select(g => new TrialAccountDelta
@@ -175,7 +228,7 @@ namespace DAMS.Application.Services
                     Kind = TrialAccountDeltaKind.Normal
                 }).ToListAsync(cancellationToken));
 
-            var expenses = await ExpenseQuery(projectId, null, finalEnd)
+            var expenses = await ExpenseQuery(projectId, null, finalEnd, expenseId)
                 .GroupBy(e => new { e.FinanceAccountId, e.Date })
                 .Select(g => new TrialSourceDelta
                 {
@@ -193,6 +246,7 @@ namespace DAMS.Application.Services
             }
 
             var assetsPaid = await AssetPurchaseQuery(projectId, null, finalEnd, null, null, false)
+                .Where(p => expenseId == null || p.FinanceAccountId == expenseId)
                 .GroupBy(p => new { p.FinanceAccountId, p.Date })
                 .Select(g => new TrialSourceDelta
                 {
@@ -208,6 +262,7 @@ namespace DAMS.Application.Services
                     AddTrialDelta(deltas, id, row.Date, row.SecondaryAmount);
             }
             deltas.AddRange(await AssetPurchaseQuery(projectId, null, finalEnd, null, null, false)
+                .Where(p => onlyId == null || p.AssetAccountId == onlyId)
                 .GroupBy(p => new { p.AssetAccountId, p.Date })
                 .Select(g => new TrialAccountDelta
                 {
@@ -221,6 +276,7 @@ namespace DAMS.Application.Services
             // payable side is what makes the commission double-sided now that the expense is raised
             // by the accrual instead of by the payment.
             var commissionPayouts = await CommissionPayoutQuery(projectId, null, finalEnd, null, false)
+                .Where(p => commissionId == null || p.FinanceAccountId == commissionId)
                 .GroupBy(p => new { p.FinanceAccountId, p.PaymentDate })
                 .Select(g => new TrialSourceDelta
                 {
@@ -235,6 +291,7 @@ namespace DAMS.Application.Services
                     AddTrialDelta(deltas, id, row.Date, -row.Amount);
             }
             var commissionReversals = await CommissionReversalQuery(projectId, null, finalEnd, null, false)
+                .Where(r => commissionId == null || r.Payout.FinanceAccountId == commissionId)
                 .GroupBy(r => new { r.Payout.FinanceAccountId, r.ReversedAt })
                 .Select(g => new TrialSourceDelta
                 {
@@ -254,7 +311,7 @@ namespace DAMS.Application.Services
             // command per report for a figure already in hand.
 
             deltas.AddRange(await CashRebateQuery(projectId, null, finalEnd, null, false)
-                .Where(d => d.FinanceAccountId != null)
+                .Where(d => d.FinanceAccountId != null && (onlyId == null || d.FinanceAccountId == onlyId))
                 .GroupBy(d => new { AccountId = d.FinanceAccountId!.Value, d.AppliedAt })
                 .Select(g => new TrialAccountDelta
                 {
@@ -264,7 +321,8 @@ namespace DAMS.Application.Services
                     Kind = TrialAccountDeltaKind.Normal
                 }).ToListAsync(cancellationToken));
             deltas.AddRange(await CashRebateReversalQuery(projectId, null, finalEnd, null, false)
-                .Where(r => r.Disbursement.FinanceAccountId != null)
+                .Where(r => r.Disbursement.FinanceAccountId != null
+                    && (onlyId == null || r.Disbursement.FinanceAccountId == onlyId))
                 .GroupBy(r => new { AccountId = r.Disbursement.FinanceAccountId!.Value, r.ReversedAt })
                 .Select(g => new TrialAccountDelta
                 {
@@ -277,7 +335,8 @@ namespace DAMS.Application.Services
             if (!projectId.HasValue)
             {
                 var deposits = await _context.WhtDeposits.AsNoTracking()
-                    .Where(d => d.DepositDate < finalEnd)
+                    .Where(d => d.DepositDate < finalEnd
+                        && (expenseId == null || d.FinanceAccountId == expenseId))
                     .GroupBy(d => new { d.FinanceAccountId, d.DepositDate })
                     .Select(g => new TrialSourceDelta
                     {
@@ -294,6 +353,7 @@ namespace DAMS.Application.Services
 
                 deltas.AddRange(await _context.CapitalTransactions.AsNoTracking()
                     .Where(t => t.Date < finalEnd && t.FinanceAccountId != null
+                        && (onlyId == null || t.FinanceAccountId == onlyId)
                         && (t.Type == CapitalTransactionType.Contribution
                             || t.Type == CapitalTransactionType.Withdrawal))
                     .GroupBy(t => new { AccountId = t.FinanceAccountId!.Value, t.Date, t.Type })
@@ -305,25 +365,8 @@ namespace DAMS.Application.Services
                             * (g.Key.Type == CapitalTransactionType.Contribution ? 1m : -1m),
                         Kind = TrialAccountDeltaKind.Normal
                     }).ToListAsync(cancellationToken));
-                deltas.AddRange(await _context.CapitalTransactions.AsNoTracking()
-                    .Where(t => t.Date < finalEnd && t.CapitalPartner.FinanceAccountId != null)
-                    .GroupBy(t => new
-                    {
-                        AccountId = t.CapitalPartner.FinanceAccountId!.Value,
-                        t.Date,
-                        t.Type
-                    }).Select(g => new TrialAccountDelta
-                    {
-                        AccountId = g.Key.AccountId,
-                        Date = g.Key.Date,
-                        Amount = g.Sum(t => t.Amount)
-                            * (g.Key.Type == CapitalTransactionType.Withdrawal
-                                || g.Key.Type == CapitalTransactionType.LossShare ? -1m : 1m),
-                        Kind = TrialAccountDeltaKind.CapitalPartner
-                    }).ToListAsync(cancellationToken));
-
                 deltas.AddRange(await _context.LoanTransactions.AsNoTracking()
-                    .Where(t => t.Date < finalEnd)
+                    .Where(t => t.Date < finalEnd && (onlyId == null || t.FinanceAccountId == onlyId))
                     .GroupBy(t => new { t.FinanceAccountId, t.Date, t.Type })
                     .Select(g => new TrialAccountDelta
                     {
@@ -334,7 +377,7 @@ namespace DAMS.Application.Services
                         Kind = TrialAccountDeltaKind.Normal
                     }).ToListAsync(cancellationToken));
                 deltas.AddRange(await _context.LoanTransactions.AsNoTracking()
-                    .Where(t => t.Date < finalEnd)
+                    .Where(t => t.Date < finalEnd && (onlyId == null || t.Loan.FinanceAccountId == onlyId))
                     .GroupBy(t => new { AccountId = t.Loan.FinanceAccountId, t.Date, t.Type })
                     .Select(g => new TrialAccountDelta
                     {
@@ -346,7 +389,9 @@ namespace DAMS.Application.Services
                     }).ToListAsync(cancellationToken));
 
                 var staff = await _context.StaffCashTransfers.AsNoTracking()
-                    .Where(t => t.Date < finalEnd)
+                    .Where(t => t.Date < finalEnd
+                        && (onlyId == null || t.StaffFinanceAccountId == onlyId
+                            || t.CounterpartyFinanceAccountId == onlyId))
                     .GroupBy(t => new
                     {
                         t.StaffFinanceAccountId,
@@ -372,6 +417,7 @@ namespace DAMS.Application.Services
 
             var refunds = await _context.BookingCancellationRefunds.AsNoTracking()
                 .Where(r => r.PaidAt < finalEnd
+                    && (refundId == null || r.FinanceAccountId == refundId)
                     && (!projectId.HasValue || r.Settlement.Booking.Unit.ProjectId == projectId.Value))
                 .GroupBy(r => new { r.FinanceAccountId, r.PaidAt })
                 .Select(g => new TrialSourceDelta
@@ -386,26 +432,46 @@ namespace DAMS.Application.Services
                 foreach (var id in refundAccountIds)
                     AddTrialDelta(deltas, id, row.Date, -row.Amount);
             }
-            var refundLiabilities = await CancellationSettlementQuery(projectId, null, finalEnd)
-                .GroupBy(s => s.CancellationDate)
-                .Select(g => new TrialSourceDelta
-                {
-                    Date = g.Key,
-                    Amount = g.Sum(s => s.RefundAmount)
-                }).ToListAsync(cancellationToken);
-            foreach (var row in refundLiabilities)
-                foreach (var id in refundAccountIds)
-                    AddTrialDelta(deltas, id, row.Date, row.Amount);
+            if (refundAccountIds.Length > 0)
+            {
+                var refundLiabilities = await CancellationSettlementQuery(projectId, null, finalEnd)
+                    .GroupBy(s => s.CancellationDate)
+                    .Select(g => new TrialSourceDelta
+                    {
+                        Date = g.Key,
+                        Amount = g.Sum(s => s.RefundAmount)
+                    }).ToListAsync(cancellationToken);
+                foreach (var row in refundLiabilities)
+                    foreach (var id in refundAccountIds)
+                        AddTrialDelta(deltas, id, row.Date, row.Amount);
+            }
 
             return deltas;
         }
 
+        /// <summary>
+        /// Every P&amp;L source, in one place. The Trial Balance reads all of them; a Details request
+        /// for one virtual row reads only the source that can produce that row's key, and — where the
+        /// key names a real category column rather than a derived bucket — narrows that source to the
+        /// line in SQL. The grouping expressions, and therefore the keys, are unchanged either way.
+        /// </summary>
         private async Task<List<TrialPnlDelta>> LoadTrialPnlDeltasAsync(
             int? projectId,
             DateTime finalEnd,
+            TrialSourceScope scope,
             CancellationToken cancellationToken)
         {
-            var rows = await ManualQuery(projectId, SqlStart, finalEnd)
+            var rows = new List<TrialPnlDelta>();
+            if (scope.Wants(TrialPnlSource.ManualRevenue))
+            {
+            var manualSource = ManualQuery(projectId, SqlStart, finalEnd);
+            // Only when the key named a managed category. The "U" bucket is whatever the grouping
+            // expression decides is unclassified — no category, or a legacy one — and restating that
+            // rule here is exactly the drift this narrowing must not introduce, so it is left alone.
+            if (scope.PnlLine is { CategoryId: int managedCategory } manualLine)
+                manualSource = manualSource.Where(r => r.RevenueCategoryId == managedCategory
+                    && r.RevenueTypeName == manualLine.Name);
+            var manualRows = await manualSource
                 .GroupBy(r => new
                 {
                     r.Date,
@@ -425,12 +491,15 @@ namespace DAMS.Application.Services
                     Amount = g.Sum(r => r.Amount),
                     Count = g.Count()
                 }).ToListAsync(cancellationToken);
-            foreach (var row in rows)
+            foreach (var row in manualRows)
                 row.Key = (row.CategoryId == null ? "U" : row.CategoryId.ToString()) + ":" + row.Name;
+            rows.AddRange(manualRows);
+            }
 
             // These recognition/credit rows also feed the physical receivable below. Its legacy
             // snapshot is all-time, even while the virtual P&L is clipped to SqlStart/baseline, so
             // load the full dated source and let BuildTrialPnlPeriod apply the P&L start.
+            if (scope.Wants(TrialPnlSource.UnitSales))
             rows.AddRange(await SaleRecognitionQuery(projectId, null, finalEnd)
                 .GroupBy(r => r.RecognitionDate)
                 .Select(g => new TrialPnlDelta
@@ -443,6 +512,7 @@ namespace DAMS.Application.Services
                     Amount = g.Sum(r => r.NetSaleValue),
                     Count = g.Count()
                 }).ToListAsync(cancellationToken));
+            if (scope.Wants(TrialPnlSource.CancellationRetained))
             rows.AddRange(await RetainedCancellationQuery(projectId, SqlStart, finalEnd)
                 .GroupBy(s => s.CancellationDate)
                 .Select(g => new TrialPnlDelta
@@ -456,7 +526,15 @@ namespace DAMS.Application.Services
                     Count = g.Count()
                 }).ToListAsync(cancellationToken));
 
-            var expenses = await ExpenseQuery(projectId, SqlStart, finalEnd)
+            if (scope.Wants(TrialPnlSource.Expenses))
+            {
+            var expenseSource = ExpenseQuery(projectId, SqlStart, finalEnd);
+            // Both halves of an expense key are plain columns of the row — the grouping applies no
+            // bucketing rule to them — so the line narrows exactly, unclassified heads included.
+            if (scope.PnlLine is { } expenseLine)
+                expenseSource = expenseSource.Where(e => e.CategoryId == expenseLine.CategoryId
+                    && e.Category == expenseLine.Name);
+            var expenses = await expenseSource
                 .GroupBy(e => new
                 {
                     e.Date,
@@ -475,8 +553,10 @@ namespace DAMS.Application.Services
             foreach (var row in expenses)
                 row.Key = (row.CategoryId == null ? "U" : row.CategoryId.ToString()) + ":" + row.Name;
             rows.AddRange(expenses);
+            }
 
             // The obligation, dated when it arose — the payout is a payable settlement, not a cost.
+            if (scope.Wants(TrialPnlSource.CommissionAccrual))
             rows.AddRange(await CommissionAccrualQuery(projectId, SqlStart, finalEnd, null, false)
                 .GroupBy(a => a.AccruedOn)
                 .Select(g => new TrialPnlDelta
@@ -488,6 +568,7 @@ namespace DAMS.Application.Services
                     Amount = g.Sum(a => a.Amount),
                     Count = g.Count()
                 }).ToListAsync(cancellationToken));
+            if (scope.Wants(TrialPnlSource.CashRebates))
             rows.AddRange(await CashRebateQuery(projectId, SqlStart, finalEnd, null, false)
                 .Select(d => new { Date = d.AppliedAt, Amount = d.Amount, Count = 1 })
                 .Concat(CashRebateReversalQuery(projectId, SqlStart, finalEnd, null, false)
@@ -503,6 +584,7 @@ namespace DAMS.Application.Services
                     Count = g.Sum(x => x.Count)
                 }).ToListAsync(cancellationToken));
 
+            if (scope.Wants(TrialPnlSource.NonCashCredits))
             rows.AddRange(await NonCashCreditQuery(projectId, null, finalEnd)
                 .Select(d => new
                 {
@@ -527,6 +609,7 @@ namespace DAMS.Application.Services
                     Amount = g.Sum(x => x.Amount),
                     Count = g.Sum(x => x.Count)
                 }).ToListAsync(cancellationToken));
+            if (scope.Wants(TrialPnlSource.LoanInterest))
             rows.AddRange(await LoanInterestQuery(projectId, SqlStart, finalEnd, null, false)
                 .GroupBy(t => t.Date)
                 .Select(g => new TrialPnlDelta

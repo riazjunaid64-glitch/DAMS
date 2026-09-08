@@ -6,6 +6,7 @@ namespace DAMS.Application.Interfaces
     public interface IFinanceAccountService
     {
         Task<PagedResult<FinanceAccountResponseDto>> GetPageAsync(string? search, FinanceAccountType? type, string? holder, bool? isActive, int skip, int take, CancellationToken cancellationToken = default);
+        Task<FinanceAccountsPageDto> GetPageWithOverviewAsync(string? search, FinanceAccountType? type, string? holder, bool? isActive, int skip, int take, CancellationToken cancellationToken = default);
         Task<List<FinanceAccountOptionDto>> GetOptionsAsync(bool includeInactive, bool cashLikeOnly = true, FinanceAccountType? type = null, CancellationToken cancellationToken = default);
         Task<FinanceAccountResponseDto> GetByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<PagedResult<FinanceAccountTransactionDto>> GetTransactionsAsync(int id, int skip, int take, CancellationToken cancellationToken = default);

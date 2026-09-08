@@ -21,6 +21,12 @@ namespace DAMS.Api.Controllers
             CancellationToken cancellationToken = default) =>
             Ok(await _service.GetPageAsync(search, type, holder, isActive, Math.Max(0, skip), Math.Clamp(take, 1, 200), cancellationToken));
 
+        [HttpGet("page-with-overview")]
+        public async Task<IActionResult> GetPageWithOverview([FromQuery] string? search, [FromQuery] FinanceAccountType? type,
+            [FromQuery] string? holder, [FromQuery] bool? isActive, [FromQuery] int skip = 0, [FromQuery] int take = 50,
+            CancellationToken cancellationToken = default) =>
+            Ok(await _service.GetPageWithOverviewAsync(search, type, holder, isActive, Math.Max(0, skip), Math.Clamp(take, 1, 200), cancellationToken));
+
         [HttpGet("options")]
         public async Task<IActionResult> GetOptions([FromQuery] bool includeInactive = false, [FromQuery] bool cashLikeOnly = true,
             [FromQuery] FinanceAccountType? type = null, CancellationToken cancellationToken = default) =>
