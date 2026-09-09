@@ -15,6 +15,52 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What the server said after a signup or a resend. Always the same neutral sentence, whether or
+  // not the address is already registered — showing it verbatim is what keeps this form from
+  // becoming a way to test which addresses have DAMS accounts.
+  const [notice, setNotice] = useState<string | null>(null);
+  // Shown only after a failed sign-in, because that is the moment somebody who never confirmed
+  // their address discovers something is wrong. Offering it unprompted would hint that unconfirmed
+  // accounts are a thing that happens to particular addresses.
+  const [offerResend, setOfferResend] = useState(false);
+
+  /**
+   * Asks for a fresh confirmation email. The server answers identically whether or not the
+   * address is registered and whether or not it is awaiting confirmation, so this can be offered
+   * to anybody without telling them anything.
+   */
+  const resendVerification = async () => {
+    if (loading || email.trim() === "") return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api(
+        "/api/Auth/resend-verification",
+        { method: "POST", body: JSON.stringify({ email }) },
+        false
+      );
+      const body = await res.json().catch(() => null);
+      const message =
+        typeof body?.message === "string" && body.message.trim() !== "" ? body.message.trim() : null;
+
+      if (!res.ok) {
+        setError(
+          res.status === 429
+            ? "Too many attempts. Please try again in a few minutes."
+            : message ?? "We could not send that right now. Please try again."
+        );
+        return;
+      }
+
+      setOfferResend(false);
+      setNotice(message ?? "If the address can be registered, we have sent confirmation instructions.");
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -33,7 +79,11 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
         );
 
         if (!res.ok) {
+          // One message for every reason sign-in failed — wrong password, unknown address, an
+          // account still awaiting confirmation, a disabled one. The server already answers them
+          // identically, and naming the reason here would put that back.
           setError("Invalid email or password. Please try again.");
+          setOfferResend(true);
           return;
         }
 
@@ -44,29 +94,36 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
       }
 
       if (mode === "signup") {
+        // No password, and no roleId. Neither was ever the caller's to choose: registration only
+        // reserves the address, and the password is set on the confirmation page by whoever can
+        // actually read the mail sent to it. Sending one here is what used to let a stranger sign
+        // up with somebody else's address and keep the credential.
         const res = await api(
           "/api/Auth/register",
           {
             method: "POST",
-            body: JSON.stringify({
-              fullName,
-              email,
-              password,
-              roleId: 1,
-            }),
+            body: JSON.stringify({ fullName, email }),
           },
           false
         );
 
+        const body = await res.json().catch(() => null);
+        const message =
+          typeof body?.message === "string" && body.message.trim() !== "" ? body.message.trim() : null;
+
         if (!res.ok) {
-          const text = await res.text();
-          setError(text || "Signup failed. Please try again.");
+          setError(
+            res.status === 429
+              ? "Too many attempts. Please try again in a few minutes."
+              : message ?? "Signup failed. Please try again."
+          );
           return;
         }
 
+        // The modal stays open on the neutral message rather than closing on an alert. There is
+        // nothing to sign in with yet, so sending them to the login form would be misleading.
         setError(null);
-        alert("Account created successfully! Please login.");
-        onClose();
+        setNotice(message ?? "Check your inbox to confirm your address and choose your password.");
       }
     } catch {
       setError("Something went wrong. Please try again.");
@@ -143,13 +200,26 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
             type="email"
           />
 
-          <Field
-            label="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            type="password"
-          />
+          {/* Signup asks for no password: there is nothing yet for one to protect, and the
+              account it would protect is not proven to belong to whoever is typing. */}
+          {mode === "login" && (
+            <Field
+              label="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              type="password"
+            />
+          )}
+
+          {notice && (
+            <div
+              role="status"
+              className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-4 py-3 text-sm text-emerald-300 animate-scale-in"
+            >
+              {notice}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-300 flex items-center gap-2 animate-scale-in">
@@ -159,14 +229,29 @@ export default function AuthModal({ mode, onClose, onSuccess }: Props) {
               {error}
             </div>
           )}
+
+          {mode === "login" && offerResend && notice === null && (
+            <p className="text-xs text-[var(--text-muted)]">
+              New here and never confirmed your email address?{" "}
+              <button
+                type="button"
+                onClick={() => void resendVerification()}
+                disabled={loading || email.trim() === ""}
+                className="font-semibold text-indigo-400 underline-offset-2 transition hover:underline disabled:opacity-50"
+              >
+                Send the confirmation email again
+              </button>
+              .
+            </p>
+          )}
         </div>
 
         {/* Footer */}
         <div className="relative flex items-center justify-between border-t border-[var(--border)] px-6 py-4 bg-[var(--surface-glass)]">
           <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>
-            Cancel
+            {notice ? "Close" : "Cancel"}
           </Button>
-          <Button type="submit" disabled={loading}>
+          <Button type="submit" disabled={loading || notice !== null}>
             {loading ? (
               <>
                 <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

@@ -987,13 +987,8 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email, int? userId = null)
+        public async Task<List<BookingResponseDto>> GetBookingsForUserAsync(int userId)
         {
-            if (string.IsNullOrWhiteSpace(email) && !userId.HasValue)
-                return new List<BookingResponseDto>();
-
-            var normalized = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
-
             var entities = await _context.Bookings
                 .AsNoTracking()
                 .Include(b => b.Customer)
@@ -1001,10 +996,13 @@ namespace DAMS.Application.Services
                 .Include(b => b.Payments)
                 .Include(b => b.Installments)
                 .AsSplitQuery()
+                // The whole authorization rule, and all of it: the customer this booking belongs
+                // to is owned by this login. Customer.Email is not read here and must never be —
+                // an admin correcting a contact address would otherwise silently hand somebody's
+                // bookings to whoever holds the new one.
                 .Where(b => b.Customer != null
-                         && b.Status != BookingStatus.Cancelled
-                         && ((userId.HasValue && b.Customer.UserId == userId.Value)
-                             || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)))
+                         && b.Customer.UserId == userId
+                         && b.Status != BookingStatus.Cancelled)
                 .OrderByDescending(b => b.BookingDate)
                 .ToListAsync();
 
@@ -1015,29 +1013,27 @@ namespace DAMS.Application.Services
                 .ToList();
         }
 
-        public async Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null)
+        public async Task<BookingResponseDto?> GetBookingForUserAsync(int bookingId, int userId)
         {
-            if (!await CustomerOwnsBookingByEmailAsync(id, email, userId))
+            // Ownership is settled before the booking is loaded, not after. Reading first and
+            // filtering the response afterwards is the shape that leaks: it puts the protected
+            // record in memory, and every future edit to the projection is one line away from
+            // returning part of it.
+            if (!await UserOwnsBookingAsync(bookingId, userId))
                 return null;
 
-            var dto = await GetResponseAsync(id);
+            var dto = await GetResponseAsync(bookingId);
             return dto == null ? null : SanitizeForClient(dto);
         }
 
-        public async Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email, int? userId = null)
+        public async Task<bool> UserOwnsBookingAsync(int bookingId, int userId)
         {
-            if (string.IsNullOrWhiteSpace(email) && !userId.HasValue)
-                return false;
-
-            var normalized = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
-
             return await _context.Bookings
                 .AsNoTracking()
                 .AnyAsync(b => b.Id == bookingId
                             && b.Status != BookingStatus.Cancelled
                             && b.Customer != null
-                            && ((userId.HasValue && b.Customer.UserId == userId.Value)
-                                || (normalized != null && b.Customer.Email != null && b.Customer.Email.ToLower() == normalized)));
+                            && b.Customer.UserId == userId);
         }
 
         /// <summary>

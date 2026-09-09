@@ -54,10 +54,29 @@ namespace DAMS.Application.Interfaces
         /// </summary>
         Task<PaymentReceiptDto> GetPaymentReceiptAsync(int bookingId, int paymentId);
 
-        Task<List<BookingResponseDto>> GetBookingsByCustomerEmailAsync(string email, int? userId = null);
+        /// <summary>
+        /// The bookings a signed-in client owns, and the only definition of that DAMS has:
+        /// <c>Booking.Customer.UserId == userId</c>.
+        ///
+        /// <para>
+        /// There is no email parameter and no email fallback anywhere below this line. An address
+        /// is a way to contact somebody and a way to name a login; it is not evidence that the
+        /// person holding a token owns a customer's financial records. Two people can share one —
+        /// an old address reassigned, a family mailbox, a stranger who registered someone else's —
+        /// and every one of those cases used to open somebody else's bookings.
+        /// </para>
+        /// </summary>
+        Task<List<BookingResponseDto>> GetBookingsForUserAsync(int userId);
 
-        Task<BookingResponseDto?> GetBookingByIdForCustomerEmailAsync(int id, string email, int? userId = null);
+        /// <summary>One booking, if and only if the same ownership chain holds. Null otherwise —
+        /// the caller turns that into a 404, never a 403, so a probe cannot confirm the id
+        /// exists.</summary>
+        Task<BookingResponseDto?> GetBookingForUserAsync(int bookingId, int userId);
 
-        Task<bool> CustomerOwnsBookingByEmailAsync(int bookingId, string email, int? userId = null);
+        /// <summary>
+        /// Whether this login owns this booking. The gate every client-facing resource hanging off
+        /// a booking — schedule, payments, receipts — passes through before the resource is read.
+        /// </summary>
+        Task<bool> UserOwnsBookingAsync(int bookingId, int userId);
     }
 }

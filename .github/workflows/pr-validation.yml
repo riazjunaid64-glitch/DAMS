@@ -40,7 +40,9 @@ jobs:
   # Migrations, filtered unique indexes, check constraints and the derived finance queries only
   # prove themselves against a real provider. Linux, because service containers do not run on the
   # Windows runners — and only this one test class, so the Windows-specific failures that keep the
-  # main suite off Linux stay out of the way.
+  # main suite off Linux stay out of the way. ClientIdentitySqlTests joins it for the same
+  # reason: the unique NormalizedEmail index and serialisable single-use redemption are the two
+  # guarantees the in-memory provider cannot express at all.
   sqlserver:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -69,7 +71,7 @@ jobs:
         run: >-
           dotnet test BACKEND/DAMS.Application.Tests/DAMS.Application.Tests.csproj
           --configuration Release
-          --filter "FullyQualifiedName~SqlServerProductionInvariantTests"
+          --filter "FullyQualifiedName~SqlServerProductionInvariantTests|FullyQualifiedName~ClientIdentitySqlTests"
           --logger "trx;LogFileName=sqlserver-tests.trx"
       # A connection failure would otherwise silently skip every test and report a green job.
       - name: Assert the suite actually ran

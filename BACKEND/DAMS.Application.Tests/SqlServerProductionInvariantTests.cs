@@ -3434,9 +3434,15 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal(130_000m, (await check.EmployeeSalaries.AsNoTracking().SingleAsync()).Amount);
     }
     /// <summary>
-    /// Staff invitations make Users.Password nullable and add an account status. Every login
-    /// that already existed must still be Active afterwards — a numbering or default-value
-    /// mistake here locks every Admin, Client, Manager and Employee out of the system.
+    /// Staff invitations make Users.Password nullable and add an account status. Every staff
+    /// login that already existed must still be Active afterwards — a numbering or default-value
+    /// mistake here locks every Admin, Manager and Employee out of the system.
+    /// <para>
+    /// Clients are the deliberate exception since AddClientEmailVerification: a login DAMS has
+    /// never proven the mailbox for is moved to PendingEmailVerification and its session cleared,
+    /// so it has to re-verify. That is the point of that migration, not a regression of this one —
+    /// what this test still guards is that the move stops at the Client role.
+    /// </para>
     /// </summary>
     [SqlServerFact]
     public async Task StaffInvitationMigration_KeepsExistingLoginsActiveAndEnforcesInvitationInvariants()
@@ -3449,20 +3455,25 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
             await db.GetService<IMigrator>().MigrateAsync("20260821020414_AddEmployeeSalaryRowVersion");
 
+        // Both a staff and a client login carry a live session, so the migration's decision to
+        // clear one and not the other is observable rather than assumed.
         await ExecuteAsync(database.ConnectionString, """
-            INSERT INTO [Users] ([RoleId], [FullName], [Email], [Password]) VALUES
-                (1, N'Legacy Admin',    N'admin@dams.test',   N'$2a$11$legacyadminhash'),
-                (2, N'Legacy Client',   N'client@dams.test',  N'$2a$11$legacyclienthash'),
-                (3, N'Legacy Manager',  N'manager@dams.test', N'$2a$11$legacymanagerhash'),
-                (4, N'Legacy Employee', N'sales@dams.test',   N'$2a$11$legacysaleshash');
+            INSERT INTO [Users] ([RoleId], [FullName], [Email], [Password], [RefreshToken], [RefreshTokenExpiresAt]) VALUES
+                (1, N'Legacy Admin',    N'admin@dams.test',   N'$2a$11$legacyadminhash',   N'admin-session',  DATEADD(day, 7, SYSUTCDATETIME())),
+                (2, N'Legacy Client',   N'client@dams.test',  N'$2a$11$legacyclienthash',  N'client-session', DATEADD(day, 7, SYSUTCDATETIME())),
+                (3, N'Legacy Manager',  N'manager@dams.test', N'$2a$11$legacymanagerhash', NULL, NULL),
+                (4, N'Legacy Employee', N'sales@dams.test',   N'$2a$11$legacysaleshash',   NULL, NULL);
             """);
 
         await using (var db = new AppDbContext(options))
             await db.Database.MigrateAsync();
 
-        // The explicit backfill, not a CLR or column default, is what has to hold here.
+        // The explicit backfill, not a CLR or column default, is what has to hold here. The one
+        // row that is no longer Active is the Client, and only because a later migration moved it.
         Assert.Equal(0, await ScalarAsync(database.ConnectionString,
-            "SELECT COUNT(*) FROM [Users] WHERE [AccountStatus] <> 0"));
+            "SELECT COUNT(*) FROM [Users] WHERE [RoleId] <> 2 AND [AccountStatus] <> 0"));
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [Users] WHERE [RoleId] = 2 AND [AccountStatus] <> 3"));
         Assert.Equal(4, await ScalarAsync(database.ConnectionString,
             "SELECT COUNT(*) FROM [Users] WHERE [Password] IS NOT NULL"));
         Assert.Equal(1, await ScalarAsync(database.ConnectionString, """
@@ -3474,10 +3485,23 @@ public sealed class SqlServerProductionInvariantTests
         int adminUserId;
         await using (var db = new AppDbContext(options))
         {
-            Assert.All(await db.Users.ToListAsync(),
+            var legacy = await db.Users.ToListAsync();
+            Assert.All(legacy.Where(u => u.RoleId != 2),
                 u => Assert.Equal(UserAccountStatus.Active, u.AccountStatus));
-            adminUserId = await db.Users
-                .Where(u => u.Email == "admin@dams.test").Select(u => u.UserId).SingleAsync();
+
+            // The Client is pending, unverified, and holds no session it could refresh with.
+            var legacyClient = Assert.Single(legacy, u => u.RoleId == 2);
+            Assert.Equal(UserAccountStatus.PendingEmailVerification, legacyClient.AccountStatus);
+            Assert.Null(legacyClient.EmailVerifiedAt);
+            Assert.Null(legacyClient.RefreshToken);
+            Assert.Null(legacyClient.RefreshTokenExpiresAt);
+
+            // The staff session is untouched: this migration signs nobody on the staff side out.
+            var legacyAdmin = Assert.Single(legacy, u => u.RoleId == 1);
+            Assert.Equal("admin-session", legacyAdmin.RefreshToken);
+            Assert.NotNull(legacyAdmin.RefreshTokenExpiresAt);
+
+            adminUserId = legacyAdmin.UserId;
 
             // An invited login exists before it has any credential to verify against.
             var invited = new User

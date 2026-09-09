@@ -1,10 +1,15 @@
+using System.Text.RegularExpressions;
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.Auth;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
+using DAMS.Application.Services.Notifications;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using DAMS.Domain.Identity;
+using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -589,5 +594,88 @@ public sealed class StaffManagementTests
                 IsActive = true
             }, h.Admin));
         Assert.Contains("Sales Manager", configError.Message);
+    }
+    // ── The whole staff lifecycle, end to end ───────────────────────────────────
+
+    /// <summary>
+    /// Provisioning, activation and the front door are three services that only meet in
+    /// production. They agree on a login through its stored comparison key, so a staff account
+    /// created without one activates successfully and then cannot be signed into at all —
+    /// <see cref="AuthService.LoginAsync"/> looks the account up by NormalizedEmail and finds
+    /// nothing. This walks the real path with the real services to prove it does not happen.
+    /// </summary>
+    [Theory]
+    [InlineData("NADIA@EXAMPLE.COM", "nadia@example.com")]
+    [InlineData("  Nadia@Example.Com  ", "Nadia@Example.Com")]
+    public async Task A_new_staff_account_can_sign_in_after_activating_its_invitation(
+        string typedEmail, string signInEmail)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        var settings = new NotificationSettingsStore(h.Db);
+        await settings.SetAsync(NotificationSettingKeys.PublicBaseUrl, "https://dams.test", h.AdminUserId);
+        await settings.SetAsync(NotificationSettingKeys.CompanyName, "DAMS Estates", h.AdminUserId);
+        await settings.SetAsync(NotificationSettingKeys.AppName, "DAMS", h.AdminUserId);
+        await h.Db.SaveChangesAsync();
+
+        var email = new NotificationTestHarness.FakeEmailSender();
+        var invitations = new StaffInvitationService(h.Db, settings, email, h.Clock);
+        var staff = new StaffManagementService(h.Db, invitations);
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        // 1. Admin creates the staff account.
+        var created = (await staff.CreateAsync(h.Admin, NewStaff(email: typedEmail, teamId: h.TeamId))).Account;
+
+        // Whatever was typed, the account carries the same comparison key the login uses.
+        h.Db.ChangeTracker.Clear();
+        var provisioned = await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == created.UserId);
+        Assert.Equal(EmailIdentity.Normalize(provisioned.Email), provisioned.NormalizedEmail);
+
+        // 2. The invited person spends the token from their own email and chooses a password.
+        const string chosen = "chosen-by-the-staff-1";
+        var link = Regex.Match(email.Sent[^1].TextBody, @"https?://\S*/activate-account#token=\S+");
+        Assert.True(link.Success, "No activation link was present in the invitation email.");
+        var token = Uri.UnescapeDataString(link.Value.Split("#token=", StringSplitOptions.None)[1]);
+
+        var activation = await invitations.ActivateAsync(token, chosen);
+        Assert.True(activation.Activated, activation.Error);
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(UserAccountStatus.Active,
+            (await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == created.UserId)).AccountStatus);
+
+        // 3. And can then actually sign in — the step that used to fail.
+        var session = await auth.LoginAsync(new LoginRequestDto { Email = signInEmail, Password = chosen });
+        Assert.NotNull(session);
+        Assert.Equal("access-token", session.AccessToken);
+
+        // The same account however the address is capitalised, and only with the real password.
+        Assert.NotNull(await auth.LoginAsync(
+            new LoginRequestDto { Email = " nAdIa@ExAmPlE.cOm ", Password = chosen }));
+        Assert.Null(await auth.LoginAsync(
+            new LoginRequestDto { Email = signInEmail, Password = "not-the-password" }));
+    }
+
+    /// <summary>
+    /// Two staff accounts cannot share an address, and the check that stops it is the same
+    /// comparison the login uses — otherwise a differently-cased duplicate passes provisioning
+    /// and is then refused by the unique index at save time.
+    /// </summary>
+    [Fact]
+    public async Task A_second_staff_login_cannot_take_the_same_address_in_a_different_case()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var staff = new StaffManagementService(h.Db, new FakeInvitations());
+
+        await staff.CreateAsync(h.Admin, NewStaff(email: "nadia@example.com", teamId: h.TeamId));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.CreateAsync(h.Admin, NewStaff(name: "Nadia Again", email: "NADIA@example.com")));
+        Assert.Contains("already exists", error.Message);
+    }
+
+    private sealed class FixedTokenService : ITokenService
+    {
+        public string GenerateAccessToken(User user, string roleName) => "access-token";
+        public string GenerateRefreshToken() => "refresh-token";
     }
 }

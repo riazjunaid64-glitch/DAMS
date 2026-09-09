@@ -78,6 +78,11 @@ namespace DAMS.Application.Services
             var bookingRequest = new BookingRequest
             {
                 UnitId = dto.UnitId,
+                // From the caller's token, resolved by the controller — never from the payload.
+                // This is the value the whole ownership chain is later rebuilt from, so the
+                // moment it can be influenced by what somebody typed, it stops being proof of
+                // anything. Everything else on this row, the email included, is contact detail
+                // the enquirer supplied about themselves and nothing decides access from it.
                 UserId = userId,
                 FullName = dto.FullName.Trim(),
                 Phone = dto.Phone.Trim(),

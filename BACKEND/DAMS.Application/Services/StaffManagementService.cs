@@ -4,6 +4,7 @@ using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using DAMS.Domain.Identity;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -228,7 +229,12 @@ namespace DAMS.Application.Services
                 else
                 {
                     var email = NormalizeEmail(dto.Email);
-                    if (await _context.Users.AnyAsync(u => u.Email.ToLower() == email, cancellationToken))
+
+                    // The same comparison key the login itself uses. Checking (and storing) the
+                    // display address instead would let a staff account be created that the
+                    // NormalizedEmail lookup in AuthService can never find.
+                    var normalizedEmail = EmailIdentity.Normalize(email);
+                    if (await _context.Users.AnyAsync(u => u.NormalizedEmail == normalizedEmail, cancellationToken))
                         throw new InvalidOperationException("A login with that email already exists. Choose it from existing accounts.");
 
                     // No password is chosen here — not by the Admin and not by DAMS. The account
@@ -237,6 +243,7 @@ namespace DAMS.Application.Services
                     {
                         FullName = dto.FullName.Trim(),
                         Email = email,
+                        NormalizedEmail = normalizedEmail,
                         Password = null,
                         RoleId = role.RoleId,
                         AccountStatus = UserAccountStatus.Invited

@@ -331,6 +331,185 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         Assert.Equal("auth", action.GetCustomAttribute<EnableRateLimitingAttribute>()!.PolicyName);
     }
 
+    // ── Client email verification ───────────────────────────────────────────────
+
+    /// <summary>
+    /// All three client-verification endpoints are anonymous by necessity — the person using them
+    /// has no usable account yet — and all three send mail to, or spend a credential for, an
+    /// address the caller chose. Without the login rate-limit bucket they would be a way to use
+    /// DAMS to flood somebody's inbox, or to grind at tokens. Asserted on the actions because
+    /// proving it by request would mean deliberately exhausting that bucket.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(AuthController.Register))]
+    [InlineData(nameof(AuthController.ResendVerification))]
+    [InlineData(nameof(AuthController.VerifyEmail))]
+    public void ClientVerificationEndpoints_AreAnonymousAndRateLimitedLikeLogin(string actionName)
+    {
+        var action = typeof(AuthController).GetMethod(actionName)!;
+
+        Assert.NotNull(action.GetCustomAttribute<AllowAnonymousAttribute>());
+        Assert.Equal("auth", action.GetCustomAttribute<EnableRateLimitingAttribute>()!.PolicyName);
+    }
+
+    [Fact]
+    public async Task VerifyEmail_AnswersABadLinkGenericallyAndIssuesNoSession()
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        var response = await client.PostAsync("/api/Auth/verify-email", new StringContent(
+            """{"token":"a-token-nobody-ever-issued","password":"chosen-password-1","confirmPassword":"chosen-password-1"}""",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("invalid or has expired", body, StringComparison.OrdinalIgnoreCase);
+
+        // Nothing here names an account, and nothing here is a session.
+        Assert.DoesNotContain("userId", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("accessToken", body, StringComparison.OrdinalIgnoreCase);
+        Assert.False(response.Headers.Contains("Set-Cookie"));
+    }
+
+    /// <summary>
+    /// Registration and resend must be indistinguishable from each other and from the case where
+    /// the address is unknown. A response that varied would turn these into a way to test which
+    /// addresses have DAMS accounts.
+    /// </summary>
+    [Fact]
+    public async Task RegisterAndResend_AnswerNeutrallyAndIdentically()
+    {
+        var client = _factory.CreateClient(NoRedirect);
+
+        var registered = await client.PostAsync("/api/Auth/register", new StringContent(
+            """{"fullName":"Neutral Buyer","email":"neutral-probe@example.com"}""",
+            Encoding.UTF8, "application/json"));
+        var resentKnown = await client.PostAsync("/api/Auth/resend-verification", new StringContent(
+            """{"email":"neutral-probe@example.com"}""",
+            Encoding.UTF8, "application/json"));
+        var resentUnknown = await client.PostAsync("/api/Auth/resend-verification", new StringContent(
+            """{"email":"nobody-has-this@example.com"}""",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, registered.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resentKnown.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resentUnknown.StatusCode);
+
+        var bodies = new[]
+        {
+            await registered.Content.ReadAsStringAsync(),
+            await resentKnown.Content.ReadAsStringAsync(),
+            await resentUnknown.Content.ReadAsStringAsync()
+        };
+
+        Assert.Single(bodies.Distinct());
+        Assert.Contains("If the address can be registered", bodies[0]);
+
+        // Registration handed back no session either. It creates nothing usable.
+        Assert.False(registered.Headers.Contains("Set-Cookie"));
+    }
+
+    // ── The customer portal ─────────────────────────────────────────────────────
+
+    public static IEnumerable<object[]> MyProjectsEndpoints() => new[]
+    {
+        new object[] { "/api/MyProjects" },
+        new object[] { "/api/MyProjects/1" },
+        new object[] { "/api/MyProjects/1/installments" },
+        new object[] { "/api/MyProjects/1/payments/1/receipt" },
+    };
+
+    [Theory]
+    [MemberData(nameof(MyProjectsEndpoints))]
+    public async Task MyProjects_IsUnreachableAnonymously(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+    }
+
+    /// <summary>
+    /// The rollout gate. A token minted before this work carries <c>Role=Client</c> and no
+    /// <c>email_verified</c> claim — it cannot, because the claim did not exist when it was
+    /// signed. Every such session must fail closed the moment this ships rather than continuing
+    /// to read bookings until it happens to expire.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(MyProjectsEndpoints))]
+    public async Task MyProjects_RejectsAClientTokenThatCarriesNoVerificationProof(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer("Client");
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(path)).StatusCode);
+    }
+
+    [Theory]
+    [MemberData(nameof(MyProjectsEndpoints))]
+    public async Task MyProjects_RejectsStaffEvenWhenTheirEmailIsVerified(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = VerifiedBearer("Admin");
+
+        // Role and verification are separate requirements, and the portal needs both. An Admin
+        // reads customer data through the Admin surfaces, which audit differently.
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(path)).StatusCode);
+    }
+
+    [Fact]
+    public async Task AVerifiedClient_GetsOnlyTheirOwnEmptyListRatherThanADenial()
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = VerifiedBearer("Client");
+
+        var response = await client.GetAsync("/api/MyProjects");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // User 42 owns no customer, so the list is empty — not a leak of everybody's bookings, and
+        // not a 403 either. The policy let them in; the ownership query decided what they see.
+        Assert.Equal("[]", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// A verified client asking for a booking that is not theirs — here, one that does not exist
+    /// at all — is answered the same way either way. Which of the two it was is exactly what a
+    /// caller walking the id space must not be able to learn.
+    /// </summary>
+    [Theory]
+    [InlineData("/api/MyProjects/424242")]
+    [InlineData("/api/MyProjects/424242/installments")]
+    [InlineData("/api/MyProjects/424242/payments/9/receipt")]
+    public async Task AVerifiedClient_GetsANonDisclosingNotFoundForSomebodyElsesBooking(string path)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = VerifiedBearer("Client");
+
+        var response = await client.GetAsync(path);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("customerId", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("userId", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Ownership is settled before the resource is read, so the whole controller derives the
+    /// caller from NameIdentifier and nothing else. An email claim in the token is display data.
+    /// </summary>
+    [Fact]
+    public void MyProjects_ReadsNoEmailClaimAnywhere()
+    {
+        var source = typeof(MyProjectsController);
+        Assert.All(
+            source.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+            method => Assert.DoesNotContain("Email", method.Name, StringComparison.OrdinalIgnoreCase));
+
+        // The controller-level policy, rather than a bare role check, is what carries the
+        // verification requirement.
+        var authorize = source.GetCustomAttribute<AuthorizeAttribute>();
+        Assert.Equal("VerifiedClient", authorize!.Policy);
+        Assert.Null(authorize.Roles);
+    }
+
     private static Task<HttpResponseMessage> SendAsync(HttpClient client, string method, string path, bool multipart)
     {
         var request = new HttpRequestMessage(new HttpMethod(method), path);
@@ -343,12 +522,25 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
 
     private static readonly WebApplicationFactoryClientOptions NoRedirect = new() { AllowAutoRedirect = false };
 
-    private AuthenticationHeaderValue Bearer(string role)
+    private AuthenticationHeaderValue Bearer(string role) => BearerFor(role, verified: false);
+
+    /// <summary>A token from an account whose address has actually been proven — the only kind
+    /// the customer portal accepts.</summary>
+    private AuthenticationHeaderValue VerifiedBearer(string role) => BearerFor(role, verified: true);
+
+    private AuthenticationHeaderValue BearerFor(string role, bool verified)
     {
         using var scope = _factory.Services.CreateScope();
         var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
         var token = tokens.GenerateAccessToken(
-            new User { UserId = 42, Email = "actor@dams.test", FullName = "Test Actor" }, role);
+            new User
+            {
+                UserId = 42,
+                Email = "actor@dams.test",
+                FullName = "Test Actor",
+                EmailVerifiedAt = verified ? new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) : null
+            },
+            role);
         return new AuthenticationHeaderValue("Bearer", token);
     }
 

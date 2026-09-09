@@ -172,6 +172,11 @@ namespace DAMS.Application.Services
             customer.SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim();
             customer.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             customer.UpdatedAt = DateTime.UtcNow;
+            // Customer.UserId is absent from the list above, and that omission is the rule rather
+            // than an oversight: contact details describe how to reach somebody, ownership
+            // describes whose bookings these are. Correcting a typo in an email address must not
+            // move a customer's payment history to whoever else holds the new address, and must
+            // not take it away from the login that has always owned it.
 
             await _context.SaveChangesAsync();
 
@@ -195,8 +200,7 @@ namespace DAMS.Application.Services
             DateTime? dateOfBirth = null,
             string? nationality = null,
             string? occupation = null,
-            string? whatsapp = null,
-            int? linkUserId = null)
+            string? whatsapp = null)
         {
             if (_context.Database.CurrentTransaction == null)
             {
@@ -208,7 +212,7 @@ namespace DAMS.Application.Services
                     await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                     var resolution = await FindOrCreateCustomerCoreAsync(
                         fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
-                        fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
+                        fatherName, dateOfBirth, nationality, occupation, whatsapp);
                     await transaction.CommitAsync();
                     return resolution;
                 });
@@ -216,7 +220,7 @@ namespace DAMS.Application.Services
 
             return await FindOrCreateCustomerCoreAsync(
                 fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
-                fatherName, dateOfBirth, nationality, occupation, whatsapp, linkUserId);
+                fatherName, dateOfBirth, nationality, occupation, whatsapp);
         }
 
         private async Task<CustomerResolution> FindOrCreateCustomerCoreAsync(
@@ -232,21 +236,17 @@ namespace DAMS.Application.Services
             DateTime? dateOfBirth,
             string? nationality,
             string? occupation,
-            string? whatsapp,
-            int? linkUserId)
+            string? whatsapp)
         {
             var normalizedPhone = NormalizePhone(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
+            // Deduplication only. Which record this is, never whose it is — see the comment on the
+            // match below.
             Customer? existing = null;
-            var matchedByStrongIdentifier = false;
-
             if (normalizedCnic != null)
-            {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.CNIC == normalizedCnic);
-                matchedByStrongIdentifier = existing != null;
-            }
 
             if (existing == null)
             {
@@ -259,7 +259,6 @@ namespace DAMS.Application.Services
             if (existing == null && normalizedEmail != null)
             {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Email == normalizedEmail);
-                matchedByStrongIdentifier = existing != null;
             }
 
             if (existing != null)
@@ -270,22 +269,26 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException(
                         "These details match a blocked customer. The booking cannot proceed.");
 
-                // Link this customer to the login account if it isn't already, so their
-                // bookings surface under "My Projects" regardless of the email they typed.
-                // Only link on a CNIC or email match — a phone-only match (shared family
-                // number, typo) must not expose another person's bookings to this login.
-                if (linkUserId.HasValue && existing.UserId == null && matchedByStrongIdentifier)
-                {
-                    existing.UserId = linkUserId.Value;
-                    existing.UpdatedAt = DateTime.UtcNow;
-                    await _context.SaveChangesAsync();
-                }
+                // An existing record is NOT claimed here, whatever matched.
+                //
+                // This used to attach linkUserId to any unowned customer found by CNIC or email,
+                // on the reasoning that a strong identifier match means it is the same person. It
+                // does not. It means somebody typed a value that is also on file — and a CNIC is
+                // printed on documents, shared with agents and photocopied at every office, while
+                // an email address is simply whatever the form said. Neither is a secret, so
+                // neither can be the thing that hands a login somebody's payment history.
+                //
+                // Matching still does its real job above: it stops DAMS creating a duplicate CRM
+                // record. Deciding who owns that record is a different question with a different
+                // standard of proof, and it belongs to ICustomerAccountLinkService.
                 return new CustomerResolution(existing.Id, WasCreated: false);
             }
 
             var customer = new Customer
             {
-                UserId = linkUserId,
+                // Deliberately unowned. A brand-new CRM record is not evidence about who may read
+                // it later; ICustomerAccountLinkService attaches a login when, and only when, one of
+                // its three trusted paths says so.
                 FullName = fullName.Trim(),
                 FatherName = string.IsNullOrWhiteSpace(fatherName) ? null : fatherName.Trim(),
                 Phone = normalizedPhone,

@@ -36,6 +36,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
     public LeadReportingService Reporting { get; }
     public LeadAlertService Alerts { get; }
     public BookingRequestService BookingRequests { get; }
+    public CustomerAccountLinkService AccountLinks { get; }
     public MemoryLeadDocumentStorage DocumentStorage { get; }
 
     public LeadUserContext Admin { get; private set; } = null!;
@@ -79,7 +80,10 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         Notifications = new LeadNotificationService(db, Dispatcher);
         var customers = new CustomerService(db);
         var bookings = new BookingService(db, customers, new FinanceAccountService(db));
-        Leads = new LeadService(db, customers, bookings, Notifications, alertOptions);
+        // Wired exactly as the API wires it, so conversion tests exercise the real account-linking
+        // decision rather than a conversion that quietly cannot link anything.
+        AccountLinks = new CustomerAccountLinkService(db, Clock);
+        Leads = new LeadService(db, customers, bookings, Notifications, alertOptions, AccountLinks);
         Communications = new LeadCommunicationService(db, Notifications);
         FollowUps = new LeadFollowUpService(db, Notifications);
         SiteVisits = new LeadSiteVisitService(db, Notifications);
@@ -210,8 +214,17 @@ internal sealed class LeadTestHarness : IAsyncDisposable
             ManagedTeamIds = managedTeams ?? Array.Empty<int>()
         };
 
-    private static User NewUser(string name, string email, int roleId) =>
-        new() { FullName = name, Email = email, Password = "hash", RoleId = roleId };
+    private static User NewUser(string name, string email, int roleId) => new()
+    {
+        FullName = name,
+        Email = email,
+        NormalizedEmail = DAMS.Domain.Identity.EmailIdentity.Normalize(email),
+        Password = "hash",
+        RoleId = roleId,
+        // Only the client carries a verification stamp: it is the one role that has to prove its
+        // address to own customer data, and a conversion cannot link an unproven account.
+        EmailVerifiedAt = roleId == 2 ? DateTime.UtcNow.AddMonths(-3) : null
+    };
 
     private static Employee NewEmployee(string name, int userId) => new()
     {
