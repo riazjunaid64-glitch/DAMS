@@ -113,7 +113,13 @@ namespace DAMS.Application.Services
                     .Select(u => (int?)u.UserId)
                     .FirstOrDefaultAsync();
 
-                if (winnerId.HasValue && _clientVerification != null)
+                // No winner means the write failed for some other reason entirely. Answering
+                // neutrally there would report a registration that does not exist, so the
+                // original failure is left to surface.
+                if (!winnerId.HasValue)
+                    throw;
+
+                if (_clientVerification != null)
                     await _clientVerification.IssueAsync(winnerId.Value);
                 return;
             }

@@ -6,6 +6,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Application.Services.Notifications;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using DAMS.Domain.Identity;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -144,6 +145,11 @@ namespace DAMS.Application.Services
                 var user = invitation.User;
                 user.Password = passwordHash;
                 user.AccountStatus = UserAccountStatus.Active;
+
+                // Accounts provisioned before staff creation started storing the comparison key
+                // would otherwise activate into a login that no NormalizedEmail lookup can find.
+                // Only ever filled in, never rewritten — the stored key is the account's identity.
+                user.NormalizedEmail ??= EmailIdentity.Normalize(user.Email);
 
                 // An Invited login should have no session at all. Clearing anyway means a
                 // historic or imported row cannot carry an old session into a fresh account.

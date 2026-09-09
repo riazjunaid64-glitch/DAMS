@@ -177,6 +177,68 @@ public sealed class AuthAccountStatusTests
         Assert.NotNull(await h.Auth.LoginAsync(Login("client@dams.test", RightPassword)));
     }
 
+    /// <summary>
+    /// Losing the unique-email race is the one database failure registration is allowed to
+    /// absorb: another request already created the identity, so the caller gets the winner's
+    /// neutral answer and only one account exists.
+    /// </summary>
+    [Fact]
+    public async Task A_registration_that_loses_the_unique_email_race_still_answers_neutrally()
+    {
+        await using var h = await Harness.CreateAsync();
+        var verification = new RecordingVerification();
+
+        // The shape of the race: the insert fails because somebody else got there first, so the
+        // winning row is already readable by the time the exception is handled.
+        await using var db = h.NewContext(onSave: async () =>
+        {
+            await using var other = h.NewContext();
+            other.Users.Add(new User
+            {
+                RoleId = 2,
+                FullName = "The Winner",
+                Email = "race@example.com",
+                NormalizedEmail = "RACE@EXAMPLE.COM",
+                Password = null,
+                AccountStatus = UserAccountStatus.PendingEmailVerification
+            });
+            await other.SaveChangesAsync();
+        });
+
+        var auth = new AuthService(db, new FixedTokenService(), verification);
+        await auth.RegisterAsync(new RegisterRequestDto { FullName = "The Loser", Email = "race@example.com" });
+
+        // One identity, and it is the winner's — the loser's row was never written.
+        var user = await h.ReloadByNormalizedAsync("RACE@EXAMPLE.COM");
+        Assert.Equal("The Winner", user.FullName);
+        Assert.Equal(1, await h.Db.Users.CountAsync(u => u.NormalizedEmail == "RACE@EXAMPLE.COM"));
+
+        // And the person who lost the race is still emailed a link, so a retry is not needed.
+        Assert.Equal(user.UserId, Assert.Single(verification.Issued));
+    }
+
+    /// <summary>
+    /// Every other write failure is not that. Swallowing it would tell the caller their account
+    /// was created and a link is on its way when neither is true, so it has to surface.
+    /// </summary>
+    [Fact]
+    public async Task An_unrelated_database_failure_is_not_reported_as_a_successful_registration()
+    {
+        await using var h = await Harness.CreateAsync();
+        var verification = new RecordingVerification();
+
+        // The insert fails and leaves nothing behind — a full disk, a dropped connection, a
+        // constraint that has nothing to do with the email address.
+        await using var db = h.NewContext(onSave: () => Task.CompletedTask);
+        var auth = new AuthService(db, new FixedTokenService(), verification);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+            auth.RegisterAsync(new RegisterRequestDto { FullName = "Bilal Buyer", Email = "nowhere@example.com" }));
+
+        Assert.Equal(0, await h.Db.Users.CountAsync(u => u.NormalizedEmail == "NOWHERE@EXAMPLE.COM"));
+        Assert.Empty(verification.Issued);
+    }
+
     // ── Client verification as a login gate ─────────────────────────────────────
 
     [Fact]
@@ -237,17 +299,32 @@ public sealed class AuthAccountStatusTests
         public AuthService Auth { get; }
         public int ClientRoleId => 2;
 
-        private Harness(AppDbContext db)
+        private readonly string _databaseName;
+
+        private Harness(AppDbContext db, string databaseName)
         {
             Db = db;
+            _databaseName = databaseName;
             Auth = new AuthService(db, new FixedTokenService());
+        }
+
+        /// <summary>
+        /// Another context over the same seeded store — a second request, in other words.
+        /// Pass <paramref name="onSave"/> to make its first save fail the way a real one can.
+        /// </summary>
+        public AppDbContext NewContext(Func<Task>? onSave = null)
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseInMemoryDatabase(_databaseName).Options;
+            return onSave == null ? new AppDbContext(options) : new FailingSaveContext(options, onSave);
         }
 
         public static async Task<Harness> CreateAsync()
         {
+            var databaseName = Guid.NewGuid().ToString();
             var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
-            var h = new Harness(db);
+                .UseInMemoryDatabase(databaseName).Options);
+            var h = new Harness(db, databaseName);
 
             db.Roles.AddRange(
                 new Role { RoleId = 1, Role_name = "Admin" },
@@ -342,12 +419,57 @@ public sealed class AuthAccountStatusTests
             Status = EmployeeStatus.Active
         };
 
-        private sealed class FixedTokenService : ITokenService
+        public ValueTask DisposeAsync() => Db.DisposeAsync();
+    }
+
+    private sealed class FixedTokenService : ITokenService
+    {
+        public string GenerateAccessToken(User user, string roleName) => "access-token";
+        public string GenerateRefreshToken() => "refresh-token";
+    }
+
+    /// <summary>Records which logins were asked for a verification link, and sends nothing.</summary>
+    private sealed class RecordingVerification : IClientEmailVerificationService
+    {
+        public List<int> Issued { get; } = new();
+
+        public Task<ClientVerificationIssueResult> IssueAsync(
+            int userId, CancellationToken cancellationToken = default)
         {
-            public string GenerateAccessToken(User user, string roleName) => "access-token";
-            public string GenerateRefreshToken() => "refresh-token";
+            Issued.Add(userId);
+            return Task.FromResult(ClientVerificationIssueResult.Sent());
         }
 
-        public ValueTask DisposeAsync() => Db.DisposeAsync();
+        public Task ResendAsync(string email, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<ClientVerificationResult> VerifyAsync(
+            string rawToken, string chosenPassword, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Registration must never spend a token.");
+    }
+
+    /// <summary>
+    /// A context whose next save fails the way a real one does. The in-memory provider enforces
+    /// no unique index, so the only way to exercise the handler that catches a failed insert is
+    /// to make the insert fail.
+    /// </summary>
+    private sealed class FailingSaveContext : AppDbContext
+    {
+        private Func<Task>? _onSave;
+
+        public FailingSaveContext(DbContextOptions<AppDbContext> options, Func<Task>? onSave)
+            : base(options) => _onSave = onSave;
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            if (_onSave == null)
+                return await base.SaveChangesAsync(cancellationToken);
+
+            // Once only: the handler's own reads and writes must go through untouched.
+            var run = _onSave;
+            _onSave = null;
+            await run();
+            throw new DbUpdateException("the write failed", new InvalidOperationException("provider"));
+        }
     }
 }
