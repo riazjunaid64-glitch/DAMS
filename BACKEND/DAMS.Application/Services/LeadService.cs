@@ -23,19 +23,28 @@ namespace DAMS.Application.Services
         private readonly ICustomerService _customerService;
         private readonly IBookingService _bookingService;
         private readonly ILeadNotificationService _notifications;
+        private readonly ICustomerAccountLinkService? _accountLinks;
         private readonly LeadAlertOptions _alertOptions;
 
+        /// <param name="accountLinks">
+        /// Optional so the many lead tests that never convert a website request do not have to
+        /// construct it. When it is absent no <c>Customer.UserId</c> is ever written — conversion
+        /// still succeeds and the customer is simply left unowned, which is the safe direction to
+        /// fail in.
+        /// </param>
         public LeadService(
             AppDbContext context,
             ICustomerService customerService,
             IBookingService bookingService,
             ILeadNotificationService notifications,
-            IOptions<LeadAlertOptions> alertOptions)
+            IOptions<LeadAlertOptions> alertOptions,
+            ICustomerAccountLinkService? accountLinks = null)
         {
             _context = context;
             _customerService = customerService;
             _bookingService = bookingService;
             _notifications = notifications;
+            _accountLinks = accountLinks;
             _alertOptions = alertOptions.Value;
         }
 
@@ -1257,6 +1266,23 @@ namespace DAMS.Application.Services
                 int customerId;
                 bool customerWasCreated;
 
+                // Resolved FIRST, before anything decides who the customer is or who owns them.
+                //
+                // This request is the only record of an authenticated identity in the whole
+                // conversion: BookingRequest.UserId was captured from the submitter's own token
+                // while they were signed in, and nothing later in this method — not the lead's
+                // email, not the DTO, not the reviewing administrator — carries comparable proof.
+                // Reading it after the customer had already been resolved (which is how this used
+                // to run) meant the linking decision was made without the one fact that could
+                // justify it, and email matching filled the gap.
+                var linkedRequest = await _context.BookingRequests
+                    .Where(br => br.LeadId == lead.Id
+                                 && br.UnitId == dto.UnitId
+                                 && br.Status == BookingRequestStatus.Pending)
+                    .OrderBy(br => br.RequestedAt)
+                    .ThenBy(br => br.Id)
+                    .FirstOrDefaultAsync(cancellationToken);
+
                 if (dto.CustomerId.HasValue)
                 {
                     var customer = await _context.Customers
@@ -1290,6 +1316,24 @@ namespace DAMS.Application.Services
 
                     customerId = resolution.CustomerId;
                     customerWasCreated = resolution.WasCreated;
+
+                    // The single automatic path by which a login ever comes to own a customer.
+                    //
+                    // Both conditions are load-bearing. WasCreated, because a record that already
+                    // existed belongs to whoever it always belonged to — matching this person's
+                    // email or CNIC is not evidence that it is theirs, and claiming it here is
+                    // exactly the hole this work closes. And a stored request with an
+                    // authenticated submitter, because that is the only identity in the room that
+                    // anybody ever proved.
+                    //
+                    // An existing unowned customer is therefore left unowned. That is deliberate:
+                    // the booking proceeds, the CRM record is correct, and portal access waits for
+                    // an administrator to verify the person and link it explicitly.
+                    if (customerWasCreated && linkedRequest?.UserId != null && _accountLinks != null)
+                    {
+                        await _accountLinks.LinkNewCustomerFromBookingRequestAsync(
+                            customerId, linkedRequest.Id, cancellationToken);
+                    }
                 }
 
                 var assignedSalesUserId = lead.AssignedEmployeeId == null
@@ -1313,14 +1357,6 @@ namespace DAMS.Application.Services
                     ReferenceId = lead.LeadReference,
                     InternalNotes = LeadContactNormalizer.Clean(dto.Notes)
                 }, ctx.UserId, cancellationToken);
-
-                var linkedRequest = await _context.BookingRequests
-                    .Where(br => br.LeadId == lead.Id
-                                 && br.UnitId == dto.UnitId
-                                 && br.Status == BookingRequestStatus.Pending)
-                    .OrderBy(br => br.RequestedAt)
-                    .ThenBy(br => br.Id)
-                    .FirstOrDefaultAsync(cancellationToken);
 
                 if (linkedRequest != null)
                 {

@@ -14,6 +14,10 @@ namespace DAMS.Infrastructure.Data
         public DbSet<User> Users { get; set; }
         public DbSet<Role> Roles { get; set; }
         public DbSet<StaffInvitation> StaffInvitations { get; set; }
+
+        public DbSet<ClientEmailVerification> ClientEmailVerifications { get; set; }
+
+        public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -117,6 +121,57 @@ namespace DAMS.Infrastructure.Data
             modelBuilder.Entity<User>(entity =>
             {
                 entity.Property(u => u.AccountStatus).HasConversion<int>();
+
+                // The database-enforced login identity. An application-level "does this email
+                // exist?" check cannot survive two registrations arriving at once — both read
+                // nothing and both insert — so the invariant lives here, where the storage engine
+                // settles it. Nullable because the column is filled by a migration that refuses to
+                // guess: a row it could not canonicalise is left null and reported rather than
+                // merged, and a filtered index lets those rows exist while still making every
+                // canonicalised address unique.
+                entity.Property(u => u.NormalizedEmail).HasMaxLength(256);
+                entity.HasIndex(u => u.NormalizedEmail)
+                      .IsUnique()
+                      .HasFilter("[NormalizedEmail] IS NOT NULL");
+            });
+
+            modelBuilder.Entity<ClientEmailVerification>(entity =>
+            {
+                // Only the hash is stored, so a database read cannot rebuild a working
+                // verification link. Uniqueness makes a token collision a write failure rather
+                // than an ambiguous lookup.
+                entity.Property(v => v.TokenHash).IsRequired().HasMaxLength(128);
+                entity.HasIndex(v => v.TokenHash).IsUnique();
+
+                // Finding the live credential for a login, newest first.
+                entity.HasIndex(v => new { v.UserId, v.CreatedAt });
+                // Expiry sweeps scan by deadline.
+                entity.HasIndex(v => v.ExpiresAt);
+
+                // Restrict rather than cascade: whether an address was ever verified, and when, is
+                // audit data that must not disappear as a side effect of deleting something else.
+                entity.HasOne(v => v.User)
+                      .WithMany()
+                      .HasForeignKey(v => v.UserId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
+            {
+                entity.Property(a => a.Action).HasConversion<int>();
+                entity.Property(a => a.Reason).HasMaxLength(500);
+
+                // The history of one customer, newest first — the only way this table is read.
+                entity.HasIndex(a => new { a.CustomerId, a.OccurredAt });
+
+                entity.HasOne(a => a.Customer)
+                      .WithMany()
+                      .HasForeignKey(a => a.CustomerId)
+                      .OnDelete(DeleteBehavior.Cascade);
+
+                // The three user columns are deliberately plain ints with no foreign key. An audit
+                // row has to outlive the accounts it describes — the whole point of recording who
+                // was granted access is that the record survives the account being removed.
             });
 
             modelBuilder.Entity<StaffInvitation>(entity =>

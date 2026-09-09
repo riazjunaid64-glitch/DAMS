@@ -481,6 +481,18 @@ export default function MyProjectsPage({ user }: Props) {
           api("/api/BookingRequest/my-requests"),
         ]);
 
+        // A 403 here means a session that predates email confirmation — the token is validly
+        // signed but carries no proof the address was ever verified, so the portal refuses it.
+        // Saying "failed to load" would send somebody hunting for a fault that does not exist;
+        // the actual remedy is to confirm the address and sign in again.
+        if (bookRes.status === 403) {
+          setError(
+            "Confirm your email address before viewing your purchases. Sign out, then use the " +
+              "confirmation link we emailed you — or ask for a new one from the sign-in form."
+          );
+          return;
+        }
+
         if (!bookRes.ok && !reqRes.ok) {
           setError("Failed to load your projects.");
           return;

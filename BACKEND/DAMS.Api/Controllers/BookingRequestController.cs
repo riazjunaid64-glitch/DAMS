@@ -51,8 +51,11 @@ namespace DAMS.Api.Controllers
             if (result == null)
                 return NotFound(new { message = "Booking request not found." });
 
+            // The same non-disclosing denial the customer portal gives. A 403 here would have
+            // separated "somebody else's request" from "no such request", which is exactly what
+            // somebody walking the id space is trying to learn.
             if (role != "Admin" && result.UserId?.ToString() != userIdClaim)
-                return Forbid();
+                return NotFound(new { message = "Booking request not found." });
 
             return Ok(result);
         }

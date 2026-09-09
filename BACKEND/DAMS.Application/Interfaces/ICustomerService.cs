@@ -31,7 +31,6 @@ namespace DAMS.Application.Interfaces
             DateTime? dateOfBirth = null,
             string? nationality = null,
             string? occupation = null,
-            string? whatsapp = null,
-            int? linkUserId = null);
+            string? whatsapp = null);
     }
 }

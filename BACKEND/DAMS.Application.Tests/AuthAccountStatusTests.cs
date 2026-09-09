@@ -3,6 +3,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using DAMS.Domain.Identity;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -120,24 +121,105 @@ public sealed class AuthAccountStatusTests
     // ── Public registration ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Public_registration_creates_an_active_client_who_can_sign_in_at_once()
+    public async Task Public_registration_creates_a_pending_client_with_no_password_at_all()
     {
         await using var h = await Harness.CreateAsync();
 
         await h.Auth.RegisterAsync(new RegisterRequestDto
         {
             FullName = "Bilal Buyer",
-            Email = "  Bilal@Example.COM ",
-            Password = "buyer-chosen-pass-2"
+            Email = "  Bilal@Example.COM "
         });
 
-        var user = await h.ReloadAsync("bilal@example.com");
-        Assert.Equal(UserAccountStatus.Active, user.AccountStatus);
+        var user = await h.ReloadByNormalizedAsync("BILAL@EXAMPLE.COM");
+        Assert.Equal(UserAccountStatus.PendingEmailVerification, user.AccountStatus);
         Assert.Equal(h.ClientRoleId, user.RoleId);
 
-        // Their own password, hashed, and immediately usable — registration is not an invitation.
-        Assert.True(BCrypt.Net.BCrypt.Verify("buyer-chosen-pass-2", user.Password));
-        Assert.NotNull(await h.Auth.LoginAsync(Login("bilal@example.com", "buyer-chosen-pass-2")));
+        // The address as typed is kept for display; identity is the folded, trimmed form.
+        Assert.Equal("Bilal@Example.COM", user.Email);
+        Assert.Equal("BILAL@EXAMPLE.COM", user.NormalizedEmail);
+
+        // Nothing to sign in with, and nothing DAMS has proven. This is the whole point: a
+        // stranger registering somebody else's address does not get to choose the password that
+        // account will end up having.
+        Assert.Null(user.Password);
+        Assert.Null(user.EmailVerifiedAt);
+    }
+
+    [Fact]
+    public async Task A_pending_registration_cannot_sign_in_however_it_is_approached()
+    {
+        await using var h = await Harness.CreateAsync();
+        await h.Auth.RegisterAsync(new RegisterRequestDto { FullName = "Bilal Buyer", Email = "bilal@example.com" });
+
+        // There is no password to guess, and the empty string must not slip past BCrypt.Verify.
+        Assert.Null(await h.Auth.LoginAsync(Login("bilal@example.com", "anything-at-all")));
+        Assert.Null(await h.Auth.LoginAsync(Login("bilal@example.com", "")));
+    }
+
+    [Fact]
+    public async Task Registering_an_address_that_already_exists_is_answered_the_same_way()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        // "client@dams.test" is an existing Active login with a known password. Registration
+        // neither throws nor reports anything, so the caller cannot use it to discover that the
+        // address is taken...
+        await h.Auth.RegisterAsync(new RegisterRequestDto { FullName = "Impostor", Email = "CLIENT@dams.test" });
+
+        // ...and, far more importantly, the existing account is untouched. No second identity, no
+        // new name, no reset status, and the real owner's password still works.
+        Assert.Equal(1, await h.Db.Users.CountAsync(u => u.NormalizedEmail == "CLIENT@DAMS.TEST"));
+
+        var existing = await h.ReloadAsync("client@dams.test");
+        Assert.Equal("Cara Client", existing.FullName);
+        Assert.Equal(UserAccountStatus.Active, existing.AccountStatus);
+        Assert.NotNull(await h.Auth.LoginAsync(Login("client@dams.test", RightPassword)));
+    }
+
+    // ── Client verification as a login gate ─────────────────────────────────────
+
+    [Fact]
+    public async Task A_client_that_is_Active_but_never_verified_still_cannot_sign_in()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        // The legacy shape exactly: Active, with a working password, and no proof the address was
+        // ever theirs. Before this work these accounts signed in and read bookings by email.
+        await h.SetEmailVerifiedAsync("client@dams.test", null);
+
+        Assert.Null(await h.Auth.LoginAsync(Login("client@dams.test", RightPassword)));
+    }
+
+    [Fact]
+    public async Task A_client_session_minted_before_verification_cannot_be_refreshed()
+    {
+        await using var h = await Harness.CreateAsync();
+        var session = await h.GiveSessionAsync("client@dams.test");
+
+        // Standing in for the migration: the account is Active, the session is real, and DAMS has
+        // never proven the address. The fifteen-day refresh window must not carry it past the gate.
+        await h.SetEmailVerifiedAsync("client@dams.test", null);
+
+        Assert.Null(await h.Auth.RefreshTokenAsync(new RefreshTokenRequestDto { RefreshToken = session }));
+
+        var user = await h.ReloadAsync("client@dams.test");
+        Assert.Null(user.RefreshToken);
+        Assert.Null(user.RefreshTokenExpiresAt);
+    }
+
+    [Fact]
+    public async Task Staff_logins_are_not_dragged_into_client_verification()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        // A manager has never had an EmailVerifiedAt and never will — staff prove themselves
+        // through the invitation an Admin issued and the employment behind it. Requiring client
+        // verification of them would lock out the entire company for no security gain.
+        var user = await h.ReloadAsync("manager@dams.test");
+        Assert.Null(user.EmailVerifiedAt);
+
+        Assert.NotNull(await h.Auth.LoginAsync(Login("manager@dams.test", RightPassword)));
     }
 
     private static LoginRequestDto Login(string email, string password) =>
@@ -206,6 +288,15 @@ public sealed class AuthAccountStatusTests
             Db.ChangeTracker.Clear();
         }
 
+        /// <summary>Reproduces the legacy shape: an Active client DAMS has never proven.</summary>
+        public async Task SetEmailVerifiedAsync(string email, DateTime? verifiedAt)
+        {
+            var user = await Db.Users.FirstAsync(u => u.Email == email);
+            user.EmailVerifiedAt = verifiedAt;
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
+        }
+
         public async Task SetEmployeeStatusAsync(string email, EmployeeStatus status)
         {
             var employee = await Db.Employees.FirstAsync(e => e.Email == email);
@@ -220,14 +311,25 @@ public sealed class AuthAccountStatusTests
             return await Db.Users.AsNoTracking().FirstAsync(u => u.Email == email);
         }
 
+        public async Task<User> ReloadByNormalizedAsync(string normalizedEmail)
+        {
+            Db.ChangeTracker.Clear();
+            return await Db.Users.AsNoTracking().FirstAsync(u => u.NormalizedEmail == normalizedEmail);
+        }
+
         private static User NewUser(
             int roleId, string name, string email, UserAccountStatus status, string? password) => new()
         {
             RoleId = roleId,
             FullName = name,
             Email = email,
+            NormalizedEmail = EmailIdentity.Normalize(email),
             Password = password,
-            AccountStatus = status
+            AccountStatus = status,
+            // The client is seeded as a fully verified account, because that is what an account
+            // that has been through the new lifecycle looks like. The staff logins keep null:
+            // client verification is not their proof, and the tests below rely on that.
+            EmailVerifiedAt = roleId == 2 ? new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) : null
         };
 
         private static Employee NewEmployee(User user) => new()

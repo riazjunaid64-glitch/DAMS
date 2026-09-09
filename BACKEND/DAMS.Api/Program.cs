@@ -1,4 +1,5 @@
 using DAMS.Api.Filters;
+using DAMS.Api.Security;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using DAMS.Application.Services;
@@ -247,6 +248,9 @@ builder.Services.AddScoped<IBookingRequestService, BookingRequestService>();
 builder.Services.AddScoped<IEmployeeService, EmployeeService>();
 builder.Services.AddScoped<IStaffManagementService, StaffManagementService>();
 builder.Services.AddScoped<IStaffInvitationService, StaffInvitationService>();
+builder.Services.AddScoped<IClientEmailVerificationService, ClientEmailVerificationService>();
+// The only registered component permitted to write Customer.UserId.
+builder.Services.AddScoped<ICustomerAccountLinkService, CustomerAccountLinkService>();
 builder.Services.AddScoped<IFinanceService, FinanceService>();
 builder.Services.AddScoped<IFinanceAccountService, FinanceAccountService>();
 builder.Services.AddScoped<IStaffCashService, StaffCashService>();
@@ -360,6 +364,8 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(key)
     };
 });
+
+builder.Services.AddAuthorization(options => options.AddDamsPolicies());
 
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
