@@ -226,6 +226,15 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(u => u.ProjectId);
                 entity.HasIndex(u => new { u.ProjectId, u.FloorNumber, u.UnitNumber });
 
+                // A unit number IS the apartment inside its project: bookings, payment schedules
+                // and customer statements all identify it that way. Two rows carrying the same
+                // number are two records of one physical apartment, and because every availability
+                // guard is per UnitId, each of them can take its own active booking — the project
+                // then reports a unit sold twice with no overlap visible anywhere.
+                entity.HasIndex(u => new { u.ProjectId, u.UnitNumber })
+                      .IsUnique()
+                      .HasDatabaseName("UX_Units_ProjectId_UnitNumber");
+
                 entity.Property(u => u.UnitNumber)
                       .IsRequired()
                       .HasMaxLength(50);

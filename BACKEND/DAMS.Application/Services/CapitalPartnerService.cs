@@ -52,6 +52,7 @@ namespace DAMS.Application.Services
             var partner = await _context.CapitalPartners.SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Capital partner not found.");
             ApplyToken(partner, dto.ConcurrencyToken);
+            await EnsureCapitalAccountNotRewritten(partner, dto.FinanceAccountId, cancellationToken);
             await EnsureNameUnique(dto.Name, id, cancellationToken);
             await ValidateCapitalAccount(dto.FinanceAccountId, id, cancellationToken);
             await ValidateProspectiveTotal(id, dto.ProfitSharePercent, dto.IsActive, partner.IsActive, cancellationToken);
@@ -135,6 +136,15 @@ namespace DAMS.Application.Services
             FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
         {
             if (!Enum.IsDefined(dto.Type)) throw new InvalidOperationException("Capital transaction type is invalid.");
+            // Every other type is double-sided: a contribution or withdrawal moves the named bank
+            // account, and a profit or loss share is the counterpart of the allocated Net Profit the
+            // Trial Balance already carries. An OpeningBalance row is the one type with no other
+            // side anywhere — it raises the partner's capital account and nothing else, so each one
+            // pushes the Balance Sheet out by its own amount. Opening capital is not recorded here
+            // at all: it belongs to the committed opening balance set, which posts it to the capital
+            // account against the rest of the baseline. GetStatementAsync shows it from there.
+            if (dto.Type == CapitalTransactionType.OpeningBalance)
+                throw new InvalidOperationException("Opening capital cannot be recorded as a movement. Enter it in the opening balances for the partner's capital account instead.");
             if (dto.Amount <= 0m) throw new InvalidOperationException("Amount must be greater than zero.");
             if (dto.Amount > 999_999_999_999_999.99m) throw new InvalidOperationException("Amount is outside the supported range.");
             if (dto.Date == default) throw new InvalidOperationException("Transaction date is required.");
@@ -336,6 +346,25 @@ namespace DAMS.Application.Services
                 UploadedAt = transaction.Attachment.UploadedAt
             }
         };
+
+        /// <summary>
+        /// The equity side of every capital movement is not stored on the movement — the Trial
+        /// Balance and the account ledger both post it to <c>CapitalPartner.FinanceAccountId</c>
+        /// as it reads TODAY. The cash side is stored, on the movement's own bank account. So
+        /// repointing or clearing a partner's capital account does not change the partner going
+        /// forward, it rewrites history: a PKR 100,000 contribution keeps its bank debit and
+        /// either lands on an account that never received it, or — when the link is cleared —
+        /// disappears from equity altogether, leaving the Balance Sheet out by that amount.
+        /// A partner with no movements yet has no history to rewrite, so it can still be linked.
+        /// </summary>
+        private async Task EnsureCapitalAccountNotRewritten(CapitalPartner partner, int? accountId, CancellationToken cancellationToken)
+        {
+            if (partner.FinanceAccountId == accountId) return;
+            if (!await _context.CapitalTransactions.AnyAsync(t => t.CapitalPartnerId == partner.Id, cancellationToken)) return;
+            throw new InvalidOperationException(accountId.HasValue
+                ? "This partner already has capital movements recorded, so its capital account cannot be changed — every past movement would move to the new account. Deactivate this partner and create a new one against the new account instead."
+                : "This partner already has capital movements recorded, so its capital account cannot be removed — the money they put in would vanish from equity while the bank balance kept it. Deactivate the partner instead.");
+        }
 
         private async Task ValidateCapitalAccount(int? accountId, int? partnerId, CancellationToken cancellationToken)
         {

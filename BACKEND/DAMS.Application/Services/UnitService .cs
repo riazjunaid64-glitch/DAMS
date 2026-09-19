@@ -28,10 +28,13 @@ namespace DAMS.Application.Services
         if (!projectExists)
             throw new Exception("Project not found");
 
+        var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
+        await EnsureUnitNumberIsFree(dto.ProjectId, unitNumber, null);
+
         var unit = new Unit
         {
             ProjectId = dto.ProjectId,
-            UnitNumber = dto.UnitNumber,
+            UnitNumber = unitNumber,
             UnitType = dto.UnitType,
             FloorNumber = dto.FloorNumber,
             Size = dto.Size,
@@ -91,7 +94,10 @@ namespace DAMS.Application.Services
         if (unit == null)
             throw new Exception("Unit not found");
 
-        unit.UnitNumber = dto.UnitNumber;
+        var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
+        await EnsureUnitNumberIsFree(unit.ProjectId, unitNumber, id);
+
+        unit.UnitNumber = unitNumber;
         unit.UnitType = dto.UnitType;
         unit.FloorNumber = dto.FloorNumber;
         unit.Size = dto.Size;
@@ -137,6 +143,32 @@ namespace DAMS.Application.Services
         await _context.SaveChangesAsync();
 
         return true;
+    }
+
+    private static string NormaliseUnitNumber(string unitNumber)
+    {
+        var trimmed = (unitNumber ?? string.Empty).Trim();
+
+        if (trimmed.Length == 0)
+            throw new Exception("Unit number is required.");
+
+        return trimmed;
+    }
+
+    // The unit number identifies the apartment within its project, so a second row carrying the
+    // same number is a duplicate record of one apartment - and since every booking guard is per
+    // UnitId, each duplicate can take its own active booking. The unique index behind this check
+    // is what actually prevents it; this is here so the user is told why rather than shown a
+    // database error.
+    private async Task EnsureUnitNumberIsFree(int projectId, string unitNumber, int? exceptUnitId)
+    {
+        var taken = await _context.Units
+            .AnyAsync(u => u.ProjectId == projectId
+                && u.UnitNumber == unitNumber
+                && (exceptUnitId == null || u.Id != exceptUnitId));
+
+        if (taken)
+            throw new Exception($"Unit number \"{unitNumber}\" already exists in this project.");
     }
 
     private static UnitResponseDto Map(Unit unit)
