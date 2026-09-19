@@ -1,6 +1,8 @@
+using System.Data;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Domain.Enums;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -12,8 +14,75 @@ namespace DAMS.Application.Services
         // the earliest date a row is allowed to carry.
         private static readonly DateTime SqlStart = FinanceDateRules.SqlMin;
 
-        public async Task<ProfitAndLossDto> GetProfitAndLossAsync(
-            int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
+        /// <summary>SQL Server: "snapshot isolation is not allowed in this database".</summary>
+        private const int SnapshotIsolationNotEnabled = 3952;
+
+        /// <summary>
+        /// Runs a whole report as ONE read of the database.
+        /// <para>
+        /// A statement is an assertion about a single moment. Every report below needs a dozen or
+        /// more queries to build one — assets from one, liabilities from another, the P&amp;L from
+        /// several more — and under READ COMMITTED each of those sees whatever was committed by the
+        /// time it ran. A payment that commits between the query that reads the bank and the query
+        /// that reads the customer balances lands on one side of the Balance Sheet and not the
+        /// other, and the sheet then reports an Imbalance, or the Trial Balance reports unequal
+        /// columns. Nothing is wrong with the books: the report simply read two different
+        /// databases. That false fault is indistinguishable from a real one, which is the whole
+        /// value of the check.
+        /// </para>
+        /// <para>
+        /// Snapshot isolation fixes it at the right level: every read in the window sees the
+        /// database as at the instant the window opened, and — unlike serialisable, the only other
+        /// isolation level that excludes the phantom insert — readers take no locks, so running a
+        /// long report never blocks a cashier from taking money.
+        /// </para>
+        /// <para>
+        /// If the database has not had ALLOW_SNAPSHOT_ISOLATION turned on (the migration alongside
+        /// this change does that), SQL Server raises 3952 on the first read. The report is then
+        /// re-run unguarded rather than failed — reads are repeatable and free of side effects, so
+        /// the fallback is exactly the behaviour that existed before, and a report is more useful
+        /// than an error even when it can only be read at READ COMMITTED.
+        /// </para>
+        /// </summary>
+        private async Task<T> ReadConsistentlyAsync<T>(
+            Func<Task<T>> read, string reportName, CancellationToken cancellationToken)
+        {
+            // An ambient transaction already fixes the read set, and a non-relational provider (the
+            // in-memory test suite) has no isolation levels to ask for.
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return await read();
+
+            try
+            {
+                // Required by EnableRetryOnFailure: EF refuses a user-initiated transaction outside
+                // an execution strategy. See ExecuteResilientlyAsync for the full reason.
+                return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+                {
+                    await using var transaction = await _context.Database
+                        .BeginTransactionAsync(IsolationLevel.Snapshot, cancellationToken);
+                    var result = await read();
+                    await transaction.CommitAsync(cancellationToken);
+                    return result;
+                });
+            }
+            catch (SqlException ex) when (ex.Number == SnapshotIsolationNotEnabled)
+            {
+                _logger.LogWarning(
+                    "{Report} was built without a consistent snapshot because snapshot isolation is not enabled on this "
+                    + "database. Concurrent activity can make the report appear not to balance. Apply the "
+                    + "EnableSnapshotIsolationForReports migration.", reportName);
+                return await read();
+            }
+        }
+
+        public Task<ProfitAndLossDto> GetProfitAndLossAsync(
+            int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken = default) =>
+            ReadConsistentlyAsync(
+                () => GetProfitAndLossCoreAsync(projectId, from, to, cancellationToken),
+                "Profit and Loss", cancellationToken);
+
+        private async Task<ProfitAndLossDto> GetProfitAndLossCoreAsync(
+            int? projectId, DateTime? from, DateTime? to, CancellationToken cancellationToken)
         {
             string? projectName = null;
             if (projectId.HasValue)
@@ -61,8 +130,14 @@ namespace DAMS.Application.Services
             Money(await FixedAssetChargeQuery(projectId, from, toExclusive, null, false)
                 .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m);
 
-        public async Task<BalanceSheetDto> GetBalanceSheetAsync(
-            int? projectId, DateTime asAt, CancellationToken cancellationToken = default)
+        public Task<BalanceSheetDto> GetBalanceSheetAsync(
+            int? projectId, DateTime asAt, CancellationToken cancellationToken = default) =>
+            ReadConsistentlyAsync(
+                () => GetBalanceSheetCoreAsync(projectId, asAt, cancellationToken),
+                "Balance Sheet", cancellationToken);
+
+        private async Task<BalanceSheetDto> GetBalanceSheetCoreAsync(
+            int? projectId, DateTime asAt, CancellationToken cancellationToken)
         {
             await EnsureProjectExistsAsync(projectId, cancellationToken);
             var date = ValidateReportDate(asAt == default ? PakistanTime.Today : asAt.Date, "As-at date");
@@ -128,8 +203,14 @@ namespace DAMS.Application.Services
             return result;
         }
 
-        public async Task<TrialBalanceDto> GetTrialBalanceAsync(
-            int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken = default)
+        public Task<TrialBalanceDto> GetTrialBalanceAsync(
+            int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken = default) =>
+            ReadConsistentlyAsync(
+                () => GetTrialBalanceCoreAsync(projectId, asAt, monthsBack, cancellationToken),
+                "Trial Balance", cancellationToken);
+
+        private async Task<TrialBalanceDto> GetTrialBalanceCoreAsync(
+            int? projectId, DateTime asAt, int monthsBack, CancellationToken cancellationToken)
         {
             await EnsureProjectExistsAsync(projectId, cancellationToken);
             if (monthsBack is < 0 or > 60) throw new InvalidOperationException("Months back must be between 0 and 60.");
@@ -226,9 +307,24 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<TrialBalanceAccountDetailsDto> GetTrialBalanceDetailsAsync(
+        /// <summary>
+        /// Needs the consistent read as much as the statements do, and for a sharper reason: the
+        /// summary row and the ledger below it are built from deliberately different queries so
+        /// that the reconciliation check at the end is a real one. Under READ COMMITTED a payment
+        /// committing between those two reads makes them disagree by its amount and the drill-down
+        /// fails with "could not be reconciled with the Trial Balance" — the exact wording reserved
+        /// for a genuine accounting fault.
+        /// </summary>
+        public Task<TrialBalanceAccountDetailsDto> GetTrialBalanceDetailsAsync(
             string accountKey, int? projectId, DateTime? from, DateTime? to,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            ReadConsistentlyAsync(
+                () => GetTrialBalanceDetailsCoreAsync(accountKey, projectId, from, to, cancellationToken),
+                "Trial Balance account details", cancellationToken);
+
+        private async Task<TrialBalanceAccountDetailsDto> GetTrialBalanceDetailsCoreAsync(
+            string accountKey, int? projectId, DateTime? from, DateTime? to,
+            CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(accountKey))
                 throw new InvalidOperationException("Account key is required.");

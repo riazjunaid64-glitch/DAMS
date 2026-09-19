@@ -1365,7 +1365,15 @@ namespace DAMS.Application.Services
                     linkedRequest.ReviewedByUserId = ctx.UserId;
                     linkedRequest.CustomerId = customerId;
                     linkedRequest.UpdatedAt = DateTime.UtcNow;
-                    booking.BookingRequestId = linkedRequest.Id;
+
+                    // On the Booking row, not on the response DTO that CreateBookingAsync just
+                    // handed back — that object is thrown away at the end of this method, and with
+                    // it the only trace of which website request this booking came from. Everything
+                    // downstream reads the stored column: the request's "view booking" link, the
+                    // portal ownership audit, and the approval notification.
+                    var bookingRow = await _context.Bookings
+                        .FirstAsync(b => b.Id == booking.Id, cancellationToken);
+                    bookingRow.BookingRequestId = linkedRequest.Id;
                 }
 
                 lead.Stage = LeadStage.Won;

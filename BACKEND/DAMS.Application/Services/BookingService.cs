@@ -101,17 +101,25 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Provide an existing customer id or new customer details.");
             }
 
-            var agreedSalePrice = dto.AgreedSalePrice ?? unit.Price;
+            // Every figure below is quantised to the scale its column holds BEFORE it is validated
+            // or compared, for the reason spelled out on applicationAmountReceived: a decision made
+            // on more places than the database keeps is a decision about a number that will not
+            // survive the save. A required amount of 100000.004 accepts a payment of 100000.00,
+            // stores both as 100000.00, and still leaves the booking awaiting its booking amount —
+            // fully paid on every screen that reads the row back, and unfinishable.
+            var agreedSalePrice = Money(dto.AgreedSalePrice ?? unit.Price);
             if (agreedSalePrice <= 0m)
                 throw new InvalidOperationException("Agreed sale price must be greater than zero.");
 
-            var discountPercent = dto.DiscountPercent ?? 0m;
+            // decimal(5,2), and it is what DiscountAmount is derived from: an unrounded percent
+            // makes the stored discount irreproducible from the stored percent.
+            var discountPercent = Money(dto.DiscountPercent ?? 0m);
             if (discountPercent < 0m || discountPercent > 100m)
                 throw new InvalidOperationException("Discount percent must be between 0 and 100.");
-            var discount = Math.Round(agreedSalePrice * discountPercent / 100m, 2, MidpointRounding.AwayFromZero);
+            var discount = Money(agreedSalePrice * discountPercent / 100m);
             var netSalePrice = agreedSalePrice - discount;
 
-            var bookingAmountRequired = dto.BookingAmountRequired ?? 0m;
+            var bookingAmountRequired = Money(dto.BookingAmountRequired ?? 0m);
             if (bookingAmountRequired < 0m)
                 throw new InvalidOperationException("Booking amount required cannot be negative.");
             if (bookingAmountRequired > netSalePrice)
@@ -122,6 +130,9 @@ namespace DAMS.Application.Services
             // places than the column holds decides the milestone on a number the database will not
             // keep — leaving a booking that has been paid in full still awaiting its booking amount.
             var applicationAmountReceived = Money(dto.ApplicationAmountReceived ?? 0m);
+            // The form snapshot keeps "nothing was received" distinct from "zero was received".
+            decimal? applicationAmountSnapshot =
+                dto.ApplicationAmountReceived.HasValue ? applicationAmountReceived : null;
             if (applicationAmountReceived < 0m)
                 throw new InvalidOperationException("Application amount received cannot be negative.");
             if (applicationAmountReceived > 0m && bookingAmountRequired <= 0m)
@@ -167,12 +178,12 @@ namespace DAMS.Application.Services
                 ApartmentCategory = string.IsNullOrWhiteSpace(dto.ApartmentCategory) ? null : dto.ApartmentCategory.Trim(),
                 Tower = string.IsNullOrWhiteSpace(dto.Tower) ? null : dto.Tower.Trim(),
                 IsCorner = dto.IsCorner,
-                PricePerSft = dto.PricePerSft,
+                PricePerSft = dto.PricePerSft.HasValue ? Money(dto.PricePerSft.Value) : null,
                 DiscountPercent = discountPercent,
                 ReferenceId = string.IsNullOrWhiteSpace(dto.ReferenceId) ? null : dto.ReferenceId.Trim(),
                 PaymentThrough = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
                 ApplicationPaymentType = string.IsNullOrWhiteSpace(dto.ApplicationPaymentType) ? null : dto.ApplicationPaymentType.Trim(),
-                ApplicationAmountReceived = dto.ApplicationAmountReceived,
+                ApplicationAmountReceived = applicationAmountSnapshot,
                 ApplicationDate = dto.ApplicationDate,
                 NextOfKinName = string.IsNullOrWhiteSpace(dto.NextOfKinName) ? null : dto.NextOfKinName.Trim(),
                 NextOfKinRelation = string.IsNullOrWhiteSpace(dto.NextOfKinRelation) ? null : dto.NextOfKinRelation.Trim(),
@@ -344,23 +355,30 @@ namespace DAMS.Application.Services
             if (booking.Status != BookingStatus.AwaitingBookingAmount)
                 throw new InvalidOperationException("Financial terms can only be edited while the booking is awaiting the booking amount.");
 
-            if (dto.AgreedSalePrice <= 0m)
+            // Quantised before validating, exactly as on the create path: this edit re-decides
+            // whether the booking amount is covered, and that decision has to be made on the
+            // figures the columns will actually hold.
+            var agreedSalePrice = Money(dto.AgreedSalePrice);
+            var bookingAmountRequired = Money(dto.BookingAmountRequired);
+            var discountPercent = Money(dto.DiscountPercent);
+
+            if (agreedSalePrice <= 0m)
                 throw new InvalidOperationException("Agreed sale price must be greater than zero.");
 
-            if (dto.BookingAmountRequired <= 0m)
+            if (bookingAmountRequired <= 0m)
                 throw new InvalidOperationException("Booking amount required must be greater than zero.");
 
-            if (dto.DiscountPercent < 0m || dto.DiscountPercent > 100m)
+            if (discountPercent < 0m || discountPercent > 100m)
                 throw new InvalidOperationException("Discount percent must be between 0 and 100.");
 
-            var discountAmount = Math.Round(dto.AgreedSalePrice * dto.DiscountPercent / 100m, 2, MidpointRounding.AwayFromZero);
-            var netSalePrice = dto.AgreedSalePrice - discountAmount;
+            var discountAmount = Money(agreedSalePrice * discountPercent / 100m);
+            var netSalePrice = agreedSalePrice - discountAmount;
 
-            if (dto.BookingAmountRequired > netSalePrice)
+            if (bookingAmountRequired > netSalePrice)
                 throw new InvalidOperationException("Booking amount required cannot exceed the discounted sale price.");
 
             // Cannot drop the required amount below what has already been received.
-            if (dto.BookingAmountRequired < booking.BookingAmountReceived)
+            if (bookingAmountRequired < booking.BookingAmountReceived)
                 throw new InvalidOperationException(
                     $"Booking amount required cannot be less than the amount already received ({booking.BookingAmountReceived:0.00}).");
 
@@ -380,13 +398,13 @@ namespace DAMS.Application.Services
                     + "on this booking in payments and rebate credits. Reverse or adjust the rebate credit before "
                     + "reducing the price — a rebate already granted as a credit cannot be granted again as a discount.");
 
-            booking.AgreedSalePrice = dto.AgreedSalePrice;
-            booking.DiscountPercent = dto.DiscountPercent;
+            booking.AgreedSalePrice = agreedSalePrice;
+            booking.DiscountPercent = discountPercent;
             booking.DiscountAmount = discountAmount;
             booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
-            booking.BookingAmountRequired = dto.BookingAmountRequired;
+            booking.BookingAmountRequired = bookingAmountRequired;
             booking.BookingAmountDueDate = dto.BookingAmountDueDate;
-            booking.TotalInstallmentAmount = netSalePrice - dto.BookingAmountRequired;
+            booking.TotalInstallmentAmount = netSalePrice - bookingAmountRequired;
             booking.UpdatedAt = DateTime.UtcNow;
 
             // If terms now mean the booking amount is already covered, advance the workflow. Covered
