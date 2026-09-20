@@ -202,8 +202,10 @@ namespace DAMS.Application.Services
             }
 
             // Tax withheld from a capital supplier is owed to FBR on the same terms as an expense, so
-            // reducing it needs the same check against what has already been deposited.
+            // reducing it — or moving it to another month — needs the same dated check against what
+            // has already been deposited.
             var withheldBefore = purchase.WhtAmount;
+            var withheldDateBefore = purchase.Date;
 
             try
             {
@@ -233,7 +235,7 @@ namespace DAMS.Application.Services
                     // After the date and amount have moved, because both feed the threshold and so the tax.
                     await ApplyAssetPurchaseDetailsAsync(purchase, dto, cancellationToken);
                     await _whtService.EnsureDepositsStayCoveredAsync(
-                        purchase.WhtAmount - withheldBefore, cancellationToken);
+                        withheldDateBefore, withheldBefore, purchase.Date, purchase.WhtAmount, cancellationToken);
 
                     await _context.SaveChangesAsync(cancellationToken);
                     if (thresholdGuard != null)
@@ -267,7 +269,8 @@ namespace DAMS.Application.Services
                 // reads — so it takes the lock for the same reason deleting an expense does.
                 await using var thresholdGuard = await BeginThresholdGuardAsync(
                     new[] { purchase.VendorId }, cancellationToken, serialisable: purchase.WhtAmount > 0m);
-                await _whtService.EnsureDepositsStayCoveredAsync(-purchase.WhtAmount, cancellationToken);
+                await _whtService.EnsureDepositsStayCoveredAsync(
+                    purchase.Date, purchase.WhtAmount, null, 0m, cancellationToken);
                 _context.AssetPurchases.Remove(purchase);
                 await _context.SaveChangesAsync(cancellationToken);
                 if (thresholdGuard != null)

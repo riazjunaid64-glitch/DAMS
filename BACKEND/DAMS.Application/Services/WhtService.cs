@@ -453,9 +453,11 @@ namespace DAMS.Application.Services
             var totalDepositedAllTime = await DepositQuery(null, null)
                 .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
             var openingPayable = await OpeningPayableAsync(cancellationToken);
-            // These three all-time values are exactly what OutstandingPayableAsync would query
-            // again. Reusing them removes four duplicate commands from every WHT summary while
-            // keeping the deposit-validation helper authoritative for mutation paths.
+            // The all-time outstanding figure, computed from values this summary has already read
+            // rather than by querying them a second time. It is the same formula the Tax Payable
+            // account balance and the Balance Sheet line use, so no screen can contradict another
+            // about what the business owes. The mutation paths ask a narrower, dated question and
+            // go through PayableTimelineAsync instead.
             var outstanding = Math.Round(
                 openingPayable + totalWithheldAllTime - totalDepositedAllTime,
                 2,
@@ -700,7 +702,7 @@ namespace DAMS.Application.Services
             {
                 var depositDate = await FinanceDateRules.ResolveAsync(
                     _context, dto.DepositDate, "Deposit date", cancellationToken);
-                await ValidateDepositAsync(dto, null, cancellationToken);
+                await ValidateDepositAsync(dto, null, depositDate, cancellationToken);
                 await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, null, cancellationToken);
 
                 var deposit = new WhtDeposit
@@ -747,7 +749,7 @@ namespace DAMS.Application.Services
                 var depositDate = dto.DepositDate.HasValue
                     ? await FinanceDateRules.ResolveAsync(_context, dto.DepositDate, "Deposit date", cancellationToken)
                     : deposit.DepositDate;
-                await ValidateDepositAsync(dto, id, cancellationToken);
+                await ValidateDepositAsync(dto, id, depositDate, cancellationToken);
                 ApplyConcurrencyToken(deposit, dto.ConcurrencyToken);
                 await _accountService.EnsureSelectableAsync(dto.FinanceAccountId, deposit.FinanceAccountId, cancellationToken);
 
@@ -809,7 +811,8 @@ namespace DAMS.Application.Services
                 ConcurrencyToken = Convert.ToBase64String(d.RowVersion)
             });
 
-        private async Task ValidateDepositAsync(SaveWhtDepositDto dto, int? excludingId, CancellationToken cancellationToken)
+        private async Task ValidateDepositAsync(
+            SaveWhtDepositDto dto, int? excludingId, DateTime depositDate, CancellationToken cancellationToken)
         {
             if (dto.Amount <= 0m)
                 throw new InvalidOperationException("Deposit amount must be greater than zero.");
@@ -834,11 +837,16 @@ namespace DAMS.Application.Services
             // this business has: DAMS deposits tax it has already deducted from a supplier, it does
             // not make advance tax payments. Refusing the excess here is what stops the Balance Sheet,
             // the Trial Balance and the payable summary from having to explain a negative liability.
-            var outstanding = await OutstandingPayableAsync(excludingId, cancellationToken);
+            //
+            // Measured across the deposit's whole tail, not as at today: Tax Payable is reported AS
+            // AT a date, so it has to stay non-negative on every date, not only the latest one. See
+            // LowestPayableFromAsync for why neither "as at today" nor "as at the deposit's own
+            // date" is sufficient on its own.
+            var outstanding = await LowestPayableFromAsync(excludingId, depositDate, cancellationToken);
             if (dto.Amount > outstanding)
                 throw new InvalidOperationException(outstanding <= 0m
-                    ? "There is no withheld tax outstanding to deposit. Record the expenses the tax was deducted from first."
-                    : $"Deposit exceeds the withholding tax outstanding. At most {outstanding:N2} can be deposited.");
+                    ? $"No withheld tax is available to a deposit dated {depositDate:dd MMM yyyy}. Record the expenses the tax was deducted from first, dated on or before the deposit."
+                    : $"Deposit exceeds the withholding tax available to a deposit dated {depositDate:dd MMM yyyy}. At most {outstanding:N2} can be deposited on that date.");
         }
 
         /// <summary>
@@ -853,24 +861,50 @@ namespace DAMS.Application.Services
         /// vanish underneath it.
         /// </para>
         /// <para>
-        /// The change is signed, and only a reduction is checked: raising the tax or adding a record
-        /// can never uncover a deposit. The caller passes the delta rather than the new figure
-        /// because the stored total is read here, inside the caller's serialisable window, where the
-        /// deposit path cannot slip between the read and the write.
+        /// The change is a REPLACEMENT, not a signed total, because Tax Payable is reported as at a
+        /// date and therefore has to hold on every date, not merely all-time. A signed total cannot
+        /// express a date move at all: take 10,000 withheld on 10 August, 10,000 deposited on
+        /// 20 August and another 100,000 withheld in September, then drag the August expense into
+        /// September without touching its amount. All-time nothing changes — the delta is zero and
+        /// the old check returned before it read anything — yet August now shows nothing withheld
+        /// against 10,000 deposited, a Tax Payable of minus 10,000 that September's withholding
+        /// hides from the all-time balance. The same move is what makes a reduction checked against
+        /// the all-time total insufficient rather than merely imprecise.
+        /// </para>
+        /// <para>
+        /// So both sides are applied to the dated timeline and every date is compared against what
+        /// it held before. The comparison is per date, not against the timeline's overall low point:
+        /// data predating this check may already hold a negative day, and taking the worst day as
+        /// the bar would let a change open a SECOND negative period anywhere above it and pass —
+        /// January at minus 50,000 would wave through a fresh minus 10,000 in August. A date may
+        /// therefore be left as bad as it already was, but no date may be made worse.
         /// </para>
         /// </summary>
         public async Task EnsureDepositsStayCoveredAsync(
-            decimal withheldChange, CancellationToken cancellationToken = default)
+            DateTime? previousDate, decimal previousWithheld,
+            DateTime? newDate, decimal newWithheld,
+            CancellationToken cancellationToken = default)
         {
-            if (withheldChange >= 0m) return;
-            var remaining = await OutstandingPayableAsync(null, cancellationToken);
-            var proposed = Math.Round(remaining + withheldChange, 2, MidpointRounding.AwayFromZero);
-            if (proposed < 0m)
-                throw new InvalidOperationException(
-                    $"This change would take Tax Payable to {proposed:N2}. Only {remaining:N2} is "
-                    + "still outstanding, so removing more than that would leave less withholding "
-                    + "tax recorded than the amount already deposited with FBR. Correct or remove "
-                    + "the FBR deposit first, then change this record.");
+            var removes = previousWithheld > 0m && previousDate.HasValue;
+            if (!removes) return;
+            // Nothing is being taken away from any date: same day, same tax, or more of it.
+            if (newWithheld >= previousWithheld && newDate?.Date == previousDate!.Value.Date) return;
+
+            var timeline = await PayableTimelineAsync(null, cancellationToken);
+            var replacement = new List<PayableDelta> { new(previousDate!.Value.Date, -previousWithheld) };
+            if (newWithheld > 0m && newDate.HasValue)
+                replacement.Add(new PayableDelta(newDate.Value.Date, newWithheld));
+
+            var opening = await OpeningPayableAsync(cancellationToken);
+            var uncovered = FirstUncoveredDate(timeline, replacement, opening);
+            if (uncovered == null) return;
+
+            throw new InvalidOperationException(
+                $"This change would take Tax Payable to {uncovered.Value.Balance:N2} as at "
+                + $"{uncovered.Value.Date:dd MMM yyyy}. Withholding tax already deposited with FBR "
+                + "would be left with less recorded withholding behind it on that date, which a "
+                + "liability cannot show. Correct or remove the FBR deposit first, then change "
+                + "this record.");
         }
 
         /// <summary>
@@ -890,26 +924,132 @@ namespace DAMS.Application.Services
                 .Where(a => a.SystemRole == FinanceSystemAccountRole.TaxPayable)
                 .SumAsync(a => (decimal?)a.OpeningBalance, cancellationToken) ?? 0m;
 
+        /// <summary>One day's net movement on Tax Payable: tax withheld raises it, a deposit lowers it.</summary>
+        private sealed record PayableDelta(DateTime Date, decimal Amount);
+
         /// <summary>
-        /// Everything still owed to FBR: the opening liability brought over at cutover, plus tax
-        /// withheld on expenses AND on asset purchases, less what has been deposited. The one
-        /// authoritative formula — identical to the Tax Payable account balance and the Balance
-        /// Sheet line, so no screen can contradict another about what the business owes.
+        /// The LOWEST the Tax Payable balance ever gets on or after <paramref name="from"/>, given
+        /// the records that exist now — which is exactly how much a deposit dated
+        /// <paramref name="from"/> is allowed to be.
         /// <para>
-        /// All-time on purpose: the liability is a running balance, not a period total, so an August
-        /// deposit can legitimately clear tax withheld in July.
+        /// A deposit lowers the balance from its own date onwards and forever after, so it has to be
+        /// affordable not just on its date but at every later point too, and the worst of those
+        /// points is neither reliably the first nor reliably today. Checking only today lets an
+        /// August deposit be settled out of September's withholding, leaving the August Balance
+        /// Sheet reporting a negative liability. Checking only the deposit's own date is no better
+        /// in the other direction: with 30,000 withheld in August and 20,000 in September, a 50,000
+        /// deposit dated September passes on its date, and a further 30,000 dated August then passes
+        /// on ITS date — 80,000 handed to FBR against 50,000 ever withheld. Only the minimum across
+        /// the whole tail refuses both.
+        /// </para>
+        /// <para>
+        /// The window is closed at the bottom by nothing at all: everything ever withheld before
+        /// <paramref name="from"/> is still available to pay, because an August deposit legitimately
+        /// clears tax withheld in July. Only the tail is scanned for the minimum.
         /// </para>
         /// </summary>
-        private async Task<decimal> OutstandingPayableAsync(int? excludingDepositId, CancellationToken cancellationToken)
+        private async Task<decimal> LowestPayableFromAsync(
+            int? excludingDepositId, DateTime from, CancellationToken cancellationToken)
         {
+            var start = from.Date;
             var opening = await OpeningPayableAsync(cancellationToken);
-            var withheld = (await WithheldExpenses(null, null).SumAsync(e => (decimal?)e.WhtAmount, cancellationToken) ?? 0m)
-                + (await WithheldPurchases(null, null).SumAsync(p => (decimal?)p.WhtAmount, cancellationToken) ?? 0m);
-            var deposited = await _context.WhtDeposits.AsNoTracking()
-                .Where(d => !excludingDepositId.HasValue || d.Id != excludingDepositId.Value)
-                .SumAsync(d => (decimal?)d.Amount, cancellationToken) ?? 0m;
-            return Math.Round(opening + withheld - deposited, 2, MidpointRounding.AwayFromZero);
+            var timeline = await PayableTimelineAsync(excludingDepositId, cancellationToken);
+
+            // The balance as it stands on the deposit's own date — everything up to and including
+            // that day, because tax withheld on the 10th can be deposited on the 10th.
+            var running = opening;
+            foreach (var point in timeline.Where(p => p.Date <= start))
+                running += point.Amount;
+
+            var lowest = running;
+            foreach (var point in timeline.Where(p => p.Date > start))
+            {
+                running += point.Amount;
+                if (running < lowest) lowest = running;
+            }
+            return Math.Round(lowest, 2, MidpointRounding.AwayFromZero);
         }
+
+        /// <summary>
+        /// Every dated movement on Tax Payable as it currently stands, one entry per date that has
+        /// any — tax withheld on expenses and on asset purchases raises it, a deposit lowers it.
+        /// Excludes the opening balance, which is the running total's starting point rather than a
+        /// movement, so a caller adds <see cref="OpeningPayableAsync"/> itself.
+        /// <para>
+        /// The one definition of the dated liability. Both guards read it: the deposit side asking
+        /// how much a deposit on a given date may be, the source side asking whether a replacement
+        /// drives any date negative. Two spellings of this would be two answers to the same
+        /// question, and the invariant only holds if both sides mean the same thing by it.
+        /// </para>
+        /// </summary>
+        private async Task<List<PayableDelta>> PayableTimelineAsync(
+            int? excludingDepositId, CancellationToken cancellationToken)
+        {
+            // Grouped in SQL: one row per date that has movement, not one per record.
+            var expenseDeltas = await WithheldExpenses(null, null)
+                .GroupBy(e => e.Date)
+                .Select(g => new { Date = g.Key, Amount = g.Sum(e => e.WhtAmount) })
+                .ToListAsync(cancellationToken);
+            var purchaseDeltas = await WithheldPurchases(null, null)
+                .GroupBy(p => p.Date)
+                .Select(g => new { Date = g.Key, Amount = g.Sum(p => p.WhtAmount) })
+                .ToListAsync(cancellationToken);
+            var depositDeltas = await _context.WhtDeposits.AsNoTracking()
+                .Where(d => !excludingDepositId.HasValue || d.Id != excludingDepositId.Value)
+                .GroupBy(d => d.DepositDate)
+                .Select(g => new { Date = g.Key, Amount = g.Sum(d => d.Amount) })
+                .ToListAsync(cancellationToken);
+
+            return expenseDeltas.Select(d => new PayableDelta(d.Date, d.Amount))
+                .Concat(purchaseDeltas.Select(d => new PayableDelta(d.Date, d.Amount)))
+                // Negated here, not in SQL: a deposit lowers the liability.
+                .Concat(depositDeltas.Select(d => new PayableDelta(d.Date, -d.Amount)))
+                .GroupBy(d => d.Date.Date)
+                .Select(g => new PayableDelta(g.Key, g.Sum(d => d.Amount)))
+                .OrderBy(d => d.Date)
+                .ToList();
+        }
+
+        /// <summary>
+        /// The earliest date on which <paramref name="replacement"/> would leave Tax Payable both
+        /// negative AND lower than it already was, or null when no date is made worse.
+        /// <para>
+        /// Both balances are walked together across the union of their dates, so the comparison is
+        /// date against its own self before the change. A date that was already negative and is not
+        /// pushed further down passes: the change did not cause it, and refusing an unrelated
+        /// correction is not how that gets cleaned up.
+        /// </para>
+        /// </summary>
+        private static (DateTime Date, decimal Balance)? FirstUncoveredDate(
+            IEnumerable<PayableDelta> timeline, IEnumerable<PayableDelta> replacement, decimal opening)
+        {
+            var before = timeline.GroupBy(d => d.Date).ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+            var after = Combine(timeline, replacement);
+            var runningBefore = opening;
+            var runningAfter = opening;
+            foreach (var point in after)
+            {
+                runningBefore += before.GetValueOrDefault(point.Date);
+                runningAfter += point.Amount;
+                var balance = Money(runningAfter);
+                if (balance < 0m && balance < Money(runningBefore)) return (point.Date, balance);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The timeline as it would stand after the change: one entry per date either side moves,
+        /// so a date present in only one of them still gets walked.
+        /// </summary>
+        private static List<PayableDelta> Combine(
+            IEnumerable<PayableDelta> timeline, IEnumerable<PayableDelta> replacement) =>
+            timeline.Concat(replacement)
+                .GroupBy(d => d.Date)
+                .Select(g => new PayableDelta(g.Key, g.Sum(d => d.Amount)))
+                .OrderBy(d => d.Date)
+                .ToList();
+
+        private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
         // The same shape LoanService uses: a serializable window around a read-then-write, skipped on
         // a non-relational provider and when the caller already owns a transaction.

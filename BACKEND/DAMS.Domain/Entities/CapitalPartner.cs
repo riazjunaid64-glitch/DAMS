@@ -31,6 +31,13 @@ namespace DAMS.Domain.Entities
         public string? Reference { get; set; }
         public string? Note { get; set; }
         public decimal? ProfitSharePercentSnapshot { get; set; }
+
+        /// <summary>Identifies the one attempt that wrote this row, so a re-execution of the same
+        /// attempt recognises its own committed work instead of moving the money again. Nullable
+        /// because every movement recorded before this existed has no answer, and none can be
+        /// given one. See <see cref="Payment.IdempotencyKey"/> — the same reason.</summary>
+        public string? IdempotencyKey { get; set; }
+
         public int? RecordedByUserId { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

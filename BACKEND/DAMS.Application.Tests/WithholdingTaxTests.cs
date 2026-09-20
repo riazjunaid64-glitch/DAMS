@@ -308,6 +308,102 @@ public sealed class WithholdingTaxTests
     }
 
     /// <summary>
+    /// Moving an expense's DATE past its own deposit is refused, even though its amount does not
+    /// change. Tax Payable is reported as at a date, so it has to stay non-negative on every date —
+    /// not merely all-time.
+    /// <para>
+    /// This is what a signed all-time delta cannot express. Withhold 10,000 in the first month,
+    /// deposit exactly that in the second, then drag the expense into the third: nothing changes
+    /// all-time, the delta is zero, and the old check returned before reading anything. The second
+    /// month is nonetheless left reporting 10,000 deposited against nothing withheld — a Tax
+    /// Payable of minus 10,000 that any later withholding would hide from the all-time balance.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task MovingAnExpenseDate_PastItsOwnDeposit_IsRefused_ThoughTheAmountIsUnchanged()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var withheldOn = PakistanTime.Today.AddDays(-40);
+        var depositedOn = PakistanTime.Today.AddDays(-30);
+        var created = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m, Date = withheldOn }, 1);
+        await Wht(context).CreateDepositAsync(new SaveWhtDepositDto
+        { FinanceAccountId = 1, Amount = 10_000m, DepositDate = depositedOn, ChallanNumber = "CPR-MOVE" }, 1);
+        Assert.Equal(10_000m, created.WhtAmount);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => finance.UpdateExpenseAsync(
+            created.Id, new UpdateExpenseDto
+            {
+                FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m,
+                Date = PakistanTime.Today.AddDays(-10)
+            }));
+
+        Assert.Contains("already deposited with FBR", error.Message);
+        Assert.Contains(depositedOn.ToString("dd MMM yyyy"), error.Message);
+        Assert.Equal(withheldOn, (await context.Expenses.AsNoTracking().SingleAsync()).Date);
+
+        // The same move within the deposit's cover is still allowed: the deposit never sits on a
+        // date the tax is missing from, so nothing about it is uncovered.
+        var moved = await finance.UpdateExpenseAsync(created.Id, new UpdateExpenseDto
+        {
+            FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m,
+            Date = depositedOn.AddDays(-1)
+        });
+
+        Assert.Equal(depositedOn.AddDays(-1), moved.Date);
+        Assert.Equal(0m, (await Wht(context).GetPayableSummaryAsync(null, null)).OutstandingPayable);
+    }
+
+    /// <summary>
+    /// A period that is already negative does not become a licence to open a second one.
+    /// <para>
+    /// Judging the change by the timeline's overall low point is not enough: an old negative day
+    /// sitting below anything the change could reach makes every shallower new hole invisible. Here
+    /// July is already at minus 50,000 from data that predates the check, and a date move would
+    /// open a fresh minus 10,000 in August — which leaves the overall minimum untouched at minus
+    /// 50,000 and so passed. The comparison has to be date against its own former self.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AnAlreadyNegativePeriod_DoesNotExcuse_OpeningASecondOneElsewhere()
+    {
+        await using var context = Seeded();
+        var finance = Finance(context);
+        var legacyDeposit = new DateTime(2026, 7, 5);
+        var covered = new DateTime(2026, 7, 10);
+        var withheldOn = new DateTime(2026, 8, 10);
+        var depositedOn = new DateTime(2026, 8, 20);
+
+        // 60,000 withheld, leaving the payable comfortably positive from 10 July onwards.
+        await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 6_000_000m, Date = covered }, 1);
+        var moving = await finance.CreateExpenseAsync(new CreateExpenseDto
+        { FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m, Date = withheldOn }, 1);
+        Assert.Equal(10_000m, moving.WhtAmount);
+
+        // Seeded straight onto the context: these are exactly the shape of rows that predate the
+        // guard, and the deposit path would refuse to create the first of them today.
+        context.WhtDeposits.AddRange(
+            new WhtDeposit { FinanceAccountId = 1, Amount = 50_000m, DepositDate = legacyDeposit, ChallanNumber = "OLD" },
+            new WhtDeposit { FinanceAccountId = 1, Amount = 20_000m, DepositDate = depositedOn, ChallanNumber = "CPR-2" });
+        await context.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => finance.UpdateExpenseAsync(
+            moving.Id, new UpdateExpenseDto
+            {
+                FinanceAccountId = 1, VendorId = 1, CategoryId = 1, Amount = 1_000_000m,
+                Date = new DateTime(2026, 9, 10)
+            }));
+
+        // Named by the date it actually breaks — 20 August, not the deeper July low point that the
+        // change never touches.
+        Assert.Contains("20 Aug 2026", error.Message);
+        Assert.Contains("already deposited with FBR", error.Message);
+        Assert.Equal(withheldOn, (await context.Expenses.AsNoTracking().SingleAsync(e => e.Id == moving.Id)).Date);
+    }
+
+    /// <summary>
     /// Raising the tax is never blocked — more withheld can only widen the gap the deposit sits in.
     /// This is the case the guard must not get in the way of.
     /// </summary>
