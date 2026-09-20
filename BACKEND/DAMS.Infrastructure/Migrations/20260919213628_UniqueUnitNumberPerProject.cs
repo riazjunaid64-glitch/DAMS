@@ -43,10 +43,24 @@ namespace DAMS.Infrastructure.Migrations
             // Leading ones do not, which is the hole.)
             //
             // So the column is canonicalised to match the service, and both the collision check and
-            // the index are taken on that canonical form. The character set is the one .NET's
-            // string.Trim() removes in practice; TRIM(chars FROM x) needs SQL Server 2017 or later.
+            // the index are taken on that canonical form. TRIM(chars FROM x) needs SQL Server 2017
+            // or later.
+            //
+            // The character set below is not "the usual spaces" — it is EXACTLY the 25 code points
+            // char.IsWhiteSpace returns true for, which is what string.Trim() removes. A shorter
+            // list would put the two sides back out of step for anything it omitted: a legacy
+            // U+3000 or U+2009 would survive the trim here, be stripped by the service on the next
+            // save, and the same apartment would hold two rows under a unique index that sees two
+            // different keys. Note U+200B ZERO WIDTH SPACE is deliberately absent — .NET does not
+            // treat it as whitespace, so neither may this.
             migrationBuilder.Sql("""
-                DECLARE @trim nvarchar(20) = CHAR(9) + CHAR(10) + CHAR(11) + CHAR(12) + CHAR(13) + NCHAR(160) + N' ';
+                DECLARE @trim nvarchar(50) =
+                    CHAR(9) + CHAR(10) + CHAR(11) + CHAR(12) + CHAR(13) + N' '
+                    + NCHAR(133) + NCHAR(160) + NCHAR(5760)
+                    + NCHAR(8192) + NCHAR(8193) + NCHAR(8194) + NCHAR(8195) + NCHAR(8196)
+                    + NCHAR(8197) + NCHAR(8198) + NCHAR(8199) + NCHAR(8200) + NCHAR(8201)
+                    + NCHAR(8202) + NCHAR(8232) + NCHAR(8233) + NCHAR(8239) + NCHAR(8287)
+                    + NCHAR(12288);
 
                 IF EXISTS (SELECT 1 FROM [Units]
                            GROUP BY [ProjectId], TRIM(@trim FROM [UnitNumber]) HAVING COUNT(*) > 1)

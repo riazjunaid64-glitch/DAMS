@@ -77,8 +77,7 @@ namespace DAMS.Application.Services
                 partner.Name = dto.Name.Trim(); partner.Cnic = Clean(dto.Cnic); partner.Ntn = Clean(dto.Ntn);
                 partner.ProfitSharePercent = Share(dto.ProfitSharePercent); partner.FinanceAccountId = dto.FinanceAccountId;
                 partner.IsActive = dto.IsActive; partner.JoinedDate = dto.JoinedDate?.Date; partner.ExitedDate = dto.ExitedDate?.Date;
-                await _context.SaveChangesAsync(cancellationToken);
-                if (guard != null) await guard.CommitAsync(cancellationToken);
+                await SaveAndCommitAsync(guard, cancellationToken);
             });
             return await GetAsync(id, cancellationToken);
         }
@@ -88,22 +87,30 @@ namespace DAMS.Application.Services
             if (dto.Partners.Count == 0 || dto.Partners.GroupBy(p => p.Id).Any(g => g.Count() > 1))
                 throw new InvalidOperationException("Provide each partner once.");
             var ids = dto.Partners.Select(p => p.Id).ToList();
-            var partners = await _context.CapitalPartners.Where(p => ids.Contains(p.Id)).ToListAsync(cancellationToken);
-            if (partners.Count != ids.Count) throw new InvalidOperationException("A capital partner no longer exists.");
-            foreach (var input in dto.Partners)
+            if (dto.Partners.Any(p => p.ProfitSharePercent < 0m || p.ProfitSharePercent > 100m))
+                throw new InvalidOperationException("A profit share must be between 0% and 100%.");
+            // This deactivates partners, and an inactive partner may not take a movement — the same
+            // condition RecordTransactionAsync re-reads under each partner's row lock. Taking those
+            // locks here is what stops a contribution being recorded against a partner this call is
+            // in the middle of retiring. Ascending order, so two of these can never deadlock.
+            await ExecuteResilientlyAsync(async () =>
             {
-                if (input.ProfitSharePercent < 0m || input.ProfitSharePercent > 100m)
-                    throw new InvalidOperationException("A profit share must be between 0% and 100%.");
-                var partner = partners.Single(p => p.Id == input.Id);
-                ApplyToken(partner, input.ConcurrencyToken);
-                partner.ProfitSharePercent = Share(input.ProfitSharePercent);
-                partner.IsActive = input.IsActive;
-            }
-            var activeOthers = await _context.CapitalPartners.AsNoTracking()
-                .Where(p => p.IsActive && !ids.Contains(p.Id)).SumAsync(p => (decimal?)p.ProfitSharePercent, cancellationToken) ?? 0m;
-            var total = activeOthers + partners.Where(p => p.IsActive).Sum(p => p.ProfitSharePercent);
-            ValidateShareTotal(total);
-            await _context.SaveChangesAsync(cancellationToken);
+                await using var guard = await BeginPartnerGuardAsync(ids, cancellationToken);
+                var partners = await _context.CapitalPartners.Where(p => ids.Contains(p.Id)).ToListAsync(cancellationToken);
+                if (partners.Count != ids.Count) throw new InvalidOperationException("A capital partner no longer exists.");
+                foreach (var input in dto.Partners)
+                {
+                    var partner = partners.Single(p => p.Id == input.Id);
+                    ApplyToken(partner, input.ConcurrencyToken);
+                    partner.ProfitSharePercent = Share(input.ProfitSharePercent);
+                    partner.IsActive = input.IsActive;
+                }
+                var activeOthers = await _context.CapitalPartners.AsNoTracking()
+                    .Where(p => p.IsActive && !ids.Contains(p.Id)).SumAsync(p => (decimal?)p.ProfitSharePercent, cancellationToken) ?? 0m;
+                var total = activeOthers + partners.Where(p => p.IsActive).Sum(p => p.ProfitSharePercent);
+                ValidateShareTotal(total);
+                await SaveAndCommitAsync(guard, cancellationToken);
+            });
             return await GetAllAsync(true, cancellationToken);
         }
 
@@ -176,25 +183,18 @@ namespace DAMS.Application.Services
             // next month's contribution inflates today's bank, and one dated before the committed
             // opening balances is counted twice.
             await FinanceDateRules.EnsureAsync(_context, dto.Date, "Transaction date", cancellationToken);
-            var partner = await _context.CapitalPartners.AsNoTracking().Include(p => p.FinanceAccount)
-                .SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
-                ?? throw new InvalidOperationException("Capital partner not found.");
-            if (!partner.IsActive) throw new InvalidOperationException("Transactions cannot be recorded for an inactive capital partner.");
-            if (!partner.FinanceAccountId.HasValue) throw new InvalidOperationException("Link the partner to a capital account first.");
-            if (partner.FinanceAccount is not { IsActive: true, Type: FinanceAccountType.Capital })
-                throw new InvalidOperationException("The linked capital account must be active and have the Capital type.");
+            // Checked here for a friendly refusal before anything is written to disk, and checked
+            // AGAIN under the row lock at save time — everything it reads is something another
+            // request can change in between.
+            var partner = await LoadRecordablePartnerAsync(id, cancellationToken);
             var movesCash = dto.Type is CapitalTransactionType.Contribution or CapitalTransactionType.Withdrawal;
             if (movesCash && !dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("A contribution or withdrawal must name the cash or bank account used.");
             if (movesCash) await _accounts.EnsureSelectableAsync(dto.FinanceAccountId!.Value, null, cancellationToken);
             if (!movesCash && dto.FinanceAccountId.HasValue)
                 throw new InvalidOperationException("Only contributions and withdrawals use a cash or bank account.");
-            if (dto.Type == CapitalTransactionType.ProfitShare)
-            {
-                var activeTotal = await _context.CapitalPartners.AsNoTracking().Where(p => p.IsActive)
-                    .SumAsync(p => (decimal?)p.ProfitSharePercent, cancellationToken) ?? 0m;
-                ValidateShareTotal(activeTotal);
-            }
+            var allocatesProfit = dto.Type == CapitalTransactionType.ProfitShare;
+            if (allocatesProfit) await ValidateActiveShareTotalAsync(cancellationToken);
             var transaction = new CapitalTransaction
             {
                 CapitalPartnerId = id, Type = dto.Type, Amount = Money(dto.Amount), Date = dto.Date.Date,
@@ -212,7 +212,7 @@ namespace DAMS.Application.Services
                 _context.CapitalTransactions.Add(transaction);
                 try
                 {
-                    await SaveUnderPartnerGuardAsync(id, partner.FinanceAccountId, cancellationToken);
+                    await SaveMovementUnderPartnerGuardAsync(id, partner.FinanceAccountId, allocatesProfit, cancellationToken);
                 }
                 catch
                 {
@@ -222,7 +222,7 @@ namespace DAMS.Application.Services
                 return MapTransaction(transaction);
             }
             _context.CapitalTransactions.Add(transaction);
-            await SaveUnderPartnerGuardAsync(id, partner.FinanceAccountId, cancellationToken);
+            await SaveMovementUnderPartnerGuardAsync(id, partner.FinanceAccountId, allocatesProfit, cancellationToken);
             return MapTransaction(transaction);
         }
 
@@ -270,19 +270,67 @@ namespace DAMS.Application.Services
         /// movement is refused because the link now differs.
         /// </para>
         /// </summary>
-        private Task SaveUnderPartnerGuardAsync(int partnerId, int? expectedAccountId, CancellationToken cancellationToken) =>
+        private Task SaveMovementUnderPartnerGuardAsync(
+            int partnerId, int? expectedAccountId, bool allocatesProfit, CancellationToken cancellationToken) =>
             ExecuteResilientlyAsync(async () =>
             {
                 await using var guard = await BeginPartnerGuardAsync(partnerId, cancellationToken);
-                var linkedAccountId = await _context.CapitalPartners.AsNoTracking()
-                    .Where(p => p.Id == partnerId).Select(p => p.FinanceAccountId)
-                    .SingleOrDefaultAsync(cancellationToken);
-                if (linkedAccountId != expectedAccountId)
+                // The whole of the partner's eligibility is re-read here, not just the account id.
+                // Every condition the caller checked — is the partner still active, is it still
+                // linked, is the linked account still an active Capital account — belongs to a row
+                // another request can change, and the earlier check was made before this lock
+                // existed. Re-running it under the lock is what makes it mean anything.
+                var partner = await LoadRecordablePartnerAsync(partnerId, cancellationToken);
+                if (partner.FinanceAccountId != expectedAccountId)
                     throw new InvalidOperationException(
                         "This partner's capital account changed while the movement was being saved, so it was not recorded. Reload the partner and try again.");
-                await _context.SaveChangesAsync(cancellationToken);
-                if (guard != null) await guard.CommitAsync(cancellationToken);
+                if (allocatesProfit) await ValidateActiveShareTotalAsync(cancellationToken);
+                await SaveAndCommitAsync(guard, cancellationToken);
             });
+
+        /// <summary>
+        /// Saves and commits as one unit that a retry can safely repeat.
+        /// <para>
+        /// <c>SaveChangesAsync</c> accepts the changes on success by default, which marks every
+        /// entity Unchanged. If the COMMIT then fails transiently, the execution strategy re-runs
+        /// the delegate and the second pass finds nothing left to save: it commits an empty
+        /// transaction and returns cleanly, so the caller is handed a movement — with an Id on it —
+        /// that the rolled-back transaction never persisted. Holding the changes back until the
+        /// commit has actually succeeded is what makes the retry re-insert instead of no-op.
+        /// </para>
+        /// <para>
+        /// This does not cover a commit that succeeded on the server while the acknowledgement was
+        /// lost; nothing below the idempotency key can tell that case from a genuine failure.
+        /// </para>
+        /// </summary>
+        private async Task SaveAndCommitAsync(IDbContextTransaction? guard, CancellationToken cancellationToken)
+        {
+            await _context.SaveChangesAsync(acceptAllChangesOnSuccess: guard == null, cancellationToken);
+            if (guard == null) return;
+            await guard.CommitAsync(cancellationToken);
+            _context.ChangeTracker.AcceptAllChanges();
+        }
+
+        /// <summary>
+        /// The partner a movement may be recorded against, with every eligibility rule applied.
+        /// Called once before any file is written, so a refusal is friendly and leaves nothing on
+        /// disk, and once under the row lock, where it is authoritative.
+        /// </summary>
+        private async Task<CapitalPartner> LoadRecordablePartnerAsync(int id, CancellationToken cancellationToken)
+        {
+            var partner = await _context.CapitalPartners.AsNoTracking().Include(p => p.FinanceAccount)
+                .SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
+                ?? throw new InvalidOperationException("Capital partner not found.");
+            if (!partner.IsActive) throw new InvalidOperationException("Transactions cannot be recorded for an inactive capital partner.");
+            if (!partner.FinanceAccountId.HasValue) throw new InvalidOperationException("Link the partner to a capital account first.");
+            if (partner.FinanceAccount is not { IsActive: true, Type: FinanceAccountType.Capital })
+                throw new InvalidOperationException("The linked capital account must be active and have the Capital type.");
+            return partner;
+        }
+
+        private async Task ValidateActiveShareTotalAsync(CancellationToken cancellationToken) =>
+            ValidateShareTotal(await _context.CapitalPartners.AsNoTracking().Where(p => p.IsActive)
+                .SumAsync(p => (decimal?)p.ProfitSharePercent, cancellationToken) ?? 0m);
 
         /// <summary>
         /// Locks one partner row for the life of the returned transaction, in the shape
@@ -290,15 +338,21 @@ namespace DAMS.Application.Services
         /// non-relational provider, where the tests run single-threaded anyway, and null when the
         /// caller already owns a transaction — the outer one is the window in that case.
         /// </summary>
-        private async Task<IDbContextTransaction?> BeginPartnerGuardAsync(int partnerId, CancellationToken cancellationToken)
+        private Task<IDbContextTransaction?> BeginPartnerGuardAsync(int partnerId, CancellationToken cancellationToken) =>
+            BeginPartnerGuardAsync([partnerId], cancellationToken);
+
+        private async Task<IDbContextTransaction?> BeginPartnerGuardAsync(
+            IEnumerable<int> partnerIds, CancellationToken cancellationToken)
         {
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
+            var ids = partnerIds.Distinct().OrderBy(id => id).ToList();
             var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
             try
             {
-                await _context.Database.ExecuteSqlRawAsync(
-                    "SELECT TOP 1 1 FROM [CapitalPartners] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
-                    new object[] { partnerId }, cancellationToken);
+                foreach (var id in ids)
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "SELECT TOP 1 1 FROM [CapitalPartners] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
+                        new object[] { id }, cancellationToken);
                 return transaction;
             }
             catch

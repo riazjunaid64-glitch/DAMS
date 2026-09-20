@@ -872,10 +872,12 @@ namespace DAMS.Application.Services
         /// the all-time total insufficient rather than merely imprecise.
         /// </para>
         /// <para>
-        /// So both sides are applied to the dated timeline and the whole of it is scanned. A change
-        /// is refused only when it drives the balance negative somewhere it was not already: data
-        /// predating this check may hold a negative day of its own, and an unrelated correction
-        /// elsewhere is not the place to force that to be cleaned up.
+        /// So both sides are applied to the dated timeline and every date is compared against what
+        /// it held before. The comparison is per date, not against the timeline's overall low point:
+        /// data predating this check may already hold a negative day, and taking the worst day as
+        /// the bar would let a change open a SECOND negative period anywhere above it and pass —
+        /// January at minus 50,000 would wave through a fresh minus 10,000 in August. A date may
+        /// therefore be left as bad as it already was, but no date may be made worse.
         /// </para>
         /// </summary>
         public async Task EnsureDepositsStayCoveredAsync(
@@ -894,16 +896,15 @@ namespace DAMS.Application.Services
                 replacement.Add(new PayableDelta(newDate.Value.Date, newWithheld));
 
             var opening = await OpeningPayableAsync(cancellationToken);
-            var lowestBefore = LowestBalance(timeline, [], opening);
-            var lowestAfter = LowestBalance(timeline, replacement, opening);
-            if (lowestAfter >= 0m || lowestAfter >= lowestBefore) return;
+            var uncovered = FirstUncoveredDate(timeline, replacement, opening);
+            if (uncovered == null) return;
 
-            var worstDate = WorstDate(timeline, replacement, opening);
             throw new InvalidOperationException(
-                $"This change would take Tax Payable to {lowestAfter:N2} as at {worstDate:dd MMM yyyy}. "
-                + "Withholding tax already deposited with FBR would be left with less recorded "
-                + "withholding behind it on that date, which a liability cannot show. Correct or "
-                + "remove the FBR deposit first, then change this record.");
+                $"This change would take Tax Payable to {uncovered.Value.Balance:N2} as at "
+                + $"{uncovered.Value.Date:dd MMM yyyy}. Withholding tax already deposited with FBR "
+                + "would be left with less recorded withholding behind it on that date, which a "
+                + "liability cannot show. Correct or remove the FBR deposit first, then change "
+                + "this record.");
         }
 
         /// <summary>
@@ -1010,40 +1011,36 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// The lowest the running Tax Payable balance reaches across the whole timeline once
-        /// <paramref name="replacement"/> is folded in — the balance as the reports would draw it
-        /// after the change, at its worst date.
+        /// The earliest date on which <paramref name="replacement"/> would leave Tax Payable both
+        /// negative AND lower than it already was, or null when no date is made worse.
+        /// <para>
+        /// Both balances are walked together across the union of their dates, so the comparison is
+        /// date against its own self before the change. A date that was already negative and is not
+        /// pushed further down passes: the change did not cause it, and refusing an unrelated
+        /// correction is not how that gets cleaned up.
+        /// </para>
         /// </summary>
-        private static decimal LowestBalance(
+        private static (DateTime Date, decimal Balance)? FirstUncoveredDate(
             IEnumerable<PayableDelta> timeline, IEnumerable<PayableDelta> replacement, decimal opening)
         {
-            var lowest = opening;
-            var running = opening;
-            foreach (var point in Combine(timeline, replacement))
+            var before = timeline.GroupBy(d => d.Date).ToDictionary(g => g.Key, g => g.Sum(d => d.Amount));
+            var after = Combine(timeline, replacement);
+            var runningBefore = opening;
+            var runningAfter = opening;
+            foreach (var point in after)
             {
-                running += point.Amount;
-                if (running < lowest) lowest = running;
+                runningBefore += before.GetValueOrDefault(point.Date);
+                runningAfter += point.Amount;
+                var balance = Money(runningAfter);
+                if (balance < 0m && balance < Money(runningBefore)) return (point.Date, balance);
             }
-            return Math.Round(lowest, 2, MidpointRounding.AwayFromZero);
+            return null;
         }
 
-        /// <summary>The date <see cref="LowestBalance"/> bottoms out on, for the refusal message.</summary>
-        private static DateTime WorstDate(
-            IEnumerable<PayableDelta> timeline, IEnumerable<PayableDelta> replacement, decimal opening)
-        {
-            var lowest = opening;
-            var running = opening;
-            var worst = DateTime.MinValue;
-            foreach (var point in Combine(timeline, replacement))
-            {
-                running += point.Amount;
-                if (running >= lowest) continue;
-                lowest = running;
-                worst = point.Date;
-            }
-            return worst;
-        }
-
+        /// <summary>
+        /// The timeline as it would stand after the change: one entry per date either side moves,
+        /// so a date present in only one of them still gets walked.
+        /// </summary>
         private static List<PayableDelta> Combine(
             IEnumerable<PayableDelta> timeline, IEnumerable<PayableDelta> replacement) =>
             timeline.Concat(replacement)
@@ -1051,6 +1048,8 @@ namespace DAMS.Application.Services
                 .Select(g => new PayableDelta(g.Key, g.Sum(d => d.Amount)))
                 .OrderBy(d => d.Date)
                 .ToList();
+
+        private static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 
         // The same shape LoanService uses: a serializable window around a read-then-write, skipped on
         // a non-relational provider and when the caller already owns a transaction.
