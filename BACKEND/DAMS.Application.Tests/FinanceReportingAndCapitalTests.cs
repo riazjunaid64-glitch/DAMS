@@ -331,6 +331,77 @@ public sealed class FinanceReportingAndCapitalTests
         Assert.Equal(25m, partner.ProfitSharePercent);
     }
 
+    /// <summary>
+    /// A partner's opening capital is history too, even with no movements recorded against it.
+    /// <para>
+    /// Nothing stores it on the partner: the statement and the partner list both read it from
+    /// <c>FinanceAccount.OpeningBalance</c> of whichever capital account is linked at the moment of
+    /// the read, and that figure is written once, when the opening balances are committed. So
+    /// relinking a partner that has no <c>CapitalTransaction</c> rows at all still rewrites what it
+    /// brought into the business — the guard cannot decide on movements alone.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task RelinkingAPartner_IsRefused_WhenItsAccountCarriesCommittedOpeningCapital()
+    {
+        await using var context = Context();
+        var brought = new FinanceAccount
+        {
+            Name = "A Capital", AccountHolderName = "A", Type = FinanceAccountType.Capital,
+            IsActive = true, OpeningBalance = 500_000m
+        };
+        var empty = new FinanceAccount
+        {
+            Name = "B Capital", AccountHolderName = "B", Type = FinanceAccountType.Capital, IsActive = true
+        };
+        var partner = new CapitalPartner { Name = "A", ProfitSharePercent = 100m, FinanceAccount = brought };
+        context.AddRange(empty, partner);
+        await context.SaveChangesAsync();
+        var partners = new CapitalPartnerService(context, new FinanceAccountService(context), TestAttachments.Writer());
+        var loaded = (await partners.GetAllAsync(true)).Single();
+        Assert.Equal(500_000m, loaded.OpeningBalance);
+        Assert.Empty(await context.CapitalTransactions.ToListAsync());
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => partners.UpdateAsync(
+            partner.Id, new SaveCapitalPartnerDto
+            {
+                Name = "A", ProfitSharePercent = 100m, IsActive = true,
+                FinanceAccountId = empty.Id, ConcurrencyToken = loaded.ConcurrencyToken
+            }));
+
+        Assert.Contains("committed opening capital", error.Message);
+        // The link, and therefore the opening capital the statement reads through it, is untouched.
+        Assert.Equal(brought.Id, (await context.CapitalPartners.AsNoTracking().SingleAsync()).FinanceAccountId);
+        Assert.Equal(500_000m, (await partners.GetAllAsync(true)).Single().OpeningBalance);
+    }
+
+    /// <summary>
+    /// The same partner with nothing behind it can still be pointed at the right account — the
+    /// guard refuses rewriting history, not ordinary setup.
+    /// </summary>
+    [Fact]
+    public async Task RelinkingAPartner_IsAllowed_WhenNeitherMovementsNorOpeningCapitalExist()
+    {
+        await using var context = Context();
+        var first = new FinanceAccount
+        { Name = "A Capital", AccountHolderName = "A", Type = FinanceAccountType.Capital, IsActive = true };
+        var second = new FinanceAccount
+        { Name = "B Capital", AccountHolderName = "B", Type = FinanceAccountType.Capital, IsActive = true };
+        var partner = new CapitalPartner { Name = "A", ProfitSharePercent = 100m, FinanceAccount = first };
+        context.AddRange(second, partner);
+        await context.SaveChangesAsync();
+        var partners = new CapitalPartnerService(context, new FinanceAccountService(context), TestAttachments.Writer());
+        var loaded = (await partners.GetAllAsync(true)).Single();
+
+        var relinked = await partners.UpdateAsync(partner.Id, new SaveCapitalPartnerDto
+        {
+            Name = "A", ProfitSharePercent = 100m, IsActive = true,
+            FinanceAccountId = second.Id, ConcurrencyToken = loaded.ConcurrencyToken
+        });
+
+        Assert.Equal(second.Id, relinked.FinanceAccountId);
+    }
+
     [Fact]
     public async Task TrialBalance_UsesRealCompletedMonthEnds()
     {

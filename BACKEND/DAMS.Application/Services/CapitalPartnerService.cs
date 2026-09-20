@@ -4,6 +4,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace DAMS.Application.Services
 {
@@ -49,17 +50,36 @@ namespace DAMS.Application.Services
         public async Task<CapitalPartnerDto> UpdateAsync(int id, SaveCapitalPartnerDto dto, CancellationToken cancellationToken = default)
         {
             Validate(dto);
-            var partner = await _context.CapitalPartners.SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
-                ?? throw new InvalidOperationException("Capital partner not found.");
-            ApplyToken(partner, dto.ConcurrencyToken);
-            await EnsureCapitalAccountNotRewritten(partner, dto.FinanceAccountId, cancellationToken);
-            await EnsureNameUnique(dto.Name, id, cancellationToken);
-            await ValidateCapitalAccount(dto.FinanceAccountId, id, cancellationToken);
-            await ValidateProspectiveTotal(id, dto.ProfitSharePercent, dto.IsActive, partner.IsActive, cancellationToken);
-            partner.Name = dto.Name.Trim(); partner.Cnic = Clean(dto.Cnic); partner.Ntn = Clean(dto.Ntn);
-            partner.ProfitSharePercent = Share(dto.ProfitSharePercent); partner.FinanceAccountId = dto.FinanceAccountId;
-            partner.IsActive = dto.IsActive; partner.JoinedDate = dto.JoinedDate?.Date; partner.ExitedDate = dto.ExitedDate?.Date;
-            await _context.SaveChangesAsync(cancellationToken);
+            // "Has this partner any history?" and "write the new link" have to be one indivisible
+            // step. The RowVersion cannot make them one: recording a movement inserts into
+            // CapitalTransactions and never touches the partner row, so the token this update
+            // carries is still current even though the answer it was checked against has changed.
+            // Two callers therefore interleave cleanly — the guard reads no movements, a
+            // contribution is recorded, and the relink commits on top of it — which is the very
+            // history rewrite the guard exists to refuse. RecordTransactionAsync takes the same
+            // row lock, so one of the two now always sees the other.
+            await ExecuteResilientlyAsync(async () =>
+            {
+                await using var guard = await BeginPartnerGuardAsync(id, cancellationToken);
+                // Read from the database rather than from whatever the tracked entity holds: the
+                // execution strategy can re-run this delegate, and on a second pass the tracked
+                // partner already carries the values the first pass assigned.
+                var before = await _context.CapitalPartners.AsNoTracking().Where(p => p.Id == id)
+                    .Select(p => new { p.FinanceAccountId, p.IsActive }).SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new InvalidOperationException("Capital partner not found.");
+                var partner = await _context.CapitalPartners.SingleOrDefaultAsync(p => p.Id == id, cancellationToken)
+                    ?? throw new InvalidOperationException("Capital partner not found.");
+                ApplyToken(partner, dto.ConcurrencyToken);
+                await EnsureCapitalAccountNotRewritten(id, before.FinanceAccountId, dto.FinanceAccountId, cancellationToken);
+                await EnsureNameUnique(dto.Name, id, cancellationToken);
+                await ValidateCapitalAccount(dto.FinanceAccountId, id, cancellationToken);
+                await ValidateProspectiveTotal(id, dto.ProfitSharePercent, dto.IsActive, before.IsActive, cancellationToken);
+                partner.Name = dto.Name.Trim(); partner.Cnic = Clean(dto.Cnic); partner.Ntn = Clean(dto.Ntn);
+                partner.ProfitSharePercent = Share(dto.ProfitSharePercent); partner.FinanceAccountId = dto.FinanceAccountId;
+                partner.IsActive = dto.IsActive; partner.JoinedDate = dto.JoinedDate?.Date; partner.ExitedDate = dto.ExitedDate?.Date;
+                await _context.SaveChangesAsync(cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+            });
             return await GetAsync(id, cancellationToken);
         }
 
@@ -192,7 +212,7 @@ namespace DAMS.Application.Services
                 _context.CapitalTransactions.Add(transaction);
                 try
                 {
-                    await _context.SaveChangesAsync(cancellationToken);
+                    await SaveUnderPartnerGuardAsync(id, partner.FinanceAccountId, cancellationToken);
                 }
                 catch
                 {
@@ -202,7 +222,7 @@ namespace DAMS.Application.Services
                 return MapTransaction(transaction);
             }
             _context.CapitalTransactions.Add(transaction);
-            await _context.SaveChangesAsync(cancellationToken);
+            await SaveUnderPartnerGuardAsync(id, partner.FinanceAccountId, cancellationToken);
             return MapTransaction(transaction);
         }
 
@@ -236,6 +256,67 @@ namespace DAMS.Application.Services
             await _context.SaveChangesAsync(cancellationToken);
             await _attachments.ForgetAsync(storedFileName);
         }
+
+        /// <summary>
+        /// Commits a pending capital movement while holding the partner's row lock, having first
+        /// confirmed the capital account it was validated against is still the one linked.
+        /// <para>
+        /// The movement carries no capital account of its own: every report attributes its equity
+        /// side through <c>CapitalPartner.FinanceAccountId</c> as it reads at the moment of the
+        /// read. Recording against a link that has just moved would therefore post this equity to
+        /// an account the money never went to. <see cref="UpdateAsync"/> holds the same lock while
+        /// it decides whether a relink is allowed, so between the two of them the loser always sees
+        /// what the winner did — either the relink is refused because a movement now exists, or the
+        /// movement is refused because the link now differs.
+        /// </para>
+        /// </summary>
+        private Task SaveUnderPartnerGuardAsync(int partnerId, int? expectedAccountId, CancellationToken cancellationToken) =>
+            ExecuteResilientlyAsync(async () =>
+            {
+                await using var guard = await BeginPartnerGuardAsync(partnerId, cancellationToken);
+                var linkedAccountId = await _context.CapitalPartners.AsNoTracking()
+                    .Where(p => p.Id == partnerId).Select(p => p.FinanceAccountId)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (linkedAccountId != expectedAccountId)
+                    throw new InvalidOperationException(
+                        "This partner's capital account changed while the movement was being saved, so it was not recorded. Reload the partner and try again.");
+                await _context.SaveChangesAsync(cancellationToken);
+                if (guard != null) await guard.CommitAsync(cancellationToken);
+            });
+
+        /// <summary>
+        /// Locks one partner row for the life of the returned transaction, in the shape
+        /// <c>FinanceService.BeginThresholdGuardAsync</c> uses for a vendor. Null on a
+        /// non-relational provider, where the tests run single-threaded anyway, and null when the
+        /// caller already owns a transaction — the outer one is the window in that case.
+        /// </summary>
+        private async Task<IDbContextTransaction?> BeginPartnerGuardAsync(int partnerId, CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null) return null;
+            var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                await _context.Database.ExecuteSqlRawAsync(
+                    "SELECT TOP 1 1 FROM [CapitalPartners] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {0}",
+                    new object[] { partnerId }, cancellationToken);
+                return transaction;
+            }
+            catch
+            {
+                await transaction.DisposeAsync();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Runs one transactional unit through the retrying execution strategy. Not optional: the
+        /// API registers SQL Server with <c>EnableRetryOnFailure</c>, and EF refuses to run anything
+        /// inside a caller-opened transaction unless the whole unit is retriable. The delegate holds
+        /// only database work on entities the change tracker already knows about — the attachment is
+        /// written to disk outside it, so a retry cannot orphan a second copy.
+        /// </summary>
+        private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         private async Task<CapitalPartnerDto> GetAsync(int id, CancellationToken cancellationToken)
         {
@@ -355,15 +436,31 @@ namespace DAMS.Application.Services
         /// forward, it rewrites history: a PKR 100,000 contribution keeps its bank debit and
         /// either lands on an account that never received it, or — when the link is cleared —
         /// disappears from equity altogether, leaving the Balance Sheet out by that amount.
-        /// A partner with no movements yet has no history to rewrite, so it can still be linked.
+        /// A partner with no history at all against the account can still be linked elsewhere.
+        /// <para>
+        /// Movements are not the only history. A partner's opening capital is not stored on the
+        /// partner either — <see cref="GetStatementAsync"/> and <c>LoadPartnersAsync</c> both read
+        /// it from <c>FinanceAccount.OpeningBalance</c> of whichever account is linked today, which
+        /// is written once, when the opening balance set is committed. So a partner carrying a
+        /// committed opening balance and no movements at all is still holding history: relink it
+        /// and that opening capital silently becomes someone else's, or none of it stays anyone's.
+        /// </para>
         /// </summary>
-        private async Task EnsureCapitalAccountNotRewritten(CapitalPartner partner, int? accountId, CancellationToken cancellationToken)
+        private async Task EnsureCapitalAccountNotRewritten(
+            int partnerId, int? currentAccountId, int? newAccountId, CancellationToken cancellationToken)
         {
-            if (partner.FinanceAccountId == accountId) return;
-            if (!await _context.CapitalTransactions.AnyAsync(t => t.CapitalPartnerId == partner.Id, cancellationToken)) return;
-            throw new InvalidOperationException(accountId.HasValue
-                ? "This partner already has capital movements recorded, so its capital account cannot be changed — every past movement would move to the new account. Deactivate this partner and create a new one against the new account instead."
-                : "This partner already has capital movements recorded, so its capital account cannot be removed — the money they put in would vanish from equity while the bank balance kept it. Deactivate the partner instead.");
+            if (currentAccountId == newAccountId) return;
+            if (await _context.CapitalTransactions.AnyAsync(t => t.CapitalPartnerId == partnerId, cancellationToken))
+                throw new InvalidOperationException(newAccountId.HasValue
+                    ? "This partner already has capital movements recorded, so its capital account cannot be changed — every past movement would move to the new account. Deactivate this partner and create a new one against the new account instead."
+                    : "This partner already has capital movements recorded, so its capital account cannot be removed — the money they put in would vanish from equity while the bank balance kept it. Deactivate the partner instead.");
+            if (!currentAccountId.HasValue) return;
+            var openingCapital = await _context.FinanceAccounts.AsNoTracking()
+                .Where(a => a.Id == currentAccountId.Value)
+                .Select(a => (decimal?)a.OpeningBalance).SingleOrDefaultAsync(cancellationToken) ?? 0m;
+            if (openingCapital != 0m)
+                throw new InvalidOperationException(
+                    $"This partner's capital account carries {openingCapital:N2} of committed opening capital, so the account cannot be changed — that opening balance is the partner's own history and would move with the link. Deactivate this partner and create a new one against the new account instead.");
         }
 
         private async Task ValidateCapitalAccount(int? accountId, int? partnerId, CancellationToken cancellationToken)

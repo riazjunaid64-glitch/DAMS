@@ -44,12 +44,23 @@ namespace DAMS.Application.Interfaces
         Task ApplyToAssetPurchaseAsync(Domain.Entities.AssetPurchase purchase, decimal? requestedRate, decimal? requestedAmount, string? overrideReason, CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Refuses a signed reduction in withheld tax that would drop the total below what has
-        /// already been deposited with FBR — the source-record half of the "Tax Payable is never
-        /// negative" invariant that deposit creation guards from the other side. Call it inside the
-        /// same transaction as the change it is checking.
+        /// Refuses a change to a source record that would drop Tax Payable below zero on any date —
+        /// the source-record half of the "Tax Payable is never negative" invariant that deposit
+        /// creation guards from the other side. Call it inside the same transaction as the change
+        /// it is checking, and before the change is saved.
+        /// <para>
+        /// The change is expressed as a replacement — what the record withheld and when, against
+        /// what it will withhold and when — because Tax Payable is reported AS AT a date. Moving a
+        /// record's date without touching its amount changes nothing all-time yet can strand a
+        /// deposit in a month that no longer has the withholding behind it, so a signed all-time
+        /// total cannot express the question. Pass a null date with zero tax for the side that does
+        /// not exist: creating a record has no previous side, deleting one has no new side.
+        /// </para>
         /// </summary>
-        Task EnsureDepositsStayCoveredAsync(decimal withheldChange, CancellationToken cancellationToken = default);
+        Task EnsureDepositsStayCoveredAsync(
+            DateTime? previousDate, decimal previousWithheld,
+            DateTime? newDate, decimal newWithheld,
+            CancellationToken cancellationToken = default);
 
         Task<FinanceSettingsDto> GetSettingsAsync(CancellationToken cancellationToken = default);
         Task<FinanceSettingsDto> UpdateSettingsAsync(SaveFinanceSettingsDto dto, string? actorName, CancellationToken cancellationToken = default);

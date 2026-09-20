@@ -1566,7 +1566,10 @@ namespace DAMS.Application.Services
 
             // Tax already withheld on this row is the amount FBR may have been paid, so a lower
             // figure has to be checked against the deposits — which needs the serialisable window.
+            // The date is captured with it: moving the tax to another month uncovers a deposit just
+            // as a reduction does, and both are only visible against where the tax sat before.
             var withheldBefore = expense.WhtAmount;
+            var withheldDateBefore = expense.Date;
 
             try
             {
@@ -1598,7 +1601,7 @@ namespace DAMS.Application.Services
                     // and therefore the tax.
                     await ApplyExpenseDetailsAsync(expense, dto, cancellationToken);
                     await _whtService.EnsureDepositsStayCoveredAsync(
-                        expense.WhtAmount - withheldBefore, cancellationToken);
+                        withheldDateBefore, withheldBefore, expense.Date, expense.WhtAmount, cancellationToken);
 
                     await _context.SaveChangesAsync(cancellationToken);
                     if (thresholdGuard != null)
@@ -1636,7 +1639,8 @@ namespace DAMS.Application.Services
                     new[] { expense.VendorId }, cancellationToken, serialisable: expense.WhtAmount > 0m);
                 // Deleting takes the whole withheld amount off the payable. If FBR has already been
                 // paid it, there is nothing left for the deposit to have come from.
-                await _whtService.EnsureDepositsStayCoveredAsync(-expense.WhtAmount, cancellationToken);
+                await _whtService.EnsureDepositsStayCoveredAsync(
+                    expense.Date, expense.WhtAmount, null, 0m, cancellationToken);
                 _context.Expenses.Remove(expense);
                 await _context.SaveChangesAsync(cancellationToken);
                 if (thresholdGuard != null)
