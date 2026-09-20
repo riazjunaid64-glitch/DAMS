@@ -332,6 +332,50 @@ public sealed class FinanceReportingAndCapitalTests
     }
 
     /// <summary>
+    /// A replayed attempt records the contribution once, not twice.
+    /// <para>
+    /// The movement is saved inside a retrying execution strategy. A commit that reached the server
+    /// but lost its acknowledgement is indistinguishable from one that never happened, so the
+    /// strategy re-runs the delegate — and because the Id is store-generated it carries no memory
+    /// of the attempt that asked for it, so a blind re-insert banks the partner's money a second
+    /// time under a second id. Calling the internal overload twice with one attempt key IS that
+    /// replay; it is the same seam RecordBookingAmountPaymentAsync uses for a customer payment.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task AReplayedCapitalMovement_IsRecordedOnce_NotTwice()
+    {
+        await using var context = Context();
+        var bank = new FinanceAccount { Name = "Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true };
+        var capital = new FinanceAccount { Name = "A Capital", AccountHolderName = "A", Type = FinanceAccountType.Capital, IsActive = true };
+        var partner = new CapitalPartner { Name = "A", ProfitSharePercent = 100m, FinanceAccount = capital };
+        context.AddRange(bank, partner);
+        await context.SaveChangesAsync();
+        var accounts = new FinanceAccountService(context);
+        var partners = new CapitalPartnerService(context, accounts, TestAttachments.Writer());
+        var movement = new SaveCapitalTransactionDto
+        {
+            Type = CapitalTransactionType.Contribution, Amount = 100_000m,
+            Date = new DateTime(2026, 7, 1), FinanceAccountId = bank.Id
+        };
+
+        var first = await partners.RecordTransactionAsync(partner.Id, movement, 1, "capital-movement:replay-1");
+        var replay = await partners.RecordTransactionAsync(partner.Id, movement, 1, "capital-movement:replay-1");
+
+        // The replay is handed back the row the first attempt committed, not a new one.
+        Assert.Equal(first.Id, replay.Id);
+        Assert.Equal(100_000m, Assert.Single(await context.CapitalTransactions.AsNoTracking().ToListAsync()).Amount);
+        // And the money moved once on both sides of the entry.
+        Assert.Equal(100_000m, (await accounts.GetByIdAsync(bank.Id)).CurrentBalance);
+        Assert.Equal(100_000m, (await accounts.GetByIdAsync(capital.Id)).CurrentBalance);
+
+        // A genuinely separate attempt still records its own movement.
+        var second = await partners.RecordTransactionAsync(partner.Id, movement, 1, "capital-movement:replay-2");
+        Assert.NotEqual(first.Id, second.Id);
+        Assert.Equal(200_000m, (await accounts.GetByIdAsync(capital.Id)).CurrentBalance);
+    }
+
+    /// <summary>
     /// A partner's opening capital is history too, even with no movements recorded against it.
     /// <para>
     /// Nothing stores it on the partner: the statement and the partner list both read it from

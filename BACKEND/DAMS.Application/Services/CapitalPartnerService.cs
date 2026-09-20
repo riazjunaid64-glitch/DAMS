@@ -159,8 +159,32 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId,
-            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
+        public Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId,
+            FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default) =>
+            RecordTransactionAsync(id, dto, userId, $"capital-movement:{Guid.NewGuid():N}", attachment, cancellationToken);
+
+        /// <summary>
+        /// <paramref name="attemptKey"/> names this ONE attempt to move the partner's capital,
+        /// created before the retrying wrapper is entered so that every re-execution of the
+        /// delegate carries the same value.
+        /// <para>
+        /// A commit that reached SQL Server but whose acknowledgement was lost is indistinguishable
+        /// from one that never happened, so the execution strategy replays the delegate. Holding the
+        /// changes back until the commit succeeds is what makes the ROLLED-BACK case re-insert
+        /// correctly — and it is exactly what makes the COMMITTED case insert a second time, because
+        /// the Id is store-generated and carries no memory of the attempt that asked for it. One
+        /// contribution would be banked twice, under two ids, both valid-looking.
+        /// </para>
+        /// <para>
+        /// The endpoint's <c>Idempotency-Key</c> filter cannot see this: it guards the HTTP call
+        /// from outside, and the replay happens wholly within one such call. So the attempt leaves
+        /// its name on the row and looks for that name first — the same two-layer arrangement
+        /// <see cref="BookingService.RecordBookingAmountPaymentAsync(int, DTOs.BookingDtos.RecordBookingAmountPaymentDto, int, string, CancellationToken)"/>
+        /// uses for a customer payment.
+        /// </para>
+        /// </summary>
+        internal async Task<CapitalTransactionDto> RecordTransactionAsync(int id, SaveCapitalTransactionDto dto, int? userId,
+            string attemptKey, FinanceAttachmentUpload? attachment = null, CancellationToken cancellationToken = default)
         {
             if (!Enum.IsDefined(dto.Type)) throw new InvalidOperationException("Capital transaction type is invalid.");
             // Every other type is double-sided: a contribution or withdrawal moves the named bank
@@ -200,7 +224,7 @@ namespace DAMS.Application.Services
                 CapitalPartnerId = id, Type = dto.Type, Amount = Money(dto.Amount), Date = dto.Date.Date,
                 FinanceAccountId = dto.FinanceAccountId, Reference = Clean(dto.Reference), Note = Clean(dto.Note),
                 ProfitSharePercentSnapshot = dto.Type == CapitalTransactionType.ProfitShare ? partner.ProfitSharePercent : null,
-                RecordedByUserId = userId, CreatedAt = DateTime.UtcNow
+                IdempotencyKey = attemptKey, RecordedByUserId = userId, CreatedAt = DateTime.UtcNow
             };
             // Stored after every validation above and before the save, so a rejected amount or date
             // never leaves a file on disk, and a save that fails takes its upload with it.
@@ -212,18 +236,18 @@ namespace DAMS.Application.Services
                 _context.CapitalTransactions.Add(transaction);
                 try
                 {
-                    await SaveMovementUnderPartnerGuardAsync(id, partner.FinanceAccountId, allocatesProfit, cancellationToken);
+                    return MapTransaction(await SaveMovementUnderPartnerGuardAsync(
+                        transaction, partner.FinanceAccountId, allocatesProfit, cancellationToken));
                 }
                 catch
                 {
                     await _attachments.DiscardAsync(stored.StoredFileName);
                     throw;
                 }
-                return MapTransaction(transaction);
             }
             _context.CapitalTransactions.Add(transaction);
-            await SaveMovementUnderPartnerGuardAsync(id, partner.FinanceAccountId, allocatesProfit, cancellationToken);
-            return MapTransaction(transaction);
+            return MapTransaction(await SaveMovementUnderPartnerGuardAsync(
+                transaction, partner.FinanceAccountId, allocatesProfit, cancellationToken));
         }
 
         public async Task<FinanceAttachmentDownload> GetTransactionAttachmentAsync(
@@ -270,11 +294,28 @@ namespace DAMS.Application.Services
         /// movement is refused because the link now differs.
         /// </para>
         /// </summary>
-        private Task SaveMovementUnderPartnerGuardAsync(
-            int partnerId, int? expectedAccountId, bool allocatesProfit, CancellationToken cancellationToken) =>
+        private Task<CapitalTransaction> SaveMovementUnderPartnerGuardAsync(
+            CapitalTransaction movement, int? expectedAccountId, bool allocatesProfit, CancellationToken cancellationToken) =>
             ExecuteResilientlyAsync(async () =>
             {
+                var partnerId = movement.CapitalPartnerId;
                 await using var guard = await BeginPartnerGuardAsync(partnerId, cancellationToken);
+                // FIRST, before any validation or write: has this very attempt already committed?
+                // Only a replay can reach here with its own key on a stored row, and a replay that
+                // re-inserted would move the money a second time. Reads below are all AsNoTracking,
+                // so they answer from the database rather than from this attempt's undone work —
+                // which is why no ChangeTracker.Clear() is needed on replay here.
+                var alreadyRecorded = await _context.CapitalTransactions.AsNoTracking()
+                    .Include(t => t.Attachment)
+                    .SingleOrDefaultAsync(t => t.IdempotencyKey == movement.IdempotencyKey, cancellationToken);
+                if (alreadyRecorded != null)
+                {
+                    // The committed row owns the stored file now, so the pending copies are dropped
+                    // without discarding anything from disk.
+                    if (movement.Attachment != null) _context.Entry(movement.Attachment).State = EntityState.Detached;
+                    _context.Entry(movement).State = EntityState.Detached;
+                    return alreadyRecorded;
+                }
                 // The whole of the partner's eligibility is re-read here, not just the account id.
                 // Every condition the caller checked — is the partner still active, is it still
                 // linked, is the linked account still an active Capital account — belongs to a row
@@ -286,6 +327,7 @@ namespace DAMS.Application.Services
                         "This partner's capital account changed while the movement was being saved, so it was not recorded. Reload the partner and try again.");
                 if (allocatesProfit) await ValidateActiveShareTotalAsync(cancellationToken);
                 await SaveAndCommitAsync(guard, cancellationToken);
+                return movement;
             });
 
         /// <summary>
@@ -370,6 +412,9 @@ namespace DAMS.Application.Services
         /// written to disk outside it, so a retry cannot orphan a second copy.
         /// </summary>
         private Task ExecuteResilientlyAsync(Func<Task> operation) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
+
+        private Task<T> ExecuteResilientlyAsync<T>(Func<Task<T>> operation) =>
             _context.Database.CreateExecutionStrategy().ExecuteAsync(operation);
 
         private async Task<CapitalPartnerDto> GetAsync(int id, CancellationToken cancellationToken)

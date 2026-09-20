@@ -1144,8 +1144,15 @@ namespace DAMS.Infrastructure.Data
                     t.HasCheckConstraint("CK_CapitalTransactions_ProfitSnapshot",
                         "([Type] = 4 AND [ProfitSharePercentSnapshot] IS NOT NULL AND [ProfitSharePercentSnapshot] >= 0 AND [ProfitSharePercentSnapshot] <= 100) OR ([Type] <> 4 AND [ProfitSharePercentSnapshot] IS NULL)");
                 });
+                entity.Property(t => t.IdempotencyKey).HasMaxLength(80);
                 entity.HasIndex(t => new { t.CapitalPartnerId, t.Date });
                 entity.HasIndex(t => t.FinanceAccountId);
+                // UNIQUE is the point, not a lookup — the same reason Payment.IdempotencyKey is
+                // unique: it is what makes a replayed attempt fail loudly if it ever got past the
+                // check-then-insert, instead of quietly recording the contribution twice.
+                entity.HasIndex(t => t.IdempotencyKey)
+                      .IsUnique()
+                      .HasFilter("[IdempotencyKey] IS NOT NULL");
                 entity.HasOne(t => t.CapitalPartner).WithMany(p => p.Transactions)
                     .HasForeignKey(t => t.CapitalPartnerId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(t => t.FinanceAccount).WithMany(a => a.CapitalCashTransactions)
