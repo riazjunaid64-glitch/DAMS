@@ -128,7 +128,7 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
-    public async Task StaffRepeatCannotRevealOrEnrichAnInaccessibleLead()
+    public async Task StaffRepeatCannotRevealEnrichOrDuplicateAnInaccessibleLead()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var original = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
@@ -139,25 +139,19 @@ public sealed class LeadIntakeAndDuplicateTests
         repeat.AllowDuplicate = true;
         repeat.City = "Lahore";
 
-        var result = await h.Leads.IngestAsync(repeat, h.OtherSales);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.IngestAsync(repeat, h.OtherSales));
 
-        Assert.NotNull(result.Lead);
-        Assert.NotEqual(original.Lead.Id, result.Lead!.Id);
-        Assert.False(result.IsDuplicate);
-        Assert.False(result.EnrichedExisting);
-        Assert.Null(result.Match);
-        Assert.Equal(2, await h.Db.Leads.CountAsync());
+        Assert.DoesNotContain(original.Lead.LeadReference, error.Message);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
 
         var unchanged = await h.LoadLeadAsync(original.Lead.Id);
         Assert.Null(unchanged.City);
         Assert.Equal(h.SalesEmployeeId, unchanged.AssignedEmployeeId);
-
-        var created = await h.LoadLeadAsync(result.Lead.Id);
-        Assert.Equal(h.OtherSalesEmployeeId, created.AssignedEmployeeId);
     }
 
     [Fact]
-    public async Task StaffSuppliedExternalReferenceCannotReplayAnInaccessibleLead()
+    public async Task StaffSuppliedExternalReferenceCannotReplayOrDuplicateAnInaccessibleLead()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var external = LeadTestHarness.Intake();
@@ -173,17 +167,11 @@ public sealed class LeadIntakeAndDuplicateTests
         manual.ExternalLeadId = "submission-1";
         manual.City = "Lahore";
 
-        var result = await h.Leads.IngestAsync(manual, h.OtherSales);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.IngestAsync(manual, h.OtherSales));
 
-        Assert.NotNull(result.Lead);
-        Assert.NotEqual(original.Lead.Id, result.Lead!.Id);
-        Assert.False(result.AlreadyIngested);
-        Assert.Equal(2, await h.Db.Leads.CountAsync());
-
-        var created = await h.LoadLeadAsync(result.Lead.Id);
-        Assert.Null(created.ExternalProvider);
-        Assert.Null(created.ExternalLeadId);
-        Assert.Equal(h.OtherSalesEmployeeId, created.AssignedEmployeeId);
+        Assert.DoesNotContain(original.Lead.LeadReference, error.Message);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
     }
 
     [Fact]

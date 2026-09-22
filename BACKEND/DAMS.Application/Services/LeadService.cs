@@ -103,10 +103,17 @@ namespace DAMS.Application.Services
             }
 
             // 2. Someone we already know?
-            var match = await FindDuplicateAsync(normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, cancellationToken);
+            var match = await FindDuplicateAsync(normalizedPhone, normalizedWhatsapp, normalizedEmail, cancellationToken);
 
             if (match is { LeadId: not null })
             {
+                // Duplicate detection protects the one-open-lead invariant across the whole
+                // CRM, but the candidate itself remains subject to normal visibility. Do not
+                // turn an inaccessible record into either a disclosure or a second open lead.
+                if (actor != null && !await IsVisibleAsync(match.LeadId.Value, actor, cancellationToken))
+                    throw new InvalidOperationException(
+                        "The lead could not be created. Ask a manager or administrator for assistance.");
+
                 if (!dto.AllowDuplicate)
                 {
                     return new LeadIntakeResultDto
@@ -375,7 +382,11 @@ namespace DAMS.Application.Services
             bool isExternal,
             CancellationToken cancellationToken)
         {
-            var lead = await _context.Leads.FirstAsync(l => l.Id == leadId, cancellationToken);
+            // Repeat enrichment is a write. Recheck scope here rather than trusting the
+            // duplicate lookup above: ownership can change between that lookup and this load.
+            var lead = actor == null
+                ? await _context.Leads.FirstAsync(l => l.Id == leadId, cancellationToken)
+                : await LoadForWriteAsync(leadId, actor, cancellationToken);
 
             // Only ever fill gaps. The original source, owner and history are untouchable.
             lead.LastName ??= LeadContactNormalizer.Clean(dto.LastName);
@@ -488,7 +499,6 @@ namespace DAMS.Application.Services
             string? normalizedPhone,
             string? normalizedWhatsapp,
             string? normalizedEmail,
-            LeadUserContext? actor,
             CancellationToken cancellationToken)
         {
             // Nothing to compare on. Without this guard the null checks below would match this
@@ -499,11 +509,8 @@ namespace DAMS.Application.Services
 
             // Closed leads are history: a fresh enquiry from someone we lost last year is a
             // genuinely new opportunity, so only open leads count as duplicates.
-            var leads = _context.Leads.AsNoTracking();
-            if (actor != null)
-                leads = LeadAccess.Scope(leads, actor);
-
-            var openLead = await leads
+            var openLead = await _context.Leads
+                .AsNoTracking()
                 .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage))
                 .Where(l =>
                     (normalizedPhone != null && l.NormalizedPhone == normalizedPhone)
@@ -1809,13 +1816,16 @@ namespace DAMS.Application.Services
 
         private async Task EnsureVisibleAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken)
         {
+            if (!await IsVisibleAsync(leadId, ctx, cancellationToken))
+                throw new LeadNotFoundException();
+        }
+
+        private async Task<bool> IsVisibleAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken)
+        {
             LeadAccess.EnsureStaff(ctx);
 
-            var visible = await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
+            return await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
                 .AnyAsync(l => l.Id == leadId, cancellationToken);
-
-            if (!visible)
-                throw new LeadNotFoundException();
         }
 
         /// <summary>Cancels pending follow-ups and open visits so a closed lead stops alerting.</summary>
