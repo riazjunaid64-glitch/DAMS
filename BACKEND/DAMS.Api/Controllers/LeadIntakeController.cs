@@ -62,7 +62,8 @@ namespace DAMS.Api.Controllers
 
             try
             {
-                var result = await _leads.IngestAsync(dto, actor: null, cancellationToken);
+                var result = await _leads.IngestAsync(
+                    dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
                 return Ok(result);
             }
             catch (InvalidOperationException ex)

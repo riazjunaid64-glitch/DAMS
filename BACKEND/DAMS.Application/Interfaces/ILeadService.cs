@@ -18,7 +18,15 @@ namespace DAMS.Application.Interfaces
         /// The single entry point every channel uses to create a lead. Applies duplicate
         /// detection and external-submission idempotency.
         /// </summary>
-        Task<LeadIntakeResultDto> IngestAsync(LeadIntakeDto dto, LeadUserContext? actor, CancellationToken cancellationToken = default);
+        /// <param name="trustedExternal">
+        /// Set only by a verified provider or internal system flow. Client-supplied provider
+        /// fields never make a staff intake replay or enrich an external submission.
+        /// </param>
+        Task<LeadIntakeResultDto> IngestAsync(
+            LeadIntakeDto dto,
+            LeadUserContext? actor,
+            bool trustedExternal = false,
+            CancellationToken cancellationToken = default);
 
         Task<LeadResponseDto?> GetByIdAsync(int id, LeadUserContext ctx, CancellationToken cancellationToken = default);
 

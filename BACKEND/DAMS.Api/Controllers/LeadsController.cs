@@ -27,7 +27,7 @@ namespace DAMS.Api.Controllers
         /// </summary>
         [HttpPost]
         public Task<IActionResult> Create([FromBody] LeadIntakeDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _leads.IngestAsync(dto, ctx, cancellationToken), cancellationToken);
+            RunAsync(ctx => _leads.IngestAsync(dto, ctx, cancellationToken: cancellationToken), cancellationToken);
 
         [HttpGet]
         public Task<IActionResult> GetAll(

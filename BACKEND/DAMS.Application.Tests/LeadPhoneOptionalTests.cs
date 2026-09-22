@@ -31,7 +31,7 @@ public class LeadPhoneOptionalTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        var result = await h.Leads.IngestAsync(External("meta-1"), actor: null);
+        var result = await h.Leads.IngestAsync(External("meta-1"), actor: null, trustedExternal: true);
 
         Assert.NotNull(result.Lead);
 
@@ -90,8 +90,8 @@ public class LeadPhoneOptionalTests
 
         // The regression this whole change risked: comparing null with null in the duplicate
         // query would have collapsed every phoneless lead into the first one.
-        var first = await h.Leads.IngestAsync(External("meta-1", firstName: "Ali"), actor: null);
-        var second = await h.Leads.IngestAsync(External("meta-2", firstName: "Bilal"), actor: null);
+        var first = await h.Leads.IngestAsync(External("meta-1", firstName: "Ali"), actor: null, trustedExternal: true);
+        var second = await h.Leads.IngestAsync(External("meta-2", firstName: "Bilal"), actor: null, trustedExternal: true);
 
         Assert.NotNull(first.Lead);
         Assert.NotNull(second.Lead);
@@ -105,8 +105,8 @@ public class LeadPhoneOptionalTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        var first = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null);
-        var second = await h.Leads.IngestAsync(External("meta-2", email: "ali@example.com"), actor: null);
+        var first = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null, trustedExternal: true);
+        var second = await h.Leads.IngestAsync(External("meta-2", email: "ali@example.com"), actor: null, trustedExternal: true);
 
         Assert.True(second.EnrichedExisting);
         Assert.Equal(first.Lead!.Id, second.Lead!.Id);
@@ -135,11 +135,11 @@ public class LeadPhoneOptionalTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        var first = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null);
+        var first = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null, trustedExternal: true);
         Assert.Null(first.Lead!.Phone);
 
         await h.Leads.IngestAsync(
-            External("meta-2", phone: "0300-1234567", email: "ali@example.com"), actor: null);
+            External("meta-2", phone: "0300-1234567", email: "ali@example.com"), actor: null, trustedExternal: true);
 
         var lead = await h.Db.Leads.SingleAsync();
         Assert.Equal("0300-1234567", lead.Phone);
@@ -151,7 +151,7 @@ public class LeadPhoneOptionalTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        var result = await h.Leads.IngestAsync(External("meta-1", phone: "123"), actor: null);
+        var result = await h.Leads.IngestAsync(External("meta-1", phone: "123"), actor: null, trustedExternal: true);
 
         var lead = await h.Db.Leads.SingleAsync(l => l.Id == result.Lead!.Id);
         Assert.Null(lead.Phone);
@@ -187,7 +187,7 @@ public class LeadPhoneOptionalTests
         h.Db.Customers.Add(customer);
         await h.Db.SaveChangesAsync();
 
-        var created = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null);
+        var created = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null, trustedExternal: true);
         var leadId = created.Lead!.Id;
 
         var lead = await h.Db.Leads.SingleAsync(l => l.Id == leadId);
@@ -214,7 +214,7 @@ public class LeadPhoneOptionalTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        var created = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null);
+        var created = await h.Leads.IngestAsync(External("meta-1", email: "ali@example.com"), actor: null, trustedExternal: true);
         var leadId = created.Lead!.Id;
 
         // A customer record cannot exist without a phone number, so conversion must ask for

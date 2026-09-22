@@ -258,7 +258,8 @@ namespace DAMS.Application.Services.Integrations
                 AllowDuplicate = true
             };
 
-            var result = await _leads.IngestAsync(dto, actor: null, cancellationToken);
+            var result = await _leads.IngestAsync(
+                dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
 
             if (result.Lead is null)
             {

@@ -51,11 +51,14 @@ namespace DAMS.Application.Services
         // ── Ingestion ───────────────────────────────────────────────────────────────
 
         public async Task<LeadIntakeResultDto> IngestAsync(
-            LeadIntakeDto dto, LeadUserContext? actor, CancellationToken cancellationToken = default)
+            LeadIntakeDto dto,
+            LeadUserContext? actor,
+            bool trustedExternal = false,
+            CancellationToken cancellationToken = default)
         {
             var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
             var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
-            var isExternal = provider != null && externalId != null;
+            var isExternal = trustedExternal && provider != null && externalId != null;
 
             // A number too short to dial is not a contact method. Discard it rather than store
             // something that would never match anything — the original answer is still kept on
@@ -104,6 +107,13 @@ namespace DAMS.Application.Services
 
             if (match is { LeadId: not null })
             {
+                // Duplicate detection protects the one-open-lead invariant across the whole
+                // CRM, but the candidate itself remains subject to normal visibility. Do not
+                // turn an inaccessible record into either a disclosure or a second open lead.
+                if (actor != null && !await IsVisibleAsync(match.LeadId.Value, actor, cancellationToken))
+                    throw new InvalidOperationException(
+                        "The lead could not be created. Ask a manager or administrator for assistance.");
+
                 if (!dto.AllowDuplicate)
                 {
                     return new LeadIntakeResultDto
@@ -115,7 +125,8 @@ namespace DAMS.Application.Services
                     };
                 }
 
-                var enriched = await EnrichExistingLeadAsync(match.LeadId.Value, dto, source, actor, cancellationToken);
+                var enriched = await EnrichExistingLeadAsync(
+                    match.LeadId.Value, dto, source, actor, isExternal, cancellationToken);
                 return new LeadIntakeResultDto
                 {
                     IsDuplicate = true,
@@ -126,12 +137,13 @@ namespace DAMS.Application.Services
                 };
             }
 
-            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor);
+            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
 
             await ApplyInitialAssignmentAsync(lead, dto, actor, cancellationToken);
 
             _context.Leads.Add(lead);
-            AddExternalReceipt(lead, dto);
+            if (isExternal)
+                AddExternalReceipt(lead, dto);
 
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
                 $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
@@ -148,7 +160,7 @@ namespace DAMS.Application.Services
                 // check above the moment the Lead is found.
                 await SaveNewLeadAsync(lead, cancellationToken, ct => NotifyNewLeadAsync(lead, ct));
             }
-            catch (DbUpdateException ex) when (IsExternalDuplicate(ex))
+            catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
             {
                 // Two copies of the same webhook arrived at once; the index rejected the
                 // loser. Discard only what this call tried to insert — a caller such as the
@@ -212,9 +224,10 @@ namespace DAMS.Application.Services
             string? normalizedPhone,
             string? normalizedWhatsapp,
             string? normalizedEmail,
-            LeadUserContext? actor)
+            LeadUserContext? actor,
+            bool isExternal)
         {
-            var externalProvider = LeadContactNormalizer.Clean(dto.ExternalProvider);
+            var externalProvider = isExternal ? LeadContactNormalizer.Clean(dto.ExternalProvider) : null;
 
             return new Lead
             {
@@ -239,7 +252,7 @@ namespace DAMS.Application.Services
                 CampaignReference = LeadContactNormalizer.Clean(dto.CampaignReference),
                 AdReference = LeadContactNormalizer.Clean(dto.AdReference),
                 ExternalProvider = externalProvider,
-                ExternalLeadId = LeadContactNormalizer.Clean(dto.ExternalLeadId),
+                ExternalLeadId = isExternal ? LeadContactNormalizer.Clean(dto.ExternalLeadId) : null,
                 ExternalFormReference = LeadContactNormalizer.Clean(dto.ExternalFormReference),
                 ExternalSubmittedAt = dto.ExternalSubmittedAt,
                 IntegrationPayload = LeadContactNormalizer.Clean(dto.IntegrationPayload),
@@ -362,9 +375,18 @@ namespace DAMS.Application.Services
         }
 
         private async Task<LeadResponseDto> EnrichExistingLeadAsync(
-            int leadId, LeadIntakeDto dto, LeadSource source, LeadUserContext? actor, CancellationToken cancellationToken)
+            int leadId,
+            LeadIntakeDto dto,
+            LeadSource source,
+            LeadUserContext? actor,
+            bool isExternal,
+            CancellationToken cancellationToken)
         {
-            var lead = await _context.Leads.FirstAsync(l => l.Id == leadId, cancellationToken);
+            // Repeat enrichment is a write. Recheck scope here rather than trusting the
+            // duplicate lookup above: ownership can change between that lookup and this load.
+            var lead = actor == null
+                ? await _context.Leads.FirstAsync(l => l.Id == leadId, cancellationToken)
+                : await LoadForWriteAsync(leadId, actor, cancellationToken);
 
             // Only ever fill gaps. The original source, owner and history are untouchable.
             lead.LastName ??= LeadContactNormalizer.Clean(dto.LastName);
@@ -412,13 +434,14 @@ namespace DAMS.Application.Services
             if (lead.PurchaseIntent == LeadPurchaseIntent.Unknown)
                 lead.PurchaseIntent = dto.PurchaseIntent;
 
-            AddExternalReceipt(lead, dto);
+            if (isExternal)
+                AddExternalReceipt(lead, dto);
 
             // Adopt the provider reference when the lead has none, so replaying this exact
             // submission later is recognised as already ingested rather than re-enriching.
             var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
             var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
-            if (provider != null && externalId != null && lead.ExternalLeadId == null)
+            if (isExternal && provider != null && externalId != null && lead.ExternalLeadId == null)
             {
                 lead.ExternalProvider = provider;
                 lead.ExternalLeadId = externalId;
@@ -473,7 +496,10 @@ namespace DAMS.Application.Services
         }
 
         private async Task<LeadDuplicateMatchDto?> FindDuplicateAsync(
-            string? normalizedPhone, string? normalizedWhatsapp, string? normalizedEmail, CancellationToken cancellationToken)
+            string? normalizedPhone,
+            string? normalizedWhatsapp,
+            string? normalizedEmail,
+            CancellationToken cancellationToken)
         {
             // Nothing to compare on. Without this guard the null checks below would match this
             // lead against every other lead that also has no contact details — two anonymous
@@ -1638,7 +1664,7 @@ namespace DAMS.Application.Services
                 // A website enquiry is never dropped: if we already know this person, the
                 // enquiry is added to their existing lead instead of being refused.
                 AllowDuplicate = true
-            }, actor, cancellationToken);
+            }, actor, trustedExternal: true, cancellationToken: cancellationToken);
 
             var leadId = result.Lead?.Id
                 ?? throw new InvalidOperationException("The lead for this website request could not be created.");
@@ -1790,13 +1816,16 @@ namespace DAMS.Application.Services
 
         private async Task EnsureVisibleAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken)
         {
+            if (!await IsVisibleAsync(leadId, ctx, cancellationToken))
+                throw new LeadNotFoundException();
+        }
+
+        private async Task<bool> IsVisibleAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken)
+        {
             LeadAccess.EnsureStaff(ctx);
 
-            var visible = await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
+            return await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
                 .AnyAsync(l => l.Id == leadId, cancellationToken);
-
-            if (!visible)
-                throw new LeadNotFoundException();
         }
 
         /// <summary>Cancels pending follow-ups and open visits so a closed lead stops alerting.</summary>

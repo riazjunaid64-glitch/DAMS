@@ -128,6 +128,53 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
+    public async Task StaffRepeatCannotRevealEnrichOrDuplicateAnInaccessibleLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var original = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
+        await h.Leads.AssignAsync(original.Lead!.Id,
+            new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+
+        var repeat = LeadTestHarness.Intake(firstName: "Different person", email: "repeat@example.com");
+        repeat.AllowDuplicate = true;
+        repeat.City = "Lahore";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.IngestAsync(repeat, h.OtherSales));
+
+        Assert.DoesNotContain(original.Lead.LeadReference, error.Message);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+
+        var unchanged = await h.LoadLeadAsync(original.Lead.Id);
+        Assert.Null(unchanged.City);
+        Assert.Equal(h.SalesEmployeeId, unchanged.AssignedEmployeeId);
+    }
+
+    [Fact]
+    public async Task StaffSuppliedExternalReferenceCannotReplayOrDuplicateAnInaccessibleLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var external = LeadTestHarness.Intake();
+        external.ExternalProvider = "portal";
+        external.ExternalLeadId = "submission-1";
+
+        var original = await h.Leads.IngestAsync(external, actor: null, trustedExternal: true);
+        await h.Leads.AssignAsync(original.Lead!.Id,
+            new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+
+        var manual = LeadTestHarness.Intake(firstName: "Walk in", email: "walkin@example.com");
+        manual.ExternalProvider = "portal";
+        manual.ExternalLeadId = "submission-1";
+        manual.City = "Lahore";
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.IngestAsync(manual, h.OtherSales));
+
+        Assert.DoesNotContain(original.Lead.LeadReference, error.Message);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
     public async Task ClosedLead_DoesNotBlockANewEnquiryFromTheSamePerson()
     {
         await using var h = await LeadTestHarness.CreateAsync();
@@ -151,8 +198,8 @@ public sealed class LeadIntakeAndDuplicateTests
         dto.ExternalLeadId = "fb-lead-991";
         dto.AllowDuplicate = true;
 
-        var first = await h.Leads.IngestAsync(dto, actor: null);
-        var replay = await h.Leads.IngestAsync(dto, actor: null);
+        var first = await h.Leads.IngestAsync(dto, actor: null, trustedExternal: true);
+        var replay = await h.Leads.IngestAsync(dto, actor: null, trustedExternal: true);
 
         Assert.False(first.AlreadyIngested);
         Assert.True(replay.AlreadyIngested);
