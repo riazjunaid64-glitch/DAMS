@@ -260,33 +260,33 @@ namespace DAMS.Application.Services
 
         public async Task<BookingRequestResponseDto> RejectBookingRequestAsync(int bookingRequestId, int adminUserId, string? rejectionReason)
         {
-            var bookingRequest = await _context.BookingRequests
-                .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
-
-            if (bookingRequest == null)
-                throw new InvalidOperationException("Booking request not found.");
-
-            if (bookingRequest.Status != BookingRequestStatus.Pending)
-                throw new InvalidOperationException("Only pending booking requests can be rejected.");
-
-            bookingRequest.Status = BookingRequestStatus.Rejected;
-            bookingRequest.ReviewedAt = DateTime.UtcNow;
-            bookingRequest.ReviewedByUserId = adminUserId;
-            bookingRequest.RejectionReason = rejectionReason?.Trim();
-            bookingRequest.UpdatedAt = DateTime.UtcNow;
-
-            if (bookingRequest.LeadId.HasValue)
+            await RunInTransactionAsync(async () =>
             {
-                await _leadService.CloseFromSystemAsync(
-                    bookingRequest.LeadId.Value,
+                var bookingRequest = await _context.BookingRequests
+                    .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
+
+                if (bookingRequest == null)
+                    throw new InvalidOperationException("Booking request not found.");
+
+                if (bookingRequest.Status != BookingRequestStatus.Pending)
+                    throw new InvalidOperationException("Only pending booking requests can be rejected.");
+
+                bookingRequest.Status = BookingRequestStatus.Rejected;
+                bookingRequest.ReviewedAt = DateTime.UtcNow;
+                bookingRequest.ReviewedByUserId = adminUserId;
+                bookingRequest.RejectionReason = rejectionReason?.Trim();
+                bookingRequest.UpdatedAt = DateTime.UtcNow;
+
+                await CloseLeadWhenNoActiveRequestsRemainAsync(
+                    bookingRequest,
                     dormant: false,
                     reasonCode: "other",
                     summary: $"Website booking request #{bookingRequest.Id} rejected.",
                     notes: rejectionReason?.Trim(),
                     actingUserId: adminUserId);
-            }
 
-            await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync();
+            });
 
             await NotifyQuietlyAsync(n => n.NotifyBookingRequestRejectedAsync(bookingRequestId, rejectionReason, adminUserId));
 
@@ -296,36 +296,36 @@ namespace DAMS.Application.Services
 
         public async Task<BookingRequestResponseDto> CancelBookingRequestAsync(int bookingRequestId, int userId)
         {
-            var bookingRequest = await _context.BookingRequests
-                .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
-
-            if (bookingRequest == null)
-                throw new InvalidOperationException("Booking request not found.");
-
-            if (bookingRequest.UserId != userId)
-                throw new InvalidOperationException("You can only cancel your own booking requests.");
-
-            if (bookingRequest.Status != BookingRequestStatus.Pending)
-                throw new InvalidOperationException("Only pending booking requests can be cancelled.");
-
-            bookingRequest.Status = BookingRequestStatus.Cancelled;
-            bookingRequest.ReviewedAt = DateTime.UtcNow;
-            bookingRequest.UpdatedAt = DateTime.UtcNow;
-
-            // Withdrawn, not lost — the person may come back, so the lead goes dormant with
-            // its whole history intact.
-            if (bookingRequest.LeadId.HasValue)
+            await RunInTransactionAsync(async () =>
             {
-                await _leadService.CloseFromSystemAsync(
-                    bookingRequest.LeadId.Value,
+                var bookingRequest = await _context.BookingRequests
+                    .FirstOrDefaultAsync(br => br.Id == bookingRequestId);
+
+                if (bookingRequest == null)
+                    throw new InvalidOperationException("Booking request not found.");
+
+                if (bookingRequest.UserId != userId)
+                    throw new InvalidOperationException("You can only cancel your own booking requests.");
+
+                if (bookingRequest.Status != BookingRequestStatus.Pending)
+                    throw new InvalidOperationException("Only pending booking requests can be cancelled.");
+
+                bookingRequest.Status = BookingRequestStatus.Cancelled;
+                bookingRequest.ReviewedAt = DateTime.UtcNow;
+                bookingRequest.UpdatedAt = DateTime.UtcNow;
+
+                // Withdrawn, not lost — the person may come back, so the lead goes dormant with
+                // its whole history intact.
+                await CloseLeadWhenNoActiveRequestsRemainAsync(
+                    bookingRequest,
                     dormant: true,
                     reasonCode: "delayed_decision",
                     summary: $"Website booking request #{bookingRequest.Id} withdrawn by the customer.",
                     notes: null,
                     actingUserId: null);
-            }
 
-            await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync();
+            });
 
             return await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Cancelled booking request could not be loaded.");
@@ -355,6 +355,31 @@ namespace DAMS.Application.Services
 
             return result;
         }
+
+        private async Task CloseLeadWhenNoActiveRequestsRemainAsync(
+            BookingRequest bookingRequest,
+            bool dormant,
+            string reasonCode,
+            string summary,
+            string? notes,
+            int? actingUserId)
+        {
+            if (!bookingRequest.LeadId.HasValue || await HasOtherActiveRequestAsync(bookingRequest))
+                return;
+
+            await _leadService.CloseFromSystemAsync(
+                bookingRequest.LeadId.Value,
+                dormant,
+                reasonCode,
+                summary,
+                notes,
+                actingUserId);
+        }
+
+        private Task<bool> HasOtherActiveRequestAsync(BookingRequest bookingRequest) =>
+            _context.BookingRequests.AnyAsync(br => br.LeadId == bookingRequest.LeadId!.Value
+                                                    && br.Id != bookingRequest.Id
+                                                    && br.Status == BookingRequestStatus.Pending);
 
         private async Task RunInTransactionAsync(Func<Task> action)
         {
