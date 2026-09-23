@@ -222,6 +222,7 @@ namespace DAMS.Application.Services
                 // records who did it, and marks the lead Won. Nothing else may set Won.
                 var conversion = await _leadService.ConvertAsync(leadId, new ConvertLeadDto
                 {
+                    BookingRequestId = bookingRequest.Id,
                     UnitId = bookingRequest.UnitId,
                     CNIC = bookingRequest.CNIC,
                     Notes = $"Approved from website booking request #{bookingRequest.Id}."
@@ -236,8 +237,9 @@ namespace DAMS.Application.Services
                 request.UpdatedAt = DateTime.UtcNow;
 
                 var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == conversion.BookingId);
-                if (booking != null)
-                    booking.BookingRequestId = request.Id;
+                if (booking == null || (booking.BookingRequestId.HasValue && booking.BookingRequestId != request.Id))
+                    throw new InvalidOperationException("The converted booking belongs to another request.");
+                booking.BookingRequestId = request.Id;
 
                 await _context.SaveChangesAsync();
             });
