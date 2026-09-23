@@ -275,17 +275,6 @@ namespace DAMS.Application.Services
             bookingRequest.RejectionReason = rejectionReason?.Trim();
             bookingRequest.UpdatedAt = DateTime.UtcNow;
 
-            if (bookingRequest.LeadId.HasValue)
-            {
-                await _leadService.CloseFromSystemAsync(
-                    bookingRequest.LeadId.Value,
-                    dormant: false,
-                    reasonCode: "other",
-                    summary: $"Website booking request #{bookingRequest.Id} rejected.",
-                    notes: rejectionReason?.Trim(),
-                    actingUserId: adminUserId);
-            }
-
             await _context.SaveChangesAsync();
 
             await NotifyQuietlyAsync(n => n.NotifyBookingRequestRejectedAsync(bookingRequestId, rejectionReason, adminUserId));
@@ -311,19 +300,6 @@ namespace DAMS.Application.Services
             bookingRequest.Status = BookingRequestStatus.Cancelled;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
-
-            // Withdrawn, not lost — the person may come back, so the lead goes dormant with
-            // its whole history intact.
-            if (bookingRequest.LeadId.HasValue)
-            {
-                await _leadService.CloseFromSystemAsync(
-                    bookingRequest.LeadId.Value,
-                    dormant: true,
-                    reasonCode: "delayed_decision",
-                    summary: $"Website booking request #{bookingRequest.Id} withdrawn by the customer.",
-                    notes: null,
-                    actingUserId: null);
-            }
 
             await _context.SaveChangesAsync();
 

@@ -80,6 +80,80 @@ public sealed class BookingRequestLeadMigrationTests
     }
 
     [Fact]
+    public async Task RejectingOneOfSeveralActiveEnquiriesKeepsTheSharedLeadAndItsOpenWorkActive()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var first = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
+        var second = await h.BookingRequests.CreateBookingRequestAsync(
+            RequestForUnit(h, h.SecondUnitId), h.ClientUserId);
+        var leadId = first.LeadId!.Value;
+
+        await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            AssignedEmployeeId = h.SalesEmployeeId,
+            Title = "Discuss second enquiry",
+            DueAt = DateTime.UtcNow.AddDays(2)
+        }, h.Admin);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            AssignedEmployeeId = h.SalesEmployeeId,
+            ProjectId = h.ProjectId,
+            UnitId = h.SecondUnitId,
+            ScheduledAt = DateTime.UtcNow.AddDays(3),
+            MeetingLocation = "Floria Heights sales office"
+        }, h.Admin);
+
+        var rejected = await h.BookingRequests.RejectBookingRequestAsync(first.Id, h.AdminUserId, "Unit unavailable.");
+
+        Assert.Equal(BookingRequestStatus.Rejected, rejected.Status);
+        Assert.Equal(BookingRequestStatus.Pending,
+            await h.Db.BookingRequests.Where(br => br.Id == second.Id).Select(br => br.Status).SingleAsync());
+        Assert.Equal(LeadStage.SiteVisitScheduled, (await h.LoadLeadAsync(leadId)).Stage);
+        Assert.Equal(LeadFollowUpStatus.Pending,
+            await h.Db.LeadFollowUps.Where(f => f.Id == followUp.Id).Select(f => f.Status).SingleAsync());
+        Assert.Equal(LeadSiteVisitStatus.Scheduled,
+            await h.Db.LeadSiteVisits.Where(v => v.Id == visit.Id).Select(v => v.Status).SingleAsync());
+    }
+
+    [Fact]
+    public async Task CancellingOneOfSeveralActiveEnquiriesKeepsTheSharedLeadAndItsOpenWorkActive()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var first = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
+        var second = await h.BookingRequests.CreateBookingRequestAsync(
+            RequestForUnit(h, h.SecondUnitId), h.ClientUserId);
+        var leadId = first.LeadId!.Value;
+
+        await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            AssignedEmployeeId = h.SalesEmployeeId,
+            Title = "Discuss second enquiry",
+            DueAt = DateTime.UtcNow.AddDays(2)
+        }, h.Admin);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            AssignedEmployeeId = h.SalesEmployeeId,
+            ProjectId = h.ProjectId,
+            UnitId = h.SecondUnitId,
+            ScheduledAt = DateTime.UtcNow.AddDays(3),
+            MeetingLocation = "Floria Heights sales office"
+        }, h.Admin);
+
+        var cancelled = await h.BookingRequests.CancelBookingRequestAsync(first.Id, h.ClientUserId);
+
+        Assert.Equal(BookingRequestStatus.Cancelled, cancelled.Status);
+        Assert.Equal(BookingRequestStatus.Pending,
+            await h.Db.BookingRequests.Where(br => br.Id == second.Id).Select(br => br.Status).SingleAsync());
+        Assert.Equal(LeadStage.SiteVisitScheduled, (await h.LoadLeadAsync(leadId)).Stage);
+        Assert.Equal(LeadFollowUpStatus.Pending,
+            await h.Db.LeadFollowUps.Where(f => f.Id == followUp.Id).Select(f => f.Status).SingleAsync());
+        Assert.Equal(LeadSiteVisitStatus.Scheduled,
+            await h.Db.LeadSiteVisits.Where(v => v.Id == visit.Id).Select(v => v.Status).SingleAsync());
+    }
+
+    [Fact]
     public async Task ApprovingARequestConvertsTheLeadIntoACustomerAndBooking()
     {
         await using var h = await LeadTestHarness.CreateAsync();
@@ -123,7 +197,7 @@ public sealed class BookingRequestLeadMigrationTests
     }
 
     [Fact]
-    public async Task RejectingARequestClosesItsLeadAsLostWithTheReason()
+    public async Task RejectingARequestLeavesItsLeadActive()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var request = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
@@ -132,14 +206,14 @@ public sealed class BookingRequestLeadMigrationTests
 
         Assert.Equal(BookingRequestStatus.Rejected, rejected.Status);
         var lead = await h.LoadLeadAsync(request.LeadId!.Value);
-        Assert.Equal(LeadStage.Lost, lead.Stage);
-        Assert.NotNull(lead.ClosureReasonId);
-        Assert.Equal("Unit already reserved.", lead.ClosureNotes);
-        Assert.Contains(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadLost);
+        Assert.Equal(LeadStage.New, lead.Stage);
+        Assert.Null(lead.ClosureReasonId);
+        Assert.Null(lead.ClosureNotes);
+        Assert.DoesNotContain(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadLost);
     }
 
     [Fact]
-    public async Task WithdrawingARequestMakesItsLeadDormantRatherThanLost()
+    public async Task WithdrawingARequestLeavesItsLeadActive()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var request = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
@@ -148,9 +222,11 @@ public sealed class BookingRequestLeadMigrationTests
 
         Assert.Equal(BookingRequestStatus.Cancelled, cancelled.Status);
         var lead = await h.LoadLeadAsync(request.LeadId!.Value);
-        Assert.Equal(LeadStage.Dormant, lead.Stage);
-        // The full history is kept so the lead can be picked up again later.
+        Assert.Equal(LeadStage.New, lead.Stage);
+        Assert.Null(lead.ClosureReasonId);
+        Assert.Null(lead.ClosureNotes);
         Assert.Contains(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadCreated);
+        Assert.DoesNotContain(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadDormant);
     }
 
     [Fact]
