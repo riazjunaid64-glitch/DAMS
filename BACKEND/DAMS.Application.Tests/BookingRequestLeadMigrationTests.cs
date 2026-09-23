@@ -197,7 +197,7 @@ public sealed class BookingRequestLeadMigrationTests
     }
 
     [Fact]
-    public async Task RejectingARequestClosesItsLeadAsLostWithTheReason()
+    public async Task RejectingARequestLeavesItsLeadActive()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var request = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
@@ -206,14 +206,14 @@ public sealed class BookingRequestLeadMigrationTests
 
         Assert.Equal(BookingRequestStatus.Rejected, rejected.Status);
         var lead = await h.LoadLeadAsync(request.LeadId!.Value);
-        Assert.Equal(LeadStage.Lost, lead.Stage);
-        Assert.NotNull(lead.ClosureReasonId);
-        Assert.Equal("Unit already reserved.", lead.ClosureNotes);
-        Assert.Contains(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadLost);
+        Assert.Equal(LeadStage.New, lead.Stage);
+        Assert.Null(lead.ClosureReasonId);
+        Assert.Null(lead.ClosureNotes);
+        Assert.DoesNotContain(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadLost);
     }
 
     [Fact]
-    public async Task WithdrawingARequestMakesItsLeadDormantRatherThanLost()
+    public async Task WithdrawingARequestLeavesItsLeadActive()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var request = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
@@ -222,9 +222,11 @@ public sealed class BookingRequestLeadMigrationTests
 
         Assert.Equal(BookingRequestStatus.Cancelled, cancelled.Status);
         var lead = await h.LoadLeadAsync(request.LeadId!.Value);
-        Assert.Equal(LeadStage.Dormant, lead.Stage);
-        // The full history is kept so the lead can be picked up again later.
+        Assert.Equal(LeadStage.New, lead.Stage);
+        Assert.Null(lead.ClosureReasonId);
+        Assert.Null(lead.ClosureNotes);
         Assert.Contains(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadCreated);
+        Assert.DoesNotContain(await h.TimelineAsync(lead.Id), a => a.Type == LeadActivityType.LeadDormant);
     }
 
     [Fact]
