@@ -1,6 +1,7 @@
 using DAMS.Api.Filters;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingDtos;
+using DAMS.Application.DTOs.BookingRequestDtos;
 using DAMS.Application.DTOs.CommissionRebateDtos;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
@@ -1971,6 +1972,165 @@ public sealed class SqlServerProductionInvariantTests
         Reason = "SQL invariant seed", Method = CustomerRebateMethod.OutstandingBalanceReduction,
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
+
+    /// <summary>
+    /// The held-enquiry table on real SQL Server: its filtered unique index (which the in-memory
+    /// provider ignores) keeps one hold per provider submission while allowing any number without
+    /// an id, and its row version stops two administrators both resolving the same hold.
+    /// </summary>
+    [SqlServerFact]
+    public async Task HeldEnquiries_AreUniquePerSubmission_AndResolvedOnlyOnce_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        int leadA, leadB, holdId;
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            leadA = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person A", Phone = "0300-1234567", Email = "a@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+            leadB = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person B", Phone = "0321-7654321", Email = "b@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+
+            var conflicting = new LeadIntakeDto
+            {
+                FirstName = "Who Is This", Phone = "0300-1234567", Email = "b@example.com", SourceCode = "facebook",
+                ExternalProvider = "meta", ExternalLeadId = "sql-conflict", AllowDuplicate = true, Notes = "Held on SQL."
+            };
+            var held = await leads.IngestAsync(conflicting, actor: null, trustedExternal: true);
+            var replay = await leads.IngestAsync(conflicting, actor: null, trustedExternal: true);
+            Assert.True(held.HeldForReview);
+            Assert.Equal(held.HoldId, replay.HoldId);
+            holdId = held.HoldId!.Value;
+
+            var listed = Assert.Single((await leads.GetIntakeHoldsAsync(admin)).Items);
+            Assert.Equal(new[] { leadA, leadB }.OrderBy(x => x), listed.Candidates.Select(c => c.LeadId).OrderBy(x => x));
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadIntakeHolds.Add(new LeadIntakeHold
+            {
+                Provider = "meta", ExternalLeadId = "sql-conflict", PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}"
+            });
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadIntakeHolds.AddRange(
+                new LeadIntakeHold { PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}" },
+                new LeadIntakeHold { PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}" });
+            await db.SaveChangesAsync();
+        }
+
+        // Two administrators open the same hold; the second decision must not also land. The
+        // second context already holds the hold as it was, just as a request that loaded it
+        // before the first decision committed would.
+        await using var first = new AppDbContext(options);
+        await using var second = new AppDbContext(options);
+        using var firstDispatcher = SqlLeadDispatcher(first);
+        using var secondDispatcher = SqlLeadDispatcher(second);
+        await second.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
+
+        await SqlLeadService(first, firstDispatcher).ResolveIntakeHoldAsync(
+            holdId, new ResolveLeadIntakeHoldDto { LeadId = leadA }, admin);
+
+        var lost = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            SqlLeadService(second, secondDispatcher).ResolveIntakeHoldAsync(
+                holdId, new ResolveLeadIntakeHoldDto { LeadId = leadB }, admin));
+        Assert.Contains("Someone else dealt with this enquiry", lost.Message);
+
+        await using var verify = new AppDbContext(options);
+        var resolved = await verify.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
+        Assert.Equal((LeadIntakeHoldStatus.Resolved, (int?)leadA), (resolved.Status, resolved.ResolvedLeadId));
+        Assert.Contains("Held on SQL.", (await verify.Leads.SingleAsync(l => l.Id == leadA)).Notes);
+        Assert.DoesNotContain("Held on SQL.", (await verify.Leads.SingleAsync(l => l.Id == leadB)).Notes ?? "");
+        Assert.Equal(leadA, (await verify.LeadExternalSubmissions.SingleAsync(s => s.ExternalLeadId == "sql-conflict")).LeadId);
+    }
+
+    /// <summary>
+    /// An administrator rejects a website request at the very moment another resolves its held
+    /// enquiry. The resolution wins; the rejection must be refused with a clear message, not a 500.
+    /// </summary>
+    [SqlServerFact]
+    public async Task RejectingARequestWhileItsHoldIsResolved_IsRefusedClearly_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        LeadUserContext admin;
+        int leadA, requestId, holdId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var adminUser = new User
+            {
+                RoleId = 1, FullName = "SQL admin", Email = "held-race-admin@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            };
+            db.Users.Add(adminUser);
+            await db.SaveChangesAsync();
+            admin = new LeadUserContext { UserId = adminUser.UserId, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+            var unit = new Unit
+            {
+                Project = new Project { ProjectName = "Held race", Location = "Karachi", CreatedById = 1 },
+                UnitNumber = "HR-01", UnitType = "Apartment", Price = 1_000_000m, Status = UnitStatus.Available
+            };
+            db.Units.Add(unit);
+            await db.SaveChangesAsync();
+
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            leadA = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person A", Phone = "0300-1234567", Email = "a@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+            await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person B", Phone = "0321-7654321", Email = "b@example.com", SourceCode = "walk_in"
+            }, admin);
+
+            requestId = (await new BookingRequestService(db, leads).CreateBookingRequestAsync(new CreateBookingRequestDto
+            {
+                UnitId = unit.Id, FullName = "Website Enquirer", Phone = "03001234567",
+                Email = "b@example.com", CNIC = "42101-1111111-1", Address = "Karachi"
+            }, userId: null)).Id;
+            holdId = (await db.LeadIntakeHolds.SingleAsync()).Id;
+        }
+
+        var race = new RunBeforeSavingInterceptor(
+            context => context.ChangeTracker.Entries<LeadIntakeHold>().Any(e => e.State == EntityState.Modified),
+            async () =>
+            {
+                await using var other = new AppDbContext(options);
+                using var dispatcher = SqlLeadDispatcher(other);
+                await SqlLeadService(other, dispatcher).ResolveIntakeHoldAsync(
+                    holdId, new ResolveLeadIntakeHoldDto { LeadId = leadA }, admin);
+            });
+
+        await using (var db = new AppDbContext(Options(database.ConnectionString, race)))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new BookingRequestService(db, SqlLeadService(db, dispatcher))
+                    .RejectBookingRequestAsync(requestId, admin.UserId, "Unit taken."));
+            Assert.Contains("dealt with this request's held enquiry at the same moment", refused.Message);
+        }
+
+        await using var verify = new AppDbContext(options);
+        var request = await verify.BookingRequests.SingleAsync(r => r.Id == requestId);
+        Assert.Equal((BookingRequestStatus.Pending, (int?)leadA), (request.Status, request.LeadId));
+        Assert.Equal(LeadIntakeHoldStatus.Resolved, (await verify.LeadIntakeHolds.SingleAsync()).Status);
+    }
 
     [SqlServerFact]
     public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
@@ -5485,6 +5645,25 @@ public sealed class SqlServerProductionInvariantTests
             }
 
             return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>Runs a competing action once, just before the first save that matches — the
+    /// moment a real concurrent request would slip in between this one's read and its write.</summary>
+    private sealed class RunBeforeSavingInterceptor(Func<DbContext, bool> when, Func<Task> race) : SaveChangesInterceptor
+    {
+        private bool _raced;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_raced && eventData.Context is { } context && when(context))
+            {
+                _raced = true;
+                await race();
+            }
+
+            return result;
         }
     }
 

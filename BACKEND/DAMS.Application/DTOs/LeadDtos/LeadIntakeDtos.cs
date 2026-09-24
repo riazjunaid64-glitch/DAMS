@@ -135,6 +135,20 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public LeadDuplicateMatchDto? Match { get; set; }
 
+        /// <summary>
+        /// True when the details match more than one open lead — say the phone matches one and
+        /// the email another. Neither lead was touched; <see cref="ConflictingMatches"/> lists them.
+        /// </summary>
+        public bool IdentityConflict { get; set; }
+
+        public List<LeadDuplicateMatchDto> ConflictingMatches { get; set; } = [];
+
+        /// <summary>True when an external enquiry with an identity conflict was kept for an
+        /// administrator to resolve instead of being added to a lead.</summary>
+        public bool HeldForReview { get; set; }
+
+        public int? HoldId { get; set; }
+
         public LeadResponseDto? Lead { get; set; }
     }
 
@@ -154,5 +168,78 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int? CustomerId { get; set; }
 
         public string? CustomerName { get; set; }
+    }
+
+    public class LeadIntakeHoldListDto
+    {
+        /// <summary>Every enquiry waiting, which can be more than <see cref="Items"/> shows.</summary>
+        public int TotalWaiting { get; set; }
+
+        /// <summary>The oldest waiting enquiries, oldest first.</summary>
+        public List<LeadIntakeHoldDto> Items { get; set; } = [];
+    }
+
+    /// <summary>An external enquiry waiting for an administrator to choose its lead.</summary>
+    public class LeadIntakeHoldDto
+    {
+        public int Id { get; set; }
+
+        public DateTime ReceivedAt { get; set; }
+
+        public string? Provider { get; set; }
+
+        public string? SourceName { get; set; }
+
+        public string FirstName { get; set; } = string.Empty;
+
+        public string? LastName { get; set; }
+
+        public string? Phone { get; set; }
+
+        public string? WhatsappNumber { get; set; }
+
+        public string? Email { get; set; }
+
+        public string? CampaignName { get; set; }
+
+        public string? Notes { get; set; }
+
+        /// <summary>Set when a website booking request is waiting on this decision; such a hold
+        /// can only be resolved to a lead, never dismissed.</summary>
+        public int? BookingRequestId { get; set; }
+
+        /// <summary>The leads it matched when it arrived. Only an open one can receive it.</summary>
+        public List<LeadIntakeHoldCandidateDto> Candidates { get; set; } = [];
+    }
+
+    public class LeadIntakeHoldCandidateDto
+    {
+        public int LeadId { get; set; }
+
+        public string LeadReference { get; set; } = string.Empty;
+
+        public string LeadName { get; set; } = string.Empty;
+
+        public LeadStage LeadStage { get; set; }
+
+        public string? LeadOwnerName { get; set; }
+
+        /// <summary>"phone", "whatsapp" or "email": which of the enquiry's details this lead matched.</summary>
+        public string MatchedOn { get; set; } = string.Empty;
+
+        /// <summary>False once the lead has closed; it must be reopened before it can receive the enquiry.</summary>
+        public bool IsOpen { get; set; }
+    }
+
+    public class ResolveLeadIntakeHoldDto
+    {
+        /// <summary>The lead to add the enquiry to. Must be one of the hold's candidates.</summary>
+        public int? LeadId { get; set; }
+
+        /// <summary>Discard the enquiry instead of adding it to a lead.</summary>
+        public bool Dismiss { get; set; }
+
+        [StringLength(1000)]
+        public string? Notes { get; set; }
     }
 }

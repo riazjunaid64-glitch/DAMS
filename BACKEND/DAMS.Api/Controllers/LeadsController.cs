@@ -141,6 +141,18 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> Convert(int id, [FromBody] ConvertLeadDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.ConvertAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
+        /// <summary>External enquiries whose details match more than one open lead, waiting for a decision.</summary>
+        [HttpGet("held-enquiries")]
+        [Authorize(Roles = LeadRoles.Admin)]
+        public Task<IActionResult> GetHeldEnquiries(CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.GetIntakeHoldsAsync(ctx, cancellationToken), cancellationToken);
+
+        /// <summary>Adds a held enquiry to the chosen lead, or dismisses it.</summary>
+        [HttpPost("held-enquiries/{id:int}/resolve")]
+        [Authorize(Roles = LeadRoles.Admin)]
+        public Task<IActionResult> ResolveHeldEnquiry(int id, [FromBody] ResolveLeadIntakeHoldDto dto, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.ResolveIntakeHoldAsync(id, dto, ctx, cancellationToken), cancellationToken);
+
         /// <summary>
         /// Creates leads for website booking requests submitted before lead management.
         /// Repeatable — already-linked requests are skipped.

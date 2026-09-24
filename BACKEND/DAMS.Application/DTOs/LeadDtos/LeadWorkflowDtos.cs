@@ -210,6 +210,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int AlreadyLinked { get; set; }
 
+        /// <summary>Requests skipped because their enquiry is waiting in the held-enquiry review.</summary>
+        public int HeldForReview { get; set; }
+
         public string Message { get; set; } = string.Empty;
     }
 }

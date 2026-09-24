@@ -212,15 +212,27 @@ namespace DAMS.Application.Services
                     .FirstOrDefaultAsync()
             };
 
+            var heldForReview = false;
             await RunInTransactionAsync(async () =>
             {
+                heldForReview = false;
+
                 // Requests submitted before lead management have no lead yet.
                 var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext);
                 await _context.SaveChangesAsync();
 
+                // Its details match more than one open lead. The hold is the only change so far and
+                // is committed, so the administrator has somewhere to resolve it; the approval itself
+                // is refused below, outside the transaction, so the refusal cannot roll the hold back.
+                if (leadId == null)
+                {
+                    heldForReview = true;
+                    return;
+                }
+
                 // Approval is the conversion: it is what creates the customer and booking,
                 // records who did it, and marks the lead Won. Nothing else may set Won.
-                var conversion = await _leadService.ConvertAsync(leadId, new ConvertLeadDto
+                var conversion = await _leadService.ConvertAsync(leadId.Value, new ConvertLeadDto
                 {
                     BookingRequestId = bookingRequest.Id,
                     UnitId = bookingRequest.UnitId,
@@ -243,6 +255,11 @@ namespace DAMS.Application.Services
 
                 await _context.SaveChangesAsync();
             });
+
+            if (heldForReview)
+                throw new InvalidOperationException(
+                    "This request's contact details match more than one open lead, so it is waiting in Leads → " +
+                    "Held enquiries. Choose the lead it belongs to there, then approve it.");
 
             var approved = await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Approved booking request could not be loaded.");
@@ -276,8 +293,10 @@ namespace DAMS.Application.Services
             bookingRequest.ReviewedByUserId = adminUserId;
             bookingRequest.RejectionReason = rejectionReason?.Trim();
             bookingRequest.UpdatedAt = DateTime.UtcNow;
+            await _leadService.CloseIntakeHoldsForBookingRequestAsync(
+                bookingRequestId, adminUserId, "The booking request was rejected, so no lead is needed.");
 
-            await _context.SaveChangesAsync();
+            await SaveClosingHoldAsync();
 
             await NotifyQuietlyAsync(n => n.NotifyBookingRequestRejectedAsync(bookingRequestId, rejectionReason, adminUserId));
 
@@ -302,11 +321,32 @@ namespace DAMS.Application.Services
             bookingRequest.Status = BookingRequestStatus.Cancelled;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
+            // Closed by the system on the customer's behalf; no staff member decided it.
+            await _leadService.CloseIntakeHoldsForBookingRequestAsync(
+                bookingRequestId, userId: null, "The booking request was cancelled by the customer, so no lead is needed.");
 
-            await _context.SaveChangesAsync();
+            await SaveClosingHoldAsync();
 
             return await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Cancelled booking request could not be loaded.");
+        }
+
+        /// <summary>
+        /// Saves a rejection or cancellation together with closing its held enquiry. If an
+        /// administrator resolved that enquiry in the same moment, the hold's row version refuses
+        /// this save and nothing is written; say so rather than fail with a server error.
+        /// </summary>
+        private async Task SaveClosingHoldAsync()
+        {
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(
+                    "An administrator dealt with this request's held enquiry at the same moment. Reload and try again.");
+            }
         }
 
         public async Task<bool> HasPendingRequestForUnitAsync(int unitId)

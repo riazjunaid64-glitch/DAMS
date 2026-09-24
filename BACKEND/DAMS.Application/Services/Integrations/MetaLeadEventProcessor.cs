@@ -6,6 +6,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace DAMS.Application.Services.Integrations
 {
@@ -347,6 +348,26 @@ namespace DAMS.Application.Services.Integrations
             var result = await _leads.IngestAsync(
                 dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
 
+            // Its details match more than one open lead, so it waits for an administrator in the
+            // held-enquiry review. The event itself is done: retrying could never pick a lead.
+            if (result.HoldId.HasValue)
+            {
+                // The page, campaign, ad and form answers are only in hand now; kept on the hold,
+                // they reach the submission receipt made when an administrator resolves it.
+                var hold = await _context.LeadIntakeHolds.FirstAsync(h => h.Id == result.HoldId, cancellationToken);
+                hold.AttributionJson ??= JsonSerializer.Serialize(
+                    await BuildAttributionAsync(connection, resource, lead, platform, mapped, cancellationToken));
+
+                // Not an error: the hold, not LastError, records why there is no lead yet.
+                integrationEvent.Status = ExternalIntegrationEventStatus.Processed;
+                integrationEvent.ProcessedAt = DateTime.UtcNow;
+                integrationEvent.LeadId = null;
+                integrationEvent.LastError = null;
+                ReleaseLease(integrationEvent);
+                await _context.SaveChangesAsync(cancellationToken);
+                return false;
+            }
+
             if (result.Lead is null)
                 return await FailAsync(integrationEvent, result.Message, cancellationToken);
 
@@ -384,29 +405,41 @@ namespace DAMS.Application.Services.Integrations
             if (submission is null || submission.ExternalIntegrationConnectionId != null)
                 return;
 
-            submission.ExternalIntegrationConnectionId = connection.Id;
-            submission.Platform = platform;
-            submission.PageExternalId = resource.ExternalId;
-            submission.PageName = resource.Name;
+            (await BuildAttributionAsync(connection, resource, lead, platform, mapped, cancellationToken))
+                .ApplyTo(submission);
+        }
+
+        private async Task<SubmissionAttribution> BuildAttributionAsync(
+            ExternalIntegrationConnection connection,
+            ExternalIntegrationResource resource,
+            MetaLead lead,
+            string? platform,
+            MappedMetaFields mapped,
+            CancellationToken cancellationToken) => new()
+        {
+            ConnectionId = connection.Id,
+            Platform = platform,
+            PageExternalId = resource.ExternalId,
+            PageName = resource.Name,
             // Bounded like the lead's own columns; RawPayloadJson below keeps the originals.
-            submission.CampaignExternalId = FitOrNull(lead.CampaignId, MaxExternalIdLength);
-            submission.CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 300);
-            submission.AdSetExternalId = FitOrNull(lead.AdSetId, MaxExternalIdLength);
-            submission.AdSetName = LeadContactNormalizer.LimitOrNull(lead.AdSetName, 300);
-            submission.AdExternalId = FitOrNull(lead.AdId, MaxExternalIdLength);
-            submission.AdName = LeadContactNormalizer.LimitOrNull(lead.AdName, 300);
+            CampaignExternalId = FitOrNull(lead.CampaignId, MaxExternalIdLength),
+            CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 300),
+            AdSetExternalId = FitOrNull(lead.AdSetId, MaxExternalIdLength),
+            AdSetName = LeadContactNormalizer.LimitOrNull(lead.AdSetName, 300),
+            AdExternalId = FitOrNull(lead.AdId, MaxExternalIdLength),
+            AdName = LeadContactNormalizer.LimitOrNull(lead.AdName, 300),
             // Neither of these comes back on the lead itself from Graph — the lead endpoint
             // returns a form id but not its name, and no ad-account id at all — so they are
             // filled in, best-effort, from whatever resource sync has already discovered.
             // Absent here just means "not yet synced", never something that should block
             // ingestion, which is why this is a lookup and not a required field.
-            submission.ExternalFormName = await LookUpResourceNameAsync(
-                ExternalResourceTypes.LeadForm, lead.FormId, cancellationToken);
-            submission.AdAccountExternalId = await LookUpParentExternalIdAsync(
-                ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken);
-            submission.RawPayloadJson = lead.RawJson;
-            submission.FieldDataJson = mapped.ToFieldDataJson();
-        }
+            ExternalFormName = await LookUpResourceNameAsync(
+                ExternalResourceTypes.LeadForm, lead.FormId, cancellationToken),
+            AdAccountExternalId = await LookUpParentExternalIdAsync(
+                ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken),
+            RawPayloadJson = lead.RawJson,
+            FieldDataJson = mapped.ToFieldDataJson()
+        };
 
         private async Task<string?> LookUpResourceNameAsync(
             string resourceType, string? externalId, CancellationToken cancellationToken)
