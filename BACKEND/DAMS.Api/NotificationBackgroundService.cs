@@ -1,7 +1,5 @@
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
-using DAMS.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DAMS.Api
@@ -43,17 +41,22 @@ namespace DAMS.Api
 
             var interval = TimeSpan.FromSeconds(_options.DeliveryIntervalSeconds);
 
-            // Let the application finish starting before the first sweep.
+            // Let the application finish starting before the first sweep, and wait out a
+            // database that is not reachable yet rather than giving up on it.
+            bool schemaExists;
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+                schemaExists = await WorkerSchemaReadiness.WaitForTablesAsync(
+                    _scopeFactory, _logger, "Notification background processing",
+                    ["NotificationJobs", "Notifications", "NotificationDeliveries"],
+                    _options.StartupDelaySeconds, _options.StartupRetryMaxDelaySeconds, stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 return;
             }
 
-            if (!await NotificationSchemaExistsAsync(stoppingToken))
+            if (!schemaExists)
             {
                 _logger.LogWarning(
                     "Notification background processing is paused because the notification database tables are missing. " +
@@ -166,47 +169,6 @@ namespace DAMS.Api
             catch (Exception ex)
             {
                 _logger.LogError(ex, "The notification reconciliation sweep failed. It will run again shortly.");
-            }
-        }
-
-        private async Task<bool> NotificationSchemaExistsAsync(CancellationToken stoppingToken)
-        {
-            try
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var connection = db.Database.GetDbConnection();
-
-                await db.Database.OpenConnectionAsync(stoppingToken);
-                try
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText = """
-                        SELECT CASE WHEN
-                            OBJECT_ID(N'[dbo].[NotificationJobs]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[Notifications]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[NotificationDeliveries]', N'U') IS NOT NULL
-                        THEN 1 ELSE 0 END
-                        """;
-
-                    var result = await command.ExecuteScalarAsync(stoppingToken);
-                    return Convert.ToInt32(result) == 1;
-                }
-                finally
-                {
-                    await db.Database.CloseConnectionAsync();
-                }
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Notification background processing is paused because the notification schema check failed.");
-                return false;
             }
         }
 

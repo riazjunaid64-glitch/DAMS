@@ -2215,6 +2215,47 @@ public sealed class SqlServerProductionInvariantTests
         Assert.DoesNotContain(logs.Messages, m => m.Contains("waiting for the database"));
     }
 
+    [SqlServerFact]
+    public async Task TheNotificationWorker_StartedWhileTheDatabaseIsDown_ResumesOnItsOwnWhenItRecovers()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+            await db.Database.MigrateAsync();
+
+        var outage = new DatabaseOutage { Down = true };
+        var deliveries = new CountingDeliveryProcessor();
+        var logs = new ListLogger<DAMS.Api.NotificationBackgroundService>();
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString).AddInterceptors(outage));
+        services.AddScoped<INotificationDeliveryProcessor>(_ => deliveries);
+        await using var provider = services.BuildServiceProvider();
+
+        var worker = new DAMS.Api.NotificationBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Microsoft.Extensions.Options.Options.Create(new NotificationOptions
+            {
+                DeliveryIntervalSeconds = 1, StartupDelaySeconds = 0, StartupRetryMaxDelaySeconds = 1
+            }), logs);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => outage.RefusedOpens >= 3, TimeSpan.FromSeconds(30));
+            Assert.False(worker.ExecuteTask!.IsCompleted);
+            Assert.Equal(0, deliveries.Sweeps);
+            Assert.Contains(logs.Messages, m => m.Contains("waiting for the database"));
+
+            outage.Down = false;
+            await WaitUntilAsync(() => deliveries.Sweeps > 0, TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Contains(logs.Messages, m => m.Contains("Notification background processing started after"));
+        Assert.DoesNotContain(logs.Messages, m => m.Contains("tables are missing"));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -2245,6 +2286,23 @@ public sealed class SqlServerProductionInvariantTests
 
             return base.ConnectionOpeningAsync(connection, eventData, result, cancellationToken);
         }
+    }
+
+    private sealed class CountingDeliveryProcessor : INotificationDeliveryProcessor
+    {
+        private int _sweeps;
+        public int Sweeps => Volatile.Read(ref _sweeps);
+
+        public Task<int> ProcessDueDeliveriesAsync(int batchSize, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _sweeps);
+            return Task.FromResult(0);
+        }
+
+        public Task<int> ProcessScheduledJobsAsync(int batchSize, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
+        public Task<int> PruneAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
     }
 
     private sealed class NoDueResourceSync : IMetaResourceSyncService

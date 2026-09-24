@@ -15,6 +15,15 @@ namespace DAMS.Application.Common
         /// <summary>Seconds between scheduled-job sweeps. Zero or less disables the worker.</summary>
         public int ScheduleIntervalSeconds { get; set; } = 30;
 
+        /// <summary>
+        /// Seconds the worker waits after boot before its first database check, and the first
+        /// wait (at least one second) before re-checking when the database could not be reached.
+        /// Each further failed check doubles the wait, up to <see cref="StartupRetryMaxDelaySeconds"/>.
+        /// </summary>
+        public int StartupDelaySeconds { get; set; } = 15;
+
+        public int StartupRetryMaxDelaySeconds { get; set; } = 300;
+
         /// <summary>Deliveries claimed per sweep.</summary>
         public int DeliveryBatchSize { get; set; } = 50;
 
