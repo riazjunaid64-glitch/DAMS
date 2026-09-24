@@ -242,6 +242,80 @@ public sealed class LeadIntakeAndDuplicateTests
         Assert.Equal(1, await h.Db.Leads.CountAsync());
     }
 
+    // A number is one identity whichever field it arrives in, in whatever format.
+    [Theory]
+    [InlineData("phone", "phone")]
+    [InlineData("phone", "whatsapp")]
+    [InlineData("whatsapp", "phone")]
+    [InlineData("whatsapp", "whatsapp")]
+    public async Task TheSameNumber_MatchesWhicheverFieldItWasEnteredIn(string existingField, string incomingField)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var existing = LeadTestHarness.Intake(phone: null, email: null);
+        SetNumber(existing, existingField, "0300-1234567");
+        var original = await h.Leads.IngestAsync(existing, h.Admin);
+
+        var incoming = LeadTestHarness.Intake(firstName: "Again", phone: null, email: null);
+        SetNumber(incoming, incomingField, "+92 300 1234567");
+        var result = await h.Leads.IngestAsync(incoming, h.Admin);
+
+        Assert.True(result.IsDuplicate);
+        Assert.Null(result.Lead);
+        Assert.Equal(original.Lead!.Id, result.Match!.LeadId);
+        // Named after the incoming field, so staff see which of their entries matched.
+        Assert.Equal(incomingField, result.Match.MatchedOn);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Theory]
+    [InlineData("phone", "phone")]
+    [InlineData("phone", "whatsapp")]
+    [InlineData("whatsapp", "phone")]
+    [InlineData("whatsapp", "whatsapp")]
+    public async Task DifferentNumbers_AreNeverMatched(string existingField, string incomingField)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var existing = LeadTestHarness.Intake(phone: null, email: null);
+        SetNumber(existing, existingField, "0300-1234567");
+        await h.Leads.IngestAsync(existing, h.Admin);
+
+        var incoming = LeadTestHarness.Intake(firstName: "Someone Else", phone: null, email: null);
+        SetNumber(incoming, incomingField, "0300-1234568");
+        var result = await h.Leads.IngestAsync(incoming, h.Admin);
+
+        Assert.False(result.IsDuplicate);
+        Assert.NotNull(result.Lead);
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+    }
+
+    [Theory]
+    [InlineData("phone", "phone")]
+    [InlineData("phone", "whatsapp")]
+    [InlineData("whatsapp", "phone")]
+    [InlineData("whatsapp", "whatsapp")]
+    public async Task EditingInAnotherOpenLeadsNumber_IsRefused_WhicheverFieldEitherUses(
+        string otherLeadField, string editedField)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var other = LeadTestHarness.Intake(firstName: "Other", phone: null, email: null);
+        SetNumber(other, otherLeadField, "0300-1234567");
+        await h.Leads.IngestAsync(other, h.Admin);
+        var mine = await h.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Mine", phone: null, email: "mine@example.com"), h.Admin);
+
+        var edit = new UpdateLeadDto { FirstName = "Mine", Email = "mine@example.com" };
+        if (editedField == "phone") edit.Phone = "+92 300 1234567"; else edit.WhatsappNumber = "+92 300 1234567";
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Leads.UpdateAsync(mine.Lead!.Id, edit, h.Admin));
+        Assert.Contains("Another open lead already uses", ex.Message);
+    }
+
+    private static void SetNumber(LeadIntakeDto dto, string field, string number)
+    {
+        if (field == "phone") dto.Phone = number; else dto.WhatsappNumber = number;
+    }
+
     [Fact]
     public async Task ClosedLead_DoesNotBlockANewEnquiryFromTheSamePerson()
     {

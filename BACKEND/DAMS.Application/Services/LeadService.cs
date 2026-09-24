@@ -545,12 +545,14 @@ namespace DAMS.Application.Services
                 return null;
 
             // Closed leads are history: a fresh enquiry from someone we lost last year is a
-            // genuinely new opportunity, so only open leads count as duplicates.
+            // genuinely new opportunity, so only open leads count as duplicates. A number is the
+            // same person whichever field it was entered in, so each incoming number is compared
+            // with both the phone and the WhatsApp field.
             var openLead = await _context.Leads
                 .AsNoTracking()
                 .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage))
                 .Where(l =>
-                    (normalizedPhone != null && l.NormalizedPhone == normalizedPhone)
+                    (normalizedPhone != null && (l.NormalizedPhone == normalizedPhone || l.NormalizedWhatsapp == normalizedPhone))
                     || (normalizedWhatsapp != null && (l.NormalizedWhatsapp == normalizedWhatsapp || l.NormalizedPhone == normalizedWhatsapp))
                     || (normalizedEmail != null && l.NormalizedEmail == normalizedEmail))
                 .OrderByDescending(l => l.CreatedAt)
@@ -568,7 +570,7 @@ namespace DAMS.Application.Services
 
             if (openLead != null)
             {
-                var matchedOn = normalizedPhone != null && openLead.NormalizedPhone == normalizedPhone ? "phone"
+                var matchedOn = normalizedPhone != null && (openLead.NormalizedPhone == normalizedPhone || openLead.NormalizedWhatsapp == normalizedPhone) ? "phone"
                     : normalizedWhatsapp != null && (openLead.NormalizedWhatsapp == normalizedWhatsapp || openLead.NormalizedPhone == normalizedWhatsapp) ? "whatsapp"
                     : "email";
 
@@ -925,13 +927,13 @@ namespace DAMS.Application.Services
 
             // Editing a contact field must not achieve what creation refuses: two open leads
             // for the same person. Checked against every channel that changed, not phone alone
-            // — matching FindDuplicateAsync's rule that a WhatsApp number can collide with
-            // either field.
+            // — matching FindDuplicateAsync's rule that a number collides with either field,
+            // whichever field it is entered in.
             if (normalizedPhone != null && normalizedPhone != lead.NormalizedPhone)
             {
                 var clash = await _context.Leads.AnyAsync(
                     l => l.Id != lead.Id
-                         && l.NormalizedPhone == normalizedPhone
+                         && (l.NormalizedPhone == normalizedPhone || l.NormalizedWhatsapp == normalizedPhone)
                          && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
 
                 if (clash)
