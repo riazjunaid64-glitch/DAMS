@@ -47,6 +47,43 @@ public sealed class BlankEmailEndpointTests : IClassFixture<IdempotentMoneyOpera
         Assert.Equal(JsonValueKind.Null, lead.GetProperty("email").ValueKind);
     }
 
+    // An omitted property never reaches the Email setter, unlike "" — so it is covered separately.
+    [Theory]
+    [InlineData("phone")]
+    [InlineData("whatsappNumber")]
+    public async Task ALead_WithNoEmailPropertyAtAll_IsCreatedWithNoEmail(string contactField)
+    {
+        var response = await Admin().PostAsync("/api/leads", Json(
+            $$"""{"firstName":"No Email Field","{{contactField}}":"{{UniquePhone()}}","sourceCode":"manual"}"""));
+
+        var lead = await CreatedLeadAsync(response);
+        Assert.Null((await StoredAsync(lead.GetProperty("id").GetInt32())).Email);
+    }
+
+    [Fact]
+    public async Task ACustomer_WithNoEmailPropertyAtAll_IsCreatedWithNoEmail()
+    {
+        var response = await Admin().PostAsync("/api/Customer", Json(
+            $$"""{"fullName":"No Email Field Customer","phone":"{{UniquePhone()}}"}"""));
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, $"Expected success, got {response.StatusCode}: {body}");
+        var id = JsonDocument.Parse(body).RootElement.GetProperty("id").GetInt32();
+        using var scope = _factory.Services.CreateScope();
+        Assert.Null((await scope.ServiceProvider.GetRequiredService<AppDbContext>().Customers
+            .AsNoTracking().SingleAsync(c => c.Id == id)).Email);
+    }
+
+    [Fact]
+    public async Task ABookingForANewCustomer_WithNoEmailPropertyAtAll_IsNotAnEmailError()
+    {
+        var response = await Admin().PostAsync("/api/Booking", Json(
+            $$$"""{"unitId":999999,"source":"WalkIn","newCustomer":{"fullName":"Walk In","phone":"{{{UniquePhone()}}}"}}"""));
+
+        var errors = ValidationErrors(await response.Content.ReadAsStringAsync());
+        Assert.DoesNotContain(errors.Keys, k => k.EndsWith("Email", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public async Task EditingALead_AndClearingItsEmail_Succeeds()
     {
