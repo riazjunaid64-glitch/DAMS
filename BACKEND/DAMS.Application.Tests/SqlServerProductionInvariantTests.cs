@@ -2169,6 +2169,267 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// A webhook id longer than the event columns can hold used to fail the whole delivery's
+    /// save, so Meta retried it forever and the valid lead beside it never got in. Only a
+    /// provider that enforces column lengths can show that.
+    /// </summary>
+    [SqlServerFact]
+    public async Task WebhookIntake_RecordsAnOversizedEventAsFailed_WithoutLosingTheValidEventBesideIt()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+            await SeedMetaPageAsync(db, "page-oversized");
+
+        var oversizedLeadgenId = new string('9', 400);
+        var body = $$$"""
+            {
+              "object": "page",
+              "entry": [{
+                "id": "page-oversized",
+                "changes": [
+                  {"field": "leadgen", "value": {"page_id": "page-oversized", "leadgen_id": "{{{oversizedLeadgenId}}}"}},
+                  {"field": "leadgen", "value": {"page_id": "page-oversized", "leadgen_id": "lead-valid"}}
+                ]
+              }]
+            }
+            """;
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(2, await MetaIntake(db).RecordAsync(body));
+
+        // A redelivery of the same body is recognised, the oversized event included.
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(0, await MetaIntake(db).RecordAsync(body));
+
+        await using (var db = new AppDbContext(options))
+        {
+            var events = await db.ExternalIntegrationEvents.AsNoTracking().OrderBy(e => e.Id).ToListAsync();
+            Assert.Equal(2, events.Count);
+
+            var oversized = events[0];
+            Assert.Equal(ExternalIntegrationEventStatus.Failed, oversized.Status);
+            Assert.Contains(oversizedLeadgenId, oversized.RawPayloadJson);
+            Assert.NotNull(oversized.LastError);
+
+            var valid = events[1];
+            Assert.Equal(ExternalIntegrationEventStatus.Pending, valid.Status);
+            Assert.EndsWith(":page-oversized:lead-valid", valid.EventKey);
+        }
+    }
+
+    /// <summary>
+    /// A lead whose write fails used to poison the worker: the failed Lead stayed tracked, so
+    /// saving the event's retry state re-attempted the same insert, threw again, and took the
+    /// rest of the batch down with it. The failure here is a real SQL Server constraint
+    /// violation, removed afterwards to prove the parked event then recovers on its own.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AMetaLeadWhoseWriteFails_IsParkedForRetry_WithoutBlockingTheNextLead_AndRecovers()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        graph.Leads["lead-poison"] = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-poison", [("full_name", "Poison Pill"), ("phone_number", "03001110001")]);
+        graph.Leads["lead-good"] = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-good", [("full_name", "Good Lead"), ("phone_number", "03001110002")]);
+
+        await using (var db = new AppDbContext(options))
+        {
+            await SeedMetaPageAsync(db, "page-poison");
+            // Recorded first, so it is claimed and processed ahead of the valid one.
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-poison", "lead-poison"));
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-poison", "lead-good"));
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE [Leads] ADD CONSTRAINT [CK_Test_RejectPoison] CHECK ([FirstName] <> N'Poison')");
+        }
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(1, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        await using (var db = new AppDbContext(options))
+        {
+            var poison = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.EventKey.EndsWith(":lead-poison"));
+            Assert.Equal(ExternalIntegrationEventStatus.Retry, poison.Status);
+            Assert.Equal(1, poison.Attempts);
+            Assert.NotNull(poison.LastError);
+            Assert.Null(poison.LeadId);
+            Assert.Null(poison.LockedUntil);
+
+            var good = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.EventKey.EndsWith(":lead-good"));
+            Assert.Equal(ExternalIntegrationEventStatus.Processed, good.Status);
+            Assert.NotNull(good.LeadId);
+
+            Assert.Equal("Good", (await db.Leads.AsNoTracking().SingleAsync()).FirstName);
+            Assert.Equal(1, await db.LeadExternalSubmissions.CountAsync());
+
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE [Leads] DROP CONSTRAINT [CK_Test_RejectPoison]");
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE [ExternalIntegrationEvents] SET [AvailableAt] = DATEADD(MINUTE, -1, SYSUTCDATETIME()) WHERE [Id] = {0}",
+                poison.Id);
+        }
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(1, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        await using (var db = new AppDbContext(options))
+        {
+            var poison = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.EventKey.EndsWith(":lead-poison"));
+            Assert.Equal(ExternalIntegrationEventStatus.Processed, poison.Status);
+            Assert.Equal(2, poison.Attempts);
+            Assert.Null(poison.LastError);
+
+            var leads = await db.Leads.AsNoTracking().OrderBy(l => l.Id).ToListAsync();
+            Assert.Equal(["Good", "Poison"], leads.Select(l => l.FirstName));
+            Assert.All(leads, l => Assert.StartsWith("LD-0", l.LeadReference));
+            Assert.Equal(2, await db.LeadExternalSubmissions.CountAsync());
+        }
+    }
+
+    /// <summary>
+    /// Meta decides how long a campaign name, an ad name or a form answer is. None of that may
+    /// fail a write against DAMS's column limits — and whatever had to be shortened or dropped
+    /// to fit is still on the submission, verbatim.
+    /// </summary>
+    [SqlServerFact]
+    public async Task OversizedMetaValues_AreBoundedToStorageLimits_AndTheOriginalAnswersAreKept()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var longAnswer = new string('x', 5000);
+        var longFirst = new string('F', 150);
+        var longLast = new string('L', 150);
+        var oversized = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-oversized",
+            [
+                ("full_name", $"{longFirst} {longLast}"),
+                ("phone_number", new string('3', 60)),
+                ("email", $"{new string('e', 250)}@example.com"),
+                ("city", new string('C', 150)),
+                ("what_are_you_looking_for", longAnswer)
+            ],
+            campaignName: new string('c', 400),
+            adName: new string('a', 400),
+            formId: new string('9', 250));
+        oversized.CampaignId = new string('8', 250);
+        oversized.AdSetName = new string('s', 400);
+
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        graph.Leads["lead-oversized"] = oversized;
+        graph.Leads["lead-normal"] = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-normal", [("full_name", "Normal Person"), ("phone_number", "03001110003")]);
+
+        await using (var db = new AppDbContext(options))
+        {
+            await SeedMetaPageAsync(db, "page-bounded");
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-bounded", "lead-oversized"));
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-bounded", "lead-normal"));
+        }
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(2, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.Equal(2, await db.ExternalIntegrationEvents
+                .CountAsync(e => e.Status == ExternalIntegrationEventStatus.Processed));
+
+            var lead = await db.Leads.AsNoTracking().SingleAsync(l => l.ExternalLeadId == "lead-oversized");
+            Assert.Equal(longFirst[..100], lead.FirstName);
+            Assert.Equal(longLast[..100], lead.LastName);
+            Assert.Equal(100, lead.City!.Length);
+            Assert.Equal(200, lead.CampaignName!.Length);
+            // A contact value or an id cut short would be a different, wrong value, so one that
+            // cannot fit is left empty rather than truncated.
+            Assert.Null(lead.Phone);
+            Assert.Null(lead.Email);
+            Assert.Null(lead.CampaignReference);
+            Assert.Null(lead.ExternalFormReference);
+
+            var submission = await db.LeadExternalSubmissions.AsNoTracking().SingleAsync(s => s.ExternalLeadId == "lead-oversized");
+            Assert.Equal(300, submission.CampaignName!.Length);
+            Assert.Equal(300, submission.AdSetName!.Length);
+            Assert.Equal(300, submission.AdName!.Length);
+            Assert.Null(submission.CampaignExternalId);
+            Assert.Null(submission.ExternalFormReference);
+            Assert.Contains(longAnswer, submission.FieldDataJson);
+            Assert.Contains($"{longFirst} {longLast}", submission.FieldDataJson);
+            Assert.Contains(longAnswer, submission.RawPayloadJson);
+
+            Assert.Equal(1, await db.Leads.CountAsync(l => l.ExternalLeadId == "lead-normal"));
+        }
+    }
+
+    private static readonly MetaIntegrationOptions SqlMetaOptions = new()
+    {
+        AppId = "sql-app-id",
+        AppSecret = "sql-app-secret",
+        WebhookVerifyToken = "sql-verify-token",
+        BaseRetryDelaySeconds = 60,
+        MaxRetryDelayMinutes = 60,
+        MaxAttempts = 3,
+        AuthRetryDelayHours = 6
+    };
+
+    /// <summary>A connected Meta account with one page enabled for lead delivery.</summary>
+    private static async Task SeedMetaPageAsync(AppDbContext db, string pageId)
+    {
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var connection = new ExternalIntegrationConnection
+        {
+            Provider = "meta", ExternalAccountId = $"account-{pageId}", DisplayName = "SQL Meta Account",
+            Status = ExternalIntegrationConnectionStatus.Connected,
+            AccessTokenProtected = protector.Protect("user-token")
+        };
+        db.ExternalIntegrationConnections.Add(connection);
+        await db.SaveChangesAsync();
+
+        db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+        {
+            ExternalIntegrationConnectionId = connection.Id,
+            Provider = "meta", ResourceType = "facebook_page", ExternalId = pageId, Name = $"Page {pageId}",
+            IsEnabled = true, IsActive = true, IsSubscribed = true,
+            ResourceTokenProtected = protector.Protect($"page-token-{pageId}")
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static DAMS.Application.Services.Integrations.MetaWebhookIntakeService MetaIntake(AppDbContext db) =>
+        new(db, NullLogger<DAMS.Application.Services.Integrations.MetaWebhookIntakeService>.Instance);
+
+    /// <summary>The event worker on the real lead ingestion path, wired the way the API wires it.</summary>
+    private static DAMS.Application.Services.Integrations.MetaLeadEventProcessor MetaProcessor(
+        AppDbContext db, DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph)
+    {
+        var clock = new LeadTestHarness.FakeClock(DateTime.UtcNow);
+        var dispatcher = new NotificationDispatcher(db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
+            clock, new NotificationEligibilityPolicy(db), NullLogger<NotificationDispatcher>.Instance);
+        var customers = new CustomerService(db);
+        var leads = new LeadService(db, customers, new BookingService(db, customers, new FinanceAccountService(db)),
+            new LeadNotificationService(db, dispatcher),
+            Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()),
+            new CustomerAccountLinkService(db, clock));
+
+        return new DAMS.Application.Services.Integrations.MetaLeadEventProcessor(
+            db, graph, new DAMS.Application.Tests.Integrations.PlaintextSecretProtector(), leads, SqlMetaOptions,
+            NullLogger<DAMS.Application.Services.Integrations.MetaLeadEventProcessor>.Instance);
+    }
+
+    /// <summary>
     /// MetaIntegrationService.SetResourceEnabledAsync's own "is this Page already enabled
     /// elsewhere" check is an AnyAsync query: two requests enabling the same physical Page
     /// through two different connections can both pass it before either has committed. Only a

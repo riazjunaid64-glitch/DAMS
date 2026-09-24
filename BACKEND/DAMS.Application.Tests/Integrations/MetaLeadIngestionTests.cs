@@ -289,6 +289,63 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task ALeadIdTooLongToStore_FailsAtOnce_AndTheNextLeadStillArrives()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+
+        // Meta answers with an id no lead or submission column can hold. Retrying cannot
+        // change that, so the event is failed on the first attempt.
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead(new string('9', 250), StandardFields, pageId: page.ExternalId);
+        h.Graph.Leads["lead-2"] = FakeMetaGraphClient.Lead("lead-2", StandardFields, pageId: page.ExternalId);
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-2"));
+
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().OrderBy(e => e.Id).ToListAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, events[0].Status);
+        Assert.Equal(1, events[0].Attempts);
+        Assert.Null(events[0].LeadId);
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, events[1].Status);
+        Assert.Equal("lead-2", (await h.Db.Leads.SingleAsync()).ExternalLeadId);
+    }
+
+    [Fact]
+    public async Task AWebhookIdTooLongToStore_IsRecordedAsFailed_BesideTheValidEventInTheSameDelivery()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+
+        var oversizedId = new string('9', 400);
+        var body = $$$"""
+            {
+              "object": "page",
+              "entry": [{
+                "id": "{{{page.ExternalId}}}",
+                "changes": [
+                  {"field": "leadgen", "value": {"page_id": "{{{page.ExternalId}}}", "leadgen_id": "{{{oversizedId}}}"}},
+                  {"field": "leadgen", "value": {"page_id": "{{{page.ExternalId}}}", "leadgen_id": "lead-2"}}
+                ]
+              }]
+            }
+            """;
+
+        Assert.Equal(2, await h.Intake.RecordAsync(body));
+        // The oversized event's stand-in key is stable, so a redelivery is still a duplicate.
+        Assert.Equal(0, await h.Intake.RecordAsync(body));
+
+        var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().OrderBy(e => e.Id).ToListAsync();
+        Assert.Equal(2, events.Count);
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, events[0].Status);
+        Assert.True(events[0].EventKey.Length <= 300);
+        Assert.Null(events[0].ResourceExternalId);
+        Assert.Contains(oversizedId, events[0].RawPayloadJson);
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, events[1].Status);
+    }
+
+    [Fact]
     public async Task ARejectedToken_FlagsTheConnectionInsteadOfBurningRetries()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

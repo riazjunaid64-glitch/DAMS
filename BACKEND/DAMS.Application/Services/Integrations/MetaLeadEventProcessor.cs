@@ -32,6 +32,9 @@ namespace DAMS.Application.Services.Integrations
 
         private static readonly string WorkerId = $"{Environment.MachineName}:{Environment.ProcessId}";
 
+        /// <summary>The length of every provider-id column a lead, submission or event stores.</summary>
+        internal const int MaxExternalIdLength = 200;
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -65,8 +68,18 @@ namespace DAMS.Application.Services.Integrations
                 if (cancellationToken.IsCancellationRequested)
                     break;
 
-                if (await ProcessOneAsync(eventId, cancellationToken))
-                    processed++;
+                try
+                {
+                    if (await ProcessOneAsync(eventId, cancellationToken))
+                        processed++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Even this event's outcome could not be saved. It keeps its lease and is
+                    // claimed again once that lapses; the events behind it must not wait.
+                    _logger.LogError(ex,
+                        "Meta lead event {EventId} could not be recorded; it will be retried when its lease expires.", eventId);
+                }
             }
 
             return processed;
@@ -187,8 +200,7 @@ namespace DAMS.Application.Services.Integrations
                 integrationEvent.Attempts++;
 
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
-                await IngestAsync(integrationEvent, connection, resource, lead, cancellationToken);
-                return true;
+                return await IngestAsync(integrationEvent, connection, resource, lead, cancellationToken);
             }
             catch (MetaAuthorizationException ex)
             {
@@ -211,21 +223,43 @@ namespace DAMS.Application.Services.Integrations
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Processing Meta lead event {EventId} failed unexpectedly.", integrationEvent.Id);
-                await RetryOrFailAsync(integrationEvent, ex.Message, cancellationToken);
+
+                // Whatever the failed write added is still tracked, so saving the retry state on
+                // this context would replay that write and fail with it. The outcome is saved
+                // on its own, against a fresh copy of the event.
+                var attempts = integrationEvent.Attempts;
+                _context.ChangeTracker.Clear();
+
+                var fresh = await _context.ExternalIntegrationEvents
+                    .FirstOrDefaultAsync(e => e.Id == eventId, cancellationToken);
+                if (fresh is null)
+                    return false;
+
+                fresh.Attempts = attempts;
+                await RetryOrFailAsync(fresh, ex.Message, cancellationToken);
                 return false;
             }
         }
 
-        private async Task IngestAsync(
+        /// <summary>True only when the event became (or enriched) a lead.</summary>
+        private async Task<bool> IngestAsync(
             ExternalIntegrationEvent integrationEvent,
             ExternalIntegrationConnection connection,
             ExternalIntegrationResource resource,
             MetaLead lead,
             CancellationToken cancellationToken)
         {
+            // The provider's id is what makes ingestion idempotent, so it can be neither cut
+            // short nor dropped. One too long to store can never succeed; retrying is pointless.
+            if (lead.LeadgenId.Length > MaxExternalIdLength)
+                return await FailAsync(integrationEvent, "Meta returned a lead id longer than DAMS can store.", cancellationToken);
+
             var mapped = MetaLeadFieldMapper.Map(lead.FieldData);
             var platform = ResolvePlatform(lead, resource);
 
+            // Every value below is provider-controlled and bounded to the Lead column it lands
+            // in, so no answer can fail the write. Nothing is lost: the submission keeps every
+            // answer and the raw response verbatim.
             var dto = new LeadIntakeDto
             {
                 // Meta forms do not guarantee a name, and Lead.FirstName is a required column —
@@ -235,20 +269,20 @@ namespace DAMS.Application.Services.Integrations
                 // would be indistinguishable from a real answer once it is on screen.
                 FirstName = string.IsNullOrWhiteSpace(mapped.FirstName)
                     ? $"Meta lead ({UnnamedLeadSuffix(lead.LeadgenId)})"
-                    : mapped.FirstName,
-                LastName = mapped.LastName,
-                Phone = mapped.Phone,
-                WhatsappNumber = mapped.WhatsappNumber,
-                Email = mapped.Email,
-                City = mapped.City,
+                    : LeadContactNormalizer.Limit(mapped.FirstName, 100),
+                LastName = LeadContactNormalizer.LimitOrNull(mapped.LastName, 100),
+                Phone = FitOrNull(mapped.Phone, 50),
+                WhatsappNumber = FitOrNull(mapped.WhatsappNumber, 50),
+                Email = FitOrNull(mapped.Email, 200),
+                City = LeadContactNormalizer.LimitOrNull(mapped.City, 100),
                 SourceCode = ResolveSourceCode(platform),
                 SourceDetails = BuildSourceDetails(lead, resource),
-                CampaignName = lead.CampaignName,
-                CampaignReference = lead.CampaignId,
-                AdReference = lead.AdId,
+                CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 200),
+                CampaignReference = FitOrNull(lead.CampaignId, MaxExternalIdLength),
+                AdReference = FitOrNull(lead.AdId, MaxExternalIdLength),
                 ExternalProvider = IntegrationProviders.Meta,
                 ExternalLeadId = lead.LeadgenId,
-                ExternalFormReference = lead.FormId,
+                ExternalFormReference = FitOrNull(lead.FormId, MaxExternalIdLength),
                 ExternalSubmittedAt = lead.CreatedTime,
                 // A summary only: the complete provider response is stored on the submission,
                 // which has no length limit, rather than squeezed into this 4000-char column.
@@ -262,10 +296,7 @@ namespace DAMS.Application.Services.Integrations
                 dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
 
             if (result.Lead is null)
-            {
-                await FailAsync(integrationEvent, result.Message, cancellationToken);
-                return;
-            }
+                return await FailAsync(integrationEvent, result.Message, cancellationToken);
 
             await StampAttributionAsync(connection, resource, lead, platform, mapped, cancellationToken);
 
@@ -276,6 +307,7 @@ namespace DAMS.Application.Services.Integrations
             ReleaseLease(integrationEvent);
 
             await _context.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
         /// <summary>
@@ -304,12 +336,13 @@ namespace DAMS.Application.Services.Integrations
             submission.Platform = platform;
             submission.PageExternalId = resource.ExternalId;
             submission.PageName = resource.Name;
-            submission.CampaignExternalId = lead.CampaignId;
-            submission.CampaignName = lead.CampaignName;
-            submission.AdSetExternalId = lead.AdSetId;
-            submission.AdSetName = lead.AdSetName;
-            submission.AdExternalId = lead.AdId;
-            submission.AdName = lead.AdName;
+            // Bounded like the lead's own columns; RawPayloadJson below keeps the originals.
+            submission.CampaignExternalId = FitOrNull(lead.CampaignId, MaxExternalIdLength);
+            submission.CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 300);
+            submission.AdSetExternalId = FitOrNull(lead.AdSetId, MaxExternalIdLength);
+            submission.AdSetName = LeadContactNormalizer.LimitOrNull(lead.AdSetName, 300);
+            submission.AdExternalId = FitOrNull(lead.AdId, MaxExternalIdLength);
+            submission.AdName = LeadContactNormalizer.LimitOrNull(lead.AdName, 300);
             // Neither of these comes back on the lead itself from Graph — the lead endpoint
             // returns a form id but not its name, and no ad-account id at all — so they are
             // filled in, best-effort, from whatever resource sync has already discovered.
@@ -375,6 +408,13 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>The last few digits of a leadgen id — enough to tell two unnamed leads apart without echoing the whole id.</summary>
         private static string UnnamedLeadSuffix(string leadgenId) =>
             leadgenId.Length <= 6 ? leadgenId : leadgenId[^6..];
+
+        /// <summary>
+        /// For ids and contact values, which are dropped rather than cut when they do not fit:
+        /// a shortened id or phone number is a different, wrong value, not a shorter right one.
+        /// </summary>
+        private static string? FitOrNull(string? value, int maxLength) =>
+            value is null || value.Length <= maxLength ? value : null;
 
         private static string ResolveSourceCode(string? platform) => platform switch
         {
