@@ -296,7 +296,7 @@ namespace DAMS.Application.Services
             await _leadService.CloseIntakeHoldsForBookingRequestAsync(
                 bookingRequestId, adminUserId, "The booking request was rejected, so no lead is needed.");
 
-            await _context.SaveChangesAsync();
+            await SaveClosingHoldAsync();
 
             await NotifyQuietlyAsync(n => n.NotifyBookingRequestRejectedAsync(bookingRequestId, rejectionReason, adminUserId));
 
@@ -321,13 +321,32 @@ namespace DAMS.Application.Services
             bookingRequest.Status = BookingRequestStatus.Cancelled;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
+            // Closed by the system on the customer's behalf; no staff member decided it.
             await _leadService.CloseIntakeHoldsForBookingRequestAsync(
-                bookingRequestId, userId, "The booking request was cancelled by the customer, so no lead is needed.");
+                bookingRequestId, userId: null, "The booking request was cancelled by the customer, so no lead is needed.");
 
-            await _context.SaveChangesAsync();
+            await SaveClosingHoldAsync();
 
             return await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Cancelled booking request could not be loaded.");
+        }
+
+        /// <summary>
+        /// Saves a rejection or cancellation together with closing its held enquiry. If an
+        /// administrator resolved that enquiry in the same moment, the hold's row version refuses
+        /// this save and nothing is written; say so rather than fail with a server error.
+        /// </summary>
+        private async Task SaveClosingHoldAsync()
+        {
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(
+                    "An administrator dealt with this request's held enquiry at the same moment. Reload and try again.");
+            }
         }
 
         public async Task<bool> HasPendingRequestForUnitAsync(int unitId)

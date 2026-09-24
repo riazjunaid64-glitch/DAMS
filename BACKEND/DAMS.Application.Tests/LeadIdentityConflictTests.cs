@@ -410,8 +410,10 @@ public sealed class LeadIdentityConflictTests
         }, h.ClientUserId)).Id;
         await h.BookingRequests.CancelBookingRequestAsync(cancelled, h.ClientUserId);
 
-        Assert.Equal(LeadIntakeHoldStatus.Dismissed,
-            (await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync(x => x.BookingRequestId == cancelled)).Status);
+        var cancelledHold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync(x => x.BookingRequestId == cancelled);
+        Assert.Equal(LeadIntakeHoldStatus.Dismissed, cancelledHold.Status);
+        // Nobody on staff decided it, so no staff member is recorded as having resolved it.
+        Assert.Null(cancelledHold.ResolvedByUserId);
         Assert.Empty((await h.Leads.GetIntakeHoldsAsync(h.Admin)).Items);
     }
 
