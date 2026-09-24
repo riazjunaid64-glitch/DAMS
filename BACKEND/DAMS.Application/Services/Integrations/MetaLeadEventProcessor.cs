@@ -32,6 +32,9 @@ namespace DAMS.Application.Services.Integrations
 
         private static readonly string WorkerId = $"{Environment.MachineName}:{Environment.ProcessId}";
 
+        /// <summary>The length of every provider-id column a lead, submission or event stores.</summary>
+        internal const int MaxExternalIdLength = 200;
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -65,8 +68,19 @@ namespace DAMS.Application.Services.Integrations
                 if (cancellationToken.IsCancellationRequested)
                     break;
 
-                if (await ProcessOneAsync(eventId, cancellationToken))
-                    processed++;
+                try
+                {
+                    if (await ProcessOneAsync(eventId, cancellationToken))
+                        processed++;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Even this event's outcome could not be saved. Its attempt is already on
+                    // record; it keeps its lease and is claimed again once that lapses, and the
+                    // events behind it do not wait.
+                    _logger.LogError(ex,
+                        "Meta lead event {EventId} could not be recorded; it will be retried when its lease expires.", eventId);
+                }
             }
 
             return processed;
@@ -182,31 +196,24 @@ namespace DAMS.Application.Services.Integrations
                 return false;
             }
 
+            // Only an event abandoned mid-attempt gets here with none left: every attempt that
+            // records an outcome already fails the event on its last one. Without this, one
+            // that keeps killing the worker, or keeps failing to save its outcome, would be
+            // reclaimed at every lease expiry forever.
+            if (integrationEvent.Attempts >= _options.MaxAttempts)
+                return await FailAsync(integrationEvent,
+                    $"Processing did not complete in {integrationEvent.Attempts} attempts.", cancellationToken);
+
+            // Counted before the lead is fetched, not with the outcome: an attempt whose outcome
+            // is never saved — the worker died, or the database failed just then — still counts,
+            // and brings the event that much closer to giving up.
+            integrationEvent.Attempts++;
+            await _context.SaveChangesAsync(cancellationToken);
+
             try
             {
-                integrationEvent.Attempts++;
-
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
-                var attempts = integrationEvent.Attempts;
-                var strategy = _context.Database.CreateExecutionStrategy();
-                await strategy.ExecuteAsync(async () =>
-                {
-                    // A retry after a rolled-back save must reload the event and all lead state.
-                    // Reusing tracked entities here could skip inserts from the failed attempt.
-                    _context.ChangeTracker.Clear();
-                    await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-                    var currentEvent = await _context.ExternalIntegrationEvents
-                        .FirstAsync(e => e.Id == eventId, cancellationToken);
-
-                    // A commit acknowledgement can be lost after SQL Server committed it.
-                    if (currentEvent.Status == ExternalIntegrationEventStatus.Processed)
-                        return;
-
-                    currentEvent.Attempts = attempts;
-                    await IngestAsync(currentEvent, connection, resource, lead, cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
-                });
-                return true;
+                return await IngestAtomicallyAsync(eventId, lead, cancellationToken);
             }
             catch (MetaAuthorizationException ex)
             {
@@ -229,28 +236,82 @@ namespace DAMS.Application.Services.Integrations
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Processing Meta lead event {EventId} failed unexpectedly.", integrationEvent.Id);
-                var attempts = integrationEvent.Attempts;
+
+                // The transaction rolled the failed write back, but whatever it added is still
+                // tracked, so saving the retry state on this context would replay that write and
+                // fail with it. The outcome is saved on its own, against a fresh copy of the event.
                 _context.ChangeTracker.Clear();
-                var retryEvent = await _context.ExternalIntegrationEvents
-                    .FirstAsync(e => e.Id == eventId, cancellationToken);
-                if (retryEvent.Status == ExternalIntegrationEventStatus.Processed)
+
+                var fresh = await _context.ExternalIntegrationEvents
+                    .FirstOrDefaultAsync(e => e.Id == eventId, cancellationToken);
+                if (fresh is null)
+                    return false;
+
+                // SQL Server may have committed the transaction even when its acknowledgement
+                // was lost. Never turn that completed event back into retry work.
+                if (fresh.Status == ExternalIntegrationEventStatus.Processed)
                     return true;
-                retryEvent.Attempts = Math.Max(retryEvent.Attempts, attempts);
-                await RetryOrFailAsync(retryEvent, ex.Message, cancellationToken);
+
+                await RetryOrFailAsync(fresh, ex.Message, cancellationToken);
                 return false;
             }
         }
 
-        private async Task IngestAsync(
+        /// <summary>
+        /// Creates the lead, its submission and the event's outcome in one transaction. The
+        /// lead is saved in two steps (its reference needs the generated id), and without this
+        /// a failure between them left a half-made lead that a retry took as already ingested.
+        ///
+        /// The Graph call has already happened, so no transaction is held open across it. Each
+        /// run starts from a clean context and a fresh copy of the event: the execution
+        /// strategy re-runs this after a transient failure, and nothing staged by the attempt
+        /// that rolled back may ride along into the next.
+        /// </summary>
+        private Task<bool> IngestAtomicallyAsync(int eventId, MetaLead lead, CancellationToken cancellationToken) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                _context.ChangeTracker.Clear();
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+                var integrationEvent = await _context.ExternalIntegrationEvents
+                    .Include(e => e.Connection)
+                    .Include(e => e.Resource)
+                    .FirstOrDefaultAsync(e => e.Id == eventId, cancellationToken);
+
+                // A retry can follow a lost commit acknowledgement. Re-read inside the new
+                // transaction before doing any lead or notification work again.
+                if (integrationEvent?.Status == ExternalIntegrationEventStatus.Processed)
+                    return true;
+
+                if (integrationEvent?.Connection is null || integrationEvent.Resource is null)
+                    return false;
+
+                var ingested = await IngestAsync(
+                    integrationEvent, integrationEvent.Connection, integrationEvent.Resource, lead, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return ingested;
+            });
+
+        /// <summary>True only when the event became (or enriched) a lead.</summary>
+        private async Task<bool> IngestAsync(
             ExternalIntegrationEvent integrationEvent,
             ExternalIntegrationConnection connection,
             ExternalIntegrationResource resource,
             MetaLead lead,
             CancellationToken cancellationToken)
         {
+            // The provider's id is what makes ingestion idempotent, so it can be neither cut
+            // short nor dropped. One too long to store can never succeed; retrying is pointless.
+            if (lead.LeadgenId.Length > MaxExternalIdLength)
+                return await FailAsync(integrationEvent, "Meta returned a lead id longer than DAMS can store.", cancellationToken);
+
             var mapped = MetaLeadFieldMapper.Map(lead.FieldData);
             var platform = ResolvePlatform(lead, resource);
 
+            // Every value below is provider-controlled and bounded to the Lead column it lands
+            // in, so no answer can fail the write. Nothing is lost: the submission keeps every
+            // answer and the raw response verbatim.
             var dto = new LeadIntakeDto
             {
                 // Meta forms do not guarantee a name, and Lead.FirstName is a required column —
@@ -260,20 +321,20 @@ namespace DAMS.Application.Services.Integrations
                 // would be indistinguishable from a real answer once it is on screen.
                 FirstName = string.IsNullOrWhiteSpace(mapped.FirstName)
                     ? $"Meta lead ({UnnamedLeadSuffix(lead.LeadgenId)})"
-                    : mapped.FirstName,
-                LastName = mapped.LastName,
-                Phone = mapped.Phone,
-                WhatsappNumber = mapped.WhatsappNumber,
-                Email = mapped.Email,
-                City = mapped.City,
+                    : LeadContactNormalizer.Limit(mapped.FirstName, 100),
+                LastName = LeadContactNormalizer.LimitOrNull(mapped.LastName, 100),
+                Phone = FitOrNull(mapped.Phone, 50),
+                WhatsappNumber = FitOrNull(mapped.WhatsappNumber, 50),
+                Email = FitOrNull(mapped.Email, 200),
+                City = LeadContactNormalizer.LimitOrNull(mapped.City, 100),
                 SourceCode = ResolveSourceCode(platform),
                 SourceDetails = BuildSourceDetails(lead, resource),
-                CampaignName = lead.CampaignName,
-                CampaignReference = lead.CampaignId,
-                AdReference = lead.AdId,
+                CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 200),
+                CampaignReference = FitOrNull(lead.CampaignId, MaxExternalIdLength),
+                AdReference = FitOrNull(lead.AdId, MaxExternalIdLength),
                 ExternalProvider = IntegrationProviders.Meta,
                 ExternalLeadId = lead.LeadgenId,
-                ExternalFormReference = lead.FormId,
+                ExternalFormReference = FitOrNull(lead.FormId, MaxExternalIdLength),
                 ExternalSubmittedAt = lead.CreatedTime,
                 // A summary only: the complete provider response is stored on the submission,
                 // which has no length limit, rather than squeezed into this 4000-char column.
@@ -287,10 +348,7 @@ namespace DAMS.Application.Services.Integrations
                 dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
 
             if (result.Lead is null)
-            {
-                await FailAsync(integrationEvent, result.Message, cancellationToken);
-                return;
-            }
+                return await FailAsync(integrationEvent, result.Message, cancellationToken);
 
             await StampAttributionAsync(connection, resource, lead, platform, mapped, cancellationToken);
 
@@ -301,6 +359,7 @@ namespace DAMS.Application.Services.Integrations
             ReleaseLease(integrationEvent);
 
             await _context.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
         /// <summary>
@@ -329,12 +388,13 @@ namespace DAMS.Application.Services.Integrations
             submission.Platform = platform;
             submission.PageExternalId = resource.ExternalId;
             submission.PageName = resource.Name;
-            submission.CampaignExternalId = lead.CampaignId;
-            submission.CampaignName = lead.CampaignName;
-            submission.AdSetExternalId = lead.AdSetId;
-            submission.AdSetName = lead.AdSetName;
-            submission.AdExternalId = lead.AdId;
-            submission.AdName = lead.AdName;
+            // Bounded like the lead's own columns; RawPayloadJson below keeps the originals.
+            submission.CampaignExternalId = FitOrNull(lead.CampaignId, MaxExternalIdLength);
+            submission.CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 300);
+            submission.AdSetExternalId = FitOrNull(lead.AdSetId, MaxExternalIdLength);
+            submission.AdSetName = LeadContactNormalizer.LimitOrNull(lead.AdSetName, 300);
+            submission.AdExternalId = FitOrNull(lead.AdId, MaxExternalIdLength);
+            submission.AdName = LeadContactNormalizer.LimitOrNull(lead.AdName, 300);
             // Neither of these comes back on the lead itself from Graph — the lead endpoint
             // returns a form id but not its name, and no ad-account id at all — so they are
             // filled in, best-effort, from whatever resource sync has already discovered.
@@ -401,6 +461,13 @@ namespace DAMS.Application.Services.Integrations
         private static string UnnamedLeadSuffix(string leadgenId) =>
             leadgenId.Length <= 6 ? leadgenId : leadgenId[^6..];
 
+        /// <summary>
+        /// For ids and contact values, which are dropped rather than cut when they do not fit:
+        /// a shortened id or phone number is a different, wrong value, not a shorter right one.
+        /// </summary>
+        private static string? FitOrNull(string? value, int maxLength) =>
+            value is null || value.Length <= maxLength ? value : null;
+
         private static string ResolveSourceCode(string? platform) => platform switch
         {
             IntegrationSourceCodes.Instagram => IntegrationSourceCodes.Instagram,
@@ -408,16 +475,25 @@ namespace DAMS.Application.Services.Integrations
             _ => IntegrationSourceCodes.Meta
         };
 
+        /// <summary>
+        /// Each part is bounded before joining, so the four together fit the 500-char column: a
+        /// long campaign name clamped only at the end would crowd the ad and form out entirely.
+        /// The full values are on the submission.
+        /// </summary>
         private static string BuildSourceDetails(MetaLead lead, ExternalIntegrationResource resource)
         {
-            var parts = new List<string> { $"Meta page: {resource.Name ?? resource.ExternalId}" };
+            const int partLength = 110;
+            var parts = new List<string>
+            {
+                $"Meta page: {LeadContactNormalizer.Limit(resource.Name ?? resource.ExternalId, partLength)}"
+            };
 
             if (!string.IsNullOrWhiteSpace(lead.CampaignName))
-                parts.Add($"campaign: {lead.CampaignName}");
+                parts.Add($"campaign: {LeadContactNormalizer.Limit(lead.CampaignName, partLength)}");
             if (!string.IsNullOrWhiteSpace(lead.AdName))
-                parts.Add($"ad: {lead.AdName}");
+                parts.Add($"ad: {LeadContactNormalizer.Limit(lead.AdName, partLength)}");
             if (!string.IsNullOrWhiteSpace(lead.FormId))
-                parts.Add($"form: {lead.FormName ?? lead.FormId}");
+                parts.Add($"form: {LeadContactNormalizer.Limit(lead.FormName ?? lead.FormId, partLength)}");
 
             return LeadContactNormalizer.Limit(string.Join(", ", parts), 500);
         }
