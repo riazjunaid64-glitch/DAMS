@@ -247,6 +247,11 @@ namespace DAMS.Application.Services.Integrations
                 if (fresh is null)
                     return false;
 
+                // SQL Server may have committed the transaction even when its acknowledgement
+                // was lost. Never turn that completed event back into retry work.
+                if (fresh.Status == ExternalIntegrationEventStatus.Processed)
+                    return true;
+
                 await RetryOrFailAsync(fresh, ex.Message, cancellationToken);
                 return false;
             }
@@ -267,15 +272,21 @@ namespace DAMS.Application.Services.Integrations
             {
                 _context.ChangeTracker.Clear();
 
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
                 var integrationEvent = await _context.ExternalIntegrationEvents
                     .Include(e => e.Connection)
                     .Include(e => e.Resource)
                     .FirstOrDefaultAsync(e => e.Id == eventId, cancellationToken);
 
+                // A retry can follow a lost commit acknowledgement. Re-read inside the new
+                // transaction before doing any lead or notification work again.
+                if (integrationEvent?.Status == ExternalIntegrationEventStatus.Processed)
+                    return true;
+
                 if (integrationEvent?.Connection is null || integrationEvent.Resource is null)
                     return false;
 
-                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
                 var ingested = await IngestAsync(
                     integrationEvent, integrationEvent.Connection, integrationEvent.Resource, lead, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);

@@ -137,28 +137,40 @@ namespace DAMS.Application.Services
                 };
             }
 
-            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
-
-            await ApplyInitialAssignmentAsync(lead, dto, actor, cancellationToken);
-
-            _context.Leads.Add(lead);
-            if (isExternal)
-                AddExternalReceipt(lead, dto);
-
-            LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
-                $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
-            LeadTimeline.Record(_context, lead, LeadActivityType.SourceRecorded,
-                $"Source recorded: {source.Name}.", actor,
-                a => a.NewValue = BuildSourceTrail(dto, source));
+            // Assignment writes into the dto, so a retried attempt must start from what was asked.
+            var requestedEmployeeId = dto.AssignedEmployeeId;
+            var requestedTeamId = dto.AssignedTeamId;
+            Lead lead;
 
             try
             {
-                // Notifications are queued between the two saves inside SaveNewLeadAsync, not
-                // after it returns: a crash between "Lead exists" and "notification exists"
-                // would otherwise leave a real, durably-created lead that a replay can never
-                // re-notify for, because the replay short-circuits at the "already ingested"
-                // check above the moment the Lead is found.
-                await SaveNewLeadAsync(lead, cancellationToken, ct => NotifyNewLeadAsync(lead, ct));
+                // The lead, final reference and queued notifications commit together. A replay
+                // must never find a lead whose initial notification was rolled back or skipped.
+                lead = await CreateLeadAtomicallyAsync(async ct =>
+                {
+                    dto.AssignedEmployeeId = requestedEmployeeId;
+                    dto.AssignedTeamId = requestedTeamId;
+                    // A retry clears the tracker, and an untracked source would be inserted anew.
+                    if (_context.Entry(source).State == EntityState.Detached)
+                        _context.LeadSources.Attach(source);
+
+                    var created = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
+
+                    await ApplyInitialAssignmentAsync(created, dto, actor, ct);
+
+                    _context.Leads.Add(created);
+                    if (isExternal)
+                        AddExternalReceipt(created, dto);
+
+                    LeadTimeline.Record(_context, created, LeadActivityType.LeadCreated,
+                        $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
+                    LeadTimeline.Record(_context, created, LeadActivityType.SourceRecorded,
+                        $"Source recorded: {source.Name}.", actor,
+                        a => a.NewValue = BuildSourceTrail(dto, source));
+
+                    await SaveNewLeadAsync(created, ct, c => NotifyNewLeadAsync(created, c));
+                    return created;
+                }, cancellationToken);
             }
             catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
             {
@@ -581,11 +593,9 @@ namespace DAMS.Application.Services
         }
 
         // Reference depends on the generated id, so the row is saved twice behind a unique
-        // placeholder — the same approach Booking uses for BookingReference. Anything queued by
-        // beforeReferenceSaveAsync rides along in the second save: a process that dies after
-        // this method returns has therefore either created the Lead with its notifications
-        // together, or not created it at all — never one without the other, which matters
-        // because a replayed submission short-circuits before ever calling this again.
+        // placeholder, as Booking does. Anything queued by beforeReferenceSaveAsync rides along
+        // in the second save. The two saves are only atomic inside a transaction, which the
+        // caller supplies — see CreateLeadAtomicallyAsync.
         private async Task SaveNewLeadAsync(
             Lead lead, CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeReferenceSaveAsync = null)
         {
@@ -598,6 +608,33 @@ namespace DAMS.Application.Services
                 await beforeReferenceSaveAsync(cancellationToken);
 
             await _context.SaveChangesAsync(cancellationToken);
+        }
+
+        /// <summary>
+        /// Runs a new lead's staging and both saves in one transaction, joining the caller's when
+        /// there is one. The API retries transient SQL errors, and a retry must rebuild the lead
+        /// from nothing: the rolled-back attempt's first save has already marked its rows as
+        /// stored, so replaying it would update rows that no longer exist. The tracker is only
+        /// cleared when this owns the transaction: callers that stage work of their own (the
+        /// website booking-request flow) always open one first.
+        /// </summary>
+        private async Task<Lead> CreateLeadAtomicallyAsync(
+            Func<CancellationToken, Task<Lead>> create, CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return await create(cancellationToken);
+
+            var attempt = 0;
+            return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                if (attempt++ > 0)
+                    _context.ChangeTracker.Clear();
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                var lead = await create(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return lead;
+            });
         }
 
         // ── Reads ───────────────────────────────────────────────────────────────────
