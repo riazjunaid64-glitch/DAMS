@@ -16,6 +16,7 @@ import {
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
 import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
+import { describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
 import {
   formatDateTime,
   isClosedStage,
@@ -282,9 +283,15 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   const [units, setUnits] = useState<UnitLookup[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [duplicate, setDuplicate] = useState<{ leadId?: number | null; leadReference?: string | null; matchedOn?: string } | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
+  const duplicateResolution = duplicate ? describeDuplicate(duplicate) : null;
 
-  const set = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const set = (key: keyof typeof form, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }));
+    // The duplicate choices describe the lead these contact details matched. Once they change,
+    // resubmitting could match nothing and create a lead the "add to" button never promised.
+    if (key === "phone" || key === "whatsappNumber" || key === "email") setDuplicate(null);
+  };
 
   useEffect(() => {
     const id = Number(form.interestedProjectId);
@@ -328,13 +335,14 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     <CrmModal open={open} onClose={onClose} wide title="Capture a new lead" subtitle="Duplicate matching runs before a new prospect is created." footer={<div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={() => void submit()} disabled={saving}>{saving ? "Checking…" : "Create lead"}</Button></div>}>
       <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="space-y-5">
         {error && <ErrorBanner message={error} />}
-        {duplicate && (
+        {duplicateResolution && (
           <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
-            <p className="font-semibold">Possible duplicate matched on {duplicate.matchedOn ?? "contact details"}.</p>
-            <p className="mt-1">DAMS will not merge an uncertain manual entry automatically.</p>
+            <p className="font-semibold">{duplicateResolution.heading}</p>
+            <p className="mt-1">{duplicateResolution.explanation}</p>
+            {duplicateResolution.addLabel && <p className="mt-1">{duplicateResolution.addOutcome}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
-              {duplicate.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>Open {duplicate.leadReference ?? "existing lead"}</Button>}
-              <Button size="sm" variant="outline" onClick={() => void submit(true)}>Create separate lead</Button>
+              {duplicate?.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>{duplicateResolution.openLabel}</Button>}
+              {duplicateResolution.addLabel && <Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={saving}>{duplicateResolution.addLabel}</Button>}
             </div>
           </div>
         )}
