@@ -6,10 +6,13 @@ using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
+using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Application.Services.Notifications;
+using DAMS.Application.Services.Integrations;
+using DAMS.Application.Tests.Integrations;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -1966,6 +1969,151 @@ public sealed class SqlServerProductionInvariantTests
         Reason = "SQL invariant seed", Method = CustomerRebateMethod.OutstandingBalanceReduction,
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
+
+    [SqlServerFact]
+    public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            db.Users.Add(new User
+            {
+                RoleId = 1, FullName = "Lead supervisor", Email = "lead-supervisor@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var intake = new LeadIntakeDto
+        {
+            FirstName = "External", SourceCode = "facebook", ExternalProvider = "meta",
+            ExternalLeadId = "crash-recovery-lead", Email = "external@example.com"
+        };
+        var failure = new FailLeadFinalizationInterceptor();
+        await using (var db = new AppDbContext(Options(database.ConnectionString, failure)))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                leads.IngestAsync(intake, actor: null, trustedExternal: true));
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            Assert.Empty(await verify.Leads.ToListAsync());
+            Assert.Empty(await verify.LeadExternalSubmissions.ToListAsync());
+            Assert.Empty(await verify.Notifications.ToListAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            var result = await leads.IngestAsync(intake, actor: null, trustedExternal: true);
+            Assert.False(result.AlreadyIngested);
+            Assert.Matches("^LD-[0-9]{6,}$", result.Lead!.LeadReference);
+            Assert.Single(await db.Leads.ToListAsync());
+            Assert.Single(await db.LeadExternalSubmissions.ToListAsync());
+            Assert.Single(await db.Notifications.Where(n => n.Type == NotificationType.LeadCreated).ToListAsync());
+
+            var replay = await leads.IngestAsync(intake, actor: null, trustedExternal: true);
+            Assert.True(replay.AlreadyIngested);
+            Assert.Single(await db.Notifications.Where(n => n.Type == NotificationType.LeadCreated).ToListAsync());
+        }
+    }
+
+    [SqlServerFact]
+    public async Task MetaEventCompletionFailure_RollsBackLeadAndRecoversOnRetry()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var protector = new PlaintextSecretProtector();
+        var graph = new FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions { MaxAttempts = 3, BaseRetryDelaySeconds = 1 };
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            db.Users.Add(new User
+            {
+                RoleId = 1, FullName = "Lead supervisor", Email = "meta-supervisor@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            });
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "meta-recovery-account",
+                DisplayName = "Recovery account", AccessTokenProtected = protector.Protect("token")
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                Connection = connection, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "recovery-page", Name = "Recovery page", IsEnabled = true,
+                IsActive = true, ResourceTokenProtected = protector.Protect("page-token")
+            });
+            await db.SaveChangesAsync();
+
+            var intake = new MetaWebhookIntakeService(db, NullLogger<MetaWebhookIntakeService>.Instance);
+            await intake.RecordAsync(MetaIntegrationHarness.WebhookBody("recovery-page", "meta-recovery-lead"));
+        }
+
+        graph.Leads["meta-recovery-lead"] = FakeMetaGraphClient.Lead("meta-recovery-lead",
+            [("full_name", "Ali Khan"), ("email", "ali@example.com")],
+            platform: "fb", pageId: "recovery-page", campaignName: "Recovery campaign");
+
+        await using (var db = new AppDbContext(Options(database.ConnectionString,
+                         new FailMetaCompletionInterceptor())))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var processor = new MetaLeadEventProcessor(db, graph, protector,
+                SqlLeadService(db, dispatcher), metaOptions,
+                NullLogger<MetaLeadEventProcessor>.Instance);
+            Assert.Equal(0, await processor.ProcessPendingEventsAsync(1));
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            Assert.Empty(await verify.Leads.ToListAsync());
+            Assert.Empty(await verify.LeadExternalSubmissions.ToListAsync());
+            Assert.Empty(await verify.Notifications.ToListAsync());
+            var integrationEvent = await verify.ExternalIntegrationEvents.SingleAsync();
+            Assert.Equal(ExternalIntegrationEventStatus.Retry, integrationEvent.Status);
+            integrationEvent.AvailableAt = DateTime.UtcNow.AddSeconds(-1);
+            await verify.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var processor = new MetaLeadEventProcessor(db, graph, protector,
+                SqlLeadService(db, dispatcher), metaOptions,
+                NullLogger<MetaLeadEventProcessor>.Instance);
+            Assert.Equal(1, await processor.ProcessPendingEventsAsync(1));
+            Assert.Equal(0, await processor.ProcessPendingEventsAsync(1));
+            var lead = await db.Leads.SingleAsync();
+            var submission = await db.LeadExternalSubmissions.SingleAsync();
+            Assert.Equal("Recovery campaign", submission.CampaignName);
+            Assert.Equal("recovery-page", submission.PageExternalId);
+            Assert.Equal(lead.Id, (await db.ExternalIntegrationEvents.SingleAsync()).LeadId);
+            Assert.Single(await db.Notifications.Where(n => n.Type == NotificationType.LeadCreated).ToListAsync());
+        }
+    }
+
+    private static NotificationDispatcher SqlLeadDispatcher(AppDbContext db) => new(
+        db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
+        TimeProvider.System, new NotificationEligibilityPolicy(db),
+        NullLogger<NotificationDispatcher>.Instance);
+
+    private static LeadService SqlLeadService(AppDbContext db, NotificationDispatcher dispatcher)
+    {
+        var customers = new CustomerService(db);
+        return new LeadService(db, customers,
+            new BookingService(db, customers, new FinanceAccountService(db)),
+            new LeadNotificationService(db, dispatcher),
+            Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()));
+    }
 
     /// <summary>
     /// The external-integration schema on real SQL Server. The in-memory provider enforces
@@ -4634,6 +4782,34 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@id", id);
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    private sealed class FailLeadFinalizationInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context?.ChangeTracker.Entries<Lead>()
+                    .Any(e => e.State == EntityState.Modified && e.Entity.LeadReference.StartsWith("LD-")) == true)
+                throw new InvalidOperationException("Simulated failure after initial lead persistence.");
+
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class FailMetaCompletionInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context?.ChangeTracker.Entries<ExternalIntegrationEvent>()
+                    .Any(e => e.Entity.Status == ExternalIntegrationEventStatus.Processed) == true)
+                throw new InvalidOperationException("Simulated failure while completing the Meta event.");
+
+            return ValueTask.FromResult(result);
+        }
     }
 
     private sealed class FailDocumentAssignmentInterceptor : SaveChangesInterceptor

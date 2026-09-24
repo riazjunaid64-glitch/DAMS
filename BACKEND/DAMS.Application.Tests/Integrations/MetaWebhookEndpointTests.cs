@@ -141,6 +141,8 @@ public class MetaWebhookEndpointTests : IClassFixture<MetaWebhookEndpointTests.M
     public async Task TheGenericLeadIntakeEndpoint_StillBehavesExactlyAsBefore()
     {
         var client = _factory.CreateClient();
+        using (var scope = _factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreatedAsync();
 
         // Untouched by this feature: still key-authenticated, still rejecting a wrong key,
         // and still ingesting through the same pipeline when the key is right.
@@ -163,7 +165,8 @@ public class MetaWebhookEndpointTests : IClassFixture<MetaWebhookEndpointTests.M
 
         var response = await client.SendAsync(accepted);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.StatusCode == HttpStatusCode.OK,
+            $"Expected OK, got {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
     }
 
     [Fact]

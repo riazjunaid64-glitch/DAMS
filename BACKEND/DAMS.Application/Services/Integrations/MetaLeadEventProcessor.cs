@@ -187,7 +187,25 @@ namespace DAMS.Application.Services.Integrations
                 integrationEvent.Attempts++;
 
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
-                await IngestAsync(integrationEvent, connection, resource, lead, cancellationToken);
+                var attempts = integrationEvent.Attempts;
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
+                {
+                    // A retry after a rolled-back save must reload the event and all lead state.
+                    // Reusing tracked entities here could skip inserts from the failed attempt.
+                    _context.ChangeTracker.Clear();
+                    await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                    var currentEvent = await _context.ExternalIntegrationEvents
+                        .FirstAsync(e => e.Id == eventId, cancellationToken);
+
+                    // A commit acknowledgement can be lost after SQL Server committed it.
+                    if (currentEvent.Status == ExternalIntegrationEventStatus.Processed)
+                        return;
+
+                    currentEvent.Attempts = attempts;
+                    await IngestAsync(currentEvent, connection, resource, lead, cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                });
                 return true;
             }
             catch (MetaAuthorizationException ex)
@@ -211,7 +229,14 @@ namespace DAMS.Application.Services.Integrations
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogError(ex, "Processing Meta lead event {EventId} failed unexpectedly.", integrationEvent.Id);
-                await RetryOrFailAsync(integrationEvent, ex.Message, cancellationToken);
+                var attempts = integrationEvent.Attempts;
+                _context.ChangeTracker.Clear();
+                var retryEvent = await _context.ExternalIntegrationEvents
+                    .FirstAsync(e => e.Id == eventId, cancellationToken);
+                if (retryEvent.Status == ExternalIntegrationEventStatus.Processed)
+                    return true;
+                retryEvent.Attempts = Math.Max(retryEvent.Attempts, attempts);
+                await RetryOrFailAsync(retryEvent, ex.Message, cancellationToken);
                 return false;
             }
         }

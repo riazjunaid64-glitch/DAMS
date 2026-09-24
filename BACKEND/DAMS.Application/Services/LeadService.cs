@@ -153,11 +153,8 @@ namespace DAMS.Application.Services
 
             try
             {
-                // Notifications are queued between the two saves inside SaveNewLeadAsync, not
-                // after it returns: a crash between "Lead exists" and "notification exists"
-                // would otherwise leave a real, durably-created lead that a replay can never
-                // re-notify for, because the replay short-circuits at the "already ingested"
-                // check above the moment the Lead is found.
+                // The lead, final reference and queued notifications commit together. A replay
+                // must never find a lead whose initial notification was rolled back or skipped.
                 await SaveNewLeadAsync(lead, cancellationToken, ct => NotifyNewLeadAsync(lead, ct));
             }
             catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
@@ -581,23 +578,28 @@ namespace DAMS.Application.Services
         }
 
         // Reference depends on the generated id, so the row is saved twice behind a unique
-        // placeholder — the same approach Booking uses for BookingReference. Anything queued by
-        // beforeReferenceSaveAsync rides along in the second save: a process that dies after
-        // this method returns has therefore either created the Lead with its notifications
-        // together, or not created it at all — never one without the other, which matters
-        // because a replayed submission short-circuits before ever calling this again.
+        // placeholder, as Booking does. Both saves and any queued notifications must be in
+        // one transaction: a crash after the first save must leave no replay-blocking lead.
         private async Task SaveNewLeadAsync(
             Lead lead, CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeReferenceSaveAsync = null)
         {
-            lead.LeadReference = $"LD-PENDING-{Guid.NewGuid():N}";
-            await _context.SaveChangesAsync(cancellationToken);
+            async Task SaveAsync()
+            {
+                lead.LeadReference = $"LD-PENDING-{Guid.NewGuid():N}";
+                await _context.SaveChangesAsync(cancellationToken);
 
-            lead.LeadReference = $"LD-{lead.Id:D6}";
+                lead.LeadReference = $"LD-{lead.Id:D6}";
 
-            if (beforeReferenceSaveAsync is not null)
-                await beforeReferenceSaveAsync(cancellationToken);
+                if (beforeReferenceSaveAsync is not null)
+                    await beforeReferenceSaveAsync(cancellationToken);
 
-            await _context.SaveChangesAsync(cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+
+            if (_context.Database.IsRelational())
+                await RunInTransactionAsync(SaveAsync);
+            else
+                await SaveAsync();
         }
 
         // ── Reads ───────────────────────────────────────────────────────────────────
