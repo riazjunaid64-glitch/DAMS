@@ -170,6 +170,15 @@ namespace DAMS.Application.DTOs.LeadDtos
         public string? CustomerName { get; set; }
     }
 
+    public class LeadIntakeHoldListDto
+    {
+        /// <summary>Every enquiry waiting, which can be more than <see cref="Items"/> shows.</summary>
+        public int TotalWaiting { get; set; }
+
+        /// <summary>The oldest waiting enquiries, oldest first.</summary>
+        public List<LeadIntakeHoldDto> Items { get; set; } = [];
+    }
+
     /// <summary>An external enquiry waiting for an administrator to choose its lead.</summary>
     public class LeadIntakeHoldDto
     {

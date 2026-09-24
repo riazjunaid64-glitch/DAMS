@@ -26,6 +26,16 @@ export type HeldEnquiry = {
   candidates: HeldEnquiryCandidate[];
 };
 
+/** `GET /api/leads/held-enquiries`: the oldest waiting enquiries, and how many are waiting in all. */
+export type HeldEnquiryList = { totalWaiting: number; items: HeldEnquiry[] };
+
+/** The panel heading, saying so when there are more waiting than it lists. */
+export function heldEnquiriesHeading(list: HeldEnquiryList): string {
+  return list.totalWaiting > list.items.length
+    ? `Held enquiries (${list.totalWaiting}, showing the oldest ${list.items.length})`
+    : `Held enquiries (${list.totalWaiting})`;
+}
+
 export type HeldEnquiryChoice = {
   leadId: number;
   title: string;

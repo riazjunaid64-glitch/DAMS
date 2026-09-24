@@ -17,6 +17,7 @@ namespace DAMS.Application.Services
     public class LeadService : ILeadService
     {
         private const string DefaultSourceCode = "manual";
+        private const int IntakeHoldPageSize = 200;
         private const string WebsiteSourceCode = "website";
         private const string BookingRequestProvider = "dams_booking_request";
 
@@ -486,7 +487,8 @@ namespace DAMS.Application.Services
             LeadSource source,
             LeadUserContext? actor,
             bool isExternal,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            SubmissionAttribution? attribution = null)
         {
             // Repeat enrichment is a write. Recheck scope here rather than trusting the
             // duplicate lookup above: ownership can change between that lookup and this load.
@@ -541,7 +543,7 @@ namespace DAMS.Application.Services
                 lead.PurchaseIntent = dto.PurchaseIntent;
 
             if (isExternal)
-                AddExternalReceipt(lead, dto);
+                AddExternalReceipt(lead, dto, attribution);
 
             // Adopt the provider reference when the lead has none, so replaying this exact
             // submission later is recognised as already ingested rather than re-enriching.
@@ -582,14 +584,14 @@ namespace DAMS.Application.Services
             return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
         }
 
-        private void AddExternalReceipt(Lead lead, LeadIntakeDto dto)
+        private void AddExternalReceipt(Lead lead, LeadIntakeDto dto, SubmissionAttribution? attribution = null)
         {
             var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
             var externalId = LeadContactNormalizer.Clean(dto.ExternalLeadId);
             if (provider == null || externalId == null)
                 return;
 
-            _context.LeadExternalSubmissions.Add(new LeadExternalSubmission
+            var submission = new LeadExternalSubmission
             {
                 Lead = lead,
                 LeadId = lead.Id,
@@ -598,7 +600,9 @@ namespace DAMS.Application.Services
                 ExternalFormReference = LeadContactNormalizer.Clean(dto.ExternalFormReference),
                 ExternalSubmittedAt = dto.ExternalSubmittedAt,
                 ReceivedAt = DateTime.UtcNow
-            });
+            };
+            attribution?.ApplyTo(submission);
+            _context.LeadExternalSubmissions.Add(submission);
         }
 
         /// <summary>
@@ -710,24 +714,25 @@ namespace DAMS.Application.Services
                 CandidateLeadIds = string.Join(',', candidates.Select(c => c.LeadId!.Value)),
                 ReceivedAt = DateTime.UtcNow
             };
-            _context.LeadIntakeHolds.Add(hold);
 
             var holdId = 0;
-            try
+            if (hold.Provider == null)
             {
-                await _context.SaveChangesAsync(cancellationToken);
-                holdId = hold.Id;
-            }
-            catch (DbUpdateException ex) when (hold.Provider != null && IsHoldDuplicate(ex))
-            {
-                // Two copies of the same webhook arrived at once and the other made the hold.
-                _context.Entry(hold).State = EntityState.Detached;
-                var (heldProvider, heldExternalId) = (hold.Provider, hold.ExternalLeadId);
+                // Without a provider id nothing identifies a retry, except that it is the same
+                // enquiry word for word. An identical one already waiting is that retry.
+                var payload = hold.PayloadJson;
                 holdId = await _context.LeadIntakeHolds
                     .AsNoTracking()
-                    .Where(h => h.Provider == heldProvider && h.ExternalLeadId == heldExternalId)
+                    .Where(h => h.Status == LeadIntakeHoldStatus.Open && h.Provider == null && h.PayloadJson == payload)
                     .Select(h => h.Id)
-                    .FirstAsync(cancellationToken);
+                    .FirstOrDefaultAsync(cancellationToken);
+            }
+
+            if (holdId == 0)
+            {
+                _context.LeadIntakeHolds.Add(hold);
+                await SaveNewHoldAsync(hold, cancellationToken);
+                holdId = hold.Id;
             }
 
             // No lead details in the result: it goes back to an external caller, which has no
@@ -742,16 +747,39 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<List<LeadIntakeHoldDto>> GetIntakeHoldsAsync(
+        private async Task SaveNewHoldAsync(LeadIntakeHold hold, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (hold.Provider != null && IsHoldDuplicate(ex))
+            {
+                // Two copies of the same webhook arrived at once and the other made the hold.
+                _context.Entry(hold).State = EntityState.Detached;
+                var (heldProvider, heldExternalId) = (hold.Provider, hold.ExternalLeadId);
+                hold.Id = await _context.LeadIntakeHolds
+                    .AsNoTracking()
+                    .Where(h => h.Provider == heldProvider && h.ExternalLeadId == heldExternalId)
+                    .Select(h => h.Id)
+                    .FirstAsync(cancellationToken);
+            }
+        }
+
+        public async Task<LeadIntakeHoldListDto> GetIntakeHoldsAsync(
             LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
             LeadAccess.EnsureCanResolveIntakeHolds(ctx);
 
-            var holds = await _context.LeadIntakeHolds
+            var waiting = _context.LeadIntakeHolds
                 .AsNoTracking()
-                .Where(h => h.Status == LeadIntakeHoldStatus.Open)
+                .Where(h => h.Status == LeadIntakeHoldStatus.Open);
+            var totalWaiting = await waiting.CountAsync(cancellationToken);
+            // Oldest first and bounded; the total says when there is more behind these.
+            var holds = await waiting
                 .OrderBy(h => h.ReceivedAt)
-                .Take(200)
+                .ThenBy(h => h.Id)
+                .Take(IntakeHoldPageSize)
                 .ToListAsync(cancellationToken);
 
             var candidateIds = holds.SelectMany(CandidateIds).Distinct().ToList();
@@ -773,7 +801,7 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .ToDictionaryAsync(s => s.Code, s => s.Name, cancellationToken);
 
-            return holds.Select(hold =>
+            var items = holds.Select(hold =>
             {
                 var payload = ReadHoldPayload(hold);
                 var phone = LeadContactNormalizer.NormalizeUsablePhoneOrNull(payload.Phone);
@@ -809,6 +837,8 @@ namespace DAMS.Application.Services
                         .ToList()
                 };
             }).ToList();
+
+            return new LeadIntakeHoldListDto { TotalWaiting = totalWaiting, Items = items };
         }
 
         /// <summary>
@@ -836,7 +866,9 @@ namespace DAMS.Application.Services
 
             if (dto.Dismiss)
             {
-                if (hold.BookingRequestId.HasValue)
+                if (hold.BookingRequestId is { } waitingRequestId
+                    && await _context.BookingRequests.AnyAsync(
+                        r => r.Id == waitingRequestId && r.Status == BookingRequestStatus.Pending, cancellationToken))
                     throw new InvalidOperationException(
                         "A website booking request is waiting on this enquiry, so it cannot be dismissed. Choose the lead it belongs to.");
 
@@ -874,8 +906,32 @@ namespace DAMS.Application.Services
             }
 
             // The enrichment's own save carries the hold's outcome and the request link with it.
+            var attribution = hold.AttributionJson == null
+                ? null
+                : JsonSerializer.Deserialize<SubmissionAttribution>(hold.AttributionJson);
+
             return await SaveHoldDecisionAsync(() =>
-                EnrichExistingLeadAsync(leadId, payload, source, ctx, hold.IsExternal, cancellationToken));
+                EnrichExistingLeadAsync(leadId, payload, source, ctx, hold.IsExternal, cancellationToken, attribution));
+        }
+
+        /// <summary>
+        /// A rejected or cancelled booking request no longer needs a lead, so its waiting hold is
+        /// closed with it. Staged only: it is saved by the caller's own save of the request.
+        /// </summary>
+        public async Task CloseIntakeHoldsForBookingRequestAsync(
+            int bookingRequestId, int? userId, string reason, CancellationToken cancellationToken = default)
+        {
+            var holds = await _context.LeadIntakeHolds
+                .Where(h => h.BookingRequestId == bookingRequestId && h.Status == LeadIntakeHoldStatus.Open)
+                .ToListAsync(cancellationToken);
+
+            foreach (var hold in holds)
+            {
+                hold.Status = LeadIntakeHoldStatus.Dismissed;
+                hold.ResolvedAt = DateTime.UtcNow;
+                hold.ResolvedByUserId = userId;
+                hold.ResolutionNotes = reason;
+            }
         }
 
         private static async Task<T> SaveHoldDecisionAsync<T>(Func<Task<T>> save)
@@ -884,7 +940,10 @@ namespace DAMS.Application.Services
             {
                 return await save();
             }
-            catch (DbUpdateConcurrencyException)
+            // Either way round, another decision landed first: SQL Server reports whichever it
+            // meets first — the hold's row version, or the receipt that decision already wrote.
+            catch (Exception ex) when (ex is DbUpdateConcurrencyException
+                                       || (ex is DbUpdateException update && IsExternalDuplicate(update)))
             {
                 throw new InvalidOperationException(
                     "Someone else dealt with this enquiry or its lead at the same time. Reload and try again.");
@@ -1879,6 +1938,17 @@ namespace DAMS.Application.Services
             var alreadyLinked = await _context.BookingRequests.CountAsync(br => br.LeadId != null, cancellationToken);
             var created = 0;
 
+            // A request waiting in the held-enquiry review has no lead on purpose: its details match
+            // more than one open lead. Creating one here would add a third lead for the same person.
+            var pendingIds = pending.Select(br => br.Id).ToList();
+            var heldRequestIds = (await _context.LeadIntakeHolds
+                .AsNoTracking()
+                .Where(h => h.Status == LeadIntakeHoldStatus.Open && h.BookingRequestId != null
+                            && pendingIds.Contains(h.BookingRequestId.Value))
+                .Select(h => h.BookingRequestId!.Value)
+                .ToListAsync(cancellationToken)).ToHashSet();
+            pending = pending.Where(br => !heldRequestIds.Contains(br.Id)).ToList();
+
             // Approved requests already produced a booking; resolve them all in one query so
             // the loop below stays free of per-row round trips.
             var requestIds = pending.Select(br => br.Id).ToList();
@@ -1943,7 +2013,11 @@ namespace DAMS.Application.Services
                 BookingRequestsScanned = pending.Count,
                 LeadsCreated = created,
                 AlreadyLinked = alreadyLinked,
-                Message = $"{created} lead(s) created from {pending.Count} unlinked booking request(s)."
+                HeldForReview = heldRequestIds.Count,
+                Message = $"{created} lead(s) created from {pending.Count} unlinked booking request(s)." +
+                          (heldRequestIds.Count > 0
+                              ? $" {heldRequestIds.Count} request(s) waiting in Held enquiries were left for an administrator."
+                              : "")
             };
         }
 
@@ -2052,7 +2126,7 @@ namespace DAMS.Application.Services
                 .Select(u => (int?)u.ProjectId)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            var result = await IngestAsync(new LeadIntakeDto
+            var intake = new LeadIntakeDto
             {
                 FirstName = first,
                 LastName = last,
@@ -2070,7 +2144,18 @@ namespace DAMS.Application.Services
                 // A website enquiry is never dropped: if we already know this person, the
                 // enquiry is added to their existing lead instead of being refused.
                 AllowDuplicate = true
-            }, actor, trustedExternal: true, cancellationToken: cancellationToken);
+            };
+            var result = await IngestAsync(intake, actor, trustedExternal: true, cancellationToken: cancellationToken);
+
+            // An administrator approving an older request reaches intake as a signed-in person,
+            // so a conflict is reported rather than held — but the website visitor, whose enquiry
+            // this is, is not here to choose. Hold it, so it can be resolved like any other.
+            if (result.IdentityConflict && result.HoldId == null)
+            {
+                result = await HoldForReviewAsync(intake, LeadContactNormalizer.Clean(intake.ExternalProvider),
+                    LeadContactNormalizer.Clean(intake.ExternalLeadId), isExternal: true, result.ConflictingMatches,
+                    cancellationToken);
+            }
 
             // Its details match more than one open lead. The request itself is kept; it gets its
             // lead when an administrator decides which one the enquiry belongs to.
@@ -2080,11 +2165,6 @@ namespace DAMS.Application.Services
                 hold.BookingRequestId ??= request.Id;
                 return null;
             }
-
-            if (result.IdentityConflict)
-                throw new InvalidOperationException(
-                    "This request's contact details match more than one open lead. " +
-                    "Resolve which lead it belongs to before continuing.");
 
             var leadId = result.Lead?.Id
                 ?? throw new InvalidOperationException("The lead for this website request could not be created.");

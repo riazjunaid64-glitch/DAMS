@@ -4681,6 +4681,9 @@ namespace DAMS.Infrastructure.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AttributionJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int?>("BookingRequestId")
                         .HasColumnType("int");
 

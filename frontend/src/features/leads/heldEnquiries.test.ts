@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeHeldEnquiry, type HeldEnquiry } from "./heldEnquiries.ts";
+import { describeHeldEnquiry, heldEnquiriesHeading, type HeldEnquiry } from "./heldEnquiries.ts";
 
 const enquiry = (overrides: Partial<HeldEnquiry> = {}): HeldEnquiry => ({
   id: 7,
@@ -56,5 +56,12 @@ describe("describeHeldEnquiry", () => {
     expect(view.title).toBe("Unnamed enquiry");
     expect(view.origin).toBe("External enquiry");
     expect(view.contact).toEqual([]);
+  });
+});
+
+describe("heldEnquiriesHeading", () => {
+  it("counts what is waiting, and says when more are waiting than are listed", () => {
+    expect(heldEnquiriesHeading({ totalWaiting: 2, items: [enquiry(), enquiry({ id: 8 })] })).toBe("Held enquiries (2)");
+    expect(heldEnquiriesHeading({ totalWaiting: 250, items: [enquiry()] })).toBe("Held enquiries (250, showing the oldest 1)");
   });
 });

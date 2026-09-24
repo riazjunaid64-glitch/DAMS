@@ -212,18 +212,27 @@ namespace DAMS.Application.Services
                     .FirstOrDefaultAsync()
             };
 
+            var heldForReview = false;
             await RunInTransactionAsync(async () =>
             {
+                heldForReview = false;
+
                 // Requests submitted before lead management have no lead yet.
-                var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext)
-                    ?? throw new InvalidOperationException(
-                        "This request's contact details match more than one open lead, so it is waiting in Leads → " +
-                        "Held enquiries. Choose the lead it belongs to there, then approve it.");
+                var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext);
                 await _context.SaveChangesAsync();
+
+                // Its details match more than one open lead. The hold is the only change so far and
+                // is committed, so the administrator has somewhere to resolve it; the approval itself
+                // is refused below, outside the transaction, so the refusal cannot roll the hold back.
+                if (leadId == null)
+                {
+                    heldForReview = true;
+                    return;
+                }
 
                 // Approval is the conversion: it is what creates the customer and booking,
                 // records who did it, and marks the lead Won. Nothing else may set Won.
-                var conversion = await _leadService.ConvertAsync(leadId, new ConvertLeadDto
+                var conversion = await _leadService.ConvertAsync(leadId.Value, new ConvertLeadDto
                 {
                     BookingRequestId = bookingRequest.Id,
                     UnitId = bookingRequest.UnitId,
@@ -246,6 +255,11 @@ namespace DAMS.Application.Services
 
                 await _context.SaveChangesAsync();
             });
+
+            if (heldForReview)
+                throw new InvalidOperationException(
+                    "This request's contact details match more than one open lead, so it is waiting in Leads → " +
+                    "Held enquiries. Choose the lead it belongs to there, then approve it.");
 
             var approved = await MapToResponseAsync(bookingRequestId)
                 ?? throw new InvalidOperationException("Approved booking request could not be loaded.");
@@ -279,6 +293,8 @@ namespace DAMS.Application.Services
             bookingRequest.ReviewedByUserId = adminUserId;
             bookingRequest.RejectionReason = rejectionReason?.Trim();
             bookingRequest.UpdatedAt = DateTime.UtcNow;
+            await _leadService.CloseIntakeHoldsForBookingRequestAsync(
+                bookingRequestId, adminUserId, "The booking request was rejected, so no lead is needed.");
 
             await _context.SaveChangesAsync();
 
@@ -305,6 +321,8 @@ namespace DAMS.Application.Services
             bookingRequest.Status = BookingRequestStatus.Cancelled;
             bookingRequest.ReviewedAt = DateTime.UtcNow;
             bookingRequest.UpdatedAt = DateTime.UtcNow;
+            await _leadService.CloseIntakeHoldsForBookingRequestAsync(
+                bookingRequestId, userId, "The booking request was cancelled by the customer, so no lead is needed.");
 
             await _context.SaveChangesAsync();
 

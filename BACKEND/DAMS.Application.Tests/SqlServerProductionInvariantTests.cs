@@ -2010,7 +2010,7 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal(held.HoldId, replay.HoldId);
             holdId = held.HoldId!.Value;
 
-            var listed = Assert.Single(await leads.GetIntakeHoldsAsync(admin));
+            var listed = Assert.Single((await leads.GetIntakeHoldsAsync(admin)).Items);
             Assert.Equal(new[] { leadA, leadB }.OrderBy(x => x), listed.Candidates.Select(c => c.LeadId).OrderBy(x => x));
         }
 
@@ -2031,18 +2031,22 @@ public sealed class SqlServerProductionInvariantTests
             await db.SaveChangesAsync();
         }
 
-        // Two administrators open the same hold; the second decision must not also land.
+        // Two administrators open the same hold; the second decision must not also land. The
+        // second context already holds the hold as it was, just as a request that loaded it
+        // before the first decision committed would.
         await using var first = new AppDbContext(options);
         await using var second = new AppDbContext(options);
         using var firstDispatcher = SqlLeadDispatcher(first);
         using var secondDispatcher = SqlLeadDispatcher(second);
-        var staleHold = await second.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
+        await second.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
 
         await SqlLeadService(first, firstDispatcher).ResolveIntakeHoldAsync(
             holdId, new ResolveLeadIntakeHoldDto { LeadId = leadA }, admin);
 
-        staleHold.Status = LeadIntakeHoldStatus.Dismissed;
-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => second.SaveChangesAsync());
+        var lost = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            SqlLeadService(second, secondDispatcher).ResolveIntakeHoldAsync(
+                holdId, new ResolveLeadIntakeHoldDto { LeadId = leadB }, admin));
+        Assert.Contains("Someone else dealt with this enquiry", lost.Message);
 
         await using var verify = new AppDbContext(options);
         var resolved = await verify.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);

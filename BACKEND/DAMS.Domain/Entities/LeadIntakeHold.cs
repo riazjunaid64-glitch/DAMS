@@ -26,6 +26,10 @@ namespace DAMS.Domain.Entities
         /// whether resolving it records an external submission receipt.</summary>
         public bool IsExternal { get; set; }
 
+        /// <summary>The provider's attribution for the submission (page, campaign, ad, form answers),
+        /// serialized, for channels that supply it. Written onto the receipt when it is resolved.</summary>
+        public string? AttributionJson { get; set; }
+
         /// <summary>The open leads the details matched when the enquiry arrived, comma separated.</summary>
         public string CandidateLeadIds { get; set; } = string.Empty;
 

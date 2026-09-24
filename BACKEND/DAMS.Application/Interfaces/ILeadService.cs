@@ -71,7 +71,11 @@ namespace DAMS.Application.Interfaces
         /// because its details match more than one open lead.</summary>
         Task<int?> EnsureLeadForBookingRequestAsync(BookingRequest request, LeadUserContext? actor, CancellationToken cancellationToken = default);
 
-        Task<List<LeadIntakeHoldDto>> GetIntakeHoldsAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
+        /// <summary>Closes the held enquiry of a booking request that was rejected or cancelled.
+        /// Staged only; the caller's save of the request writes it.</summary>
+        Task CloseIntakeHoldsForBookingRequestAsync(int bookingRequestId, int? userId, string reason, CancellationToken cancellationToken = default);
+
+        Task<LeadIntakeHoldListDto> GetIntakeHoldsAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         /// <summary>Adds a held enquiry to the chosen lead and returns it, or dismisses the enquiry and returns null.</summary>
         Task<LeadResponseDto?> ResolveIntakeHoldAsync(int holdId, ResolveLeadIntakeHoldDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);

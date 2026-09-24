@@ -187,7 +187,9 @@ public sealed class LeadIdentityConflictTests
         var (a, b) = await TwoPeopleAsync(h);
         await h.Leads.IngestAsync(Conflicting("meta-conflict-1"), actor: null, trustedExternal: true);
 
-        var held = Assert.Single(await h.Leads.GetIntakeHoldsAsync(h.Admin));
+        var list = await h.Leads.GetIntakeHoldsAsync(h.Admin);
+        Assert.Equal(1, list.TotalWaiting);
+        var held = Assert.Single(list.Items);
 
         Assert.Equal("Who Is This", held.FirstName);
         Assert.Equal(EmailOfB, held.Email);
@@ -231,7 +233,7 @@ public sealed class LeadIdentityConflictTests
         Assert.Equal(a, hold.ResolvedLeadId);
         Assert.Equal(h.AdminUserId, hold.ResolvedByUserId);
         Assert.Equal(a, (await h.Db.LeadExternalSubmissions.SingleAsync(s => s.ExternalLeadId == "meta-conflict-1")).LeadId);
-        Assert.Empty(await h.Leads.GetIntakeHoldsAsync(h.Admin));
+        Assert.Empty((await h.Leads.GetIntakeHoldsAsync(h.Admin)).Items);
 
         var replay = await h.Leads.IngestAsync(Conflicting("meta-conflict-1"), actor: null, trustedExternal: true);
         Assert.True(replay.AlreadyIngested);
@@ -256,7 +258,7 @@ public sealed class LeadIdentityConflictTests
         var closed = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             h.Leads.ResolveIntakeHoldAsync(holdId, new ResolveLeadIntakeHoldDto { LeadId = b }, h.Admin));
         Assert.Contains("closed", closed.Message);
-        Assert.False((await h.Leads.GetIntakeHoldsAsync(h.Admin)).Single().Candidates.Single(c => c.LeadId == b).IsOpen);
+        Assert.False((await h.Leads.GetIntakeHoldsAsync(h.Admin)).Items.Single().Candidates.Single(c => c.LeadId == b).IsOpen);
 
         await h.Leads.ResolveIntakeHoldAsync(holdId, new ResolveLeadIntakeHoldDto { LeadId = a }, h.Admin);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -327,5 +329,125 @@ public sealed class LeadIdentityConflictTests
         Assert.Equal(b, (await h.Db.BookingRequests.AsNoTracking().SingleAsync(r => r.Id == request.Id)).LeadId);
         var notesOfA = await h.Db.Leads.Where(l => l.Id == a).Select(l => l.SourceDetails).SingleAsync();
         Assert.DoesNotContain("Website booking request", notesOfA ?? "");
+    }
+
+    private static async Task<int> HeldWebsiteRequestAsync(LeadTestHarness h) =>
+        (await h.BookingRequests.CreateBookingRequestAsync(new CreateBookingRequestDto
+        {
+            UnitId = h.UnitId, FullName = "Website Enquirer", Phone = "03001234567",
+            Email = EmailOfB, CNIC = "42101-1111111-1", Address = "Karachi"
+        }, h.ClientUserId)).Id;
+
+    [Fact]
+    public async Task Backfill_LeavesAHeldWebsiteRequestForTheAdministrator()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var (_, b) = await TwoPeopleAsync(h);
+        var requestId = await HeldWebsiteRequestAsync(h);
+
+        var backfill = await h.Leads.BackfillFromBookingRequestsAsync(h.Admin);
+
+        // A third lead for the same person would also make resolving the hold record the same
+        // website submission twice.
+        Assert.Equal(0, backfill.LeadsCreated);
+        Assert.Equal(1, backfill.HeldForReview);
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+        Assert.Null((await h.Db.BookingRequests.AsNoTracking().SingleAsync(r => r.Id == requestId)).LeadId);
+
+        var holdId = (await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync()).Id;
+        await h.Leads.ResolveIntakeHoldAsync(holdId, new ResolveLeadIntakeHoldDto { LeadId = b }, h.Admin);
+        Assert.Equal(b, (await h.Db.BookingRequests.AsNoTracking().SingleAsync(r => r.Id == requestId)).LeadId);
+    }
+
+    [Fact]
+    public async Task ApprovingAnOlderRequestWithConflictingDetails_HoldsIt_ThenApprovesOnceResolved()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var (a, _) = await TwoPeopleAsync(h);
+        // Submitted before lead management: no lead, and no hold was ever made for it.
+        var legacy = new Domain.Entities.BookingRequest
+        {
+            UnitId = h.UnitId, UserId = h.ClientUserId, FullName = "Older Enquirer", Phone = "03001234567",
+            Email = EmailOfB, CNIC = "42101-1111111-1", Address = "Karachi", Status = BookingRequestStatus.Pending
+        };
+        h.Db.BookingRequests.Add(legacy);
+        await h.Db.SaveChangesAsync();
+
+        var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.BookingRequests.ApproveBookingRequestAsync(legacy.Id, h.AdminUserId));
+        Assert.Contains("Held enquiries", blocked.Message);
+
+        // The refusal left somewhere to resolve it: a hold that survived the failed approval.
+        var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync();
+        Assert.Equal(legacy.Id, hold.BookingRequestId);
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+
+        await h.Leads.ResolveIntakeHoldAsync(hold.Id, new ResolveLeadIntakeHoldDto { LeadId = a }, h.Admin);
+        var approved = await h.BookingRequests.ApproveBookingRequestAsync(legacy.Id, h.AdminUserId);
+
+        Assert.Equal(BookingRequestStatus.Approved, approved.Status);
+        Assert.Equal(a, (await h.Db.BookingRequests.AsNoTracking().SingleAsync(r => r.Id == legacy.Id)).LeadId);
+    }
+
+    [Fact]
+    public async Task RejectingOrCancellingAHeldRequest_ClosesItsHold()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await TwoPeopleAsync(h);
+        var rejected = await HeldWebsiteRequestAsync(h);
+
+        await h.BookingRequests.RejectBookingRequestAsync(rejected, h.AdminUserId, "Unit no longer available.");
+
+        var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync(x => x.BookingRequestId == rejected);
+        Assert.Equal(LeadIntakeHoldStatus.Dismissed, hold.Status);
+        Assert.Equal(h.AdminUserId, hold.ResolvedByUserId);
+        Assert.Contains("rejected", hold.ResolutionNotes);
+
+        var cancelled = (await h.BookingRequests.CreateBookingRequestAsync(new CreateBookingRequestDto
+        {
+            UnitId = h.SecondUnitId, FullName = "Website Enquirer", Phone = "03001234567",
+            Email = EmailOfB, CNIC = "42101-1111111-1", Address = "Karachi"
+        }, h.ClientUserId)).Id;
+        await h.BookingRequests.CancelBookingRequestAsync(cancelled, h.ClientUserId);
+
+        Assert.Equal(LeadIntakeHoldStatus.Dismissed,
+            (await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync(x => x.BookingRequestId == cancelled)).Status);
+        Assert.Empty((await h.Leads.GetIntakeHoldsAsync(h.Admin)).Items);
+    }
+
+    [Fact]
+    public async Task AHoldWhoseRequestIsNoLongerPending_CanBeDismissed()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await TwoPeopleAsync(h);
+        var requestId = await HeldWebsiteRequestAsync(h);
+        // Data from before rejecting closed the hold: the request was rejected, the hold left open.
+        var request = await h.Db.BookingRequests.SingleAsync(r => r.Id == requestId);
+        request.Status = BookingRequestStatus.Rejected;
+        await h.Db.SaveChangesAsync();
+        var holdId = (await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync()).Id;
+
+        await h.Leads.ResolveIntakeHoldAsync(holdId, new ResolveLeadIntakeHoldDto { Dismiss = true }, h.Admin);
+
+        Assert.Equal(LeadIntakeHoldStatus.Dismissed, (await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task AWebhookRetryWithoutAnId_DoesNotQueueTheSameEnquiryTwice()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await TwoPeopleAsync(h);
+        LeadIntakeDto NoId() => new()
+        {
+            FirstName = "Who Is This", Phone = PhoneOfA, Email = EmailOfB, SourceCode = "website",
+            ExternalProvider = "portal", Notes = "Same body, retried.", AllowDuplicate = true
+        };
+
+        var first = await h.Leads.IngestAsync(NoId(), actor: null, trustedExternal: true);
+        var retry = await h.Leads.IngestAsync(NoId(), actor: null, trustedExternal: true);
+
+        Assert.True(first.HeldForReview && retry.HeldForReview);
+        Assert.Equal(first.HoldId, retry.HoldId);
+        Assert.Single(await h.Db.LeadIntakeHolds.ToListAsync());
     }
 }

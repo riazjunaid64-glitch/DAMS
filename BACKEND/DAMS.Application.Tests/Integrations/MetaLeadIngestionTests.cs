@@ -107,22 +107,36 @@ public class MetaLeadIngestionTests
         await h.Leads.Leads.IngestAsync(
             LeadTestHarness.Intake(firstName: "Email Owner", phone: "0321-7654321", email: "ali@example.com"), h.Leads.Admin);
 
-        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId,
+            campaignName: "Summer Launch", adName: "Corner units");
         await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
 
         Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
 
-        // Done, not failed: retrying could never choose a lead. No lead was touched or created.
+        // Done, not failed: retrying could never choose a lead, and nothing went wrong, so no
+        // error is recorded. No lead was touched or created.
         var integrationEvent = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
         Assert.Equal(ExternalIntegrationEventStatus.Processed, integrationEvent.Status);
         Assert.Null(integrationEvent.LeadId);
-        Assert.Contains("more than one open lead", integrationEvent.LastError);
+        Assert.Null(integrationEvent.LastError);
         Assert.Equal(2, await h.Db.Leads.CountAsync());
         Assert.Empty(await h.Db.LeadExternalSubmissions.ToListAsync());
 
         var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync();
         Assert.Equal(("meta", "lead-1", LeadIntakeHoldStatus.Open), (hold.Provider, hold.ExternalLeadId, hold.Status));
         Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+
+        // Resolved later, the receipt still carries the ad attribution captured when it arrived.
+        var chosen = await h.Db.Leads.AsNoTracking().Where(l => l.FirstName == "Email Owner").Select(l => l.Id).SingleAsync();
+        await h.Leads.Leads.ResolveIntakeHoldAsync(hold.Id, new DTOs.LeadDtos.ResolveLeadIntakeHoldDto { LeadId = chosen }, h.Leads.Admin);
+
+        var submission = await h.Db.LeadExternalSubmissions.AsNoTracking().SingleAsync();
+        Assert.Equal(chosen, submission.LeadId);
+        Assert.Equal(("Summer Launch", "Corner units", page.ExternalId, page.Name),
+            (submission.CampaignName, submission.AdName, submission.PageExternalId, submission.PageName));
+        Assert.NotNull(submission.ExternalIntegrationConnectionId);
+        Assert.NotNull(submission.RawPayloadJson);
+        Assert.Contains("Ali Khan", submission.FieldDataJson);
     }
 
     [Fact]

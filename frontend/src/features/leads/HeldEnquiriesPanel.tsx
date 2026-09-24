@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Button from "../../lib/Button.tsx";
-import { ErrorBanner } from "./CrmUi.tsx";
+import { ErrorBanner, inputClass } from "./CrmUi.tsx";
 import { apiJson, jsonRequest } from "./leadApi.ts";
-import { describeHeldEnquiry, type HeldEnquiry } from "./heldEnquiries.ts";
+import { describeHeldEnquiry, heldEnquiriesHeading, type HeldEnquiryList } from "./heldEnquiries.ts";
 import { formatDateTime } from "./types.ts";
 
 /**
@@ -12,16 +12,20 @@ import { formatDateTime } from "./types.ts";
  * nothing waiting.
  */
 export default function HeldEnquiriesPanel({ onResolved }: { onResolved: () => void }) {
-  const [held, setHeld] = useState<HeldEnquiry[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [list, setList] = useState<HeldEnquiryList>({ totalWaiting: 0, items: [] });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Kept apart from loadError: the list reloads after every decision, and a successful reload
+  // must not wipe the reason the decision was refused.
+  const [resolveError, setResolveError] = useState<{ enquiryId: number; message: string } | null>(null);
+  const [notes, setNotes] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setHeld(await apiJson<HeldEnquiry[]>("/api/leads/held-enquiries"));
-      setError(null);
+      setList(await apiJson<HeldEnquiryList>("/api/leads/held-enquiries"));
+      setLoadError(null);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Held enquiries could not be loaded.");
+      setLoadError(caught instanceof Error ? caught.message : "Held enquiries could not be loaded.");
     }
   }, []);
 
@@ -29,29 +33,33 @@ export default function HeldEnquiriesPanel({ onResolved }: { onResolved: () => v
 
   const resolve = async (enquiryId: number, body: { leadId?: number; dismiss?: boolean }) => {
     setBusyId(enquiryId);
+    setResolveError(null);
     try {
-      await apiJson(`/api/leads/held-enquiries/${enquiryId}/resolve`, jsonRequest("POST", body));
-      await load();
+      await apiJson(`/api/leads/held-enquiries/${enquiryId}/resolve`,
+        jsonRequest("POST", { ...body, notes: notes[enquiryId]?.trim() || null }));
       onResolved();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The enquiry could not be resolved.");
-      await load();
+      setResolveError({ enquiryId, message: caught instanceof Error ? caught.message : "The enquiry could not be resolved." });
     } finally {
+      await load();
       setBusyId(null);
     }
   };
 
-  if (held.length === 0 && !error) return null;
+  if (list.items.length === 0 && !loadError && !resolveError) return null;
 
   return (
     <section aria-label="Held enquiries" className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4 sm:p-5">
-      <h2 className="text-base font-semibold text-[var(--text-heading)]">Held enquiries ({held.length})</h2>
+      <h2 className="text-base font-semibold text-[var(--text-heading)]">{heldEnquiriesHeading(list)}</h2>
       <p className="mt-1 text-sm text-[var(--text-secondary)]">
         Each of these matches more than one open lead, so it was not added to any of them. Choose the lead it belongs to.
       </p>
-      {error && <div className="mt-3"><ErrorBanner message={error} onRetry={() => void load()} /></div>}
+      {loadError && <div className="mt-3"><ErrorBanner message={loadError} onRetry={() => void load()} /></div>}
+      {resolveError && !list.items.some((enquiry) => enquiry.id === resolveError.enquiryId) && (
+        <div className="mt-3"><ErrorBanner message={resolveError.message} /></div>
+      )}
       <ul className="mt-4 space-y-3">
-        {held.map((enquiry) => {
+        {list.items.map((enquiry) => {
           const view = describeHeldEnquiry(enquiry);
           const busy = busyId === enquiry.id;
           return (
@@ -63,6 +71,7 @@ export default function HeldEnquiriesPanel({ onResolved }: { onResolved: () => v
               {view.contact.length > 0 && <p className="mt-1 text-[var(--text-secondary)]">{view.contact.join(" · ")}</p>}
               {enquiry.notes && <p className="mt-1 text-[var(--text-secondary)]">{enquiry.notes}</p>}
               {view.waitingNote && <p className="mt-2 font-medium text-amber-300">{view.waitingNote}</p>}
+              {resolveError?.enquiryId === enquiry.id && <div className="mt-3"><ErrorBanner message={resolveError.message} /></div>}
               <ul className="mt-3 space-y-2">
                 {view.choices.map((choice) => (
                   <li key={choice.leadId} className="flex flex-wrap items-center gap-2">
@@ -75,14 +84,17 @@ export default function HeldEnquiriesPanel({ onResolved }: { onResolved: () => v
                   </li>
                 ))}
               </ul>
-              {view.canDismiss && (
-                <div className="mt-3 flex justify-end">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <input aria-label="Note about this decision (optional)" placeholder="Note about this decision (optional)" maxLength={1000}
+                  className={`${inputClass} min-w-[12rem] flex-1`} value={notes[enquiry.id] ?? ""}
+                  onChange={(e) => setNotes((current) => ({ ...current, [enquiry.id]: e.target.value }))} />
+                {view.canDismiss && (
                   <Button size="sm" variant="ghost" disabled={busy}
                     onClick={() => { if (window.confirm("Dismiss this enquiry? It will not be added to any lead.")) void resolve(enquiry.id, { dismiss: true }); }}>
                     Dismiss
                   </Button>
-                </div>
-              )}
+                )}
+              </div>
             </li>
           );
         })}

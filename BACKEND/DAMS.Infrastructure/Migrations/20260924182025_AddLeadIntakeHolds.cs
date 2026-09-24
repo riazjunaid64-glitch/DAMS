@@ -21,6 +21,7 @@ namespace DAMS.Infrastructure.Migrations
                     ExternalLeadId = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
                     PayloadJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
                     IsExternal = table.Column<bool>(type: "bit", nullable: false),
+                    AttributionJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
                     CandidateLeadIds = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
                     BookingRequestId = table.Column<int>(type: "int", nullable: true),
                     Status = table.Column<int>(type: "int", nullable: false),

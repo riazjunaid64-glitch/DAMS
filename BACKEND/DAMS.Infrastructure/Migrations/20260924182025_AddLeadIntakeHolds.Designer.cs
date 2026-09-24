@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260924165609_AddLeadIntakeHolds")]
+    [Migration("20260924182025_AddLeadIntakeHolds")]
     partial class AddLeadIntakeHolds
     {
         /// <inheritdoc />
@@ -4683,6 +4683,9 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("int");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AttributionJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int?>("BookingRequestId")
                         .HasColumnType("int");
