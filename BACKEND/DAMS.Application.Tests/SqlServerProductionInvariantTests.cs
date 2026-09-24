@@ -6,6 +6,7 @@ using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.DTOs.InstallmentDtos;
+using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
@@ -27,6 +28,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 using System.IO.Compression;
@@ -2098,6 +2100,234 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal("recovery-page", submission.PageExternalId);
             Assert.Equal(lead.Id, (await db.ExternalIntegrationEvents.SingleAsync()).LeadId);
             Assert.Single(await db.Notifications.Where(n => n.Type == NotificationType.LeadCreated).ToListAsync());
+        }
+    }
+
+    [SqlServerFact]
+    public async Task TheMetaWorker_StartedWhileTheDatabaseIsDown_ResumesOnItsOwnWhenItRecovers()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var protector = new PlaintextSecretProtector();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+        {
+            await db.Database.MigrateAsync();
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "outage-account",
+                DisplayName = "Outage account", AccessTokenProtected = protector.Protect("token")
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                Connection = connection, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "outage-page", Name = "Outage page", IsEnabled = true,
+                IsActive = true, ResourceTokenProtected = protector.Protect("page-token")
+            });
+            await db.SaveChangesAsync();
+            await new MetaWebhookIntakeService(db, NullLogger<MetaWebhookIntakeService>.Instance)
+                .RecordAsync(MetaIntegrationHarness.WebhookBody("outage-page", "outage-lead"));
+        }
+
+        var graph = new FakeMetaGraphClient();
+        graph.Leads["outage-lead"] = FakeMetaGraphClient.Lead("outage-lead",
+            [("full_name", "Sara Ahmed"), ("email", "sara@example.com")], pageId: "outage-page");
+
+        var outage = new DatabaseOutage { Down = true };
+        var logs = new ListLogger<DAMS.Api.IntegrationBackgroundService>();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback",
+            EventIntervalSeconds = 1, StartupDelaySeconds = 0, StartupRetryMaxDelaySeconds = 1
+        };
+
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString).AddInterceptors(outage));
+        services.AddScoped(sp => SqlLeadDispatcher(sp.GetRequiredService<AppDbContext>()));
+        services.AddScoped<IMetaLeadEventProcessor>(sp =>
+        {
+            var db = sp.GetRequiredService<AppDbContext>();
+            return new MetaLeadEventProcessor(db, graph, protector,
+                SqlLeadService(db, sp.GetRequiredService<NotificationDispatcher>()), metaOptions,
+                NullLogger<MetaLeadEventProcessor>.Instance);
+        });
+        services.AddScoped<IMetaResourceSyncService, NoDueResourceSync>();
+        await using var provider = services.BuildServiceProvider();
+
+        var worker = new DAMS.Api.IntegrationBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Microsoft.Extensions.Options.Options.Create(metaOptions), logs);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            // Several failed readiness checks must leave the worker waiting, not finished.
+            await WaitUntilAsync(() => outage.RefusedOpens >= 3, TimeSpan.FromSeconds(30));
+            Assert.False(worker.ExecuteTask!.IsCompleted);
+            Assert.Contains(logs.Messages, m => m.Contains("waiting for the database"));
+
+            outage.Down = false;
+            await WaitUntilAsync(() => LeadCountAsync().GetAwaiter().GetResult() == 1, TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Contains(logs.Messages, m => m.Contains("started after"));
+        Assert.DoesNotContain(logs.Messages, m => m.Contains("tables are missing"));
+        await using (var verify = new AppDbContext(Options(database.ConnectionString)))
+        {
+            var integrationEvent = await verify.ExternalIntegrationEvents.SingleAsync();
+            Assert.Equal(ExternalIntegrationEventStatus.Processed, integrationEvent.Status);
+            Assert.Equal((await verify.Leads.SingleAsync()).Id, integrationEvent.LeadId);
+        }
+
+        async Task<int> LeadCountAsync()
+        {
+            await using var db = new AppDbContext(Options(database.ConnectionString));
+            return await db.Leads.CountAsync();
+        }
+    }
+
+    [SqlServerFact]
+    public async Task TheMetaWorker_OnAReachableDatabaseWithoutItsTables_StopsOnceAndSaysWhy()
+    {
+        // No migration: the database answers, and its answer is that the tables are missing.
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var logs = new ListLogger<DAMS.Api.IntegrationBackgroundService>();
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString));
+        await using var provider = services.BuildServiceProvider();
+
+        var worker = new DAMS.Api.IntegrationBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Microsoft.Extensions.Options.Options.Create(new MetaIntegrationOptions
+            {
+                AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+                OAuthCallbackUrl = "https://dams.test/callback", StartupDelaySeconds = 0
+            }), logs);
+        await worker.StartAsync(CancellationToken.None);
+
+        await worker.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(30));
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Single(logs.Messages, m => m.Contains("tables are missing"));
+        Assert.DoesNotContain(logs.Messages, m => m.Contains("waiting for the database"));
+    }
+
+    [SqlServerFact]
+    public async Task TheNotificationWorker_StartedWhileTheDatabaseIsDown_ResumesOnItsOwnWhenItRecovers()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+            await db.Database.MigrateAsync();
+
+        var outage = new DatabaseOutage { Down = true };
+        var deliveries = new CountingDeliveryProcessor();
+        var logs = new ListLogger<DAMS.Api.NotificationBackgroundService>();
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseSqlServer(database.ConnectionString).AddInterceptors(outage));
+        services.AddScoped<INotificationDeliveryProcessor>(_ => deliveries);
+        await using var provider = services.BuildServiceProvider();
+
+        var worker = new DAMS.Api.NotificationBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            Microsoft.Extensions.Options.Options.Create(new NotificationOptions
+            {
+                DeliveryIntervalSeconds = 1, StartupDelaySeconds = 0, StartupRetryMaxDelaySeconds = 1
+            }), logs);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => outage.RefusedOpens >= 3, TimeSpan.FromSeconds(30));
+            Assert.False(worker.ExecuteTask!.IsCompleted);
+            Assert.Equal(0, deliveries.Sweeps);
+            Assert.Contains(logs.Messages, m => m.Contains("waiting for the database"));
+
+            outage.Down = false;
+            await WaitUntilAsync(() => deliveries.Sweeps > 0, TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Contains(logs.Messages, m => m.Contains("Notification background processing started after"));
+        Assert.DoesNotContain(logs.Messages, m => m.Contains("tables are missing"));
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("The condition was not met in time.");
+            await Task.Delay(100);
+        }
+    }
+
+    /// <summary>Refuses every connection the worker's context opens while <see cref="Down"/>.</summary>
+    private sealed class DatabaseOutage : DbConnectionInterceptor
+    {
+        private int _refusedOpens;
+        public volatile bool Down;
+        public int RefusedOpens => Volatile.Read(ref _refusedOpens);
+
+        public override ValueTask<InterceptionResult> ConnectionOpeningAsync(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Down)
+            {
+                Interlocked.Increment(ref _refusedOpens);
+                throw new InvalidOperationException("Simulated database outage.");
+            }
+
+            return base.ConnectionOpeningAsync(connection, eventData, result, cancellationToken);
+        }
+    }
+
+    private sealed class CountingDeliveryProcessor : INotificationDeliveryProcessor
+    {
+        private int _sweeps;
+        public int Sweeps => Volatile.Read(ref _sweeps);
+
+        public Task<int> ProcessDueDeliveriesAsync(int batchSize, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _sweeps);
+            return Task.FromResult(0);
+        }
+
+        public Task<int> ProcessScheduledJobsAsync(int batchSize, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
+        public Task<int> PruneAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+    }
+
+    private sealed class NoDueResourceSync : IMetaResourceSyncService
+    {
+        public Task<MetaSyncResultDto> SyncConnectionAsync(int connectionId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<MetaSyncResultDto> SyncNowAsync(int connectionId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> SyncDueConnectionsAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+    }
+
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = [];
+        public IReadOnlyList<string> Messages { get { lock (_messages) return _messages.ToList(); } }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages) _messages.Add(formatter(state, exception));
         }
     }
 

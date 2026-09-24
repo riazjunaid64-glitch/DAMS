@@ -126,6 +126,9 @@ builder.Services.AddOptions<NotificationOptions>()
     .Bind(builder.Configuration.GetSection(NotificationOptions.SectionName))
     .Validate(o => o.DeliveryIntervalSeconds >= 0 && o.ScheduleIntervalSeconds >= 0,
         "Notification worker intervals cannot be negative.")
+    .Validate(o => o.StartupDelaySeconds is >= 0 and <= 300
+                   && o.StartupRetryMaxDelaySeconds is >= 1 and <= 3600,
+        "Notification worker startup retry settings are outside the supported range.")
     .Validate(o => o.DeliveryBatchSize is >= 1 and <= 1000 && o.JobBatchSize is >= 1 and <= 100,
         "Notification batch sizes are outside the supported range.")
     .Validate(o => o.LeaseMinutes is >= 1 and <= 60,
@@ -163,6 +166,9 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
         "Meta integration worker intervals cannot be negative.")
     .Validate(o => o.EventBatchSize is >= 1 and <= 200,
         "Meta integration batch size is outside the supported range.")
+    .Validate(o => o.StartupDelaySeconds is >= 0 and <= 300
+                   && o.StartupRetryMaxDelaySeconds is >= 1 and <= 3600,
+        "Meta integration startup retry settings are outside the supported range.")
     .Validate(o => o.LeaseMinutes is >= 1 and <= 60,
         "Meta integration lease duration must be between 1 and 60 minutes.")
     .Validate(o => o.SyncLeaseMinutes is >= 1 and <= 120,

@@ -1,7 +1,5 @@
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
-using DAMS.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace DAMS.Api
@@ -55,16 +53,20 @@ namespace DAMS.Api
 
             var interval = TimeSpan.FromSeconds(_options.EventIntervalSeconds);
 
+            bool schemaExists;
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+                schemaExists = await WorkerSchemaReadiness.WaitForTablesAsync(
+                    _scopeFactory, _logger, "Meta integration processing",
+                    ["ExternalIntegrationConnections", "ExternalIntegrationResources", "ExternalIntegrationEvents"],
+                    _options.StartupDelaySeconds, _options.StartupRetryMaxDelaySeconds, stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 return;
             }
 
-            if (!await IntegrationSchemaExistsAsync(stoppingToken))
+            if (!schemaExists)
             {
                 _logger.LogWarning(
                     "Meta integration processing is paused because its database tables are missing. " +
@@ -145,50 +147,6 @@ namespace DAMS.Api
                 // A failed sweep must never take the host down; the next tick retries, and
                 // every row it was working on is protected by its lease.
                 _logger.LogError(ex, "The Meta integration {Sweep} sweep failed. It will run again shortly.", name);
-            }
-        }
-
-        /// <summary>
-        /// Refuses to run against a database that has not had the integration migration
-        /// applied, rather than throwing on every tick until someone notices.
-        /// </summary>
-        private async Task<bool> IntegrationSchemaExistsAsync(CancellationToken stoppingToken)
-        {
-            try
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var connection = db.Database.GetDbConnection();
-
-                await db.Database.OpenConnectionAsync(stoppingToken);
-                try
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText = """
-                        SELECT CASE WHEN
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationConnections]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationResources]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationEvents]', N'U') IS NOT NULL
-                        THEN 1 ELSE 0 END
-                        """;
-
-                    var result = await command.ExecuteScalarAsync(stoppingToken);
-                    return Convert.ToInt32(result) == 1;
-                }
-                finally
-                {
-                    await db.Database.CloseConnectionAsync();
-                }
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Meta integration processing is paused because its schema check failed.");
-                return false;
             }
         }
 

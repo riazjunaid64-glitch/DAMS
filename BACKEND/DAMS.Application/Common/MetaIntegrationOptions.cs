@@ -36,6 +36,15 @@ namespace DAMS.Application.Common
 
         public int EventBatchSize { get; set; } = 25;
 
+        /// <summary>
+        /// Seconds the worker waits after boot before its first database check, and the first
+        /// wait (at least one second) before re-checking when the database could not be reached.
+        /// Each further failed check doubles the wait, up to <see cref="StartupRetryMaxDelaySeconds"/>.
+        /// </summary>
+        public int StartupDelaySeconds { get; set; } = 15;
+
+        public int StartupRetryMaxDelaySeconds { get; set; } = 300;
+
         /// <summary>Six hours: often enough that a new form appears the same day, rare enough to be invisible in rate limits.</summary>
         public int ResourceSyncIntervalSeconds { get; set; } = 21600;
 
