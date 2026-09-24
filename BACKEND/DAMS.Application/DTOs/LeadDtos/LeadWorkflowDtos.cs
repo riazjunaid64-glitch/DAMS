@@ -19,9 +19,11 @@ namespace DAMS.Application.DTOs.LeadDtos
         [StringLength(50)]
         public string? WhatsappNumber { get; set; }
 
+        /// <summary>Optional; a blank value means "no email", exactly as on <see cref="LeadIntakeDto.Email"/>.</summary>
         [EmailAddress]
         [StringLength(200)]
-        public string? Email { get; set; }
+        public string? Email { get => _email; set => _email = string.IsNullOrWhiteSpace(value) ? null : value; }
+        private string? _email;
 
         [StringLength(500)]
         public string? Address { get; set; }

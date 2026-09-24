@@ -28,9 +28,14 @@ namespace DAMS.Application.DTOs.LeadDtos
         [StringLength(50)]
         public string? WhatsappNumber { get; set; }
 
+        /// <summary>
+        /// Optional. Forms send every field, so a blank value means "no email" and becomes null
+        /// here, before [EmailAddress] would reject it as a malformed address.
+        /// </summary>
         [EmailAddress]
         [StringLength(200)]
-        public string? Email { get; set; }
+        public string? Email { get => _email; set => _email = string.IsNullOrWhiteSpace(value) ? null : value; }
+        private string? _email;
 
         [StringLength(500)]
         public string? Address { get; set; }
