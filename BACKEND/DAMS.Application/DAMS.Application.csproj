@@ -9,6 +9,9 @@
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
+    <!-- SkiaSharp ships native code for Windows and macOS only; without this, image uploads
+         are rejected as corrupted on a Linux host. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
   </ItemGroup>
 
   <PropertyGroup>

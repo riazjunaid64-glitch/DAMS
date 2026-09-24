@@ -200,7 +200,7 @@ namespace DAMS.Application.Services.Integrations
                 integrationEvent.Attempts++;
 
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
-                return await IngestAsync(integrationEvent, connection, resource, lead, cancellationToken);
+                return await IngestAtomicallyAsync(eventId, integrationEvent.Attempts, lead, cancellationToken);
             }
             catch (MetaAuthorizationException ex)
             {
@@ -224,9 +224,9 @@ namespace DAMS.Application.Services.Integrations
             {
                 _logger.LogError(ex, "Processing Meta lead event {EventId} failed unexpectedly.", integrationEvent.Id);
 
-                // Whatever the failed write added is still tracked, so saving the retry state on
-                // this context would replay that write and fail with it. The outcome is saved
-                // on its own, against a fresh copy of the event.
+                // The transaction rolled the failed write back, but whatever it added is still
+                // tracked, so saving the retry state on this context would replay that write and
+                // fail with it. The outcome is saved on its own, against a fresh copy of the event.
                 var attempts = integrationEvent.Attempts;
                 _context.ChangeTracker.Clear();
 
@@ -240,6 +240,39 @@ namespace DAMS.Application.Services.Integrations
                 return false;
             }
         }
+
+        /// <summary>
+        /// Creates the lead, its submission and the event's outcome in one transaction. The
+        /// lead is saved in two steps (its reference needs the generated id), and without this
+        /// a failure between them left a half-made lead that a retry took as already ingested.
+        ///
+        /// The Graph call has already happened, so no transaction is held open across it. Each
+        /// run starts from a clean context and a fresh copy of the event: the execution
+        /// strategy re-runs this after a transient failure, and nothing staged by the attempt
+        /// that rolled back may ride along into the next.
+        /// </summary>
+        private Task<bool> IngestAtomicallyAsync(
+            int eventId, int attempts, MetaLead lead, CancellationToken cancellationToken) =>
+            _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                _context.ChangeTracker.Clear();
+
+                var integrationEvent = await _context.ExternalIntegrationEvents
+                    .Include(e => e.Connection)
+                    .Include(e => e.Resource)
+                    .FirstOrDefaultAsync(e => e.Id == eventId, cancellationToken);
+
+                if (integrationEvent?.Connection is null || integrationEvent.Resource is null)
+                    return false;
+
+                integrationEvent.Attempts = attempts;
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                var ingested = await IngestAsync(
+                    integrationEvent, integrationEvent.Connection, integrationEvent.Resource, lead, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return ingested;
+            });
 
         /// <summary>True only when the event became (or enriched) a lead.</summary>
         private async Task<bool> IngestAsync(

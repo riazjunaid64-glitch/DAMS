@@ -2226,6 +2226,10 @@ public sealed class SqlServerProductionInvariantTests
     /// saving the event's retry state re-attempted the same insert, threw again, and took the
     /// rest of the batch down with it. The failure here is a real SQL Server constraint
     /// violation, removed afterwards to prove the parked event then recovers on its own.
+    ///
+    /// It deliberately fails the lead's second save, after the first has inserted the row:
+    /// the whole write must roll back, not leave a half-made "LD-PENDING-…" lead behind that
+    /// the retry would then treat as already ingested and never finish.
     /// </summary>
     [SqlServerFact]
     public async Task AMetaLeadWhoseWriteFails_IsParkedForRetry_WithoutBlockingTheNextLead_AndRecovers()
@@ -2250,7 +2254,8 @@ public sealed class SqlServerProductionInvariantTests
             await MetaIntake(db).RecordAsync(
                 DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-poison", "lead-good"));
             await db.Database.ExecuteSqlRawAsync(
-                "ALTER TABLE [Leads] ADD CONSTRAINT [CK_Test_RejectPoison] CHECK ([FirstName] <> N'Poison')");
+                "ALTER TABLE [Leads] ADD CONSTRAINT [CK_Test_RejectPoison] " +
+                "CHECK ([FirstName] <> N'Poison' OR [LeadReference] LIKE N'LD-PENDING-%')");
         }
 
         await using (var db = new AppDbContext(options))
