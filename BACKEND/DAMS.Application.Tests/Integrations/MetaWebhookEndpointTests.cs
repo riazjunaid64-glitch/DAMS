@@ -1,12 +1,16 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -135,6 +139,35 @@ public class MetaWebhookEndpointTests : IClassFixture<MetaWebhookEndpointTests.M
         var response = await client.SendAsync(Post(body, Sign(body)));
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task TheGenericLeadIntakeEndpoint_AnswersABusyContactWith503AndRetryAfter()
+    {
+        // A 400 would tell the sender never to retry, and the enquiry would be lost.
+        var client = _factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+            services.AddScoped(_ => DispatchProxy.Create<ILeadService, BusyLeadService>()))).CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/lead-intake/portal")
+        {
+            Content = new StringContent("""{"firstName":"Ali","phone":"03001234567"}""", Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("X-Lead-Intake-Key", IntakeKey);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(LeadIntakeBusyException.RetryAfterSeconds), response.Headers.RetryAfter?.Delta);
+        Assert.Contains("still being processed", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>A lead service whose intake always finds the contact locked by someone else.</summary>
+    public class BusyLeadService : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+            targetMethod?.Name == nameof(ILeadService.IngestAsync)
+                ? Task.FromException<LeadIntakeResultDto>(new LeadIntakeBusyException())
+                : throw new NotSupportedException(targetMethod?.Name);
     }
 
     [Fact]
