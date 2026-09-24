@@ -2132,6 +2132,95 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(LeadIntakeHoldStatus.Resolved, (await verify.LeadIntakeHolds.SingleAsync()).Status);
     }
 
+    private static LeadIntakeDto ConcurrentEnquiry(string externalId, string? phone = null, string? whatsapp = null) => new()
+    {
+        FirstName = "Same Person", Phone = phone, WhatsappNumber = whatsapp, SourceCode = "facebook",
+        ExternalProvider = "meta", ExternalLeadId = externalId, AllowDuplicate = true,
+        Notes = $"Enquiry {externalId}."
+    };
+
+    /// <summary>
+    /// Two different submissions for one person, each on its own connection. The second starts
+    /// at the worst moment: after the first has checked for an existing lead and is saving its
+    /// new one. Without the intake locks it would see no lead yet and create a second.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ASecondEnquiryArrivingWhileTheFirstIsSaving_JoinsItsLead_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        async Task<LeadIntakeResultDto> IngestOnItsOwnConnectionAsync(LeadIntakeDto dto, SaveChangesInterceptor? interceptor = null)
+        {
+            await using var db = new AppDbContext(Options(database.ConnectionString, interceptor));
+            using var dispatcher = SqlLeadDispatcher(db);
+            return await SqlLeadService(db, dispatcher).IngestAsync(dto, actor: null, trustedExternal: true);
+        }
+
+        Task<LeadIntakeResultDto>? second = null;
+        var race = new RunBeforeSavingInterceptor(
+            context => context.ChangeTracker.Entries<Lead>().Any(e => e.State == EntityState.Added),
+            async () =>
+            {
+                // WhatsApp this time: the same number must be the same person in either field.
+                second = IngestOnItsOwnConnectionAsync(ConcurrentEnquiry("race-2", whatsapp: "+92 300 1234567"));
+                // Give it every chance to run ahead; with the locks it waits for this commit instead.
+                await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(3)));
+            });
+
+        var first = await IngestOnItsOwnConnectionAsync(ConcurrentEnquiry("race-1", phone: "0300-1234567"), race);
+        var joined = await second!;
+
+        Assert.NotNull(first.Lead);
+        Assert.True(joined.EnrichedExisting);
+        Assert.Equal(first.Lead!.Id, joined.Lead!.Id);
+
+        await using var verify = new AppDbContext(options);
+        var lead = await verify.Leads.SingleAsync();
+        Assert.Contains("Enquiry race-2.", lead.Notes);
+        Assert.Equal(new[] { "race-1", "race-2" },
+            await verify.LeadExternalSubmissions.Where(x => x.LeadId == lead.Id)
+                .OrderBy(x => x.ExternalLeadId).Select(x => x.ExternalLeadId).ToArrayAsync());
+    }
+
+    /// <summary>Many distinct submissions for one person at once, on independent connections:
+    /// one lead, every submission kept, none lost.</summary>
+    [SqlServerFact]
+    public async Task ManyConcurrentEnquiriesForOnePerson_ProduceOneLead_AndKeepEverySubmission_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        const int enquiries = 8;
+        using var start = new ManualResetEventSlim(false);
+        var tasks = Enumerable.Range(1, enquiries).Select(i => Task.Run(async () =>
+        {
+            start.Wait();
+            await using var db = new AppDbContext(options);
+            using var dispatcher = SqlLeadDispatcher(db);
+            // Half arrive with the number as a phone, half as WhatsApp.
+            var dto = i % 2 == 0
+                ? ConcurrentEnquiry($"burst-{i}", phone: "0300-7654321")
+                : ConcurrentEnquiry($"burst-{i}", whatsapp: "0300 7654321");
+            return await SqlLeadService(db, dispatcher).IngestAsync(dto, actor: null, trustedExternal: true);
+        })).ToList();
+
+        start.Set();
+        var results = await Task.WhenAll(tasks);
+
+        Assert.All(results, r => Assert.NotNull(r.Lead));
+        Assert.Single(results.Select(r => r.Lead!.Id).Distinct());
+        Assert.Equal(enquiries - 1, results.Count(r => r.EnrichedExisting));
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(1, await verify.Leads.CountAsync());
+        Assert.Equal(enquiries, await verify.LeadExternalSubmissions.CountAsync());
+    }
+
     [SqlServerFact]
     public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
     {

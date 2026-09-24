@@ -8,8 +8,12 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using System.Data;
+using System.Data.Common;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace DAMS.Application.Services
@@ -18,6 +22,8 @@ namespace DAMS.Application.Services
     {
         private const string DefaultSourceCode = "manual";
         private const int IntakeHoldPageSize = 200;
+        // Well inside the 30-second command timeout; only reached under heavy contention for one contact.
+        private const int IntakeLockTimeoutMilliseconds = 15000;
         private const string WebsiteSourceCode = "website";
         private const string BookingRequestProvider = "dams_booking_request";
 
@@ -75,6 +81,72 @@ namespace DAMS.Application.Services
 
             var source = await ResolveSourceAsync(dto.SourceCode, cancellationToken);
 
+            // Assignment writes into the dto, so a retried attempt must start from what was asked.
+            var requestedEmployeeId = dto.AssignedEmployeeId;
+            var requestedTeamId = dto.AssignedTeamId;
+
+            try
+            {
+                // Checking for an existing lead and creating or enriching one happen in a single
+                // transaction that first locks these contact details, so two enquiries for the
+                // same person cannot both see "no lead yet" and both create one.
+                return await RunIntakeAtomicallyAsync(async ct =>
+                {
+                    dto.AssignedEmployeeId = requestedEmployeeId;
+                    dto.AssignedTeamId = requestedTeamId;
+                    // A retry clears the tracker, and an untracked source would be inserted anew.
+                    if (_context.Entry(source).State == EntityState.Detached)
+                        _context.LeadSources.Attach(source);
+
+                    await LockIntakeAsync(isExternal ? provider : null, isExternal ? externalId : null,
+                        normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
+
+                    return await DecideAndWriteAsync(dto, actor, source, isExternal, provider, externalId,
+                        normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
+                }, cancellationToken);
+            }
+            catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
+            {
+                // Two copies of the same webhook arrived at once; the index rejected the
+                // loser. Discard only what this call tried to insert — a caller such as the
+                // website request flow may still have unsaved changes of its own — then
+                // return the winner instead of a 500.
+                DetachPendingInserts();
+                var winnerId = await _context.LeadExternalSubmissions
+                    .AsNoTracking()
+                    .Where(s => s.Provider == provider && s.ExternalLeadId == externalId)
+                    .Select(s => s.LeadId)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (winnerId == 0)
+                    throw;
+
+                return new LeadIntakeResultDto
+                {
+                    AlreadyIngested = true,
+                    Message = "This submission had already been received; the existing lead was returned.",
+                    Lead = await LoadResponseAsync(winnerId, cancellationToken)
+                };
+            }
+        }
+
+        /// <summary>
+        /// Everything intake decides once the details are known: a replay, a conflict, a match to
+        /// enrich, or a new lead. Runs inside <see cref="RunIntakeAtomicallyAsync{T}"/>, under the
+        /// contact locks, so its reads and its write cannot be split by a concurrent enquiry.
+        /// </summary>
+        private async Task<LeadIntakeResultDto> DecideAndWriteAsync(
+            LeadIntakeDto dto,
+            LeadUserContext? actor,
+            LeadSource source,
+            bool isExternal,
+            string? provider,
+            string? externalId,
+            string? normalizedPhone,
+            string? normalizedWhatsapp,
+            string? normalizedEmail,
+            CancellationToken cancellationToken)
+        {
             // 1. Same external submission replayed — return what we already stored.
             if (isExternal)
             {
@@ -232,64 +304,24 @@ namespace DAMS.Application.Services
                 };
             }
 
-            // Assignment writes into the dto, so a retried attempt must start from what was asked.
-            var requestedEmployeeId = dto.AssignedEmployeeId;
-            var requestedTeamId = dto.AssignedTeamId;
-            Lead lead;
+            // The lead, final reference and queued notifications commit together, in the
+            // surrounding intake transaction. A replay must never find a lead whose initial
+            // notification was rolled back or skipped.
+            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
 
-            try
-            {
-                // The lead, final reference and queued notifications commit together. A replay
-                // must never find a lead whose initial notification was rolled back or skipped.
-                lead = await CreateLeadAtomicallyAsync(async ct =>
-                {
-                    dto.AssignedEmployeeId = requestedEmployeeId;
-                    dto.AssignedTeamId = requestedTeamId;
-                    // A retry clears the tracker, and an untracked source would be inserted anew.
-                    if (_context.Entry(source).State == EntityState.Detached)
-                        _context.LeadSources.Attach(source);
+            await ApplyInitialAssignmentAsync(lead, dto, actor, cancellationToken);
 
-                    var created = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
+            _context.Leads.Add(lead);
+            if (isExternal)
+                AddExternalReceipt(lead, dto);
 
-                    await ApplyInitialAssignmentAsync(created, dto, actor, ct);
+            LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
+                $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
+            LeadTimeline.Record(_context, lead, LeadActivityType.SourceRecorded,
+                $"Source recorded: {source.Name}.", actor,
+                a => a.NewValue = BuildSourceTrail(dto, source));
 
-                    _context.Leads.Add(created);
-                    if (isExternal)
-                        AddExternalReceipt(created, dto);
-
-                    LeadTimeline.Record(_context, created, LeadActivityType.LeadCreated,
-                        $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
-                    LeadTimeline.Record(_context, created, LeadActivityType.SourceRecorded,
-                        $"Source recorded: {source.Name}.", actor,
-                        a => a.NewValue = BuildSourceTrail(dto, source));
-
-                    await SaveNewLeadAsync(created, ct, c => NotifyNewLeadAsync(created, c));
-                    return created;
-                }, cancellationToken);
-            }
-            catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
-            {
-                // Two copies of the same webhook arrived at once; the index rejected the
-                // loser. Discard only what this call tried to insert — a caller such as the
-                // website request flow may still have unsaved changes of its own — then
-                // return the winner instead of a 500.
-                DetachPendingInserts();
-                var winnerId = await _context.LeadExternalSubmissions
-                    .AsNoTracking()
-                    .Where(s => s.Provider == provider && s.ExternalLeadId == externalId)
-                    .Select(s => s.LeadId)
-                    .FirstOrDefaultAsync(cancellationToken);
-
-                if (winnerId == 0)
-                    throw;
-
-                return new LeadIntakeResultDto
-                {
-                    AlreadyIngested = true,
-                    Message = "This submission had already been received; the existing lead was returned.",
-                    Lead = await LoadResponseAsync(winnerId, cancellationToken)
-                };
-            }
+            await SaveNewLeadAsync(lead, cancellationToken, c => NotifyNewLeadAsync(lead, c));
 
             return new LeadIntakeResultDto
             {
@@ -979,7 +1011,7 @@ namespace DAMS.Application.Services
         // Reference depends on the generated id, so the row is saved twice behind a unique
         // placeholder, as Booking does. Anything queued by beforeReferenceSaveAsync rides along
         // in the second save. The two saves are only atomic inside a transaction, which the
-        // caller supplies — see CreateLeadAtomicallyAsync.
+        // caller supplies — see RunIntakeAtomicallyAsync.
         private async Task SaveNewLeadAsync(
             Lead lead, CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeReferenceSaveAsync = null)
         {
@@ -995,18 +1027,18 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// Runs a new lead's staging and both saves in one transaction, joining the caller's when
-        /// there is one. The API retries transient SQL errors, and a retry must rebuild the lead
-        /// from nothing: the rolled-back attempt's first save has already marked its rows as
-        /// stored, so replaying it would update rows that no longer exist. The tracker is only
-        /// cleared when this owns the transaction: callers that stage work of their own (the
-        /// website booking-request flow) always open one first.
+        /// Runs intake's decision and write in one transaction, joining the caller's when there is
+        /// one. The API retries transient SQL errors, and a retry must rebuild from nothing: the
+        /// rolled-back attempt's first save has already marked its rows as stored, so replaying it
+        /// would update rows that no longer exist. The tracker is only cleared when this owns the
+        /// transaction: callers that stage work of their own (the website booking-request flow,
+        /// the Meta processor) always open one first.
         /// </summary>
-        private async Task<Lead> CreateLeadAtomicallyAsync(
-            Func<CancellationToken, Task<Lead>> create, CancellationToken cancellationToken)
+        private async Task<T> RunIntakeAtomicallyAsync<T>(
+            Func<CancellationToken, Task<T>> intake, CancellationToken cancellationToken)
         {
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
-                return await create(cancellationToken);
+                return await intake(cancellationToken);
 
             var attempt = 0;
             return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
@@ -1015,10 +1047,74 @@ namespace DAMS.Application.Services
                     _context.ChangeTracker.Clear();
 
                 await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-                var lead = await create(cancellationToken);
+                var result = await intake(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
-                return lead;
+                return result;
             });
+        }
+
+        /// <summary>
+        /// Takes, for the rest of the intake transaction, a SQL Server application lock for each
+        /// identity this enquiry carries: each number (phone and WhatsApp share one, since either
+        /// field can match either), the email, and the provider submission. A second enquiry for
+        /// the same person waits here until the first commits, then finds its lead instead of
+        /// creating another. The locks live in the database, so they hold across API instances.
+        ///
+        /// Taken in one sorted order, so two enquiries that share some details never wait on each
+        /// other in a circle. The names are hashes: contact details never appear in lock views.
+        /// </summary>
+        private async Task LockIntakeAsync(
+            string? provider, string? externalId, string? normalizedPhone, string? normalizedWhatsapp,
+            string? normalizedEmail, CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational())
+                return;
+
+            var resources = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var number in new[] { normalizedPhone, normalizedWhatsapp })
+            {
+                if (number != null)
+                    resources.Add(IntakeLockName("number", number));
+            }
+            if (normalizedEmail != null)
+                resources.Add(IntakeLockName("email", normalizedEmail));
+            if (provider != null && externalId != null)
+                resources.Add(IntakeLockName("submission", provider + "\n" + externalId));
+
+            var transaction = _context.Database.CurrentTransaction?.GetDbTransaction()
+                ?? throw new InvalidOperationException("Intake locks are only taken inside the intake transaction.");
+
+            foreach (var resource in resources)
+            {
+                await using var command = _context.Database.GetDbConnection().CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    DECLARE @result int;
+                    EXEC @result = sp_getapplock @Resource = @resource, @LockMode = 'Exclusive',
+                        @LockOwner = 'Transaction', @LockTimeout = @timeout;
+                    SELECT @result;
+                    """;
+                AddParameter(command, "@resource", resource);
+                AddParameter(command, "@timeout", IntakeLockTimeoutMilliseconds);
+
+                // 0 or 1: granted (1 after waiting). Negative: timed out, cancelled or chosen as
+                // a deadlock victim — nothing has been written yet, so the caller can simply retry.
+                var granted = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+                if (granted < 0)
+                    throw new InvalidOperationException(
+                        "Another enquiry for the same contact is still being processed. Try again in a moment.");
+            }
+        }
+
+        private static string IntakeLockName(string kind, string value) =>
+            "dams:lead-intake:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{kind}:{value}")));
+
+        private static void AddParameter(DbCommand command, string name, object value)
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
         }
 
         // ── Reads ───────────────────────────────────────────────────────────────────
