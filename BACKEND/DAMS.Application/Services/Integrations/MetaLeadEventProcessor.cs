@@ -75,8 +75,9 @@ namespace DAMS.Application.Services.Integrations
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Even this event's outcome could not be saved. It keeps its lease and is
-                    // claimed again once that lapses; the events behind it must not wait.
+                    // Even this event's outcome could not be saved. Its attempt is already on
+                    // record; it keeps its lease and is claimed again once that lapses, and the
+                    // events behind it do not wait.
                     _logger.LogError(ex,
                         "Meta lead event {EventId} could not be recorded; it will be retried when its lease expires.", eventId);
                 }
@@ -195,12 +196,24 @@ namespace DAMS.Application.Services.Integrations
                 return false;
             }
 
+            // Only an event abandoned mid-attempt gets here with none left: every attempt that
+            // records an outcome already fails the event on its last one. Without this, one
+            // that keeps killing the worker, or keeps failing to save its outcome, would be
+            // reclaimed at every lease expiry forever.
+            if (integrationEvent.Attempts >= _options.MaxAttempts)
+                return await FailAsync(integrationEvent,
+                    $"Processing did not complete in {integrationEvent.Attempts} attempts.", cancellationToken);
+
+            // Counted before the lead is fetched, not with the outcome: an attempt whose outcome
+            // is never saved — the worker died, or the database failed just then — still counts,
+            // and brings the event that much closer to giving up.
+            integrationEvent.Attempts++;
+            await _context.SaveChangesAsync(cancellationToken);
+
             try
             {
-                integrationEvent.Attempts++;
-
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
-                return await IngestAtomicallyAsync(eventId, integrationEvent.Attempts, lead, cancellationToken);
+                return await IngestAtomicallyAsync(eventId, lead, cancellationToken);
             }
             catch (MetaAuthorizationException ex)
             {
@@ -227,7 +240,6 @@ namespace DAMS.Application.Services.Integrations
                 // The transaction rolled the failed write back, but whatever it added is still
                 // tracked, so saving the retry state on this context would replay that write and
                 // fail with it. The outcome is saved on its own, against a fresh copy of the event.
-                var attempts = integrationEvent.Attempts;
                 _context.ChangeTracker.Clear();
 
                 var fresh = await _context.ExternalIntegrationEvents
@@ -235,7 +247,6 @@ namespace DAMS.Application.Services.Integrations
                 if (fresh is null)
                     return false;
 
-                fresh.Attempts = attempts;
                 await RetryOrFailAsync(fresh, ex.Message, cancellationToken);
                 return false;
             }
@@ -251,8 +262,7 @@ namespace DAMS.Application.Services.Integrations
         /// strategy re-runs this after a transient failure, and nothing staged by the attempt
         /// that rolled back may ride along into the next.
         /// </summary>
-        private Task<bool> IngestAtomicallyAsync(
-            int eventId, int attempts, MetaLead lead, CancellationToken cancellationToken) =>
+        private Task<bool> IngestAtomicallyAsync(int eventId, MetaLead lead, CancellationToken cancellationToken) =>
             _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
                 _context.ChangeTracker.Clear();
@@ -264,8 +274,6 @@ namespace DAMS.Application.Services.Integrations
 
                 if (integrationEvent?.Connection is null || integrationEvent.Resource is null)
                     return false;
-
-                integrationEvent.Attempts = attempts;
 
                 await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
                 var ingested = await IngestAsync(
@@ -456,16 +464,25 @@ namespace DAMS.Application.Services.Integrations
             _ => IntegrationSourceCodes.Meta
         };
 
+        /// <summary>
+        /// Each part is bounded before joining, so the four together fit the 500-char column: a
+        /// long campaign name clamped only at the end would crowd the ad and form out entirely.
+        /// The full values are on the submission.
+        /// </summary>
         private static string BuildSourceDetails(MetaLead lead, ExternalIntegrationResource resource)
         {
-            var parts = new List<string> { $"Meta page: {resource.Name ?? resource.ExternalId}" };
+            const int partLength = 110;
+            var parts = new List<string>
+            {
+                $"Meta page: {LeadContactNormalizer.Limit(resource.Name ?? resource.ExternalId, partLength)}"
+            };
 
             if (!string.IsNullOrWhiteSpace(lead.CampaignName))
-                parts.Add($"campaign: {lead.CampaignName}");
+                parts.Add($"campaign: {LeadContactNormalizer.Limit(lead.CampaignName, partLength)}");
             if (!string.IsNullOrWhiteSpace(lead.AdName))
-                parts.Add($"ad: {lead.AdName}");
+                parts.Add($"ad: {LeadContactNormalizer.Limit(lead.AdName, partLength)}");
             if (!string.IsNullOrWhiteSpace(lead.FormId))
-                parts.Add($"form: {lead.FormName ?? lead.FormId}");
+                parts.Add($"form: {LeadContactNormalizer.Limit(lead.FormName ?? lead.FormId, partLength)}");
 
             return LeadContactNormalizer.Limit(string.Join(", ", parts), 500);
         }

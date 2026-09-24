@@ -346,6 +346,33 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task AnEventAbandonedOnItsLastAttempt_IsFailed_InsteadOfReclaimedForever()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+
+        // What a worker that died mid-attempt leaves behind: its last attempt counted, still
+        // Processing, the lease since lapsed. MaxAttempts is 3 in the harness.
+        var abandoned = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        abandoned.Status = ExternalIntegrationEventStatus.Processing;
+        abandoned.Attempts = 3;
+        abandoned.LockedUntil = DateTime.UtcNow.AddMinutes(-1);
+        await h.Db.SaveChangesAsync();
+
+        Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var stored = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, stored.Status);
+        Assert.Equal(3, stored.Attempts);
+        Assert.Null(stored.LockedUntil);
+        Assert.Empty(h.Graph.LeadRequests);
+        Assert.Equal(0, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
     public async Task ARejectedToken_FlagsTheConnectionInsteadOfBurningRetries()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

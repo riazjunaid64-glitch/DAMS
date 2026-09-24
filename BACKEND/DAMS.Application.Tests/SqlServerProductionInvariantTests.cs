@@ -2301,6 +2301,90 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// When even the retry state cannot be saved, the event is left leased in Processing. The
+    /// attempt must already be on record by then — it is saved before the lead is fetched — or
+    /// every lease expiry would retry it afresh, with no backoff and no end. It is reclaimed
+    /// once its lease lapses, and the lead behind it is never held up.
+    /// </summary>
+    [SqlServerFact]
+    public async Task WhenSavingTheRetryStateFails_TheAttemptIsStillCounted_AndTheEventRecoversAfterItsLease()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        graph.Leads["lead-poison"] = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-poison", [("full_name", "Poison Pill"), ("phone_number", "03001110001")]);
+        graph.Leads["lead-good"] = DAMS.Application.Tests.Integrations.FakeMetaGraphClient.Lead(
+            "lead-good", [("full_name", "Good Lead"), ("phone_number", "03001110002")]);
+
+        await using (var db = new AppDbContext(options))
+        {
+            await SeedMetaPageAsync(db, "page-outage");
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-outage", "lead-poison"));
+            await MetaIntake(db).RecordAsync(
+                DAMS.Application.Tests.Integrations.MetaIntegrationHarness.WebhookBody("page-outage", "lead-good"));
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE [Leads] ADD CONSTRAINT [CK_Test_RejectPoison] CHECK ([FirstName] <> N'Poison')");
+        }
+
+        // The lead write fails, and then so does saving its retry state.
+        await using (var db = new AppDbContext(Options(database.ConnectionString, new FailRetryStateInterceptor())))
+            Assert.Equal(1, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        int poisonId;
+        await using (var db = new AppDbContext(options))
+        {
+            var poison = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.EventKey.EndsWith(":lead-poison"));
+            poisonId = poison.Id;
+            Assert.Equal(ExternalIntegrationEventStatus.Processing, poison.Status);
+            Assert.NotNull(poison.LockedUntil);
+            Assert.Equal(1, poison.Attempts);
+
+            Assert.Equal(ExternalIntegrationEventStatus.Processed, (await db.ExternalIntegrationEvents
+                .AsNoTracking().SingleAsync(e => e.EventKey.EndsWith(":lead-good"))).Status);
+
+            // Still leased: nothing reclaims it early.
+            Assert.Equal(0, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE [ExternalIntegrationEvents] SET [LockedUntil] = DATEADD(MINUTE, -1, SYSUTCDATETIME()) WHERE [Id] = {0}",
+                poisonId);
+        }
+
+        // Lease lapsed: reclaimed, and this time the retry state is saved normally.
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(0, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        await using (var db = new AppDbContext(options))
+        {
+            var poison = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Id == poisonId);
+            Assert.Equal(ExternalIntegrationEventStatus.Retry, poison.Status);
+            Assert.Equal(2, poison.Attempts);
+            Assert.Null(poison.LockedUntil);
+
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE [Leads] DROP CONSTRAINT [CK_Test_RejectPoison]");
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE [ExternalIntegrationEvents] SET [AvailableAt] = DATEADD(MINUTE, -1, SYSUTCDATETIME()) WHERE [Id] = {0}",
+                poisonId);
+        }
+
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(1, await MetaProcessor(db, graph).ProcessPendingEventsAsync(10));
+
+        await using (var db = new AppDbContext(options))
+        {
+            var poison = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Id == poisonId);
+            Assert.Equal(ExternalIntegrationEventStatus.Processed, poison.Status);
+            Assert.Equal(3, poison.Attempts);
+            Assert.Equal(2, await db.Leads.CountAsync());
+        }
+    }
+
+    /// <summary>
     /// Meta decides how long a campaign name, an ad name or a form answer is. None of that may
     /// fail a write against DAMS's column limits — and whatever had to be shortened or dropped
     /// to fit is still on the submission, verbatim.
@@ -2364,6 +2448,10 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Null(lead.Email);
             Assert.Null(lead.CampaignReference);
             Assert.Null(lead.ExternalFormReference);
+            // One long campaign name does not crowd the ad and form out of the summary.
+            Assert.Contains("campaign: ccc", lead.SourceDetails);
+            Assert.Contains("ad: aaa", lead.SourceDetails);
+            Assert.Contains("form: 999", lead.SourceDetails);
 
             var submission = await db.LeadExternalSubmissions.AsNoTracking().SingleAsync(s => s.ExternalLeadId == "lead-oversized");
             Assert.Equal(300, submission.CampaignName!.Length);
@@ -4900,6 +4988,22 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@id", id);
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    /// <summary>Fails any save that would park a Meta event for retry — a database that gives out
+    /// at exactly the moment the worker records a failure.</summary>
+    private sealed class FailRetryStateInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context?.ChangeTracker.Entries<ExternalIntegrationEvent>()
+                    .Any(entry => entry.State == EntityState.Modified
+                                  && entry.Entity.Status == ExternalIntegrationEventStatus.Retry) == true)
+                throw new InvalidOperationException("Simulated database failure while saving retry state.");
+
+            return ValueTask.FromResult(result);
+        }
     }
 
     private sealed class FailDocumentAssignmentInterceptor : SaveChangesInterceptor
