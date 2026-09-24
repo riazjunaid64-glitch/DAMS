@@ -197,6 +197,67 @@ public sealed class BookingRequestLeadMigrationTests
     }
 
     [Fact]
+    public async Task ApprovingTwoEnquiriesForDifferentUnitsKeepsEachBookingLinkedToItsOwnRequest()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var first = await h.BookingRequests.CreateBookingRequestAsync(Request(h), h.ClientUserId);
+        var second = await h.BookingRequests.CreateBookingRequestAsync(
+            RequestForUnit(h, h.SecondUnitId), h.ClientUserId);
+        Assert.Equal(first.LeadId, second.LeadId);
+
+        await h.BookingRequests.ApproveBookingRequestAsync(first.Id, h.AdminUserId);
+        var firstBooking = await h.Db.Bookings.AsNoTracking().SingleAsync();
+
+        var approvedSecond = await h.BookingRequests.ApproveBookingRequestAsync(second.Id, h.AdminUserId);
+
+        h.Db.ChangeTracker.Clear();
+        var bookings = await h.Db.Bookings.AsNoTracking().ToListAsync();
+        Assert.Equal(2, bookings.Count);
+        Assert.Equal(first.Id, bookings.Single(b => b.Id == firstBooking.Id).BookingRequestId);
+        var secondBooking = bookings.Single(b => b.UnitId == h.SecondUnitId);
+        Assert.NotEqual(firstBooking.Id, secondBooking.Id);
+        Assert.Equal(second.Id, secondBooking.BookingRequestId);
+        Assert.Equal(BookingRequestStatus.Approved, approvedSecond.Status);
+        Assert.NotEqual(first.LeadId, approvedSecond.LeadId);
+        Assert.Equal(secondBooking.Id, (await h.LoadLeadAsync(approvedSecond.LeadId!.Value)).ConvertedBookingId);
+        Assert.Equal(first.LeadId, await h.Db.LeadExternalSubmissions.AsNoTracking()
+            .Where(s => s.Provider == "dams_booking_request" && s.ExternalLeadId == second.Id.ToString())
+            .Select(s => (int?)s.LeadId).SingleAsync());
+    }
+
+    [Fact]
+    public async Task ApprovingTheLaterOfTwoSharedLeadEnquiriesLinksOnlyThatRequest()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var first = await h.BookingRequests.CreateBookingRequestAsync(Request(h), null);
+        var second = await h.BookingRequests.CreateBookingRequestAsync(Request(h), null);
+        Assert.Equal(first.LeadId, second.LeadId);
+
+        var approved = await h.BookingRequests.ApproveBookingRequestAsync(second.Id, h.AdminUserId);
+
+        Assert.Equal(BookingRequestStatus.Approved, approved.Status);
+        Assert.Equal(second.Id, (await h.Db.Bookings.AsNoTracking().SingleAsync()).BookingRequestId);
+        Assert.Equal(BookingRequestStatus.Pending, (await h.Db.BookingRequests.AsNoTracking()
+            .SingleAsync(r => r.Id == first.Id)).Status);
+    }
+
+    [Fact]
+    public async Task ASecondEnquiryForTheSameUnitCannotRelinkTheApprovedBooking()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var first = await h.BookingRequests.CreateBookingRequestAsync(Request(h), null);
+        var second = await h.BookingRequests.CreateBookingRequestAsync(Request(h), null);
+
+        await h.BookingRequests.ApproveBookingRequestAsync(first.Id, h.AdminUserId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.BookingRequests.ApproveBookingRequestAsync(second.Id, h.AdminUserId));
+
+        Assert.Equal(first.Id, (await h.Db.Bookings.AsNoTracking().SingleAsync()).BookingRequestId);
+        Assert.Equal(BookingRequestStatus.Pending, (await h.Db.BookingRequests.AsNoTracking()
+            .SingleAsync(r => r.Id == second.Id)).Status);
+    }
+
+    [Fact]
     public async Task RejectingARequestLeavesItsLeadActive()
     {
         await using var h = await LeadTestHarness.CreateAsync();

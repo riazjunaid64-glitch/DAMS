@@ -146,6 +146,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     public class ConvertLeadDto
     {
+        internal int? BookingRequestId { get; set; }
+
         /// <summary>Unit being booked. Required — conversion always produces a booking.</summary>
         [Required]
         public int UnitId { get; set; }

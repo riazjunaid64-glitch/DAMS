@@ -1269,7 +1269,12 @@ namespace DAMS.Application.Services
             // Idempotent: a repeated request returns the first conversion rather than
             // creating a second customer or booking.
             if (lead.ConvertedBookingId.HasValue)
+            {
+                if (!await _context.Bookings.AnyAsync(b => b.Id == lead.ConvertedBookingId.Value
+                                                       && b.UnitId == dto.UnitId, cancellationToken))
+                    throw new InvalidOperationException("This lead was already converted for a different unit.");
                 return await BuildExistingConversionAsync(lead, cancellationToken);
+            }
 
             LeadStageRules.EnsureCanConvert(lead.Stage);
 
@@ -1304,10 +1309,14 @@ namespace DAMS.Application.Services
                 var linkedRequest = await _context.BookingRequests
                     .Where(br => br.LeadId == lead.Id
                                  && br.UnitId == dto.UnitId
-                                 && br.Status == BookingRequestStatus.Pending)
+                                 && br.Status == BookingRequestStatus.Pending
+                                 && (dto.BookingRequestId == null || br.Id == dto.BookingRequestId))
                     .OrderBy(br => br.RequestedAt)
                     .ThenBy(br => br.Id)
                     .FirstOrDefaultAsync(cancellationToken);
+
+                if (dto.BookingRequestId.HasValue && linkedRequest == null)
+                    throw new InvalidOperationException("The pending booking request does not match this lead and unit.");
 
                 if (dto.CustomerId.HasValue)
                 {
@@ -1637,7 +1646,42 @@ namespace DAMS.Application.Services
             BookingRequest request, LeadUserContext? actor, CancellationToken cancellationToken = default)
         {
             if (request.LeadId.HasValue)
-                return request.LeadId.Value;
+            {
+                var convertedBookingId = await _context.Leads
+                    .Where(l => l.Id == request.LeadId.Value)
+                    .Select(l => l.ConvertedBookingId)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (!convertedBookingId.HasValue || await _context.Bookings.AnyAsync(
+                        b => b.Id == convertedBookingId.Value && b.BookingRequestId == request.Id,
+                        cancellationToken))
+                    return request.LeadId.Value;
+
+                // Several open enquiries can share a lead, but a won lead represents one
+                // conversion. Give this still-pending request its own conversion context.
+                var websiteSource = await _context.LeadSources.FirstAsync(
+                    s => s.Code == WebsiteSourceCode, cancellationToken);
+                var lead = BuildLeadFromBookingRequest(request, websiteSource, null, null);
+                var externalId = request.Id.ToString();
+                if (await _context.LeadExternalSubmissions.AnyAsync(
+                        s => s.Provider == BookingRequestProvider && s.ExternalLeadId == externalId,
+                        cancellationToken)
+                    || await _context.Leads.AnyAsync(l => l.ExternalProvider == BookingRequestProvider
+                                                       && l.ExternalLeadId == externalId, cancellationToken))
+                {
+                    // Keep the original submission attribution and receipt as history.
+                    lead.ExternalProvider = null;
+                    lead.ExternalLeadId = null;
+                }
+
+                _context.Leads.Add(lead);
+                LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
+                    $"Lead created for website booking request #{request.Id} after an earlier enquiry converted.", actor);
+                await SaveNewLeadAsync(lead, cancellationToken);
+
+                request.LeadId = lead.Id;
+                return lead.Id;
+            }
 
             var (first, last) = SplitName(request.FullName);
             var projectId = await _context.Units

@@ -91,6 +91,19 @@ public sealed class LeadConversionTests
     }
 
     [Fact]
+    public async Task ConversionRetryForADifferentUnitCannotReturnTheFirstBooking()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var first = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.SecondUnitId }, h.Admin));
+
+        Assert.Equal(first.BookingId, (await h.Db.Bookings.AsNoTracking().SingleAsync()).Id);
+    }
+
+    [Fact]
     public async Task AnExistingCustomerIsReusedRatherThanDuplicated()
     {
         await using var h = await LeadTestHarness.CreateAsync();
