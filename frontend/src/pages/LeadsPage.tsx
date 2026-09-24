@@ -16,6 +16,7 @@ import {
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
 import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
+import { describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
 import {
   formatDateTime,
   isClosedStage,
@@ -282,9 +283,15 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   const [units, setUnits] = useState<UnitLookup[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [duplicate, setDuplicate] = useState<{ leadId?: number | null; leadReference?: string | null; matchedOn?: string } | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
+  const duplicateResolution = duplicate ? describeDuplicate(duplicate) : null;
 
-  const set = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const set = (key: keyof typeof form, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }));
+    // The duplicate choices describe the lead these contact details matched. Once they change,
+    // resubmitting could match nothing and create a lead the "add to" button never promised.
+    if (key === "phone" || key === "whatsappNumber" || key === "email") setDuplicate(null);
+  };
 
   useEffect(() => {
     const id = Number(form.interestedProjectId);
@@ -292,7 +299,9 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     void loadUnits(id).then(setUnits).catch(() => setUnits([]));
   }, [form.interestedProjectId]);
 
-  const submit = async (allowDuplicate = false) => {
+  // With addToLeadId, the enquiry may only be added to that lead; the API writes nothing if it no
+  // longer matches, rather than enriching another lead or creating a new one.
+  const submit = async (addToLeadId?: number) => {
     if (!form.firstName.trim()) { setError("A first name is required."); return; }
     // Staff capturing a lead by hand have the person in front of them, so require a way to
     // reach them — but any one channel will do, matching what the API enforces.
@@ -304,7 +313,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     if (form.phone.trim() && !hasPhone) { setError("That phone number is too short to be usable."); return; }
     setSaving(true); setError(null); setDuplicate(null);
     try {
-      const result = await apiJson<{ isDuplicate: boolean; match?: { leadId?: number | null; leadReference?: string | null; matchedOn?: string }; lead?: Lead }>(
+      const result = await apiJson<{ isDuplicate: boolean; message?: string; match?: DuplicateMatch; lead?: Lead }>(
         "/api/leads",
         jsonRequest("POST", {
           ...form,
@@ -314,11 +323,18 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           budgetMax: form.budgetMax ? Number(form.budgetMax) : null,
           assignedEmployeeId: canAssign && form.assignedEmployeeId ? Number(form.assignedEmployeeId) : null,
           assignedTeamId: canAssign && form.assignedTeamId ? Number(form.assignedTeamId) : null,
-          allowDuplicate,
+          allowDuplicate: addToLeadId != null,
+          expectedExistingLeadId: addToLeadId ?? null,
         }),
       );
-      if (result.isDuplicate && !result.lead) { setDuplicate(result.match ?? {}); return; }
-      if (result.lead) onCreated(result.lead.id);
+      if (result.isDuplicate && !result.lead) {
+        setDuplicate(result.match ?? {});
+        // Only an add that was refused needs explaining; a first-time match speaks for itself.
+        if (addToLeadId != null && result.message) setError(result.message);
+        return;
+      }
+      if (result.lead) { onCreated(result.lead.id); return; }
+      setError(result.message || "Nothing was saved. Review the details and try again.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The lead could not be created. Your form values have been preserved.");
     } finally { setSaving(false); }
@@ -328,13 +344,14 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     <CrmModal open={open} onClose={onClose} wide title="Capture a new lead" subtitle="Duplicate matching runs before a new prospect is created." footer={<div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={() => void submit()} disabled={saving}>{saving ? "Checking…" : "Create lead"}</Button></div>}>
       <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="space-y-5">
         {error && <ErrorBanner message={error} />}
-        {duplicate && (
+        {duplicateResolution && (
           <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
-            <p className="font-semibold">Possible duplicate matched on {duplicate.matchedOn ?? "contact details"}.</p>
-            <p className="mt-1">DAMS will not merge an uncertain manual entry automatically.</p>
+            <p className="font-semibold">{duplicateResolution.heading}</p>
+            <p className="mt-1">{duplicateResolution.explanation}</p>
+            {duplicateResolution.addLabel && <p className="mt-1">{duplicateResolution.addOutcome}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
-              {duplicate.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>Open {duplicate.leadReference ?? "existing lead"}</Button>}
-              <Button size="sm" variant="outline" onClick={() => void submit(true)}>Create separate lead</Button>
+              {duplicate?.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>{duplicateResolution.openLabel}</Button>}
+              {duplicateResolution.addLabel && <Button size="sm" variant="outline" onClick={() => void submit(duplicate!.leadId!)} disabled={saving}>{duplicateResolution.addLabel}</Button>}
             </div>
           </div>
         )}

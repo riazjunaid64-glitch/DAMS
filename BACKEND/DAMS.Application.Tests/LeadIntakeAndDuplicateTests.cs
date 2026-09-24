@@ -127,6 +127,74 @@ public sealed class LeadIntakeAndDuplicateTests
         Assert.Contains(timeline, a => a.Type == LeadActivityType.LeadEnriched);
     }
 
+    // "Add this enquiry to LD-…" names one lead; the server must add to that lead or to none.
+
+    [Fact]
+    public async Task AddingToTheChosenLead_EnrichesIt_WhenItStillMatches()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var original = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
+
+        var repeat = LeadTestHarness.Intake(email: null);
+        repeat.AllowDuplicate = true;
+        repeat.ExpectedExistingLeadId = original.Lead!.Id;
+        repeat.Notes = "Second visit.";
+
+        var result = await h.Leads.IngestAsync(repeat, h.Admin);
+
+        Assert.True(result.EnrichedExisting);
+        Assert.Equal(original.Lead.Id, result.Lead!.Id);
+        Assert.Contains("Second visit.", result.Lead.Notes);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
+    public async Task AddingToTheChosenLead_CreatesNothing_WhenItWasClosedInTheMeantime()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var original = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
+        var stored = await h.Db.Leads.SingleAsync(l => l.Id == original.Lead!.Id);
+        stored.Stage = LeadStage.Lost;
+        await h.Db.SaveChangesAsync();
+
+        var repeat = LeadTestHarness.Intake(email: null);
+        repeat.AllowDuplicate = true;
+        repeat.ExpectedExistingLeadId = original.Lead!.Id;
+
+        var result = await h.Leads.IngestAsync(repeat, h.Admin);
+
+        // Without the expected id this exact request creates a new lead, which the
+        // "add to LD-…" button never promised.
+        Assert.Null(result.Lead);
+        Assert.False(result.IsDuplicate);
+        Assert.Contains("no longer match", result.Message);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
+    public async Task AddingToTheChosenLead_TouchesNeitherLead_WhenTheDetailsNowMatchAnother()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var chosen = await h.Leads.IngestAsync(LeadTestHarness.Intake(), h.Admin);
+        var other = await h.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Other", phone: "0321-7654321", email: "other@example.com"), h.Admin);
+
+        var repeat = LeadTestHarness.Intake(phone: "0321-7654321", email: null);
+        repeat.AllowDuplicate = true;
+        repeat.ExpectedExistingLeadId = chosen.Lead!.Id;
+        repeat.Notes = "Must not land anywhere.";
+
+        var result = await h.Leads.IngestAsync(repeat, h.Admin);
+
+        Assert.True(result.IsDuplicate);
+        Assert.False(result.EnrichedExisting);
+        Assert.Null(result.Lead);
+        Assert.Equal(other.Lead!.Id, result.Match!.LeadId);
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+        Assert.DoesNotContain(await h.Db.Leads.Select(l => l.Notes).ToListAsync(),
+            n => n != null && n.Contains("Must not land anywhere."));
+    }
+
     [Fact]
     public async Task StaffRepeatCannotRevealEnrichOrDuplicateAnInaccessibleLead()
     {
