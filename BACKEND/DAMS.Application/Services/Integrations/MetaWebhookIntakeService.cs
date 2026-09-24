@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
@@ -20,6 +22,9 @@ namespace DAMS.Application.Services.Integrations
     /// </summary>
     public sealed class MetaWebhookIntakeService : IMetaWebhookIntakeService
     {
+        /// <summary>ExternalIntegrationEvents.EventKey's column length.</summary>
+        private const int MaxEventKeyLength = 300;
+
         private readonly AppDbContext _context;
         private readonly ILogger<MetaWebhookIntakeService> _logger;
 
@@ -101,8 +106,9 @@ namespace DAMS.Application.Services.Integrations
             // this should only ever find one enabled candidate; the ordering is a defensive
             // tie-break for pre-existing data, not the mechanism that prevents ambiguity. The
             // unique (Provider, ExternalLeadId) index on submissions is a second backstop that
-            // stops one lead being created twice regardless.
-            var resource = pageId is null
+            // stops one lead being created twice regardless. A page id too long to be stored
+            // cannot match a stored page, so it is not looked up.
+            var resource = pageId is null || pageId.Length > MetaLeadEventProcessor.MaxExternalIdLength
                 ? null
                 : await _context.ExternalIntegrationResources
                     .Where(r => r.Provider == IntegrationProviders.Meta
@@ -113,6 +119,17 @@ namespace DAMS.Application.Services.Integrations
                     .FirstOrDefaultAsync(cancellationToken);
 
             var eventKey = $"{resource?.ExternalIntegrationConnectionId ?? 0}:{pageId ?? "unknown"}:{leadgenId}";
+
+            // Both ids are provider-controlled. One longer than DAMS stores would fail this
+            // save, and with it the whole delivery: Meta would redeliver it forever and the
+            // valid events beside it would never get in. Such an event is kept, closed out as
+            // Failed, under a fixed-length key derived from the original so a redelivery is
+            // still recognised.
+            var storable = leadgenId.Length <= MetaLeadEventProcessor.MaxExternalIdLength
+                           && (pageId is null || pageId.Length <= MetaLeadEventProcessor.MaxExternalIdLength)
+                           && eventKey.Length <= MaxEventKeyLength;
+            if (!storable)
+                eventKey = $"oversized:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(eventKey)))}";
 
             if (!pending.Add(eventKey))
                 return false;
@@ -127,16 +144,17 @@ namespace DAMS.Application.Services.Integrations
             if (alreadyRecorded)
                 return false;
 
-            var isDeliverable = resource is { IsEnabled: true, IsActive: true };
+            var isDeliverable = storable && resource is { IsEnabled: true, IsActive: true };
 
             var integrationEvent = new ExternalIntegrationEvent
             {
                 Provider = IntegrationProviders.Meta,
                 ExternalIntegrationConnectionId = resource?.ExternalIntegrationConnectionId,
                 ExternalIntegrationResourceId = resource?.Id,
-                EventType = field,
+                EventType = LeadContactNormalizer.Limit(field, 100),
                 EventKey = eventKey,
-                ResourceExternalId = pageId,
+                ResourceExternalId = storable ? pageId : null,
+                // Unbounded, so the event as Meta sent it is always kept, oversized ids included.
                 RawPayloadJson = payloadJson,
                 ReceivedAt = DateTime.UtcNow,
                 // Recorded either way. A lead arriving from a page nobody enabled is not turned
@@ -144,13 +162,17 @@ namespace DAMS.Application.Services.Integrations
                 // and understand why nothing happened.
                 Status = isDeliverable
                     ? ExternalIntegrationEventStatus.Pending
-                    : ExternalIntegrationEventStatus.Ignored,
+                    : storable
+                        ? ExternalIntegrationEventStatus.Ignored
+                        : ExternalIntegrationEventStatus.Failed,
                 ProcessedAt = isDeliverable ? null : DateTime.UtcNow,
                 LastError = isDeliverable
                     ? null
-                    : resource is null
-                        ? "No connected Meta page matches this webhook."
-                        : "This page is not enabled for lead delivery in DAMS.",
+                    : !storable
+                        ? "This webhook's page or lead id is longer than DAMS can store, so it cannot be processed."
+                        : resource is null
+                            ? "No connected Meta page matches this webhook."
+                            : "This page is not enabled for lead delivery in DAMS.",
                 AvailableAt = DateTime.UtcNow
             };
 
