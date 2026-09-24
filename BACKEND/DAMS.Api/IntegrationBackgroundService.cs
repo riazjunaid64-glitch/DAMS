@@ -55,16 +55,17 @@ namespace DAMS.Api
 
             var interval = TimeSpan.FromSeconds(_options.EventIntervalSeconds);
 
+            bool schemaExists;
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+                schemaExists = await WaitForIntegrationSchemaAsync(stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 return;
             }
 
-            if (!await IntegrationSchemaExistsAsync(stoppingToken))
+            if (!schemaExists)
             {
                 _logger.LogWarning(
                     "Meta integration processing is paused because its database tables are missing. " +
@@ -149,46 +150,72 @@ namespace DAMS.Api
         }
 
         /// <summary>
+        /// Waits until the database answers, then reports whether the integration migration has
+        /// been applied. Only a real answer of "missing" stops the worker: a check that could
+        /// not reach the database is retried with a growing delay, so a database that comes up
+        /// after the API does not leave this instance idle until someone restarts it.
+        /// </summary>
+        private async Task<bool> WaitForIntegrationSchemaAsync(CancellationToken stoppingToken)
+        {
+            var startupDelay = TimeSpan.FromSeconds(_options.StartupDelaySeconds);
+            var maxRetryDelay = TimeSpan.FromSeconds(_options.StartupRetryMaxDelaySeconds);
+            var retryDelay = TimeSpan.FromSeconds(Math.Clamp(
+                _options.StartupDelaySeconds, 1, _options.StartupRetryMaxDelaySeconds));
+
+            await Task.Delay(startupDelay, stoppingToken);
+
+            for (var failures = 0; ; failures++)
+            {
+                try
+                {
+                    var exists = await IntegrationSchemaExistsAsync(stoppingToken);
+                    if (exists && failures > 0)
+                        _logger.LogInformation(
+                            "Meta integration processing started after {Failures} failed database check(s).", failures);
+                    else if (exists)
+                        _logger.LogInformation("Meta integration processing started.");
+                    return exists;
+                }
+                catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning(ex,
+                        "Meta integration processing is waiting for the database (check {Attempt} failed). " +
+                        "Retrying in {DelaySeconds} seconds.", failures + 1, retryDelay.TotalSeconds);
+                    await Task.Delay(retryDelay, stoppingToken);
+                    retryDelay = retryDelay * 2 < maxRetryDelay ? retryDelay * 2 : maxRetryDelay;
+                }
+            }
+        }
+
+        /// <summary>
         /// Refuses to run against a database that has not had the integration migration
-        /// applied, rather than throwing on every tick until someone notices.
+        /// applied, rather than throwing on every tick until someone notices. Throws when the
+        /// database cannot be asked at all.
         /// </summary>
         private async Task<bool> IntegrationSchemaExistsAsync(CancellationToken stoppingToken)
         {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var connection = db.Database.GetDbConnection();
+
+            await db.Database.OpenConnectionAsync(stoppingToken);
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var connection = db.Database.GetDbConnection();
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT CASE WHEN
+                        OBJECT_ID(N'[dbo].[ExternalIntegrationConnections]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[ExternalIntegrationResources]', N'U') IS NOT NULL AND
+                        OBJECT_ID(N'[dbo].[ExternalIntegrationEvents]', N'U') IS NOT NULL
+                    THEN 1 ELSE 0 END
+                    """;
 
-                await db.Database.OpenConnectionAsync(stoppingToken);
-                try
-                {
-                    await using var command = connection.CreateCommand();
-                    command.CommandText = """
-                        SELECT CASE WHEN
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationConnections]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationResources]', N'U') IS NOT NULL AND
-                            OBJECT_ID(N'[dbo].[ExternalIntegrationEvents]', N'U') IS NOT NULL
-                        THEN 1 ELSE 0 END
-                        """;
-
-                    var result = await command.ExecuteScalarAsync(stoppingToken);
-                    return Convert.ToInt32(result) == 1;
-                }
-                finally
-                {
-                    await db.Database.CloseConnectionAsync();
-                }
+                var result = await command.ExecuteScalarAsync(stoppingToken);
+                return Convert.ToInt32(result) == 1;
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            finally
             {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Meta integration processing is paused because its schema check failed.");
-                return false;
+                await db.Database.CloseConnectionAsync();
             }
         }
 
