@@ -98,6 +98,34 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task ALeadWhosePhoneAndEmailMatchDifferentLeads_IsHeld_NotAddedToEither()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Phone Owner", phone: "0300-1234567", email: "someone@example.com"), h.Leads.Admin);
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Email Owner", phone: "0321-7654321", email: "ali@example.com"), h.Leads.Admin);
+
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+
+        Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+
+        // Done, not failed: retrying could never choose a lead. No lead was touched or created.
+        var integrationEvent = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, integrationEvent.Status);
+        Assert.Null(integrationEvent.LeadId);
+        Assert.Contains("more than one open lead", integrationEvent.LastError);
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+        Assert.Empty(await h.Db.LeadExternalSubmissions.ToListAsync());
+
+        var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync();
+        Assert.Equal(("meta", "lead-1", LeadIntakeHoldStatus.Open), (hold.Provider, hold.ExternalLeadId, hold.Status));
+        Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+    }
+
+    [Fact]
     public async Task ProcessingAnAlreadyProcessedLead_CreatesNoSecondLead()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

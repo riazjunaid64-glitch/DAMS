@@ -113,6 +113,16 @@ namespace DAMS.Application.Common
             if (!ctx.IsAdmin)
                 throw new LeadAuthorizationException("Only an admin can change lead configuration.");
         }
+
+        /// <summary>
+        /// A held enquiry names leads from any team, so deciding it needs the one role that can
+        /// see them all.
+        /// </summary>
+        public static void EnsureCanResolveIntakeHolds(LeadUserContext ctx)
+        {
+            if (!ctx.IsAdmin)
+                throw new LeadAuthorizationException("Only an admin can review held enquiries.");
+        }
     }
 
     /// <summary>

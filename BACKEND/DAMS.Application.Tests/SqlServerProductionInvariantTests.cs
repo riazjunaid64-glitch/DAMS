@@ -1972,6 +1972,86 @@ public sealed class SqlServerProductionInvariantTests
         Status = status, CreatedAt = DateTime.UtcNow, CreatedByName = "SQL seed"
     };
 
+    /// <summary>
+    /// The held-enquiry table on real SQL Server: its filtered unique index (which the in-memory
+    /// provider ignores) keeps one hold per provider submission while allowing any number without
+    /// an id, and its row version stops two administrators both resolving the same hold.
+    /// </summary>
+    [SqlServerFact]
+    public async Task HeldEnquiries_AreUniquePerSubmission_AndResolvedOnlyOnce_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        int leadA, leadB, holdId;
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            leadA = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person A", Phone = "0300-1234567", Email = "a@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+            leadB = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person B", Phone = "0321-7654321", Email = "b@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+
+            var conflicting = new LeadIntakeDto
+            {
+                FirstName = "Who Is This", Phone = "0300-1234567", Email = "b@example.com", SourceCode = "facebook",
+                ExternalProvider = "meta", ExternalLeadId = "sql-conflict", AllowDuplicate = true, Notes = "Held on SQL."
+            };
+            var held = await leads.IngestAsync(conflicting, actor: null, trustedExternal: true);
+            var replay = await leads.IngestAsync(conflicting, actor: null, trustedExternal: true);
+            Assert.True(held.HeldForReview);
+            Assert.Equal(held.HoldId, replay.HoldId);
+            holdId = held.HoldId!.Value;
+
+            var listed = Assert.Single(await leads.GetIntakeHoldsAsync(admin));
+            Assert.Equal(new[] { leadA, leadB }.OrderBy(x => x), listed.Candidates.Select(c => c.LeadId).OrderBy(x => x));
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadIntakeHolds.Add(new LeadIntakeHold
+            {
+                Provider = "meta", ExternalLeadId = "sql-conflict", PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}"
+            });
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            db.LeadIntakeHolds.AddRange(
+                new LeadIntakeHold { PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}" },
+                new LeadIntakeHold { PayloadJson = "{}", CandidateLeadIds = $"{leadA},{leadB}" });
+            await db.SaveChangesAsync();
+        }
+
+        // Two administrators open the same hold; the second decision must not also land.
+        await using var first = new AppDbContext(options);
+        await using var second = new AppDbContext(options);
+        using var firstDispatcher = SqlLeadDispatcher(first);
+        using var secondDispatcher = SqlLeadDispatcher(second);
+        var staleHold = await second.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
+
+        await SqlLeadService(first, firstDispatcher).ResolveIntakeHoldAsync(
+            holdId, new ResolveLeadIntakeHoldDto { LeadId = leadA }, admin);
+
+        staleHold.Status = LeadIntakeHoldStatus.Dismissed;
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => second.SaveChangesAsync());
+
+        await using var verify = new AppDbContext(options);
+        var resolved = await verify.LeadIntakeHolds.SingleAsync(h => h.Id == holdId);
+        Assert.Equal((LeadIntakeHoldStatus.Resolved, (int?)leadA), (resolved.Status, resolved.ResolvedLeadId));
+        Assert.Contains("Held on SQL.", (await verify.Leads.SingleAsync(l => l.Id == leadA)).Notes);
+        Assert.DoesNotContain("Held on SQL.", (await verify.Leads.SingleAsync(l => l.Id == leadB)).Notes ?? "");
+        Assert.Equal(leadA, (await verify.LeadExternalSubmissions.SingleAsync(s => s.ExternalLeadId == "sql-conflict")).LeadId);
+    }
+
     [SqlServerFact]
     public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
     {

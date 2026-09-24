@@ -16,7 +16,8 @@ import {
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
 import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
-import { describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
+import { describeConflict, describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
+import HeldEnquiriesPanel from "../features/leads/HeldEnquiriesPanel.tsx";
 import {
   formatDateTime,
   isClosedStage,
@@ -124,6 +125,7 @@ function LeadsWorkspace({ user }: { user: User }) {
 
       <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
+        {user.role === "Admin" && <HeldEnquiriesPanel onResolved={() => void load()} />}
 
         <section aria-label="Lead summary" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {metrics.map((metric) => {
@@ -285,12 +287,15 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
   const duplicateResolution = duplicate ? describeDuplicate(duplicate) : null;
+  // Set when the details match several open leads at once, e.g. the phone one and the email another.
+  const [conflict, setConflict] = useState<DuplicateMatch[] | null>(null);
+  const conflictResolution = conflict ? describeConflict(conflict) : null;
 
   const set = (key: keyof typeof form, value: string) => {
     setForm((current) => ({ ...current, [key]: value }));
     // The duplicate choices describe the lead these contact details matched. Once they change,
     // resubmitting could match nothing and create a lead the "add to" button never promised.
-    if (key === "phone" || key === "whatsappNumber" || key === "email") setDuplicate(null);
+    if (key === "phone" || key === "whatsappNumber" || key === "email") { setDuplicate(null); setConflict(null); }
   };
 
   useEffect(() => {
@@ -311,9 +316,9 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
       return;
     }
     if (form.phone.trim() && !hasPhone) { setError("That phone number is too short to be usable."); return; }
-    setSaving(true); setError(null); setDuplicate(null);
+    setSaving(true); setError(null); setDuplicate(null); setConflict(null);
     try {
-      const result = await apiJson<{ isDuplicate: boolean; message?: string; match?: DuplicateMatch; lead?: Lead }>(
+      const result = await apiJson<{ isDuplicate: boolean; identityConflict?: boolean; conflictingMatches?: DuplicateMatch[]; message?: string; match?: DuplicateMatch; lead?: Lead }>(
         "/api/leads",
         jsonRequest("POST", {
           ...form,
@@ -327,6 +332,11 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           expectedExistingLeadId: addToLeadId ?? null,
         }),
       );
+      if (result.identityConflict && !result.lead) {
+        setConflict(result.conflictingMatches ?? []);
+        if (addToLeadId != null && result.message) setError(result.message);
+        return;
+      }
       if (result.isDuplicate && !result.lead) {
         setDuplicate(result.match ?? {});
         // Only an add that was refused needs explaining; a first-time match speaks for itself.
@@ -344,6 +354,22 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     <CrmModal open={open} onClose={onClose} wide title="Capture a new lead" subtitle="Duplicate matching runs before a new prospect is created." footer={<div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={() => void submit()} disabled={saving}>{saving ? "Checking…" : "Create lead"}</Button></div>}>
       <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="space-y-5">
         {error && <ErrorBanner message={error} />}
+        {conflictResolution && (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
+            <p className="font-semibold">{conflictResolution.heading}</p>
+            <p className="mt-1">{conflictResolution.explanation}</p>
+            <p className="mt-1">{conflictResolution.addOutcome}</p>
+            <ul className="mt-3 space-y-2">
+              {conflictResolution.choices.map((choice) => (
+                <li key={choice.leadId} className="flex flex-wrap items-center gap-2">
+                  <span className="mr-auto">{choice.detail}</span>
+                  <Button size="sm" onClick={() => onCreated(choice.leadId)}>{choice.openLabel}</Button>
+                  <Button size="sm" variant="outline" onClick={() => void submit(choice.leadId)} disabled={saving}>{choice.addLabel}</Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {duplicateResolution && (
           <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
             <p className="font-semibold">{duplicateResolution.heading}</p>

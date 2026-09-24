@@ -347,6 +347,19 @@ namespace DAMS.Application.Services.Integrations
             var result = await _leads.IngestAsync(
                 dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
 
+            // Its details match more than one open lead, so it waits for an administrator in the
+            // held-enquiry review. The event itself is done: retrying could never pick a lead.
+            if (result.HoldId.HasValue)
+            {
+                integrationEvent.Status = ExternalIntegrationEventStatus.Processed;
+                integrationEvent.ProcessedAt = DateTime.UtcNow;
+                integrationEvent.LeadId = null;
+                integrationEvent.LastError = LeadContactNormalizer.Limit(result.Message, 1000);
+                ReleaseLease(integrationEvent);
+                await _context.SaveChangesAsync(cancellationToken);
+                return false;
+            }
+
             if (result.Lead is null)
                 return await FailAsync(integrationEvent, result.Message, cancellationToken);
 

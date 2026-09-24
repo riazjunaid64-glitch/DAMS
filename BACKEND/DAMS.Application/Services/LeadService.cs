@@ -10,6 +10,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.Data;
+using System.Text.Json;
 
 namespace DAMS.Application.Services
 {
@@ -100,10 +101,78 @@ namespace DAMS.Application.Services
                         Lead = await LoadResponseAsync(existingExternal, cancellationToken)
                     };
                 }
+
+                // Held earlier for an identity conflict: the same hold stands, whatever has changed.
+                var existingHold = await _context.LeadIntakeHolds
+                    .AsNoTracking()
+                    .Where(h => h.Provider == provider && h.ExternalLeadId == externalId)
+                    .Select(h => new { h.Id, h.Status })
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (existingHold != null)
+                {
+                    return new LeadIntakeResultDto
+                    {
+                        AlreadyIngested = true,
+                        HeldForReview = existingHold.Status == LeadIntakeHoldStatus.Open,
+                        HoldId = existingHold.Id,
+                        Message = existingHold.Status == LeadIntakeHoldStatus.Open
+                            ? "This submission is already waiting for an administrator to choose its lead."
+                            : "This submission was already reviewed by an administrator."
+                    };
+                }
             }
 
             // 2. Someone we already know?
-            var match = await FindDuplicateAsync(normalizedPhone, normalizedWhatsapp, normalizedEmail, cancellationToken);
+            var (match, openLeads) = await FindDuplicateAsync(normalizedPhone, normalizedWhatsapp, normalizedEmail, cancellationToken);
+
+            // 2a. The details point at more than one person — the phone matching one open lead and
+            // the email another. Choosing either would join two people's records on a guess, so
+            // neither is touched until someone who can see both decides.
+            if (openLeads.Count > 1)
+            {
+                if (actor != null)
+                {
+                    foreach (var candidate in openLeads)
+                    {
+                        if (!await IsVisibleAsync(candidate.LeadId!.Value, actor, cancellationToken))
+                            throw new InvalidOperationException(
+                                "The lead could not be created. Ask a manager or administrator for assistance.");
+                    }
+
+                    // A person saw every candidate and picked one: that is the explicit decision.
+                    var chosen = openLeads.FirstOrDefault(m => m.LeadId == dto.ExpectedExistingLeadId);
+                    if (dto.AllowDuplicate && chosen != null)
+                    {
+                        var enrichedChoice = await EnrichExistingLeadAsync(
+                            chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken);
+                        return new LeadIntakeResultDto
+                        {
+                            IsDuplicate = true,
+                            EnrichedExisting = true,
+                            Match = chosen,
+                            Message = "The enquiry was added to the lead you chose.",
+                            Lead = enrichedChoice
+                        };
+                    }
+                }
+                else if (dto.AllowDuplicate)
+                {
+                    // An external channel would have enriched automatically, and nobody is here
+                    // to choose. Keep the enquiry, exactly as it arrived, for an administrator.
+                    return await HoldForReviewAsync(dto, provider, externalId, isExternal, openLeads, cancellationToken);
+                }
+
+                return new LeadIntakeResultDto
+                {
+                    IsDuplicate = true,
+                    IdentityConflict = true,
+                    Match = openLeads[0],
+                    ConflictingMatches = openLeads,
+                    Message = $"These details match more than one open lead ({DescribeLeads(openLeads)}). " +
+                              "Nothing was changed. Choose which lead this enquiry belongs to."
+                };
+            }
 
             if (match is { LeadId: not null })
             {
@@ -532,7 +601,12 @@ namespace DAMS.Application.Services
             });
         }
 
-        private async Task<LeadDuplicateMatchDto?> FindDuplicateAsync(
+        /// <summary>
+        /// The best match for these details, plus every open lead they match. More than one open
+        /// lead means the details disagree about who this is — the phone matching one person and
+        /// the email another — and the caller must not pick one on the person's behalf.
+        /// </summary>
+        private async Task<(LeadDuplicateMatchDto? Match, List<LeadDuplicateMatchDto> OpenLeads)> FindDuplicateAsync(
             string? normalizedPhone,
             string? normalizedWhatsapp,
             string? normalizedEmail,
@@ -542,13 +616,13 @@ namespace DAMS.Application.Services
             // lead against every other lead that also has no contact details — two anonymous
             // Meta enquiries are not the same person.
             if (normalizedPhone == null && normalizedWhatsapp == null && normalizedEmail == null)
-                return null;
+                return (null, []);
 
             // Closed leads are history: a fresh enquiry from someone we lost last year is a
             // genuinely new opportunity, so only open leads count as duplicates. A number is the
             // same person whichever field it was entered in, so each incoming number is compared
             // with both the phone and the WhatsApp field.
-            var openLead = await _context.Leads
+            var openLeads = await _context.Leads
                 .AsNoTracking()
                 .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage))
                 .Where(l =>
@@ -566,22 +640,22 @@ namespace DAMS.Application.Services
                     l.NormalizedEmail,
                     OwnerName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null
                 })
-                .FirstOrDefaultAsync(cancellationToken);
+                // Bounded: a conflict needs only to be seen, not enumerated in full.
+                .Take(10)
+                .ToListAsync(cancellationToken);
 
-            if (openLead != null)
+            if (openLeads.Count > 0)
             {
-                var matchedOn = normalizedPhone != null && (openLead.NormalizedPhone == normalizedPhone || openLead.NormalizedWhatsapp == normalizedPhone) ? "phone"
-                    : normalizedWhatsapp != null && (openLead.NormalizedWhatsapp == normalizedWhatsapp || openLead.NormalizedPhone == normalizedWhatsapp) ? "whatsapp"
-                    : "email";
-
-                return new LeadDuplicateMatchDto
+                var matches = openLeads.Select(openLead => new LeadDuplicateMatchDto
                 {
-                    MatchedOn = matchedOn,
+                    MatchedOn = MatchedOn(normalizedPhone, normalizedWhatsapp, openLead.NormalizedPhone, openLead.NormalizedWhatsapp),
                     LeadId = openLead.Id,
                     LeadReference = openLead.LeadReference,
                     LeadStage = openLead.Stage,
                     LeadOwnerName = openLead.OwnerName
-                };
+                }).ToList();
+
+                return (matches[0], matches);
             }
 
             // No open lead, but this may still be a customer we already sold to. Report it so
@@ -596,15 +670,239 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (customer == null)
-                return null;
+                return (null, []);
 
-            return new LeadDuplicateMatchDto
+            return (new LeadDuplicateMatchDto
             {
                 MatchedOn = normalizedPhone != null && customer.Phone.EndsWith(normalizedPhone, StringComparison.Ordinal) ? "phone" : "email",
                 CustomerId = customer.Id,
                 CustomerName = customer.FullName
+            }, []);
+        }
+
+        /// <summary>Which of the incoming details a lead matched on. A number matches either of the
+        /// lead's number fields; anything else that matched was the email.</summary>
+        private static string MatchedOn(
+            string? normalizedPhone, string? normalizedWhatsapp, string? leadPhone, string? leadWhatsapp) =>
+            normalizedPhone != null && (leadPhone == normalizedPhone || leadWhatsapp == normalizedPhone) ? "phone"
+            : normalizedWhatsapp != null && (leadWhatsapp == normalizedWhatsapp || leadPhone == normalizedWhatsapp) ? "whatsapp"
+            : "email";
+
+        private static string DescribeLeads(IEnumerable<LeadDuplicateMatchDto> leads) =>
+            string.Join(", ", leads.Select(l => $"{l.LeadReference} by {l.MatchedOn}"));
+
+        // ── Held enquiries ──────────────────────────────────────────────────────────
+
+        private async Task<LeadIntakeResultDto> HoldForReviewAsync(
+            LeadIntakeDto dto,
+            string? provider,
+            string? externalId,
+            bool isExternal,
+            List<LeadDuplicateMatchDto> candidates,
+            CancellationToken cancellationToken)
+        {
+            var hold = new LeadIntakeHold
+            {
+                Provider = isExternal ? provider : null,
+                ExternalLeadId = isExternal ? externalId : null,
+                PayloadJson = JsonSerializer.Serialize(dto),
+                IsExternal = isExternal,
+                CandidateLeadIds = string.Join(',', candidates.Select(c => c.LeadId!.Value)),
+                ReceivedAt = DateTime.UtcNow
+            };
+            _context.LeadIntakeHolds.Add(hold);
+
+            var holdId = 0;
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+                holdId = hold.Id;
+            }
+            catch (DbUpdateException ex) when (hold.Provider != null && IsHoldDuplicate(ex))
+            {
+                // Two copies of the same webhook arrived at once and the other made the hold.
+                _context.Entry(hold).State = EntityState.Detached;
+                var (heldProvider, heldExternalId) = (hold.Provider, hold.ExternalLeadId);
+                holdId = await _context.LeadIntakeHolds
+                    .AsNoTracking()
+                    .Where(h => h.Provider == heldProvider && h.ExternalLeadId == heldExternalId)
+                    .Select(h => h.Id)
+                    .FirstAsync(cancellationToken);
+            }
+
+            // No lead details in the result: it goes back to an external caller, which has no
+            // business learning which leads exist. Administrators see them in the review list.
+            return new LeadIntakeResultDto
+            {
+                IdentityConflict = true,
+                HeldForReview = true,
+                HoldId = holdId,
+                Message = "These details match more than one open lead. The enquiry was kept for an administrator " +
+                          "to add to the right lead; no lead was changed."
             };
         }
+
+        public async Task<List<LeadIntakeHoldDto>> GetIntakeHoldsAsync(
+            LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            LeadAccess.EnsureCanResolveIntakeHolds(ctx);
+
+            var holds = await _context.LeadIntakeHolds
+                .AsNoTracking()
+                .Where(h => h.Status == LeadIntakeHoldStatus.Open)
+                .OrderBy(h => h.ReceivedAt)
+                .Take(200)
+                .ToListAsync(cancellationToken);
+
+            var candidateIds = holds.SelectMany(CandidateIds).Distinct().ToList();
+            var leads = await _context.Leads
+                .AsNoTracking()
+                .Where(l => candidateIds.Contains(l.Id))
+                .Select(l => new
+                {
+                    l.Id,
+                    l.LeadReference,
+                    l.Stage,
+                    l.NormalizedPhone,
+                    l.NormalizedWhatsapp,
+                    Name = (l.FirstName + " " + (l.LastName ?? "")).Trim(),
+                    OwnerName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null
+                })
+                .ToDictionaryAsync(l => l.Id, cancellationToken);
+            var sources = await _context.LeadSources
+                .AsNoTracking()
+                .ToDictionaryAsync(s => s.Code, s => s.Name, cancellationToken);
+
+            return holds.Select(hold =>
+            {
+                var payload = ReadHoldPayload(hold);
+                var phone = LeadContactNormalizer.NormalizeUsablePhoneOrNull(payload.Phone);
+                var whatsapp = LeadContactNormalizer.NormalizeUsablePhoneOrNull(payload.WhatsappNumber);
+
+                return new LeadIntakeHoldDto
+                {
+                    Id = hold.Id,
+                    ReceivedAt = hold.ReceivedAt,
+                    Provider = hold.Provider,
+                    SourceName = payload.SourceCode != null && sources.TryGetValue(payload.SourceCode, out var name) ? name : payload.SourceCode,
+                    FirstName = payload.FirstName,
+                    LastName = payload.LastName,
+                    Phone = payload.Phone,
+                    WhatsappNumber = payload.WhatsappNumber,
+                    Email = payload.Email,
+                    CampaignName = payload.CampaignName,
+                    Notes = payload.Notes,
+                    BookingRequestId = hold.BookingRequestId,
+                    Candidates = CandidateIds(hold)
+                        .Where(leads.ContainsKey)
+                        .Select(id => leads[id])
+                        .Select(l => new LeadIntakeHoldCandidateDto
+                        {
+                            LeadId = l.Id,
+                            LeadReference = l.LeadReference,
+                            LeadName = l.Name,
+                            LeadStage = l.Stage,
+                            LeadOwnerName = l.OwnerName,
+                            MatchedOn = MatchedOn(phone, whatsapp, l.NormalizedPhone, l.NormalizedWhatsapp),
+                            IsOpen = !LeadStageRules.IsClosed(l.Stage)
+                        })
+                        .ToList()
+                };
+            }).ToList();
+        }
+
+        /// <summary>
+        /// Adds a held enquiry to the lead an administrator chose, or dismisses it. Everything —
+        /// the enrichment, the hold's outcome and any waiting booking request's link — is written
+        /// by one save, so the decision either happens completely or not at all.
+        /// </summary>
+        public async Task<LeadResponseDto?> ResolveIntakeHoldAsync(
+            int holdId, ResolveLeadIntakeHoldDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            LeadAccess.EnsureCanResolveIntakeHolds(ctx);
+
+            if (dto.Dismiss == dto.LeadId.HasValue)
+                throw new InvalidOperationException("Choose the lead to add this enquiry to, or dismiss it.");
+
+            var hold = await _context.LeadIntakeHolds.FirstOrDefaultAsync(h => h.Id == holdId, cancellationToken)
+                ?? throw new InvalidOperationException("That held enquiry was not found.");
+
+            if (hold.Status != LeadIntakeHoldStatus.Open)
+                throw new InvalidOperationException("This enquiry has already been dealt with.");
+
+            hold.ResolvedByUserId = ctx.UserId;
+            hold.ResolvedAt = DateTime.UtcNow;
+            hold.ResolutionNotes = LeadContactNormalizer.LimitOrNull(dto.Notes, 1000);
+
+            if (dto.Dismiss)
+            {
+                if (hold.BookingRequestId.HasValue)
+                    throw new InvalidOperationException(
+                        "A website booking request is waiting on this enquiry, so it cannot be dismissed. Choose the lead it belongs to.");
+
+                hold.Status = LeadIntakeHoldStatus.Dismissed;
+                await SaveHoldDecisionAsync(() => _context.SaveChangesAsync(cancellationToken));
+                return null;
+            }
+
+            var leadId = dto.LeadId!.Value;
+            if (!CandidateIds(hold).Contains(leadId))
+                throw new InvalidOperationException("That lead is not one this enquiry matched.");
+
+            var stage = await _context.Leads
+                .Where(l => l.Id == leadId)
+                .Select(l => (LeadStage?)l.Stage)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (stage == null || LeadStageRules.IsClosed(stage.Value))
+                throw new InvalidOperationException("That lead has been closed since. Reopen it first, or choose another.");
+
+            var payload = ReadHoldPayload(hold);
+            // Not ResolveSourceAsync: a source switched off since the enquiry arrived must not
+            // strand an enquiry that was valid when it came in.
+            var sourceCode = string.IsNullOrWhiteSpace(payload.SourceCode) ? DefaultSourceCode : payload.SourceCode.Trim().ToLowerInvariant();
+            var source = await _context.LeadSources.FirstOrDefaultAsync(s => s.Code == sourceCode, cancellationToken)
+                ?? throw new InvalidOperationException($"Lead source '{sourceCode}' no longer exists.");
+
+            hold.Status = LeadIntakeHoldStatus.Resolved;
+            hold.ResolvedLeadId = leadId;
+
+            if (hold.BookingRequestId is { } bookingRequestId)
+            {
+                var request = await _context.BookingRequests.FirstOrDefaultAsync(r => r.Id == bookingRequestId, cancellationToken);
+                if (request != null && request.LeadId == null)
+                    request.LeadId = leadId;
+            }
+
+            // The enrichment's own save carries the hold's outcome and the request link with it.
+            return await SaveHoldDecisionAsync(() =>
+                EnrichExistingLeadAsync(leadId, payload, source, ctx, hold.IsExternal, cancellationToken));
+        }
+
+        private static async Task<T> SaveHoldDecisionAsync<T>(Func<Task<T>> save)
+        {
+            try
+            {
+                return await save();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(
+                    "Someone else dealt with this enquiry or its lead at the same time. Reload and try again.");
+            }
+        }
+
+        private static IEnumerable<int> CandidateIds(LeadIntakeHold hold) =>
+            hold.CandidateLeadIds
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(int.Parse);
+
+        private static LeadIntakeDto ReadHoldPayload(LeadIntakeHold hold) =>
+            JsonSerializer.Deserialize<LeadIntakeDto>(hold.PayloadJson)
+            ?? throw new InvalidOperationException("The held enquiry could not be read.");
+
+        private static bool IsHoldDuplicate(DbUpdateException ex) =>
+            ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+            && sql.Message.Contains("LeadIntakeHolds", StringComparison.OrdinalIgnoreCase);
 
         private async Task<LeadSource> ResolveSourceAsync(string? code, CancellationToken cancellationToken)
         {
@@ -1706,7 +2004,7 @@ namespace DAMS.Application.Services
             return lead;
         }
 
-        public async Task<int> EnsureLeadForBookingRequestAsync(
+        public async Task<int?> EnsureLeadForBookingRequestAsync(
             BookingRequest request, LeadUserContext? actor, CancellationToken cancellationToken = default)
         {
             if (request.LeadId.HasValue)
@@ -1773,6 +2071,20 @@ namespace DAMS.Application.Services
                 // enquiry is added to their existing lead instead of being refused.
                 AllowDuplicate = true
             }, actor, trustedExternal: true, cancellationToken: cancellationToken);
+
+            // Its details match more than one open lead. The request itself is kept; it gets its
+            // lead when an administrator decides which one the enquiry belongs to.
+            if (result.HoldId is { } holdId)
+            {
+                var hold = await _context.LeadIntakeHolds.FirstAsync(h => h.Id == holdId, cancellationToken);
+                hold.BookingRequestId ??= request.Id;
+                return null;
+            }
+
+            if (result.IdentityConflict)
+                throw new InvalidOperationException(
+                    "This request's contact details match more than one open lead. " +
+                    "Resolve which lead it belongs to before continuing.");
 
             var leadId = result.Lead?.Id
                 ?? throw new InvalidOperationException("The lead for this website request could not be created.");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeDuplicate } from "./duplicateResolution.ts";
+import { describeConflict, describeDuplicate } from "./duplicateResolution.ts";
 
 describe("describeDuplicate", () => {
   it("offers to add the enquiry to the matched lead, never to create a separate one", () => {
@@ -41,5 +41,31 @@ describe("describeDuplicate", () => {
 
     expect(resolution.addLabel).toBeNull();
     expect(resolution.openLabel).toBe("Open the existing lead");
+  });
+});
+
+describe("describeConflict", () => {
+  const conflict = describeConflict([
+    { leadId: 1, leadReference: "LD-000001", matchedOn: "phone" },
+    { leadId: 2, leadReference: "LD-000002", matchedOn: "email" },
+  ]);
+
+  it("shows every matched lead with its own open and add choice", () => {
+    expect(conflict.heading).toBe("These details match 2 different open leads.");
+    expect(conflict.choices).toEqual([
+      { leadId: 1, detail: "LD-000001 matches this phone number.", openLabel: "Open LD-000001", addLabel: "Add this enquiry to LD-000001" },
+      { leadId: 2, detail: "LD-000002 matches this email address.", openLabel: "Open LD-000002", addLabel: "Add this enquiry to LD-000002" },
+    ]);
+  });
+
+  it("says nothing was changed and that adding touches only the chosen lead", () => {
+    expect(conflict.explanation).toMatch(/nothing has been changed/);
+    expect(conflict.addOutcome).toMatch(/changes only the lead you choose/);
+    for (const choice of conflict.choices) expect(choice.addLabel).not.toMatch(/separate|new lead|create/i);
+  });
+
+  it("offers no choice for a match without a lead", () => {
+    expect(describeConflict([{ leadId: null, leadReference: null }, { leadId: 3, leadReference: "LD-000003" }]).choices)
+      .toHaveLength(1);
   });
 });

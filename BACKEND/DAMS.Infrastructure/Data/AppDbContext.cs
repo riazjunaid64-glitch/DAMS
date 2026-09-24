@@ -77,6 +77,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
         public DbSet<Lead> Leads { get; set; }
         public DbSet<LeadExternalSubmission> LeadExternalSubmissions { get; set; }
+        public DbSet<LeadIntakeHold> LeadIntakeHolds { get; set; }
         public DbSet<LeadActivity> LeadActivities { get; set; }
         public DbSet<LeadAssignmentHistory> LeadAssignmentHistories { get; set; }
         public DbSet<LeadCommunication> LeadCommunications { get; set; }
@@ -2043,6 +2044,34 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(l => l.ConvertedBookingId)
                       .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<LeadIntakeHold>(entity =>
+            {
+                entity.Property(h => h.Provider).HasMaxLength(50);
+                entity.Property(h => h.ExternalLeadId).HasMaxLength(200);
+                entity.Property(h => h.PayloadJson).IsRequired();
+                entity.Property(h => h.CandidateLeadIds).IsRequired().HasMaxLength(200);
+                entity.Property(h => h.ResolutionNotes).HasMaxLength(1000);
+                entity.Property(h => h.RowVersion).IsRowVersion();
+
+                // One hold per provider submission: a replayed webhook finds the hold it already
+                // made rather than queueing the same enquiry twice.
+                entity.HasIndex(h => new { h.Provider, h.ExternalLeadId })
+                      .IsUnique()
+                      .HasFilter("[Provider] IS NOT NULL AND [ExternalLeadId] IS NOT NULL");
+                entity.HasIndex(h => new { h.Status, h.ReceivedAt });
+                entity.HasIndex(h => h.BookingRequestId);
+
+                entity.HasOne(h => h.BookingRequest)
+                      .WithMany()
+                      .HasForeignKey(h => h.BookingRequestId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(h => h.ResolvedLead)
+                      .WithMany()
+                      .HasForeignKey(h => h.ResolvedLeadId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<LeadExternalSubmission>(entity =>

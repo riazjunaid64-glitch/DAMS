@@ -67,7 +67,14 @@ namespace DAMS.Application.Interfaces
         /// shared ingestion pipeline when it does not. Sets <c>request.LeadId</c>; the caller
         /// saves. Returns the lead id.
         /// </summary>
-        Task<int> EnsureLeadForBookingRequestAsync(BookingRequest request, LeadUserContext? actor, CancellationToken cancellationToken = default);
+        /// <summary>The request's lead, or null while its enquiry waits in the held-enquiry review
+        /// because its details match more than one open lead.</summary>
+        Task<int?> EnsureLeadForBookingRequestAsync(BookingRequest request, LeadUserContext? actor, CancellationToken cancellationToken = default);
+
+        Task<List<LeadIntakeHoldDto>> GetIntakeHoldsAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
+
+        /// <summary>Adds a held enquiry to the chosen lead and returns it, or dismisses the enquiry and returns null.</summary>
+        Task<LeadResponseDto?> ResolveIntakeHoldAsync(int holdId, ResolveLeadIntakeHoldDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Closes a lead on the system's behalf — used when the outcome is decided outside

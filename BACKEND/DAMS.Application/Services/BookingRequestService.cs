@@ -215,7 +215,10 @@ namespace DAMS.Application.Services
             await RunInTransactionAsync(async () =>
             {
                 // Requests submitted before lead management have no lead yet.
-                var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext);
+                var leadId = await _leadService.EnsureLeadForBookingRequestAsync(bookingRequest, adminContext)
+                    ?? throw new InvalidOperationException(
+                        "This request's contact details match more than one open lead, so it is waiting in Leads → " +
+                        "Held enquiries. Choose the lead it belongs to there, then approve it.");
                 await _context.SaveChangesAsync();
 
                 // Approval is the conversion: it is what creates the customer and booking,
