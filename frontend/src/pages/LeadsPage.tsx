@@ -299,7 +299,9 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     void loadUnits(id).then(setUnits).catch(() => setUnits([]));
   }, [form.interestedProjectId]);
 
-  const submit = async (allowDuplicate = false) => {
+  // With addToLeadId, the enquiry may only be added to that lead; the API writes nothing if it no
+  // longer matches, rather than enriching another lead or creating a new one.
+  const submit = async (addToLeadId?: number) => {
     if (!form.firstName.trim()) { setError("A first name is required."); return; }
     // Staff capturing a lead by hand have the person in front of them, so require a way to
     // reach them — but any one channel will do, matching what the API enforces.
@@ -311,7 +313,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     if (form.phone.trim() && !hasPhone) { setError("That phone number is too short to be usable."); return; }
     setSaving(true); setError(null); setDuplicate(null);
     try {
-      const result = await apiJson<{ isDuplicate: boolean; match?: { leadId?: number | null; leadReference?: string | null; matchedOn?: string }; lead?: Lead }>(
+      const result = await apiJson<{ isDuplicate: boolean; message?: string; match?: DuplicateMatch; lead?: Lead }>(
         "/api/leads",
         jsonRequest("POST", {
           ...form,
@@ -321,11 +323,18 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           budgetMax: form.budgetMax ? Number(form.budgetMax) : null,
           assignedEmployeeId: canAssign && form.assignedEmployeeId ? Number(form.assignedEmployeeId) : null,
           assignedTeamId: canAssign && form.assignedTeamId ? Number(form.assignedTeamId) : null,
-          allowDuplicate,
+          allowDuplicate: addToLeadId != null,
+          expectedExistingLeadId: addToLeadId ?? null,
         }),
       );
-      if (result.isDuplicate && !result.lead) { setDuplicate(result.match ?? {}); return; }
-      if (result.lead) onCreated(result.lead.id);
+      if (result.isDuplicate && !result.lead) {
+        setDuplicate(result.match ?? {});
+        // Only an add that was refused needs explaining; a first-time match speaks for itself.
+        if (addToLeadId != null && result.message) setError(result.message);
+        return;
+      }
+      if (result.lead) { onCreated(result.lead.id); return; }
+      setError(result.message || "Nothing was saved. Review the details and try again.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The lead could not be created. Your form values have been preserved.");
     } finally { setSaving(false); }
@@ -342,7 +351,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
             {duplicateResolution.addLabel && <p className="mt-1">{duplicateResolution.addOutcome}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               {duplicate?.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>{duplicateResolution.openLabel}</Button>}
-              {duplicateResolution.addLabel && <Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={saving}>{duplicateResolution.addLabel}</Button>}
+              {duplicateResolution.addLabel && <Button size="sm" variant="outline" onClick={() => void submit(duplicate!.leadId!)} disabled={saving}>{duplicateResolution.addLabel}</Button>}
             </div>
           </div>
         )}

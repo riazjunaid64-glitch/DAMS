@@ -33,7 +33,8 @@ export function describeDuplicate(match: DuplicateMatch): DuplicateResolution {
     openLabel: `Open ${reference}`,
     addLabel: match.leadId ? `Add this enquiry to ${reference}` : null,
     addOutcome:
-      "Adding it records this enquiry's source and notes on that lead and fills in only the details it is missing. " +
-      "The lead's owner, stage and history do not change.",
+      `Adding it uses the details in this form as they are now: their source and notes are recorded on ${reference}, ` +
+      "and only details it is missing are filled in. The lead's owner, stage and history do not change. " +
+      "If these details no longer match it when you add, nothing is saved.",
   };
 }

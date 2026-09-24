@@ -112,6 +112,13 @@ namespace DAMS.Application.DTOs.LeadDtos
         /// rejected as a duplicate. External channels always enrich.
         /// </summary>
         public bool AllowDuplicate { get; set; }
+
+        /// <summary>
+        /// The lead a person chose to add this enquiry to. When set, the enquiry is only ever
+        /// added to that lead: if the details now match another lead, or no open lead at all,
+        /// nothing is written and the result says why. Never creates a lead.
+        /// </summary>
+        public int? ExpectedExistingLeadId { get; set; }
     }
 
     public class LeadIntakeResultDto

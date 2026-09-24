@@ -114,6 +114,20 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException(
                         "The lead could not be created. Ask a manager or administrator for assistance.");
 
+                // The caller chose to add this enquiry to one specific lead, but the details now
+                // match a different one. Enriching it would add the enquiry somewhere the person
+                // never agreed to, so nothing is written and the current match is shown instead.
+                if (dto.ExpectedExistingLeadId is { } expectedLeadId && expectedLeadId != match.LeadId)
+                {
+                    return new LeadIntakeResultDto
+                    {
+                        IsDuplicate = true,
+                        Match = match,
+                        Message = $"These details now match {match.LeadReference}, not the lead you chose. " +
+                                  "Nothing was added. Review the match before adding this enquiry."
+                    };
+                }
+
                 if (!dto.AllowDuplicate)
                 {
                     return new LeadIntakeResultDto
@@ -134,6 +148,17 @@ namespace DAMS.Application.Services
                     Match = match,
                     Message = "An existing lead matched this contact and was enriched with the new enquiry.",
                     Lead = enriched
+                };
+            }
+
+            // Asked to add to a lead that no longer matches at all — typically closed in the
+            // meantime. Creating a new lead instead would be exactly what the caller did not ask for.
+            if (dto.ExpectedExistingLeadId.HasValue)
+            {
+                return new LeadIntakeResultDto
+                {
+                    Message = "These details no longer match an open lead, so nothing was added. " +
+                              "Submit again to create a new lead."
                 };
             }
 

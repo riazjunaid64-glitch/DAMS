@@ -18,8 +18,11 @@ describe("describeDuplicate", () => {
 
     expect(explanation).toMatch(/one open lead per person/);
     expect(explanation).toMatch(/separate lead cannot be created/);
-    expect(addOutcome).toMatch(/source and notes/);
+    expect(addOutcome).toMatch(/source and notes are recorded on LD-000012/);
     expect(addOutcome).toMatch(/owner, stage and history do not change/);
+    // Edits made after the match are what gets added, and a stale match adds nothing.
+    expect(addOutcome).toMatch(/details in this form as they are now/);
+    expect(addOutcome).toMatch(/no longer match it when you add, nothing is saved/);
   });
 
   it.each([
