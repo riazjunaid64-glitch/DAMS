@@ -13,15 +13,15 @@ using Xunit;
 namespace DAMS.Application.Tests;
 
 /// <summary>
-/// The lead forms send every field, so a lead captured without an email arrives with
-/// <c>"email": ""</c>. Email is optional, and a blank one must mean "no email" — not an invalid
-/// address that the API rejects before the lead service ever sees the request.
+/// Forms send every field, so a lead or customer captured without an email arrives with
+/// <c>"email": ""</c>. Where email is optional, a blank one must mean "no email" — not an invalid
+/// address that the API rejects before the service ever sees the request.
 /// </summary>
-public sealed class LeadBlankEmailEndpointTests : IClassFixture<IdempotentMoneyOperationTests.ApiFactory>
+public sealed class BlankEmailEndpointTests : IClassFixture<IdempotentMoneyOperationTests.ApiFactory>
 {
     private readonly IdempotentMoneyOperationTests.ApiFactory _factory;
 
-    public LeadBlankEmailEndpointTests(IdempotentMoneyOperationTests.ApiFactory factory) => _factory = factory;
+    public BlankEmailEndpointTests(IdempotentMoneyOperationTests.ApiFactory factory) => _factory = factory;
 
     [Theory]
     [InlineData("\"\"")]
@@ -92,6 +92,61 @@ public sealed class LeadBlankEmailEndpointTests : IClassFixture<IdempotentMoneyO
         var email = (await StoredAsync(lead.GetProperty("id").GetInt32())).Email;
         Assert.StartsWith("mixed.", email);
         Assert.EndsWith("@example.com", email);
+    }
+
+    [Fact]
+    public async Task ACustomer_WithABlankEmail_IsCreatedAndEditedWithNoEmail()
+    {
+        var client = Admin();
+        var phone = UniquePhone();
+
+        var create = await client.PostAsync("/api/Customer", Json(
+            $$"""{"fullName":"No Email Customer","phone":"{{phone}}","email":""}"""));
+        var createBody = await create.Content.ReadAsStringAsync();
+        Assert.True(create.IsSuccessStatusCode, $"Expected success, got {create.StatusCode}: {createBody}");
+        var id = JsonDocument.Parse(createBody).RootElement.GetProperty("id").GetInt32();
+
+        var edit = await client.PutAsync($"/api/Customer/{id}", Json(
+            $$"""{"fullName":"No Email Customer","phone":"{{phone}}","email":"   ","status":"Active"}"""));
+        Assert.True(edit.IsSuccessStatusCode,
+            $"Expected success, got {edit.StatusCode}: {await edit.Content.ReadAsStringAsync()}");
+
+        using var scope = _factory.Services.CreateScope();
+        var stored = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Customers
+            .AsNoTracking().SingleAsync(c => c.Id == id);
+        Assert.Null(stored.Email);
+    }
+
+    [Fact]
+    public async Task ACustomer_WithAnInvalidEmail_IsStillRejected()
+    {
+        var response = await Admin().PostAsync("/api/Customer", Json(
+            $$"""{"fullName":"Bad Email Customer","phone":"{{UniquePhone()}}","email":"not-an-email"}"""));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(ValidationErrors(await response.Content.ReadAsStringAsync()).ContainsKey("Email"));
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("not-an-email", true)]
+    public async Task ABookingForANewCustomer_OnlyRejectsAnEmailThatIsActuallyInvalid(string email, bool rejected)
+    {
+        // The booking itself fails later for other reasons (no such unit); what matters here is
+        // whether model validation calls the new customer's email invalid.
+        var response = await Admin().PostAsync("/api/Booking", Json(
+            $$$"""{"unitId":999999,"source":"WalkIn","newCustomer":{"fullName":"Walk In","phone":"{{{UniquePhone()}}}","email":"{{{email}}}"}}"""));
+
+        var errors = ValidationErrors(await response.Content.ReadAsStringAsync());
+        Assert.Equal(rejected, errors.Keys.Any(k => k.EndsWith("Email", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static Dictionary<string, JsonElement> ValidationErrors(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.TryGetProperty("errors", out var errors)
+            ? errors.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone())
+            : [];
     }
 
     private HttpClient Admin()

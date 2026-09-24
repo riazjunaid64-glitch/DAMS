@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using DAMS.Application.Common;
 using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.BookingDtos
@@ -107,9 +108,11 @@ namespace DAMS.Application.DTOs.BookingDtos
         [StringLength(50)]
         public string? CNIC { get; set; }
 
+        /// <summary>Optional; a blank value means "no email" (see <see cref="OptionalInput"/>).</summary>
         [EmailAddress]
         [StringLength(200)]
-        public string? Email { get; set; }
+        public string? Email { get => _email; set => _email = OptionalInput.BlankAsNull(value); }
+        private string? _email;
 
         [StringLength(500)]
         public string? Address { get; set; }
