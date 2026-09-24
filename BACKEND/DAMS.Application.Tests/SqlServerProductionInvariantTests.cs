@@ -2101,6 +2101,103 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    [SqlServerFact]
+    public async Task ATransientFailureWhileFinalizingALead_IsRetriedToOneCompleteLead()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+        {
+            await db.Database.MigrateAsync();
+            db.Users.Add(new User
+            {
+                RoleId = 1, FullName = "Lead supervisor", Email = "retry-supervisor@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // The API retries transient SQL errors. One arriving on the save that writes the final
+        // reference must be retried into a whole lead, as it was before both saves shared a
+        // transaction — not replayed against rows that transaction already rolled back.
+        var transient = new FailOnceTransientlyOnLeadReference();
+        var retrying = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer(database.ConnectionString, sql => sql.EnableRetryOnFailure(
+                3, TimeSpan.FromMilliseconds(10), [FailOnceTransientlyOnLeadReference.ErrorNumber]))
+            .AddInterceptors(transient)
+            .Options;
+
+        await using (var db = new AppDbContext(retrying))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var result = await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Retried", SourceCode = "facebook", ExternalProvider = "meta",
+                ExternalLeadId = "transient-finalization-lead", Email = "retried@example.com"
+            }, actor: null, trustedExternal: true);
+
+            Assert.True(transient.Failed);
+            Assert.False(result.AlreadyIngested);
+            Assert.Matches("^LD-[0-9]{6,}$", result.Lead!.LeadReference);
+        }
+
+        await using (var verify = new AppDbContext(Options(database.ConnectionString)))
+        {
+            var lead = await verify.Leads.SingleAsync();
+            Assert.Equal($"LD-{lead.Id:D6}", lead.LeadReference);
+            Assert.Equal(lead.Id, (await verify.LeadExternalSubmissions.SingleAsync()).LeadId);
+            Assert.Equal(2, await verify.LeadActivities.CountAsync(a => a.LeadId == lead.Id));
+            Assert.Single(await verify.Notifications.Where(n => n.Type == NotificationType.LeadCreated).ToListAsync());
+        }
+
+        // A sales employee's own lead is assigned to them by writing into the request. The retry
+        // must see the request as it arrived, or it would refuse them their own lead.
+        int salesUserId, salesEmployeeId;
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+        {
+            var salesUser = new User
+            {
+                RoleId = 4, FullName = "Retry seller", Email = "retry-seller@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            };
+            db.Users.Add(salesUser);
+            await db.SaveChangesAsync();
+            var salesEmployee = new Employee
+            {
+                FullName = "Retry seller", UserId = salesUser.UserId, JobTitle = "Sales Executive",
+                JoinDate = new DateTime(2026, 1, 1), Status = EmployeeStatus.Active
+            };
+            db.Employees.Add(salesEmployee);
+            await db.SaveChangesAsync();
+            (salesUserId, salesEmployeeId) = (salesUser.UserId, salesEmployee.Id);
+        }
+
+        transient.Arm();
+        await using (var db = new AppDbContext(retrying))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var result = await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Walk-in", SourceCode = "walk_in", Phone = "03001112233"
+            }, new LeadUserContext
+            {
+                UserId = salesUserId, Role = LeadRoles.Employee, DisplayName = "Retry seller",
+                EmployeeId = salesEmployeeId
+            });
+
+            Assert.True(transient.Failed);
+            Assert.Equal(salesEmployeeId, result.Lead!.AssignedEmployeeId);
+        }
+
+        await using (var verify = new AppDbContext(Options(database.ConnectionString)))
+        {
+            var lead = await verify.Leads.SingleAsync(l => l.FirstName == "Walk-in");
+            Assert.Equal($"LD-{lead.Id:D6}", lead.LeadReference);
+            Assert.Equal(salesEmployeeId, lead.AssignedEmployeeId);
+            Assert.Single(await verify.LeadAssignmentHistories.Where(h => h.LeadId == lead.Id).ToListAsync());
+            Assert.Equal(2, await verify.Leads.CountAsync());
+        }
+    }
+
     private static NotificationDispatcher SqlLeadDispatcher(AppDbContext db) => new(
         db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
         TimeProvider.System, new NotificationEligibilityPolicy(db),
@@ -5136,6 +5233,29 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@id", id);
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    /// <summary>Turns the first command that writes a lead's final reference into a SQL error the
+    /// test's execution strategy is told to treat as transient — a deadlock victim, in effect.</summary>
+    private sealed class FailOnceTransientlyOnLeadReference : DbCommandInterceptor
+    {
+        public const int ErrorNumber = 50001;
+        public bool Failed { get; private set; }
+
+        public void Arm() => Failed = false;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!Failed && command.CommandText.Contains("UPDATE [Leads]") && command.CommandText.Contains("[LeadReference]"))
+            {
+                Failed = true;
+                command.CommandText = $"THROW {ErrorNumber}, 'Simulated transient failure.', 1;";
+            }
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
     }
 
     private sealed class FailLeadFinalizationInterceptor : SaveChangesInterceptor
