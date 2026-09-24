@@ -39,6 +39,10 @@ namespace DAMS.Api.Controllers
             {
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
+            catch (LeadIntakeBusyException ex)
+            {
+                return BusyResponse.From(this, ex);
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
@@ -60,6 +64,10 @@ namespace DAMS.Api.Controllers
             catch (LeadAuthorizationException ex)
             {
                 return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+            }
+            catch (LeadIntakeBusyException ex)
+            {
+                return BusyResponse.From(this, ex);
             }
             catch (InvalidOperationException ex)
             {

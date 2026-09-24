@@ -66,6 +66,11 @@ namespace DAMS.Api.Controllers
                     dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
                 return Ok(result);
             }
+            catch (LeadIntakeBusyException ex)
+            {
+                // Retryable, and the sender must know it: a 400 here would drop the enquiry.
+                return BusyResponse.From(this, ex);
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });

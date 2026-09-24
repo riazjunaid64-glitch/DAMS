@@ -2166,8 +2166,12 @@ public sealed class SqlServerProductionInvariantTests
             {
                 // WhatsApp this time: the same number must be the same person in either field.
                 second = IngestOnItsOwnConnectionAsync(ConcurrentEnquiry("race-2", whatsapp: "+92 300 1234567"));
-                // Give it every chance to run ahead; with the locks it waits for this commit instead.
-                await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(3)));
+                // The second must be seen actually waiting on the contact lock, and still not done,
+                // before this one commits. A second that merely started late would run after the
+                // commit and pass without any lock, so waiting for a while proves nothing.
+                Assert.True(await SomeoneIsWaitingOnAContactLockAsync(database.ConnectionString, second, TimeSpan.FromSeconds(20)),
+                    "The second enquiry never waited on the contact lock.");
+                Assert.False(second.IsCompleted);
             });
 
         var first = await IngestOnItsOwnConnectionAsync(ConcurrentEnquiry("race-1", phone: "0300-1234567"), race);
@@ -2196,10 +2200,10 @@ public sealed class SqlServerProductionInvariantTests
             await db.Database.MigrateAsync();
 
         const int enquiries = 8;
-        using var start = new ManualResetEventSlim(false);
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var tasks = Enumerable.Range(1, enquiries).Select(i => Task.Run(async () =>
         {
-            start.Wait();
+            await start.Task;
             await using var db = new AppDbContext(options);
             using var dispatcher = SqlLeadDispatcher(db);
             // Half arrive with the number as a phone, half as WhatsApp.
@@ -2209,7 +2213,7 @@ public sealed class SqlServerProductionInvariantTests
             return await SqlLeadService(db, dispatcher).IngestAsync(dto, actor: null, trustedExternal: true);
         })).ToList();
 
-        start.Set();
+        start.SetResult();
         var results = await Task.WhenAll(tasks);
 
         Assert.All(results, r => Assert.NotNull(r.Lead));
@@ -2219,6 +2223,228 @@ public sealed class SqlServerProductionInvariantTests
         await using var verify = new AppDbContext(options);
         Assert.Equal(1, await verify.Leads.CountAsync());
         Assert.Equal(enquiries, await verify.LeadExternalSubmissions.CountAsync());
+    }
+
+    private static async Task<LeadIntakeResultDto[]> IngestTogetherAsync(DbContextOptions<AppDbContext> options, params LeadIntakeDto[] enquiries)
+    {
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = enquiries.Select(dto => Task.Run(async () =>
+        {
+            await start.Task;
+            await using var db = new AppDbContext(options);
+            using var dispatcher = SqlLeadDispatcher(db);
+            return await SqlLeadService(db, dispatcher).IngestAsync(dto, actor: null, trustedExternal: true);
+        })).ToList();
+        start.SetResult();
+        return await Task.WhenAll(tasks);
+    }
+
+    [SqlServerFact]
+    public async Task ConcurrentEnquiriesSharingOnlyAnEmail_ProduceOneLead_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var results = await IngestTogetherAsync(options, Enumerable.Range(1, 6).Select(i => new LeadIntakeDto
+        {
+            FirstName = "Email Only", Email = "shared@example.com", SourceCode = "facebook",
+            ExternalProvider = "meta", ExternalLeadId = $"email-{i}", AllowDuplicate = true
+        }).ToArray());
+
+        Assert.Single(results.Select(r => r.Lead!.Id).Distinct());
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(1, await verify.Leads.CountAsync());
+        Assert.Equal(6, await verify.LeadExternalSubmissions.CountAsync());
+    }
+
+    /// <summary>
+    /// A carries phone P and email E, B only E, C only P — several locks at once, overlapping in
+    /// different ways. Whatever order they land in, the outcome must be one a sequential run could
+    /// give: no two open leads share a number or an email, and every submission is kept, either
+    /// as a receipt on a lead or as a hold for an administrator.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ThreeOverlappingEnquiriesAtOnce_NeverLeaveTwoOpenLeadsForOneContact_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        for (var round = 1; round <= 5; round++)
+        {
+            var phone = $"0300-55500{round:00}";
+            var email = $"round{round}@example.com";
+            LeadIntakeDto Enquiry(string id, string? p, string? e) => new()
+            {
+                FirstName = "Overlap", Phone = p, Email = e, SourceCode = "facebook",
+                ExternalProvider = "meta", ExternalLeadId = $"{id}-{round}", AllowDuplicate = true
+            };
+
+            await IngestTogetherAsync(options, Enquiry("a", phone, email), Enquiry("b", null, email), Enquiry("c", phone, null));
+
+            await using var verify = new AppDbContext(options);
+            var normalizedPhone = LeadContactNormalizer.NormalizeUsablePhoneOrNull(phone);
+            var open = await verify.Leads
+                .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage)
+                            && (l.NormalizedPhone == normalizedPhone || l.NormalizedEmail == email))
+                .Select(l => new { l.NormalizedPhone, l.NormalizedEmail })
+                .ToListAsync();
+            Assert.True(open.Count(l => l.NormalizedPhone == normalizedPhone) <= 1, $"Round {round}: two open leads share the phone.");
+            Assert.True(open.Count(l => l.NormalizedEmail == email) <= 1, $"Round {round}: two open leads share the email.");
+
+            var ids = new[] { $"a-{round}", $"b-{round}", $"c-{round}" };
+            var kept = await verify.LeadExternalSubmissions.CountAsync(x => ids.Contains(x.ExternalLeadId))
+                       + await verify.LeadIntakeHolds.CountAsync(x => ids.Contains(x.ExternalLeadId!));
+            Assert.Equal(3, kept);
+        }
+    }
+
+    /// <summary>
+    /// Lead L has phone P and email E. One enquiry matches it by E and another by P: different
+    /// contact locks, same lead. While the first is saving its enrichment the second must wait,
+    /// then enrich L after it — not update L at the same time and fail on its row version.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TwoEnquiriesMatchingOneLeadByDifferentDetails_EnrichItInTurn_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        int leadId;
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            leadId = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Both Details", Phone = "0300-1234567", Email = "both@example.com", SourceCode = "facebook",
+                ExternalProvider = "meta", ExternalLeadId = "turn-0", AllowDuplicate = true
+            }, actor: null, trustedExternal: true)).Lead!.Id;
+        }
+
+        Task<LeadIntakeResultDto>? byPhone = null;
+        var race = new RunBeforeSavingInterceptor(
+            context => context.ChangeTracker.Entries<Lead>().Any(e => e.State == EntityState.Modified),
+            async () =>
+            {
+                byPhone = Task.Run(async () =>
+                {
+                    await using var db = new AppDbContext(options);
+                    using var dispatcher = SqlLeadDispatcher(db);
+                    return await SqlLeadService(db, dispatcher).IngestAsync(
+                        ConcurrentEnquiry("turn-phone", phone: "0300-1234567"), actor: null, trustedExternal: true);
+                });
+                Assert.True(await SomeoneIsWaitingOnAContactLockAsync(database.ConnectionString, byPhone, TimeSpan.FromSeconds(20)),
+                    "The second enrichment never waited for the first.");
+            });
+
+        LeadIntakeResultDto byEmail;
+        await using (var db = new AppDbContext(Options(database.ConnectionString, race)))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            byEmail = await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Same Person", Email = "both@example.com", SourceCode = "facebook",
+                ExternalProvider = "meta", ExternalLeadId = "turn-email", AllowDuplicate = true
+            }, actor: null, trustedExternal: true);
+        }
+        var phoneResult = await byPhone!;
+
+        Assert.Equal((leadId, leadId), (byEmail.Lead!.Id, phoneResult.Lead!.Id));
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(1, await verify.Leads.CountAsync());
+        Assert.Equal(3, await verify.LeadExternalSubmissions.CountAsync(x => x.LeadId == leadId));
+    }
+
+    [SqlServerFact]
+    public async Task AContactLockHeldTooLong_RefusesAsBusy_AndWritesNothing_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        // Someone else holds the number's lock and does not let go.
+        await using var holder = new SqlConnection(database.ConnectionString);
+        await holder.OpenAsync();
+        await using var held = (SqlTransaction)await holder.BeginTransactionAsync();
+        await using (var take = new SqlCommand(
+                         "EXEC sp_getapplock @Resource = @r, @LockMode = 'Exclusive', @LockOwner = 'Transaction';",
+                         holder, held))
+        {
+            take.Parameters.AddWithValue("@r",
+                LeadService.ContactLockName("number", LeadContactNormalizer.NormalizeUsablePhoneOrNull("0300-1234567")!));
+            await take.ExecuteNonQueryAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            await Assert.ThrowsAsync<LeadIntakeBusyException>(() =>
+                SqlLeadService(db, dispatcher, lockTimeoutMilliseconds: 300)
+                    .IngestAsync(ConcurrentEnquiry("busy-1", phone: "0300-1234567"), actor: null, trustedExternal: true));
+        }
+
+        await held.RollbackAsync();
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(0, await verify.Leads.CountAsync());
+        Assert.Equal(0, await verify.LeadExternalSubmissions.CountAsync());
+    }
+
+    /// <summary>
+    /// An edit giving lead X a number while an enquiry for that number is creating its lead. The
+    /// edit must wait for the enquiry and then be refused, not leave two open leads for one number.
+    /// </summary>
+    [SqlServerFact]
+    public async Task EditingInANumberWhileAnEnquiryForItIsSaving_IsRefused_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+        int existingId;
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            existingId = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Existing", Email = "existing@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+        }
+
+        Task<LeadResponseDto>? edit = null;
+        var race = new RunBeforeSavingInterceptor(
+            context => context.ChangeTracker.Entries<Lead>().Any(e => e.State == EntityState.Added),
+            async () =>
+            {
+                edit = Task.Run(async () =>
+                {
+                    await using var db = new AppDbContext(options);
+                    using var dispatcher = SqlLeadDispatcher(db);
+                    return await SqlLeadService(db, dispatcher).UpdateAsync(existingId, new UpdateLeadDto
+                    {
+                        FirstName = "Existing", Email = "existing@example.com", Phone = "0300-1234567"
+                    }, admin);
+                });
+                Assert.True(await SomeoneIsWaitingOnAContactLockAsync(database.ConnectionString, edit, TimeSpan.FromSeconds(20)),
+                    "The edit never waited on the contact lock.");
+            });
+
+        await using (var db = new AppDbContext(Options(database.ConnectionString, race)))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            await SqlLeadService(db, dispatcher).IngestAsync(ConcurrentEnquiry("edit-race", phone: "0300-1234567"),
+                actor: null, trustedExternal: true);
+        }
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => edit!);
+        Assert.Contains("Another open lead already uses that phone number", refused.Message);
+
+        await using var verify = new AppDbContext(options);
+        var number = LeadContactNormalizer.NormalizeUsablePhoneOrNull("0300-1234567");
+        Assert.Equal(1, await verify.Leads.CountAsync(l => l.NormalizedPhone == number || l.NormalizedWhatsapp == number));
     }
 
     [SqlServerFact]
@@ -2682,13 +2908,40 @@ public sealed class SqlServerProductionInvariantTests
         TimeProvider.System, new NotificationEligibilityPolicy(db),
         NullLogger<NotificationDispatcher>.Instance);
 
-    private static LeadService SqlLeadService(AppDbContext db, NotificationDispatcher dispatcher)
+    private static LeadService SqlLeadService(AppDbContext db, NotificationDispatcher dispatcher, int lockTimeoutMilliseconds = 15000)
     {
         var customers = new CustomerService(db);
         return new LeadService(db, customers,
             new BookingService(db, customers, new FinanceAccountService(db)),
             new LeadNotificationService(db, dispatcher),
-            Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()));
+            Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()))
+        {
+            IntakeLockTimeoutMilliseconds = lockTimeoutMilliseconds
+        };
+    }
+
+    /// <summary>
+    /// True once SQL Server shows some session waiting on an application lock in this database —
+    /// proof that a concurrent write is blocked on a contact lock, not merely slow to start.
+    /// Gives up when <paramref name="other"/> finishes first or the timeout passes.
+    /// </summary>
+    private static async Task<bool> SomeoneIsWaitingOnAContactLockAsync(string connectionString, Task other, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        while (DateTime.UtcNow < deadline && !other.IsCompleted)
+        {
+            await using var command = new SqlCommand("""
+                SELECT COUNT(*) FROM sys.dm_tran_locks
+                WHERE resource_type = 'APPLICATION' AND request_status = 'WAIT' AND resource_database_id = DB_ID()
+                """, connection);
+            if (Convert.ToInt32(await command.ExecuteScalarAsync()) > 0)
+                return true;
+            await Task.Delay(50);
+        }
+
+        return false;
     }
 
     /// <summary>

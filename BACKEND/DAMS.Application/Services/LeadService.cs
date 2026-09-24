@@ -22,8 +22,10 @@ namespace DAMS.Application.Services
     {
         private const string DefaultSourceCode = "manual";
         private const int IntakeHoldPageSize = 200;
-        // Well inside the 30-second command timeout; only reached under heavy contention for one contact.
-        private const int IntakeLockTimeoutMilliseconds = 15000;
+        /// <summary>How long a write waits for another request's contact lock. Well inside the
+        /// 30-second command timeout; only reached under heavy contention for one contact.
+        /// Settable only so a test can reach the timeout without waiting for it.</summary>
+        internal int IntakeLockTimeoutMilliseconds { get; init; } = 15000;
         private const string WebsiteSourceCode = "website";
         private const string BookingRequestProvider = "dams_booking_request";
 
@@ -90,7 +92,7 @@ namespace DAMS.Application.Services
                 // Checking for an existing lead and creating or enriching one happen in a single
                 // transaction that first locks these contact details, so two enquiries for the
                 // same person cannot both see "no lead yet" and both create one.
-                return await RunIntakeAtomicallyAsync(async ct =>
+                return await RunContactWriteAtomicallyAsync(async ct =>
                 {
                     dto.AssignedEmployeeId = requestedEmployeeId;
                     dto.AssignedTeamId = requestedTeamId;
@@ -98,7 +100,7 @@ namespace DAMS.Application.Services
                     if (_context.Entry(source).State == EntityState.Detached)
                         _context.LeadSources.Attach(source);
 
-                    await LockIntakeAsync(isExternal ? provider : null, isExternal ? externalId : null,
+                    await LockContactsAsync(isExternal ? provider : null, isExternal ? externalId : null,
                         normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
 
                     return await DecideAndWriteAsync(dto, actor, source, isExternal, provider, externalId,
@@ -107,10 +109,11 @@ namespace DAMS.Application.Services
             }
             catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
             {
-                // Two copies of the same webhook arrived at once; the index rejected the
-                // loser. Discard only what this call tried to insert — a caller such as the
-                // website request flow may still have unsaved changes of its own — then
-                // return the winner instead of a 500.
+                // A backstop: the submission lock already makes a second copy of the same
+                // webhook wait and then find the first, so this is reached only if the unique
+                // index catches what the lock did not. Discard only what this call tried to
+                // insert — a caller such as the website request flow may still have unsaved
+                // changes of its own — then return the winner instead of a 500.
                 DetachPendingInserts();
                 var winnerId = await _context.LeadExternalSubmissions
                     .AsNoTracking()
@@ -132,7 +135,7 @@ namespace DAMS.Application.Services
 
         /// <summary>
         /// Everything intake decides once the details are known: a replay, a conflict, a match to
-        /// enrich, or a new lead. Runs inside <see cref="RunIntakeAtomicallyAsync{T}"/>, under the
+        /// enrich, or a new lead. Runs inside <see cref="RunContactWriteAtomicallyAsync{T}"/>, under the
         /// contact locks, so its reads and its write cannot be split by a concurrent enquiry.
         /// </summary>
         private async Task<LeadIntakeResultDto> DecideAndWriteAsync(
@@ -217,6 +220,7 @@ namespace DAMS.Application.Services
                     var chosen = openLeads.FirstOrDefault(m => m.LeadId == dto.ExpectedExistingLeadId);
                     if (dto.AllowDuplicate && chosen != null)
                     {
+                        await LockLeadAsync(chosen.LeadId!.Value, cancellationToken);
                         var enrichedChoice = await EnrichExistingLeadAsync(
                             chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken);
                         return new LeadIntakeResultDto
@@ -281,6 +285,7 @@ namespace DAMS.Application.Services
                     };
                 }
 
+                await LockLeadAsync(match.LeadId.Value, cancellationToken);
                 var enriched = await EnrichExistingLeadAsync(
                     match.LeadId.Value, dto, source, actor, isExternal, cancellationToken);
                 return new LeadIntakeResultDto
@@ -724,6 +729,13 @@ namespace DAMS.Application.Services
             : normalizedWhatsapp != null && (leadWhatsapp == normalizedWhatsapp || leadPhone == normalizedWhatsapp) ? "whatsapp"
             : "email";
 
+        private static string DescribeMatchedOn(string matchedOn) => matchedOn switch
+        {
+            "phone" => "phone number",
+            "whatsapp" => "WhatsApp number",
+            _ => "email address"
+        };
+
         private static string DescribeLeads(IEnumerable<LeadDuplicateMatchDto> leads) =>
             string.Join(", ", leads.Select(l => $"{l.LeadReference} by {l.MatchedOn}"));
 
@@ -1011,7 +1023,7 @@ namespace DAMS.Application.Services
         // Reference depends on the generated id, so the row is saved twice behind a unique
         // placeholder, as Booking does. Anything queued by beforeReferenceSaveAsync rides along
         // in the second save. The two saves are only atomic inside a transaction, which the
-        // caller supplies — see RunIntakeAtomicallyAsync.
+        // caller supplies — see RunContactWriteAtomicallyAsync.
         private async Task SaveNewLeadAsync(
             Lead lead, CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeReferenceSaveAsync = null)
         {
@@ -1027,14 +1039,15 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// Runs intake's decision and write in one transaction, joining the caller's when there is
-        /// one. The API retries transient SQL errors, and a retry must rebuild from nothing: the
+        /// Runs a write that decides whether a contact already has an open lead — intake, an edit
+        /// of a lead's contact details, a reopen — in one transaction, joining the caller's when
+        /// there is one. The API retries transient SQL errors, and a retry must rebuild from nothing: the
         /// rolled-back attempt's first save has already marked its rows as stored, so replaying it
         /// would update rows that no longer exist. The tracker is only cleared when this owns the
         /// transaction: callers that stage work of their own (the website booking-request flow,
         /// the Meta processor) always open one first.
         /// </summary>
-        private async Task<T> RunIntakeAtomicallyAsync<T>(
+        private async Task<T> RunContactWriteAtomicallyAsync<T>(
             Func<CancellationToken, Task<T>> intake, CancellationToken cancellationToken)
         {
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
@@ -1054,8 +1067,8 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// Takes, for the rest of the intake transaction, a SQL Server application lock for each
-        /// identity this enquiry carries: each number (phone and WhatsApp share one, since either
+        /// Takes, for the rest of the surrounding transaction, a SQL Server application lock for
+        /// each identity a write is about to rely on: each number (phone and WhatsApp share one, since either
         /// field can match either), the email, and the provider submission. A second enquiry for
         /// the same person waits here until the first commits, then finds its lead instead of
         /// creating another. The locks live in the database, so they hold across API instances.
@@ -1063,7 +1076,7 @@ namespace DAMS.Application.Services
         /// Taken in one sorted order, so two enquiries that share some details never wait on each
         /// other in a circle. The names are hashes: contact details never appear in lock views.
         /// </summary>
-        private async Task LockIntakeAsync(
+        private async Task LockContactsAsync(
             string? provider, string? externalId, string? normalizedPhone, string? normalizedWhatsapp,
             string? normalizedEmail, CancellationToken cancellationToken)
         {
@@ -1074,15 +1087,35 @@ namespace DAMS.Application.Services
             foreach (var number in new[] { normalizedPhone, normalizedWhatsapp })
             {
                 if (number != null)
-                    resources.Add(IntakeLockName("number", number));
+                    resources.Add(ContactLockName("number", number));
             }
             if (normalizedEmail != null)
-                resources.Add(IntakeLockName("email", normalizedEmail));
+                resources.Add(ContactLockName("email", normalizedEmail));
             if (provider != null && externalId != null)
-                resources.Add(IntakeLockName("submission", provider + "\n" + externalId));
+                resources.Add(ContactLockName("submission", provider + "\n" + externalId));
 
+            await AcquireLocksAsync(resources, cancellationToken);
+        }
+
+        /// <summary>
+        /// Locks one lead before enriching it. Enquiries matching the same lead through different
+        /// details — one by its phone, another by its email — hold different contact locks and
+        /// would otherwise update the lead together, and the second would fail on its row
+        /// version. Always taken after the contact locks, and only ever one, so it cannot close a
+        /// circle of waits.
+        /// </summary>
+        private async Task LockLeadAsync(int leadId, CancellationToken cancellationToken)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction == null)
+                return;
+
+            await AcquireLocksAsync([ContactLockName("lead", leadId.ToString())], cancellationToken);
+        }
+
+        private async Task AcquireLocksAsync(IEnumerable<string> resources, CancellationToken cancellationToken)
+        {
             var transaction = _context.Database.CurrentTransaction?.GetDbTransaction()
-                ?? throw new InvalidOperationException("Intake locks are only taken inside the intake transaction.");
+                ?? throw new InvalidOperationException("Contact locks are only taken inside a transaction.");
 
             foreach (var resource in resources)
             {
@@ -1101,12 +1134,11 @@ namespace DAMS.Application.Services
                 // a deadlock victim — nothing has been written yet, so the caller can simply retry.
                 var granted = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
                 if (granted < 0)
-                    throw new InvalidOperationException(
-                        "Another enquiry for the same contact is still being processed. Try again in a moment.");
+                    throw new LeadIntakeBusyException();
             }
         }
 
-        private static string IntakeLockName(string kind, string value) =>
+        internal static string ContactLockName(string kind, string value) =>
             "dams:lead-intake:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{kind}:{value}")));
 
         private static void AddParameter(DbCommand command, string name, object value)
@@ -1351,14 +1383,6 @@ namespace DAMS.Application.Services
 
         public async Task<LeadResponseDto> UpdateAsync(int id, UpdateLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
-
-            if (LeadStageRules.IsClosed(lead.Stage))
-                throw new InvalidOperationException(
-                    lead.Stage == LeadStage.Won
-                        ? "A converted lead is kept as history and can no longer be edited."
-                        : $"This lead is {lead.Stage}. Reopen it before editing.");
-
             var normalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(dto.Phone);
             if (normalizedPhone is { Length: < LeadContactNormalizer.MinUsablePhoneDigits })
                 throw new InvalidOperationException("That phone number is too short to be usable.");
@@ -1368,6 +1392,27 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("That WhatsApp number is too short to be usable.");
 
             var normalizedEmailEdit = LeadContactNormalizer.NormalizeEmail(dto.Email);
+
+            // The clash check and the write share one transaction under the same contact locks
+            // intake takes, so an enquiry for the new number cannot create a lead in between.
+            return await RunContactWriteAtomicallyAsync(async ct =>
+            {
+                await LockContactsAsync(null, null, normalizedPhone, normalizedWhatsappEdit, normalizedEmailEdit, ct);
+                return await UpdateUnderLockAsync(id, dto, ctx, normalizedPhone, normalizedWhatsappEdit, normalizedEmailEdit, ct);
+            }, cancellationToken);
+        }
+
+        private async Task<LeadResponseDto> UpdateUnderLockAsync(
+            int id, UpdateLeadDto dto, LeadUserContext ctx, string? normalizedPhone, string? normalizedWhatsappEdit,
+            string? normalizedEmailEdit, CancellationToken cancellationToken)
+        {
+            var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
+
+            if (LeadStageRules.IsClosed(lead.Stage))
+                throw new InvalidOperationException(
+                    lead.Stage == LeadStage.Won
+                        ? "A converted lead is kept as history and can no longer be edited."
+                        : $"This lead is {lead.Stage}. Reopen it before editing.");
 
             // Editing must not strand a lead with no way to reach the person, even though a
             // lead may legitimately have arrived without a phone number.
@@ -1732,6 +1777,12 @@ namespace DAMS.Application.Services
         {
             LeadAccess.EnsureCanReopen(ctx);
 
+            return await RunContactWriteAtomicallyAsync(ct => ReopenUnderLockAsync(id, dto, ctx, ct), cancellationToken);
+        }
+
+        private async Task<LeadResponseDto> ReopenUnderLockAsync(
+            int id, ReopenLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
+        {
             var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
 
             if (!LeadStageRules.ReopenableStages.Contains(lead.Stage))
@@ -1742,6 +1793,17 @@ namespace DAMS.Application.Services
 
             if (dto.Stage == LeadStage.Contacted && lead.LastContactAt == null)
                 throw new InvalidOperationException("Reopen into New or First Contact Pending — no contact has been recorded yet.");
+
+            // While this lead was closed, the same person may have come back and been given a new
+            // open lead. Reopening this one too would leave two open leads for one person, which
+            // intake and editing both refuse. Checked under the contact locks, with intake's rule.
+            await LockContactsAsync(null, null, lead.NormalizedPhone, lead.NormalizedWhatsapp, lead.NormalizedEmail, cancellationToken);
+            var (_, openLeads) = await FindDuplicateAsync(lead.NormalizedPhone, lead.NormalizedWhatsapp, lead.NormalizedEmail, cancellationToken);
+            var other = openLeads.FirstOrDefault(m => m.LeadId != lead.Id);
+            if (other != null)
+                throw new InvalidOperationException(
+                    $"Another open lead ({other.LeadReference}) already uses this lead's {DescribeMatchedOn(other.MatchedOn)}. " +
+                    "Reopening this one would make two open leads for the same person; continue with that lead instead.");
 
             var previousStage = lead.Stage;
             var previousReason = await _context.LeadClosureReasons

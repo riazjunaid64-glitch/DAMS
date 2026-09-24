@@ -317,6 +317,42 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
+    public async Task ReopeningALead_IsRefused_WhenThatPersonAlreadyHasAnotherOpenLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var old = await h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-1234567", email: null), h.Admin);
+        var reasonId = await ReasonIdAsync(h, "not_interested");
+        await h.Leads.CloseAsync(old.Lead!.Id, dormant: false, new CloseLeadDto { ClosureReasonId = reasonId }, h.Admin);
+
+        // They came back; with the old lead closed, the new enquiry rightly became a new lead —
+        // this time with the number given as WhatsApp.
+        var fresh = LeadTestHarness.Intake(firstName: "Back Again", phone: null, email: null);
+        fresh.WhatsappNumber = "+92 300 1234567";
+        var current = await h.Leads.IngestAsync(fresh, h.Admin);
+        Assert.NotEqual(old.Lead.Id, current.Lead!.Id);
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.ReopenAsync(old.Lead.Id, new ReopenLeadDto { Stage = LeadStage.New, Reason = "They called back." }, h.Admin));
+
+        Assert.Contains(current.Lead.LeadReference, refused.Message);
+        Assert.Contains("phone number", refused.Message);
+        Assert.Equal(LeadStage.Lost, (await h.Db.Leads.AsNoTracking().SingleAsync(l => l.Id == old.Lead.Id)).Stage);
+    }
+
+    [Fact]
+    public async Task ReopeningALead_StillWorks_WhenNoOtherOpenLeadHasItsDetails()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var old = await h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-1234567", email: null), h.Admin);
+        var reasonId = await ReasonIdAsync(h, "not_interested");
+        await h.Leads.CloseAsync(old.Lead!.Id, dormant: false, new CloseLeadDto { ClosureReasonId = reasonId }, h.Admin);
+
+        var reopened = await h.Leads.ReopenAsync(old.Lead.Id, new ReopenLeadDto { Stage = LeadStage.New, Reason = "They called back." }, h.Admin);
+
+        Assert.Equal(LeadStage.New.ToString(), reopened.Stage.ToString());
+    }
+
+    [Fact]
     public async Task ClosedLead_DoesNotBlockANewEnquiryFromTheSamePerson()
     {
         await using var h = await LeadTestHarness.CreateAsync();
