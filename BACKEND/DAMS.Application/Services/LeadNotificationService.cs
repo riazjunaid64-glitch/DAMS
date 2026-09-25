@@ -71,15 +71,16 @@ namespace DAMS.Application.Services
             string? body,
             string dedupKeySuffix,
             bool isEscalation = false,
+            bool includeQueueManagers = false,
             CancellationToken cancellationToken = default)
         {
-            var recipients = await GetSupervisorUserIdsAsync(lead, cancellationToken);
+            var recipients = await GetSupervisorUserIdsAsync(lead, includeQueueManagers, cancellationToken);
             var created = 0;
 
             foreach (var userId in recipients)
             {
-                if (await QueueAsync(lead.Id, userId, type, title, body,
-                        $"{type}:{lead.Id}:{userId}:{dedupKeySuffix}", isEscalation, cancellationToken))
+                var dedupKey = LeadService.BuildDedupKey(type, lead.Id, userId, dedupKeySuffix);
+                if (await QueueAsync(lead.Id, userId, type, title, body, dedupKey, isEscalation, cancellationToken))
                     created++;
             }
 
@@ -89,6 +90,7 @@ namespace DAMS.Application.Services
         // A single scan raises alerts on hundreds of leads that share the same handful of
         // supervisors; resolve each set once per request rather than per lead.
         private List<int>? _adminUserIds;
+        private List<int>? _queueManagerUserIds;
         private readonly Dictionary<int, List<int>> _teamSupervisors = new();
         private readonly Dictionary<int, int?> _employeeTeams = new();
         private readonly Dictionary<int, (string Name, string Reference)> _leads = new();
@@ -96,9 +98,12 @@ namespace DAMS.Application.Services
 
         /// <summary>
         /// Everyone who should be told about a lead's problems: every admin, plus the
-        /// manager of the owning team when there is one.
+        /// manager of the owning team when there is one. An unassigned lead has no team, and
+        /// the unassigned queue belongs to every manager (see <see cref="LeadAccess.Scope"/>),
+        /// so every active manager is told — they are the ones who have to hand it out.
+        /// Only used for new-lead and repeat-enquiry alerts when includeQueueManagers is true.
         /// </summary>
-        private async Task<List<int>> GetSupervisorUserIdsAsync(Lead lead, CancellationToken cancellationToken)
+        private async Task<List<int>> GetSupervisorUserIdsAsync(Lead lead, bool includeQueueManagers = false, CancellationToken cancellationToken = default)
         {
             _adminUserIds ??= await _context.Users
                 .AsNoTracking()
@@ -115,8 +120,22 @@ namespace DAMS.Application.Services
             if (teamId != null)
                 recipients.AddRange(await GetTeamSupervisorsAsync(teamId.Value, cancellationToken));
 
+            if (includeQueueManagers && lead.AssignmentState == LeadAssignmentState.Unassigned)
+                recipients.AddRange(await GetQueueManagersAsync(cancellationToken));
+
             return recipients.Distinct().ToList();
         }
+
+        // Only managers with an active employee record: the notification policy refuses
+        // anyone else, and each refusal would be logged as a producer mistake.
+        private async Task<List<int>> GetQueueManagersAsync(CancellationToken cancellationToken) =>
+            _queueManagerUserIds ??= await _context.Employees
+                .AsNoTracking()
+                .Where(e => e.Status == EmployeeStatus.Active && e.UserId != null
+                            && e.User!.Role.Role_name == LeadRoles.Manager)
+                .Select(e => e.UserId!.Value)
+                .Distinct()
+                .ToListAsync(cancellationToken);
 
         private async Task<int?> GetEmployeeTeamAsync(int employeeId, CancellationToken cancellationToken)
         {

@@ -504,6 +504,7 @@ namespace DAMS.Application.Services
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
+                includeQueueManagers: true,
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
@@ -528,8 +529,9 @@ namespace DAMS.Application.Services
             if (ownerUserId == null)
                 return;
 
+            var dedupKey = BuildDedupKey(type, lead.Id, ownerUserId.Value, suffix);
             await _notifications.QueueAsync(lead.Id, ownerUserId.Value, type, title, body,
-                $"{type}:{lead.Id}:{ownerUserId.Value}:{suffix}", isEscalation, cancellationToken);
+                dedupKey, isEscalation, cancellationToken);
         }
 
         private async Task<LeadResponseDto> EnrichExistingLeadAsync(
@@ -625,10 +627,28 @@ namespace DAMS.Application.Services
                     a.NewValue = trail;
                 });
 
-            await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
-                $"Repeat enquiry: {FullName(lead)}",
-                $"A new enquiry arrived through {source.Name} for a lead you own.",
-                $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}", cancellationToken);
+            // One alert per enquiry. A provider submission is its own identity; anything else
+            // falls back to the minute it arrived, so a double-submitted form alerts once.
+            var repeatSuffix = isExternal && provider != null && externalId != null
+                ? $"repeat:{provider}:{externalId}"
+                : $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}";
+
+            if (lead.AssignedEmployeeId == null)
+            {
+                // No salesperson owns it yet — unassigned, or parked on a team — so the people
+                // who hand it out hear instead: the queue's managers, or the team's.
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
+                    repeatSuffix, includeQueueManagers: true, cancellationToken: cancellationToken);
+            }
+            else
+            {
+                await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead you own.",
+                    repeatSuffix, cancellationToken);
+            }
 
             await _context.SaveChangesAsync(cancellationToken);
 
@@ -2430,6 +2450,25 @@ namespace DAMS.Application.Services
             if (!string.IsNullOrWhiteSpace(dto.ExternalProvider)) parts.Add($"provider: {dto.ExternalProvider.Trim()}");
             if (!string.IsNullOrWhiteSpace(dto.SourceDetails)) parts.Add(dto.SourceDetails.Trim());
             return string.Join(" | ", parts);
+        }
+
+        internal static string BuildDedupKey(NotificationType type, int leadId, int userId, string dedupKeySuffix)
+        {
+            const int maxLength = 200;
+            var key = $"{type}:{leadId}:{userId}:{dedupKeySuffix}";
+
+            if (key.Length <= maxLength)
+                return key;
+
+            // Hash the suffix if the full key exceeds the DedupKey column limit (200 chars).
+            // DedupKey is unique in the database, so truncation risks collisions.
+            // Use stable SHA256 so the same suffix always produces the same hash.
+            var hash = System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(dedupKeySuffix))
+                [..8];
+            var prefix = $"{type}:{leadId}:{userId}:";
+            var hashSuffix = $"h:{Convert.ToHexString(hash).ToLowerInvariant()}";
+            return prefix + hashSuffix;
         }
 
         private async Task<Employee> LoadAssignableEmployeeAsync(int employeeId, LeadUserContext ctx, CancellationToken cancellationToken)
