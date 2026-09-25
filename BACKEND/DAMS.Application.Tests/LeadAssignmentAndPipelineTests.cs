@@ -111,7 +111,23 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task EmployeeOnlyCreationRejectsAnInactiveAutoResolvedTeam()
+    public async Task EmployeeOnlyCreationRejectsAnInactiveEmployeeTeam()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
+        team.IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        var dto = LeadTestHarness.Intake(phone: "0300-5555555", email: "inactive-team@example.com");
+        dto.AssignedEmployeeId = h.SalesEmployeeId;
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.IngestAsync(dto, h.Admin));
+
+        Assert.Contains("not active", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EmployeeCreationOnAnInactiveOwnTeamExplainsTheBlock()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
@@ -119,9 +135,9 @@ public sealed class LeadAssignmentAndPipelineTests
         await h.Db.SaveChangesAsync();
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-5555555", email: "inactive-team@example.com"), h.Sales));
+            h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-6666666", email: "employee-inactive-team@example.com"), h.Sales));
 
-        Assert.Contains("not active", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot create leads", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

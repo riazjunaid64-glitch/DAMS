@@ -455,7 +455,12 @@ namespace DAMS.Application.Services
 
                 var teamId = dto.AssignedTeamId ?? employee.TeamId;
                 if (teamId.HasValue)
-                    await EnsureTeamAssignableAsync(teamId.Value, actor, cancellationToken);
+                {
+                    var inactiveTeamMessage = employeeAutoAssigned && actor?.IsEmployee == true
+                        ? "Your assigned team is inactive, so you cannot create leads."
+                        : null;
+                    await EnsureTeamAssignableAsync(teamId.Value, actor!, cancellationToken, inactiveTeamMessage);
+                }
 
                 if (dto.AssignedTeamId.HasValue && employee.TeamId != dto.AssignedTeamId.Value)
                     throw new InvalidOperationException(
@@ -471,7 +476,7 @@ namespace DAMS.Application.Services
 
             lead.AssignmentState = LeadAssignmentState.Assigned;
             lead.AssignedAt = DateTime.UtcNow;
-            lead.AssignedByUserId = actor.UserId;
+            lead.AssignedByUserId = actor!.UserId;
             lead.Stage = LeadStage.FirstContactPending;
 
             _context.LeadAssignmentHistories.Add(new LeadAssignmentHistory
@@ -2459,13 +2464,14 @@ namespace DAMS.Application.Services
             return employee;
         }
 
-        private async Task EnsureTeamAssignableAsync(int teamId, LeadUserContext ctx, CancellationToken cancellationToken)
+        private async Task EnsureTeamAssignableAsync(
+            int teamId, LeadUserContext ctx, CancellationToken cancellationToken, string? inactiveMessage = null)
         {
             var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(t => t.Id == teamId, cancellationToken)
                 ?? throw new InvalidOperationException("Team not found.");
 
             if (!team.IsActive)
-                throw new InvalidOperationException($"Team '{team.Name}' is not active.");
+                throw new InvalidOperationException(inactiveMessage ?? $"Team '{team.Name}' is not active.");
 
             if (ctx.IsManager && !ctx.ManagedTeamIds.Contains(teamId))
                 throw new LeadAuthorizationException("You can only assign leads to a team you manage.");
