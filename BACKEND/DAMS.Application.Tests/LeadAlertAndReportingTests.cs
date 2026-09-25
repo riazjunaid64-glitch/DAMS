@@ -146,6 +146,127 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.ManagerAttentionRequired, h.ManagerUserId));
     }
 
+    [Fact]
+    public async Task AnOverdueFollowUpThatIsRescheduledIsFlaggedOverdueAgainForItsNewTime()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var start = h.Clock.UtcNow;
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = start.AddHours(1)
+        }, h.Sales);
+
+        h.Clock.Set(start.AddHours(3));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(1, await FollowUpAlertsAsync(h, NotificationType.FollowUpOverdue, h.SalesUserId));
+
+        await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+        {
+            DueAt = start.AddHours(5),
+            Reason = "Customer asked for later"
+        }, h.Sales);
+
+        // Two hours past the new time: overdue again, and only once however often it is scanned.
+        h.Clock.Set(start.AddHours(7));
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.FollowUpOverdue, h.SalesUserId));
+    }
+
+    [Fact]
+    public async Task AFollowUpMovedAwayAndBackToItsOriginalTimeIsRemindedForTheReturn()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var original = DateTime.UtcNow.AddHours(1);
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = original
+        }, h.Sales);
+        await h.Alerts.RunScanAsync();
+
+        foreach (var dueAt in new[] { original.AddHours(1), original })
+        {
+            await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+            {
+                DueAt = dueAt,
+                Reason = "Customer changed their mind"
+            }, h.Sales);
+            await h.Alerts.RunScanAsync();
+        }
+
+        Assert.Equal(3, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+    }
+
+    [Fact]
+    public async Task ACancelledFollowUpIsNeverReminded()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var start = h.Clock.UtcNow;
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = start.AddHours(1)
+        }, h.Sales);
+        await h.FollowUps.CancelAsync(followUp.Id, "Customer bought elsewhere", h.Sales);
+
+        await h.Alerts.RunScanAsync();
+        h.Clock.Set(start.AddHours(3));
+        await h.Alerts.RunScanAsync();
+        h.Clock.Set(start.AddHours(30));
+        var late = await h.Alerts.RunScanAsync();
+
+        Assert.Equal(0, late.FollowUpsMarkedMissed);
+        Assert.Equal(0, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+        Assert.Equal(0, await FollowUpAlertsAsync(h, NotificationType.FollowUpOverdue, h.SalesUserId));
+        Assert.Equal(0, await FollowUpAlertsAsync(h, NotificationType.ManagerAttentionRequired, h.ManagerUserId));
+        Assert.Equal(LeadFollowUpStatus.Cancelled,
+            (await h.Db.LeadFollowUps.AsNoTracking().FirstAsync(f => f.Id == followUp.Id)).Status);
+    }
+
+    [Fact]
+    public async Task AFollowUpWithItsOwnReminderTimeIsRemindedThenRatherThanByTheDefaultWindow()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var start = h.Clock.UtcNow;
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        // Due well outside the default window, but asked to be reminded earlier.
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Early reminder",
+            DueAt = start.AddHours(10),
+            RemindAt = start.AddHours(6)
+        }, h.Sales);
+        // Due inside the default window, but asked to be reminded only shortly before.
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Late reminder",
+            DueAt = start.AddHours(3),
+            RemindAt = start.AddHours(2)
+        }, h.Sales);
+
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(0, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+
+        h.Clock.Set(start.AddHours(2).AddMinutes(1));
+        await h.Alerts.RunScanAsync();
+        Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.FollowUpDue
+            && n.Message.StartsWith("Late reminder")));
+        Assert.Equal(1, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+
+        h.Clock.Set(start.AddHours(6).AddMinutes(1));
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+        Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.FollowUpDue
+            && n.Message.StartsWith("Early reminder")));
+        Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+    }
+
     private static Task<int> FollowUpAlertsAsync(LeadTestHarness h, NotificationType type, int userId) =>
         h.Db.Notifications.CountAsync(n => n.Type == type && n.RecipientUserId == userId
             && (type != NotificationType.ManagerAttentionRequired || n.Title.StartsWith("Follow-up missed")));
@@ -298,6 +419,64 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(LeadSiteVisitStatus.Missed,
             (await h.Db.LeadSiteVisits.AsNoTracking().FirstAsync(v => v.Id == visit.Id)).Status);
         Assert.Contains(await h.TimelineAsync(leadId), a => a.Type == LeadActivityType.SiteVisitMissed);
+    }
+
+    [Fact]
+    public async Task ASiteVisitMovedLaterTheSameDayIsAnnouncedAgainForTheNewTime()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = LeadTestHarness.FakeClock.TomorrowAt(10);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot,
+            MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddHours(-2));
+        await h.Alerts.RunScanAsync();
+
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = slot.AddHours(5),
+            Reason = "Customer delayed"
+        }, h.Sales);
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+
+        Assert.Equal(2, await h.Db.Notifications.CountAsync(
+            n => n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.SiteVisitReminder));
+        Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.SiteVisitReminder
+            && n.Message.StartsWith($"{slot.AddHours(5):HH:mm}")));
+    }
+
+    [Fact]
+    public async Task AMissedSiteVisitThatIsRescheduledAndMissedAgainEscalatesAgain()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = LeadTestHarness.FakeClock.TomorrowAt(10);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot,
+            MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddHours(10));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).SiteVisitsMarkedMissed);
+
+        var nextSlot = slot.AddDays(1);
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = nextSlot,
+            Reason = "Customer was ill"
+        }, h.Sales);
+
+        h.Clock.Set(nextSlot.AddHours(10));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).SiteVisitsMarkedMissed);
+        Assert.Equal(0, (await h.Alerts.RunScanAsync()).SiteVisitsMarkedMissed);
+        Assert.Equal(2, await h.Db.Notifications.CountAsync(
+            n => n.RecipientUserId == h.ManagerUserId && n.Type == NotificationType.SiteVisitMissed));
     }
 
     /// <summary>

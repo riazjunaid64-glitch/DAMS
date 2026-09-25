@@ -6,7 +6,6 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using System.Globalization;
 
 namespace DAMS.Application.Services
 {
@@ -107,9 +106,13 @@ namespace DAMS.Application.Services
             var overdueCutoff = now.AddHours(-_options.FollowUpOverdueGraceHours);
             var missedCutoff = now.AddHours(-_options.FollowUpMissedAfterHours);
 
+            // A follow-up with its own reminder time is reminded then; the rest are reminded
+            // when they come into the due window. Anything already past due is always read, so
+            // overdue and missed handling never depends on the reminder time.
             var followUps = await _context.LeadFollowUps
                 .Include(f => f.Lead)
-                .Where(f => f.Status == LeadFollowUpStatus.Pending && f.DueAt <= dueWindow)
+                .Where(f => f.Status == LeadFollowUpStatus.Pending
+                            && ((f.RemindAt == null && f.DueAt <= dueWindow) || f.RemindAt <= now || f.DueAt <= now))
                 .OrderBy(f => f.DueAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
@@ -119,7 +122,10 @@ namespace DAMS.Application.Services
                 var lead = followUp.Lead;
                 var name = Name(lead);
                 var ownerUserId = await EmployeeUserIdAsync(followUp.AssignedEmployeeId, cancellationToken);
-                var occurrence = Occurrence(followUp);
+                // Rescheduling keeps the same row, so the alert keys carry which schedule they
+                // were raised for: a new time is reminded and escalated afresh, while repeat
+                // scans of one schedule still produce the same key.
+                var occurrence = followUp.RescheduleCount;
 
                 if (followUp.DueAt < missedCutoff)
                 {
@@ -241,6 +247,9 @@ namespace DAMS.Application.Services
                 var lead = visit.Lead;
                 var name = Name(lead);
                 var ownerUserId = await EmployeeUserIdAsync(visit.AssignedEmployeeId, cancellationToken);
+                // Keyed by schedule for the same reason as follow-ups: a visit moved later the
+                // same day, or missed again after a reschedule, is a new occurrence.
+                var occurrence = visit.RescheduleCount;
 
                 if (visit.ScheduledAt < missedCutoff)
                 {
@@ -257,7 +266,7 @@ namespace DAMS.Application.Services
                         NotificationType.SiteVisitMissed,
                         $"Site visit missed: {name}",
                         $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC with no outcome recorded.",
-                        $"visit-missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
+                        $"visit-missed:{visit.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
                     if (escalated > 0)
@@ -271,19 +280,13 @@ namespace DAMS.Application.Services
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit today: {name}",
                             $"{visit.ScheduledAt:HH:mm} UTC at {visit.MeetingLocation}.",
-                            $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}", cancellationToken: cancellationToken))
+                            $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
             }
         }
 
         private static string Name(Lead lead) => LeadService.FullName(lead);
-
-        // Rescheduling keeps the same follow-up row and moves DueAt. Keying follow-up alerts
-        // by the schedule they were raised for lets the new time be reminded and escalated
-        // afresh, while repeat scans of one schedule still produce the same key.
-        private static string Occurrence(LeadFollowUp followUp) =>
-            followUp.DueAt.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture);
 
         private Task<int?> OwnerUserIdAsync(Lead lead, CancellationToken cancellationToken) =>
             lead.AssignedEmployeeId == null

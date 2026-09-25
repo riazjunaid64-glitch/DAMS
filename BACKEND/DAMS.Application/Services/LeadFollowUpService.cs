@@ -195,6 +195,7 @@ namespace DAMS.Application.Services
             followUp.DueAt = dto.DueAt;
             followUp.RemindAt = dto.RemindAt;
             followUp.Status = LeadFollowUpStatus.Pending;
+            followUp.RescheduleCount++;
             followUp.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpRescheduled,
