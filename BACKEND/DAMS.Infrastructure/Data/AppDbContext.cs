@@ -78,6 +78,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Lead> Leads { get; set; }
         public DbSet<LeadExternalSubmission> LeadExternalSubmissions { get; set; }
         public DbSet<LeadIntakeHold> LeadIntakeHolds { get; set; }
+        public DbSet<LeadAlertCheck> LeadAlertChecks { get; set; }
         public DbSet<LeadActivity> LeadActivities { get; set; }
         public DbSet<LeadAssignmentHistory> LeadAssignmentHistories { get; set; }
         public DbSet<LeadCommunication> LeadCommunications { get; set; }
@@ -2073,6 +2074,16 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(h => h.ResolvedLeadId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<LeadAlertCheck>(entity =>
+            {
+                entity.HasKey(c => c.LeadId);
+
+                entity.HasOne(c => c.Lead)
+                      .WithOne()
+                      .HasForeignKey<LeadAlertCheck>(c => c.LeadId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<LeadExternalSubmission>(entity =>
