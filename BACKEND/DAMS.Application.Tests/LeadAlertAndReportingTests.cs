@@ -84,6 +84,73 @@ public sealed class LeadAlertAndReportingTests
     }
 
     [Fact]
+    public async Task ARescheduledFollowUpIsRemindedAgainForItsNewTime_ButOncePerSchedule()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = DateTime.UtcNow.AddHours(1)
+        }, h.Sales);
+
+        // Before the reschedule: one reminder, however often the scan runs.
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).NotificationsCreated);
+        Assert.Equal(0, (await h.Alerts.RunScanAsync()).NotificationsCreated);
+        Assert.Equal(1, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+
+        var newDueAt = DateTime.UtcNow.AddHours(2);
+        await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+        {
+            DueAt = newDueAt,
+            Reason = "Customer asked for later"
+        }, h.Sales);
+
+        // After the reschedule: the new time earns its own reminder, still only once.
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).NotificationsCreated);
+        Assert.Equal(0, (await h.Alerts.RunScanAsync()).NotificationsCreated);
+        Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
+        Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.FollowUpDue
+            && n.Message.Contains($"{newDueAt:yyyy-MM-dd HH:mm}")));
+
+        // Once completed it is never reminded again.
+        await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto { Outcome = "Spoke to them" }, h.Sales);
+        Assert.Equal(0, (await h.Alerts.RunScanAsync()).NotificationsCreated);
+    }
+
+    [Fact]
+    public async Task AMissedFollowUpThatIsRescheduledAndMissedAgainEscalatesAgain()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = DateTime.UtcNow.AddHours(1)
+        }, h.Sales);
+
+        await SetFollowUpDueAsync(h, followUp.Id, DateTime.UtcNow.AddHours(-30));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).FollowUpsMarkedMissed);
+        Assert.Equal(1, await FollowUpAlertsAsync(h, NotificationType.ManagerAttentionRequired, h.ManagerUserId));
+
+        await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+        {
+            DueAt = DateTime.UtcNow.AddHours(1),
+            Reason = "Customer was travelling"
+        }, h.Sales);
+
+        // The new time is missed as well: written off and escalated again, once.
+        h.Clock.Set(h.Clock.UtcNow.AddHours(30));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).FollowUpsMarkedMissed);
+        Assert.Equal(0, (await h.Alerts.RunScanAsync()).FollowUpsMarkedMissed);
+        Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.ManagerAttentionRequired, h.ManagerUserId));
+    }
+
+    private static Task<int> FollowUpAlertsAsync(LeadTestHarness h, NotificationType type, int userId) =>
+        h.Db.Notifications.CountAsync(n => n.Type == type && n.RecipientUserId == userId
+            && (type != NotificationType.ManagerAttentionRequired || n.Title.StartsWith("Follow-up missed")));
+
+    [Fact]
     public async Task ASilentLeadIsFlaggedDailyRatherThanEveryScan()
     {
         await using var h = await LeadTestHarness.CreateAsync();

@@ -6,6 +6,7 @@ using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using System.Globalization;
 
 namespace DAMS.Application.Services
 {
@@ -118,6 +119,7 @@ namespace DAMS.Application.Services
                 var lead = followUp.Lead;
                 var name = Name(lead);
                 var ownerUserId = await EmployeeUserIdAsync(followUp.AssignedEmployeeId, cancellationToken);
+                var occurrence = Occurrence(followUp);
 
                 if (followUp.DueAt < missedCutoff)
                 {
@@ -139,7 +141,7 @@ namespace DAMS.Application.Services
                         NotificationType.ManagerAttentionRequired,
                         $"Follow-up missed on {name}",
                         $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                        $"followup-missed:{followUp.Id}", isEscalation: true, cancellationToken: cancellationToken);
+                        $"followup-missed:{followUp.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
                     if (escalated > 0)
@@ -154,7 +156,7 @@ namespace DAMS.Application.Services
                             NotificationType.FollowUpOverdue,
                             $"Follow-up overdue: {name}",
                             $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                            $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
+                            $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
                 else
@@ -166,7 +168,7 @@ namespace DAMS.Application.Services
                             NotificationType.FollowUpDue,
                             $"Follow-up due: {name}",
                             $"{followUp.Title} is due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                            $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
+                            $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
             }
@@ -276,6 +278,12 @@ namespace DAMS.Application.Services
         }
 
         private static string Name(Lead lead) => LeadService.FullName(lead);
+
+        // Rescheduling keeps the same follow-up row and moves DueAt. Keying follow-up alerts
+        // by the schedule they were raised for lets the new time be reminded and escalated
+        // afresh, while repeat scans of one schedule still produce the same key.
+        private static string Occurrence(LeadFollowUp followUp) =>
+            followUp.DueAt.ToString("yyyyMMddHHmmssfffffff", CultureInfo.InvariantCulture);
 
         private Task<int?> OwnerUserIdAsync(Lead lead, CancellationToken cancellationToken) =>
             lead.AssignedEmployeeId == null
