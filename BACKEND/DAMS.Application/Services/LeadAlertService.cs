@@ -106,9 +106,13 @@ namespace DAMS.Application.Services
             var overdueCutoff = now.AddHours(-_options.FollowUpOverdueGraceHours);
             var missedCutoff = now.AddHours(-_options.FollowUpMissedAfterHours);
 
+            // A follow-up with its own reminder time is reminded then; the rest are reminded
+            // when they come into the due window. Anything already past due is always read, so
+            // overdue and missed handling never depends on the reminder time.
             var followUps = await _context.LeadFollowUps
                 .Include(f => f.Lead)
-                .Where(f => f.Status == LeadFollowUpStatus.Pending && f.DueAt <= dueWindow)
+                .Where(f => f.Status == LeadFollowUpStatus.Pending
+                            && ((f.RemindAt == null && f.DueAt <= dueWindow) || f.RemindAt <= now || f.DueAt <= now))
                 .OrderBy(f => f.DueAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
@@ -118,6 +122,10 @@ namespace DAMS.Application.Services
                 var lead = followUp.Lead;
                 var name = Name(lead);
                 var ownerUserId = await EmployeeUserIdAsync(followUp.AssignedEmployeeId, cancellationToken);
+                // Rescheduling keeps the same row, so the alert keys carry which schedule they
+                // were raised for: a new time is reminded and escalated afresh, while repeat
+                // scans of one schedule still produce the same key.
+                var occurrence = followUp.RescheduleCount;
 
                 if (followUp.DueAt < missedCutoff)
                 {
@@ -139,7 +147,7 @@ namespace DAMS.Application.Services
                         NotificationType.ManagerAttentionRequired,
                         $"Follow-up missed on {name}",
                         $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                        $"followup-missed:{followUp.Id}", isEscalation: true, cancellationToken: cancellationToken);
+                        $"followup-missed:{followUp.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
                     if (escalated > 0)
@@ -154,7 +162,7 @@ namespace DAMS.Application.Services
                             NotificationType.FollowUpOverdue,
                             $"Follow-up overdue: {name}",
                             $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                            $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
+                            $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
                 else
@@ -166,7 +174,7 @@ namespace DAMS.Application.Services
                             NotificationType.FollowUpDue,
                             $"Follow-up due: {name}",
                             $"{followUp.Title} is due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
-                            $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
+                            $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
             }
@@ -239,6 +247,9 @@ namespace DAMS.Application.Services
                 var lead = visit.Lead;
                 var name = Name(lead);
                 var ownerUserId = await EmployeeUserIdAsync(visit.AssignedEmployeeId, cancellationToken);
+                // Keyed by schedule for the same reason as follow-ups: a visit moved later the
+                // same day, or missed again after a reschedule, is a new occurrence.
+                var occurrence = visit.RescheduleCount;
 
                 if (visit.ScheduledAt < missedCutoff)
                 {
@@ -255,7 +266,7 @@ namespace DAMS.Application.Services
                         NotificationType.SiteVisitMissed,
                         $"Site visit missed: {name}",
                         $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC with no outcome recorded.",
-                        $"visit-missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
+                        $"visit-missed:{visit.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
                     if (escalated > 0)
@@ -269,7 +280,7 @@ namespace DAMS.Application.Services
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit today: {name}",
                             $"{visit.ScheduledAt:HH:mm} UTC at {visit.MeetingLocation}.",
-                            $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}", cancellationToken: cancellationToken))
+                            $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
             }

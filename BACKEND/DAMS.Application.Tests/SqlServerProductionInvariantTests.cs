@@ -2974,6 +2974,131 @@ public sealed class SqlServerProductionInvariantTests
             c.FirstContactAssignmentCheckedAt == c.Lead.AssignedAt && c.InactivityCheckedAt != null));
     }
 
+    /// <summary>
+    /// Follow-up and visit alerts are keyed by schedule from KeyLeadAlertsBySchedule on. The
+    /// migration must carry reminders already sent for the CURRENT schedule onto the new key, so
+    /// the first scan after release does not remind everyone again — while a reminder sent before
+    /// a reschedule keeps its old key and the new time is still reminded.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AlertKeysAreCarriedOntoTheCurrentSchedule_SoReleaseSendsNoRepeatReminders_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260925141153_AddLeadAlertChecks");
+
+        var now = DateTime.UtcNow;
+        int userId, employeeId, leadId, visitId;
+        await using (var db = new AppDbContext(options))
+        {
+            var user = new User
+            {
+                RoleId = 4, FullName = "Rekey seller", Email = "rekey-seller@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            };
+            db.Users.Add(user);
+            await db.SaveChangesAsync();
+            var employee = new Employee
+            {
+                FullName = "Rekey seller", UserId = user.UserId, JobTitle = "Sales Executive",
+                JoinDate = now.AddYears(-1), Status = EmployeeStatus.Active
+            };
+            db.Employees.Add(employee);
+            await db.SaveChangesAsync();
+
+            var source = await db.LeadSources.FirstAsync(s => s.Code == "walk_in");
+            var lead = new Lead
+            {
+                LeadReference = "LD-REKEY", FirstName = "Rekey", LeadSourceId = source.Id,
+                Stage = LeadStage.Contacted, AssignmentState = LeadAssignmentState.Assigned,
+                AssignedEmployeeId = employee.Id, AssignedAt = now.AddDays(-1),
+                FirstContactAt = now.AddDays(-1), LastActivityAt = now, CreatedAt = now.AddDays(-1)
+            };
+            db.Leads.Add(lead);
+            await db.SaveChangesAsync();
+
+            // Moved twice, last three hours ago.
+            var visit = new LeadSiteVisit
+            {
+                LeadId = lead.Id, AssignedEmployeeId = employee.Id, ScheduledAt = now.AddDays(30),
+                MeetingLocation = "Site office", Status = LeadSiteVisitStatus.Rescheduled,
+                RescheduleCount = 2, CreatedAt = now.AddDays(-2), UpdatedAt = now.AddHours(-3)
+            };
+            db.LeadSiteVisits.Add(visit);
+            await db.SaveChangesAsync();
+            (userId, employeeId, leadId, visitId) = (user.UserId, employee.Id, lead.Id, visit.Id);
+        }
+
+        // The model already carries RescheduleCount, which this schema does not yet have.
+        Task<int> FollowUpAsync(string title, int status, DateTime dueAt, DateTime createdAt, DateTime? updatedAt) =>
+            ScalarAsync(database.ConnectionString, $"""
+                INSERT INTO [LeadFollowUps] ([LeadId],[Type],[AssignedEmployeeId],[Title],[DueAt],[Priority],[Status],[CreatedAt],[UpdatedAt])
+                VALUES ({leadId}, 0, {employeeId}, N'{title}', '{dueAt:O}', 1, {status}, '{createdAt:O}',
+                        {(updatedAt == null ? "NULL" : $"'{updatedAt:O}'")});
+                SELECT CAST(SCOPE_IDENTITY() AS int);
+                """);
+
+        var current = await FollowUpAsync("Current", 0, now.AddHours(1), now.AddHours(-5), null);
+        var rescheduled = await FollowUpAsync("Rescheduled", 0, now.AddHours(2), now.AddHours(-5), now.AddHours(-1));
+        var alreadyRekeyed = await FollowUpAsync("Already rekeyed", 0, now.AddHours(3), now.AddHours(-5), null);
+        var completed = await FollowUpAsync("Completed", 1, now.AddHours(-1), now.AddHours(-5), now.AddMinutes(-30));
+
+        await using (var db = new AppDbContext(options))
+        {
+            Notification Sent(NotificationType type, string key, DateTime createdAt) => new()
+            {
+                Type = type, RecipientUserId = userId, DedupKey = key, Title = key, Message = key,
+                EntityType = NotificationEntityType.Lead, EntityId = leadId, CreatedAt = createdAt
+            };
+
+            db.Notifications.AddRange(
+                Sent(NotificationType.FollowUpDue, $"FollowUpDue:{current}:{userId}", now.AddHours(-1)),
+                Sent(NotificationType.FollowUpOverdue, $"FollowUpOverdue:{rescheduled}:{userId}", now.AddHours(-2)),
+                Sent(NotificationType.FollowUpDue, $"FollowUpDue:{alreadyRekeyed}:{userId}", now.AddHours(-2)),
+                Sent(NotificationType.FollowUpDue, $"FollowUpDue:{alreadyRekeyed}:{userId}:0", now.AddMinutes(-5)),
+                Sent(NotificationType.FollowUpDue, $"FollowUpDue:{completed}:{userId}", now.AddHours(-2)),
+                Sent(NotificationType.SiteVisitReminder, $"SiteVisitToday:{visitId}:{userId}:2026-01-01", now.AddHours(-4)),
+                Sent(NotificationType.SiteVisitReminder, $"SiteVisitToday:{visitId}:{userId}:2026-01-02", now.AddHours(-1)));
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        async Task<List<string>> KeysAsync(string prefix)
+        {
+            await using var db = new AppDbContext(options);
+            return await db.Notifications.AsNoTracking()
+                .Where(n => n.DedupKey.StartsWith(prefix))
+                .OrderBy(n => n.DedupKey)
+                .Select(n => n.DedupKey)
+                .ToListAsync();
+        }
+
+        // Sent for the current schedule: carried onto count 0 (a follow-up) or its own count (a visit).
+        Assert.Equal(new[] { $"FollowUpDue:{current}:{userId}:0" }, await KeysAsync($"FollowUpDue:{current}:"));
+        Assert.Equal(new[] { $"SiteVisitToday:{visitId}:{userId}:2026-01-01", $"SiteVisitToday:{visitId}:{userId}:2026-01-02:2" },
+            await KeysAsync($"SiteVisitToday:{visitId}:"));
+        // Sent before the reschedule, for a closed follow-up, or already carried by new code: untouched.
+        Assert.Equal(new[] { $"FollowUpOverdue:{rescheduled}:{userId}" }, await KeysAsync($"FollowUpOverdue:{rescheduled}:"));
+        Assert.Equal(new[] { $"FollowUpDue:{completed}:{userId}" }, await KeysAsync($"FollowUpDue:{completed}:"));
+        Assert.Equal(new[] { $"FollowUpDue:{alreadyRekeyed}:{userId}", $"FollowUpDue:{alreadyRekeyed}:{userId}:0" },
+            await KeysAsync($"FollowUpDue:{alreadyRekeyed}:"));
+
+        // The first scan after release: only the rescheduled follow-up's new time is reminded.
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            await new LeadAlertService(db, new LeadNotificationService(db, dispatcher),
+                Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()), TimeProvider.System).RunScanAsync();
+        }
+
+        Assert.Single(await KeysAsync($"FollowUpDue:{current}:"));
+        Assert.Equal(2, (await KeysAsync($"FollowUpDue:{alreadyRekeyed}:")).Count);
+        Assert.Equal(new[] { $"FollowUpDue:{rescheduled}:{userId}:0" }, await KeysAsync($"FollowUpDue:{rescheduled}:"));
+    }
+
     private static NotificationDispatcher SqlLeadDispatcher(AppDbContext db) => new(
         db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
         TimeProvider.System, new NotificationEligibilityPolicy(db),

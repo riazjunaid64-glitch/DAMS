@@ -21,6 +21,8 @@ namespace DAMS.Domain.Entities
 
         public DateTime? RemindAt { get; set; }
 
+        public int RescheduleCount { get; set; }
+
         public TaskPriority Priority { get; set; } = TaskPriority.Medium;
 
         public LeadFollowUpStatus Status { get; set; } = LeadFollowUpStatus.Pending;
