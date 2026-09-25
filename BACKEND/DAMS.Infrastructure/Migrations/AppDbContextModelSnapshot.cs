@@ -4447,9 +4447,7 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("int");
 
                     b.Property<bool>("Connected")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(true);
+                        .HasColumnType("bit");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
