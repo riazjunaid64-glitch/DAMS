@@ -40,6 +40,8 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public int AdAccountCount { get; set; }
         public int LeadFormCount { get; set; }
         public int EnabledResourceCount { get; set; }
+        public int PendingEventCount { get; set; }
+        public int FailedEventCount { get; set; }
     }
 
     public class MetaResourceDto
@@ -89,6 +91,9 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public int? LeadId { get; set; }
         public string? ResourceName { get; set; }
         public string? LastError { get; set; }
+        public int RetryCount { get; set; }
+        public DateTime? LastRetriedAt { get; set; }
+        public string? LastRetriedByName { get; set; }
     }
 
     /// <summary>One answer from a provider form, as shown on the lead's detail screen.</summary>

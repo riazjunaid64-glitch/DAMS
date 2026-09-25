@@ -1,4 +1,6 @@
+using DAMS.Application.Common;
 using DAMS.Application.Services.Integrations;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -153,6 +155,47 @@ public class MetaLeadIngestionTests
         // A processed event is not claimable, so a second sweep finds nothing to do.
         Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
         Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
+    public async Task RetryingWhenTheSubmissionAlreadyExists_UpdatesTheEventWithoutCreatingAnotherLead()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await h.ConnectPageAsync();
+        h.Graph.Leads["existing-lead"] = FakeMetaGraphClient.Lead(
+            "existing-lead", StandardFields, pageId: page.ExternalId);
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "existing-lead"));
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+        var existingLead = await h.Db.Leads.SingleAsync();
+        Assert.Single(await h.Db.LeadExternalSubmissions.ToListAsync());
+
+        var failed = new ExternalIntegrationEvent
+        {
+            Provider = IntegrationProviders.Meta,
+            ExternalIntegrationConnectionId = connection.Id,
+            ExternalIntegrationResourceId = page.Id,
+            EventType = "leadgen",
+            EventKey = "manual-recovery:existing-lead",
+            ResourceExternalId = page.ExternalId,
+            RawPayloadJson = "{\"leadgen_id\":\"existing-lead\"}",
+            Status = ExternalIntegrationEventStatus.Failed,
+            ProcessedAt = DateTime.UtcNow,
+            LastError = "Simulated failed delivery.",
+            AvailableAt = DateTime.UtcNow
+        };
+        h.Db.ExternalIntegrationEvents.Add(failed);
+        await h.Db.SaveChangesAsync();
+
+        await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var recovered = await h.Db.ExternalIntegrationEvents.SingleAsync(e => e.Id == failed.Id);
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, recovered.Status);
+        Assert.Equal(existingLead.Id, recovered.LeadId);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+        Assert.Equal(1, await h.Db.LeadExternalSubmissions.CountAsync());
     }
 
     [Fact]

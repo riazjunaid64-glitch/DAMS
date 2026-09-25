@@ -357,6 +357,33 @@ public class MetaIntegrationSecurityTests
         Assert.Contains("could not be told to stop", updated.LastError);
     }
 
+    /// <summary>
+    /// A disconnect whose unsubscribe Meta refused leaves a disabled Page still flagged as
+    /// subscribed. Unchecking it again (from a stale tab, or the API directly) used to try Meta
+    /// with credentials the disconnect had already deleted, and that failure marked the
+    /// connection NeedsReauthorization, undoing the disconnect.
+    /// </summary>
+    [Fact]
+    public async Task DisablingAPageOnADisconnectedConnection_LeavesItDisconnectedAndNeverCallsMeta()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+        h.Graph.UnsubscribeFailure = new MetaTransientException("Meta could not be reached.");
+        await h.Integration.DisconnectAsync(connection.Id, h.Leads.Admin);
+        h.Graph.UnsubscribeFailure = null;
+        var callsBefore = h.Graph.SubscriptionCallLog.Count;
+
+        var result = await h.Integration.SetResourceEnabledAsync(connection.Id, page.Id, isEnabled: false);
+
+        Assert.False(result.IsEnabled);
+        Assert.Equal(callsBefore, h.Graph.SubscriptionCallLog.Count);
+        h.Db.ChangeTracker.Clear();
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Disconnected, reloaded.Status);
+        // Still the record of what Meta may be holding, for the sync after a reconnect.
+        Assert.True((await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id)).IsSubscribed);
+    }
+
     [Fact]
     public async Task EnablingAPage_SubscribesItForLeadDelivery()
     {
@@ -397,6 +424,47 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task AFailedEvent_IsVisibleAndCanBeRetriedByAnAdminIdempotently()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await h.ConnectPageAsync();
+
+        h.Graph.LeadFailures.Enqueue(new MetaTransientException("Meta is temporarily unavailable."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "recoverable-lead"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        var failed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, failed.Status);
+
+        var visible = await h.Integration.GetEventsAsync(connection.Id, 25);
+        Assert.Contains(visible, e => e.Id == failed.Id && e.Status == ExternalIntegrationEventStatus.Failed);
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Manager));
+
+        var queued = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, queued.Status);
+        Assert.Equal(1, queued.RetryCount);
+        Assert.Equal("Ayesha Admin", queued.LastRetriedByName);
+        Assert.Null(queued.LastError);
+
+        h.Graph.Leads["recoverable-lead"] = FakeMetaGraphClient.Lead(
+            "recoverable-lead", [("full_name", "Ali Khan"), ("email", "ali@example.com")], pageId: page.ExternalId);
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var processed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, processed.Status);
+        Assert.Null(processed.LastError);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+
+        var repeated = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, repeated.Status);
+        Assert.Equal(1, repeated.RetryCount);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
     public async Task DisablingANonOwningOrAlreadyDisabledPage_NeverUnsubscribesTheActiveOwner()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
@@ -419,6 +487,53 @@ public class MetaIntegrationSecurityTests
         var reloadedNonOwner = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == nonOwnerPage.Id);
         Assert.False(reloadedNonOwner.IsEnabled);
         Assert.False(reloadedNonOwner.IsSubscribed);
+    }
+
+    [Fact]
+    public async Task DisablingAnAlreadyDisabledPageWithStaleSubscription_CleansUpMeta()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(enabled: false);
+        page.IsSubscribed = true;
+        await h.Db.SaveChangesAsync();
+
+        await h.Integration.SetResourceEnabledAsync(connection.Id, page.Id, isEnabled: false);
+
+        Assert.Contains(page.ExternalId, h.Graph.UnsubscribedPages);
+        var reloaded = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id);
+        Assert.False(reloaded.IsEnabled);
+        Assert.False(reloaded.IsSubscribed);
+    }
+
+    [Fact]
+    public async Task RetryingAFailedEventRequiresAConnectedConnectionAndEnabledPage()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await h.ConnectPageAsync();
+        h.Graph.LeadFailures.Enqueue(new MetaTransientException("Meta is temporarily unavailable."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "blocked-retry"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+        var failed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, failed.Status);
+
+        h.Db.ChangeTracker.Clear();
+        connection = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        connection.Status = ExternalIntegrationConnectionStatus.Disconnected;
+        await h.Db.SaveChangesAsync();
+        var disconnected = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin));
+        Assert.Contains("Reconnect", disconnected.Message);
+
+        h.Db.ChangeTracker.Clear();
+        connection = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        page = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id);
+        connection.Status = ExternalIntegrationConnectionStatus.Connected;
+        page.IsEnabled = false;
+        await h.Db.SaveChangesAsync();
+        var disabled = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin));
+        Assert.Contains("Enable", disabled.Message);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.Interfaces;
+using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -75,8 +76,14 @@ namespace DAMS.Api.Controllers
             RunAsync(_ => _sync.SyncNowAsync(id, cancellationToken), cancellationToken);
 
         [HttpGet("connections/{id:int}/events")]
-        public Task<IActionResult> Events(int id, [FromQuery] int take = 25, CancellationToken cancellationToken = default) =>
-            RunAsync(_ => _integration.GetEventsAsync(id, take, cancellationToken), cancellationToken);
+        public Task<IActionResult> Events(
+            int id, [FromQuery] int take = 25, [FromQuery] ExternalIntegrationEventStatus? status = null,
+            CancellationToken cancellationToken = default) =>
+            RunAsync(_ => _integration.GetEventsAsync(id, take, status, cancellationToken), cancellationToken);
+
+        [HttpPost("connections/{id:int}/events/{eventId:int}/retry")]
+        public Task<IActionResult> RetryEvent(int id, int eventId, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _integration.RetryEventAsync(id, eventId, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("connections/{id:int}/disconnect")]
         public Task<IActionResult> Disconnect(int id, CancellationToken cancellationToken) =>

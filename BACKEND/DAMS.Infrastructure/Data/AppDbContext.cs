@@ -104,6 +104,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ExternalIntegrationConnection> ExternalIntegrationConnections { get; set; }
         public DbSet<ExternalIntegrationResource> ExternalIntegrationResources { get; set; }
         public DbSet<ExternalIntegrationEvent> ExternalIntegrationEvents { get; set; }
+        public DbSet<ExternalIntegrationEventRetry> ExternalIntegrationEventRetries { get; set; }
         public DbSet<ExternalIntegrationOAuthState> ExternalIntegrationOAuthStates { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -2546,6 +2547,10 @@ namespace DAMS.Infrastructure.Data
                 // The claim query: due work, oldest first.
                 entity.HasIndex(e => new { e.Status, e.AvailableAt });
                 entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.ReceivedAt });
+                // The connections list counts pending and failed events per connection on every
+                // load, and the event list can be filtered by status newest-first. Events are
+                // kept forever by default, so both need this rather than a scan of the history.
+                entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.Status, e.ReceivedAt });
 
                 entity.HasOne(e => e.Connection)
                       .WithMany()
@@ -2559,6 +2564,23 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(e => e.LeadId)
                       .OnDelete(DeleteBehavior.NoAction);
+            });
+
+            modelBuilder.Entity<ExternalIntegrationEventRetry>(entity =>
+            {
+                entity.HasIndex(r => new { r.ExternalIntegrationEventId, r.RequestedAt });
+                // Retry history belongs to its event and goes with it. Event retention
+                // (MetaLeadEventProcessor.PruneOldEventsAsync) deletes old events in one
+                // set-based statement; a restricting key here would make that whole statement
+                // fail as soon as any old event had ever been retried, stopping cleanup for good.
+                entity.HasOne(r => r.Event)
+                      .WithMany()
+                      .HasForeignKey(r => r.ExternalIntegrationEventId)
+                      .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne<User>()
+                      .WithMany()
+                      .HasForeignKey(r => r.RequestedByUserId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<ExternalIntegrationOAuthState>(entity =>
