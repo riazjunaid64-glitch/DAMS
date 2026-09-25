@@ -42,16 +42,14 @@ namespace DAMS.Application.Common
     /// access by editing a URL somewhere.
     ///
     /// This scope list is read-only with respect to advertising. Do NOT add ads_management or
-    /// business_management: neither is required for discovering pages, reading form metadata,
-    /// subscribing a page to leadgen webhooks, or retrieving a lead. If a future Graph version
-    /// genuinely requires more for one of those exact operations, document which endpoint and
-    /// why before adding it.
+    /// business_management without evidence: DAMS believes neither is needed for discovering
+    /// pages, reading form metadata, subscribing a page to leadgen webhooks or retrieving a
+    /// lead, but that is unverified until the KAN-12 live test (see below).
     ///
     /// What each permission is for:
     /// <list type="bullet">
     /// <item><c>pages_show_list</c> — <c>GET me/accounts</c> (Page discovery).</item>
-    /// <item><c>pages_read_engagement</c> — Page fields and the linked
-    /// <c>instagram_business_account</c> during discovery.</item>
+    /// <item><c>pages_read_engagement</c> — Page fields read during discovery.</item>
     /// <item><c>pages_manage_metadata</c> — <c>POST/DELETE {page-id}/subscribed_apps</c>
     /// (leadgen webhook subscription).</item>
     /// <item><c>leads_retrieval</c> — <c>GET {leadgen-id}</c> and the Page's lead forms.</item>
