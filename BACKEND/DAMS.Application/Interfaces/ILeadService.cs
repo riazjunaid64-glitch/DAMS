@@ -42,6 +42,12 @@ namespace DAMS.Application.Interfaces
         /// </summary>
         Task<List<LeadExternalSubmissionDto>> GetExternalSubmissionsAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// The provider's original data behind one of those receipts, and the webhook event that
+        /// delivered it. Admins and managers only, and only for a lead they can already see.
+        /// </summary>
+        Task<LeadExternalSubmissionRawDto> GetExternalSubmissionRawAsync(int leadId, int submissionId, LeadUserContext ctx, CancellationToken cancellationToken = default);
+
         Task<LeadResponseDto> UpdateAsync(int id, UpdateLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<LeadResponseDto> AssignAsync(int id, AssignLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);

@@ -3,6 +3,7 @@ using DAMS.Application.DTOs.BookingDtos;
 using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
+using DAMS.Application.Services.Integrations;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -983,7 +984,24 @@ namespace DAMS.Application.Services
                     request.LeadId = leadId;
             }
 
-            // The enrichment's own save carries the hold's outcome and the request link with it.
+            // Holding the enquiry left its webhook event with no lead. Pointing it at the chosen
+            // one now is what lets the lead reach its original Meta delivery, and the admin event
+            // list show where the enquiry went.
+            if (hold.Provider == IntegrationProviders.Meta && hold.ExternalLeadId is { } externalLeadId)
+            {
+                var suffix = MetaWebhookIntakeService.EventKeySuffix(externalLeadId);
+                var heldEvents = await _context.ExternalIntegrationEvents
+                    .Where(e => e.Provider == IntegrationProviders.Meta
+                                && e.LeadId == null
+                                && e.Status == ExternalIntegrationEventStatus.Processed
+                                && e.EventKey.EndsWith(suffix))
+                    .ToListAsync(cancellationToken);
+                foreach (var heldEvent in heldEvents)
+                    heldEvent.LeadId = leadId;
+            }
+
+            // The enrichment's own save carries the hold's outcome, the request link and the
+            // event link with it.
             var attribution = hold.AttributionJson == null
                 ? null
                 : JsonSerializer.Deserialize<SubmissionAttribution>(hold.AttributionJson);
@@ -1339,6 +1357,53 @@ namespace DAMS.Application.Services
                     AssignedAt = h.AssignedAt
                 })
                 .ToListAsync(cancellationToken);
+        }
+
+        public async Task<LeadExternalSubmissionRawDto> GetExternalSubmissionRawAsync(
+            int leadId, int submissionId, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            LeadAccess.EnsureCanViewRawIntegrationData(ctx);
+            await EnsureVisibleAsync(leadId, ctx, cancellationToken);
+
+            var submission = await _context.LeadExternalSubmissions
+                .AsNoTracking()
+                .Where(s => s.Id == submissionId && s.LeadId == leadId)
+                .Select(s => new { s.Id, s.Provider, s.ExternalLeadId, s.RawPayloadJson })
+                .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new LeadNotFoundException("That submission was not found on this lead.");
+
+            // Only an event already linked to this very lead: the key alone would also match a
+            // delivery of the same Meta lead id that never became part of this lead.
+            LeadIntegrationEventRawDto? integrationEvent = null;
+            if (submission.Provider == IntegrationProviders.Meta)
+            {
+                var suffix = MetaWebhookIntakeService.EventKeySuffix(submission.ExternalLeadId);
+                integrationEvent = await _context.ExternalIntegrationEvents
+                    .AsNoTracking()
+                    .Where(e => e.LeadId == leadId
+                                && e.Provider == IntegrationProviders.Meta
+                                && e.EventKey.EndsWith(suffix))
+                    .OrderByDescending(e => e.Id)
+                    .Select(e => new LeadIntegrationEventRawDto
+                    {
+                        Id = e.Id,
+                        EventType = e.EventType,
+                        Status = e.Status,
+                        ReceivedAt = e.ReceivedAt,
+                        ProcessedAt = e.ProcessedAt,
+                        RawPayloadJson = e.RawPayloadJson
+                    })
+                    .FirstOrDefaultAsync(cancellationToken);
+            }
+
+            return new LeadExternalSubmissionRawDto
+            {
+                SubmissionId = submission.Id,
+                Provider = submission.Provider,
+                ExternalLeadId = submission.ExternalLeadId,
+                RawPayloadJson = submission.RawPayloadJson,
+                Event = integrationEvent
+            };
         }
 
         public async Task<List<LeadExternalSubmissionDto>> GetExternalSubmissionsAsync(

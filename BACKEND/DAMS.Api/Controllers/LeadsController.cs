@@ -99,6 +99,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> GetExternalSubmissions(int id, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.GetExternalSubmissionsAsync(id, ctx, cancellationToken), cancellationToken);
 
+        [HttpGet("{id:int}/external-submissions/{submissionId:int}/raw")]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        public Task<IActionResult> GetExternalSubmissionRaw(int id, int submissionId, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.GetExternalSubmissionRawAsync(id, submissionId, ctx, cancellationToken), cancellationToken);
+
         [HttpGet("{id:int}/timeline")]
         public Task<IActionResult> GetTimeline(int id, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.GetTimelineAsync(id, ctx, cancellationToken), cancellationToken);
