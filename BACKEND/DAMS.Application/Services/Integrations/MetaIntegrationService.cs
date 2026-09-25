@@ -83,6 +83,11 @@ namespace DAMS.Application.Services.Integrations
                 $"&redirect_uri={Uri.EscapeDataString(_options.OAuthCallbackUrl!)}" +
                 $"&state={Uri.EscapeDataString(rawState)}" +
                 $"&response_type=code" +
+                // Meta silently skips any permission this person declined before unless the
+                // dialog is told to ask again. Without it, "Reconnect" could never recover a
+                // declined lead-critical scope and the connection would stay stuck in
+                // NeedsReauthorization.
+                $"&auth_type=rerequest" +
                 $"&scope={Uri.EscapeDataString(MetaScopes.Joined)}";
 
             return new MetaConnectStartDto { AuthorizationUrl = url, ExpiresAt = expiresAt };
