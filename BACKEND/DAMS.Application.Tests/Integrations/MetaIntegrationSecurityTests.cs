@@ -50,6 +50,19 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task TheAuthorizationUrl_AsksAgainForPreviouslyDeclinedPermissions()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, null);
+
+        // Reconnect goes through this same URL. Without rerequest Meta never re-shows a
+        // permission the person declined once, so a missing lead-critical scope could not be
+        // recovered and the connection would stay in NeedsReauthorization.
+        Assert.Equal("rerequest", ExtractQueryValue(start.AuthorizationUrl, "auth_type"));
+    }
+
+    [Fact]
     public async Task AnUnknownState_IsRejected()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

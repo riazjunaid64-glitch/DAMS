@@ -46,6 +46,28 @@ namespace DAMS.Application.Common
     /// subscribing a page to leadgen webhooks, or retrieving a lead. If a future Graph version
     /// genuinely requires more for one of those exact operations, document which endpoint and
     /// why before adding it.
+    ///
+    /// What each permission is for:
+    /// <list type="bullet">
+    /// <item><c>pages_show_list</c> — <c>GET me/accounts</c> (Page discovery).</item>
+    /// <item><c>pages_read_engagement</c> — Page fields and the linked
+    /// <c>instagram_business_account</c> during discovery.</item>
+    /// <item><c>pages_manage_metadata</c> — <c>POST/DELETE {page-id}/subscribed_apps</c>
+    /// (leadgen webhook subscription).</item>
+    /// <item><c>leads_retrieval</c> — <c>GET {leadgen-id}</c> and the Page's lead forms.</item>
+    /// <item><c>ads_read</c> — optional; ad account, campaign, ad set and ad discovery.</item>
+    /// <item><c>instagram_basic</c> — optional; reading the linked Instagram account.</item>
+    /// </list>
+    ///
+    /// Meta's lead-ads guides also mention <c>pages_manage_ads</c> (lead retrieval) and
+    /// <c>ads_management</c> (<c>subscribed_apps</c>). Neither is requested: whether Meta enforces
+    /// them for this flow is decided by the live Floria Heights Instant Form test (KAN-12), not
+    /// by the docs alone. Until that test has passed, this list is not verified against the
+    /// production app. If it fails with a permission error, add the scope proven necessary to
+    /// <see cref="All"/> and <see cref="LeadCritical"/>, record here the endpoint and Meta error
+    /// that proved it together with the test date, and update MetaIntegrationSecurityTests.
+    /// Existing connections then simply reconnect; the OAuth dialog is opened with
+    /// <c>auth_type=rerequest</c>, so Meta asks again for anything previously declined.
     /// </summary>
     public static class MetaScopes
     {
