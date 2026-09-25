@@ -503,7 +503,7 @@ public sealed class LeadIntakeAndDuplicateTests
     // ── KAN-18: Lead initial assignment validates both employee and team ──
 
     [Fact]
-    public async Task KAN18_EmployeeNotInTeam_ThrowsAuthorizationException()
+    public async Task KAN18_EmployeeNotInTeam_ThrowsInvalidOperationException()
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
@@ -512,7 +512,7 @@ public sealed class LeadIntakeAndDuplicateTests
         dto.AssignedEmployeeId = h.OtherSalesEmployeeId;
         dto.AssignedTeamId = h.TeamId;
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(
+        await Assert.ThrowsAsync<InvalidOperationException>(
             () => h.Leads.IngestAsync(dto, h.Admin));
     }
 

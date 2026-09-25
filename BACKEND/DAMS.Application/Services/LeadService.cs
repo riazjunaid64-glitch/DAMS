@@ -453,16 +453,15 @@ namespace DAMS.Application.Services
                 var employee = await LoadAssignableEmployeeAsync(dto.AssignedEmployeeId.Value, actor, cancellationToken);
                 lead.AssignedEmployeeId = employee.Id;
 
-                // KAN-18: When a team is also supplied, validate it — just like reassignment does.
-                if (dto.AssignedTeamId.HasValue)
-                {
-                    await EnsureTeamAssignableAsync(dto.AssignedTeamId.Value, actor, cancellationToken);
-                    if (employee.TeamId != dto.AssignedTeamId.Value)
-                        throw new LeadAuthorizationException(
-                            $"{employee.FullName} is not a member of that team.");
-                }
+                var teamId = dto.AssignedTeamId ?? employee.TeamId;
+                if (teamId.HasValue)
+                    await EnsureTeamAssignableAsync(teamId.Value, actor, cancellationToken);
 
-                lead.AssignedTeamId = dto.AssignedTeamId ?? employee.TeamId;
+                if (dto.AssignedTeamId.HasValue && employee.TeamId != dto.AssignedTeamId.Value)
+                    throw new InvalidOperationException(
+                        $"{employee.FullName} is not a member of that team.");
+
+                lead.AssignedTeamId = teamId;
             }
             else
             {
@@ -1545,6 +1544,9 @@ namespace DAMS.Application.Services
                 var teamId = dto.TeamId ?? employee?.TeamId;
                 if (teamId.HasValue)
                     await EnsureTeamAssignableAsync(teamId.Value, ctx, cancellationToken);
+
+                if (employee != null && dto.TeamId.HasValue && employee.TeamId != dto.TeamId.Value)
+                    throw new InvalidOperationException($"{employee.FullName} is not a member of that team.");
 
                 if (employee != null && previousEmployeeId == employee.Id && previousTeamId == teamId)
                     throw new InvalidOperationException("This lead is already assigned to that owner.");

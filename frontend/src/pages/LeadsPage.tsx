@@ -298,6 +298,21 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     if (key === "phone" || key === "whatsappNumber" || key === "email") { setDuplicate(null); setConflict(null); }
   };
 
+  const assignableStaff = lookups.staff.filter((member) =>
+    member.canOwnLeads && (!form.assignedTeamId || member.teamId === Number(form.assignedTeamId)));
+  const setAssignmentTeam = (teamId: string) => setForm((current) => {
+    const employee = lookups.staff.find((member) => member.employeeId === Number(current.assignedEmployeeId));
+    return {
+      ...current,
+      assignedTeamId: teamId,
+      assignedEmployeeId: employee && teamId && employee.teamId !== Number(teamId) ? "" : current.assignedEmployeeId,
+    };
+  });
+  const setAssignmentEmployee = (employeeId: string) => setForm((current) => {
+    const employee = lookups.staff.find((member) => member.employeeId === Number(employeeId));
+    return { ...current, assignedEmployeeId: employeeId, assignedTeamId: employee?.teamId?.toString() ?? current.assignedTeamId };
+  });
+
   useEffect(() => {
     const id = Number(form.interestedProjectId);
     if (!id) { setUnits([]); return; }
@@ -406,7 +421,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           <TextField label="Maximum budget" value={form.budgetMax} onChange={(v) => set("budgetMax", v)} type="number" />
           <SelectField label="Purchase intent" value={form.purchaseIntent} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"].map((v) => [v, stageLabel(v)])} />
         </FormSection>
-        {canAssign && <FormSection title="Ownership"><SelectField label="Team" value={form.assignedTeamId} onChange={(v) => set("assignedTeamId", v)} options={lookups.teams.map((v) => [String(v.id), v.name])} /><SelectField label="Employee" value={form.assignedEmployeeId} onChange={(v) => set("assignedEmployeeId", v)} options={lookups.staff.filter((v) => v.canOwnLeads).map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
+        {canAssign && <FormSection title="Ownership"><SelectField label="Team" value={form.assignedTeamId} onChange={setAssignmentTeam} options={lookups.teams.filter((v) => v.isActive).map((v) => [String(v.id), v.name])} /><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
         <div><Label>Initial notes</Label><textarea className={`${inputClass} min-h-24 resize-y`} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></div>
       </form>
     </CrmModal>
