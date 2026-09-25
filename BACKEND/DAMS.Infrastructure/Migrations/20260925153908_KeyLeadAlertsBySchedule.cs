@@ -25,6 +25,12 @@ namespace DAMS.Infrastructure.Migrations
     /// scanned again until it is rescheduled, which moves it to a new count anyway.
     /// </para>
     /// <para>
+    /// Deploy order: the new code maps the new column, so every read of a follow-up fails until
+    /// this has run; and once it has run, the OLD scan no longer recognises the rekeyed reminders
+    /// and would send them again. Apply it immediately before the new code goes live (inside one
+    /// scan interval), or pause the scan for the release with LeadAlerts:ScanIntervalMinutes = 0.
+    /// </para>
+    /// <para>
     /// Down drops the column but leaves keys as they are: shortening them again could collide
     /// under the unique index, and the only cost of not doing so is at most one repeat reminder
     /// per open item from the older code.
@@ -43,13 +49,15 @@ namespace DAMS.Infrastructure.Migrations
                 defaultValue: 0);
 
             // Follow-up due / overdue reminders: FollowUpDue:{id}:{user} -> FollowUpDue:{id}:{user}:0.
-            // Status 0 = Pending.
+            // Status 0 = Pending; EntityType 1 = Lead; Type 41 = FollowUpDue, 42 = FollowUpOverdue.
+            // The EntityType / Type filters let the (EntityType, EntityId) index narrow the scan.
             migrationBuilder.Sql("""
                 UPDATE n
                 SET n.[DedupKey] = n.[DedupKey] + N':0'
                 FROM [Notifications] n
                 JOIN [LeadFollowUps] f
-                    ON n.[EntityId] = f.[LeadId]
+                    ON n.[EntityType] = 1 AND n.[EntityId] = f.[LeadId]
+                   AND n.[Type] IN (41, 42)
                    AND n.[DedupKey] IN (CONCAT(N'FollowUpDue:', f.[Id], N':', n.[RecipientUserId]),
                                         CONCAT(N'FollowUpOverdue:', f.[Id], N':', n.[RecipientUserId]))
                 WHERE f.[Status] = 0
@@ -58,13 +66,14 @@ namespace DAMS.Infrastructure.Migrations
                 """);
 
             // Same-day visit reminders: SiteVisitToday:{id}:{user}:{yyyy-MM-dd} -> ...:{RescheduleCount}.
-            // Status 0 = Scheduled, 1 = Rescheduled.
+            // Status 0 = Scheduled, 1 = Rescheduled; EntityType 1 = Lead; Type 52 = SiteVisitReminder.
             migrationBuilder.Sql("""
                 UPDATE n
                 SET n.[DedupKey] = CONCAT(n.[DedupKey], N':', v.[RescheduleCount])
                 FROM [Notifications] n
                 JOIN [LeadSiteVisits] v
-                    ON n.[EntityId] = v.[LeadId]
+                    ON n.[EntityType] = 1 AND n.[EntityId] = v.[LeadId]
+                   AND n.[Type] = 52
                    AND n.[DedupKey] LIKE CONCAT(N'SiteVisitToday:', v.[Id], N':', n.[RecipientUserId], N':____-__-__')
                 WHERE v.[Status] IN (0, 1)
                   AND n.[CreatedAt] >= COALESCE(v.[UpdatedAt], v.[CreatedAt])
