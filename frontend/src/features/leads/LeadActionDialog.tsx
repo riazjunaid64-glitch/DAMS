@@ -10,6 +10,7 @@ import {
   inputClass,
   Label,
 } from "./CrmUi.tsx";
+import { oneHourFromNow, toLocalInput } from "./dateTimeInput.ts";
 import { apiJson, jsonRequest, loadUnits } from "./leadApi.ts";
 import {
   enumLabel,
@@ -48,12 +49,6 @@ type Props = {
   user: User;
   onClose: () => void;
   onSaved: (destination?: string) => void | Promise<void>;
-};
-
-const toLocalInput = (date?: string | null) => {
-  const value = date ? new Date(date) : new Date(Date.now() + 60 * 60 * 1000);
-  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
 };
 
 export default function LeadActionDialog({ action, lead, lookups, user, onClose, onSaved }: Props) {
@@ -339,12 +334,12 @@ function initialForm(action: LeadAction, lead: Lead): Record<string, string | bo
     case "assign": return { employeeId: lead.assignedEmployeeId?.toString() ?? "", teamId: lead.assignedTeamId?.toString() ?? "", reason: "" };
     case "stage": return { stage: "", notes: "" };
     case "qualification": return { qualification: lead.qualification, notes: "" };
-    case "communication": return { channel: "Phone", direction: "Outbound", occurredAt: toLocalInput(), connected: true, summary: "", customerResponse: "", nextAction: "", nextActionAt: "" };
-    case "followUp": return { followUpType: "FollowUp", priority: "Medium", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", dueAt: toLocalInput(), title: "", notes: "" };
+    case "communication": return { channel: "Phone", direction: "Outbound", occurredAt: toLocalInput(new Date()), connected: true, summary: "", customerResponse: "", nextAction: "", nextActionAt: "" };
+    case "followUp": return { followUpType: "FollowUp", priority: "Medium", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", dueAt: toLocalInput(oneHourFromNow()), title: "", notes: "" };
     case "completeFollowUp": return { outcome: "", nextFollowUpAt: "", nextFollowUpTitle: "" };
     case "rescheduleFollowUp": return { dueAt: toLocalInput(action.item.dueAt), reason: "" };
     case "cancelFollowUp": return { reason: "" };
-    case "siteVisit": return { projectId: lead.interestedProjectId?.toString() ?? "", unitId: lead.interestedUnitId?.toString() ?? "", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", scheduledAt: toLocalInput(), meetingLocation: "", customerAttendees: lead.fullName, internalAttendees: "", notes: "" };
+    case "siteVisit": return { projectId: lead.interestedProjectId?.toString() ?? "", unitId: lead.interestedUnitId?.toString() ?? "", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", scheduledAt: toLocalInput(oneHourFromNow()), meetingLocation: "", customerAttendees: lead.fullName, internalAttendees: "", notes: "" };
     case "completeVisit": return { outcome: "Interested", outcomeNotes: "", customerFeedback: "", nextAction: "" };
     case "rescheduleVisit": return { scheduledAt: toLocalInput(action.item.scheduledAt), meetingLocation: action.item.meetingLocation, reason: "" };
     case "closeVisit": return { reason: "" };
