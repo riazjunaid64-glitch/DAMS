@@ -43,12 +43,12 @@ OUTER APPLY (
                        WHERE f.LeadId = l.Id AND f.Status IN (0, 3)
                        ORDER BY f.DueAt) fu
         UNION ALL
-        SELECT * FROM (SELECT TOP 1 v.ScheduledAt, N'Site visit at ' + v.MeetingLocation
+        SELECT * FROM (SELECT TOP 1 v.ScheduledAt AS At, N'Site visit at ' + v.MeetingLocation AS Summary
                        FROM LeadSiteVisits v
                        WHERE v.LeadId = l.Id AND v.Status IN (0, 1, 4)
                        ORDER BY v.ScheduledAt) sv
         UNION ALL
-        SELECT * FROM (SELECT TOP 1 c.NextActionAt, COALESCE(c.NextAction, c.Summary)
+        SELECT * FROM (SELECT TOP 1 c.NextActionAt AS At, COALESCE(c.NextAction, c.Summary) AS Summary
                        FROM LeadCommunications c
                        WHERE c.LeadId = l.Id
                          AND (c.Connected = 1 OR c.NextActionAt IS NOT NULL)
