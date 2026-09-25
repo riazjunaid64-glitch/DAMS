@@ -17,6 +17,7 @@ import {
   enumLabel,
   formatDateTime,
   isClosedStage,
+  isPastServerTime,
   type AssignmentHistory,
   type ClosureReason,
   type Communication,
@@ -157,7 +158,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
           <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>
           <SummaryCard label="Owner"><span>{lead.assignedEmployeeName ?? "Unassigned"}</span><small>{lead.assignedTeamName ?? "No team"}</small></SummaryCard>
           <SummaryCard label="Last activity"><span>{lead.lastActivitySummary ?? "No activity recorded"}</span><small>{formatDateTime(lead.lastActivityAt)}</small></SummaryCard>
-          <SummaryCard label="Next action" danger={Boolean(lead.nextActionAt && new Date(lead.nextActionAt) < new Date() && !closed)}><span>{lead.nextActionSummary ?? "Not scheduled"}</span><small>{formatDateTime(lead.nextActionAt)}</small></SummaryCard>
+          <SummaryCard label="Next action" danger={isPastServerTime(lead.nextActionAt) && !closed}><span>{lead.nextActionSummary ?? "Not scheduled"}</span><small>{formatDateTime(lead.nextActionAt)}</small></SummaryCard>
         </section>
 
         <div className="flex flex-wrap gap-2">
@@ -255,7 +256,7 @@ function Communications({ items, onAdd }: { items: Communication[]; onAdd?: () =
 }
 
 function FollowUps({ items, closed, onAdd, onComplete, onReschedule, onCancel }: { items: FollowUp[]; closed: boolean; onAdd: () => void; onComplete: (item: FollowUp) => void; onReschedule: (item: FollowUp) => void; onCancel: (item: FollowUp) => void }) {
-  return <SectionList title="Follow-ups and tasks" action={!closed && <Button size="sm" onClick={onAdd}>New follow-up</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{item.title}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{enumLabel(item.type)} · {item.assignedEmployeeName} · {item.priority}</p></div><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.status === "Pending" && new Date(item.dueAt) < new Date() ? "bg-rose-500/10 text-rose-400" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`}>{item.status}</span></div><p className="mt-3 text-sm text-[var(--text-secondary)]">{item.notes ?? "No notes"}</p><div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]"><span>Due {formatDateTime(item.dueAt)}</span>{item.status === "Pending" && !closed && <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => onComplete(item)}>Complete</Button><Button size="sm" variant="outline" onClick={() => onReschedule(item)}>Reschedule</Button><Button size="sm" variant="danger" onClick={() => onCancel(item)}>Cancel</Button></div>}</div>{item.outcome && <p className="mt-3 rounded-lg bg-[var(--surface-glass)] p-3 text-sm text-[var(--text-secondary)]">Outcome: {item.outcome}</p>}</article>) : <Empty text="No follow-ups or tasks yet." />}</SectionList>;
+  return <SectionList title="Follow-ups and tasks" action={!closed && <Button size="sm" onClick={onAdd}>New follow-up</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{item.title}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{enumLabel(item.type)} · {item.assignedEmployeeName} · {item.priority}</p></div><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.status === "Pending" && isPastServerTime(item.dueAt) ? "bg-rose-500/10 text-rose-400" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`}>{item.status}</span></div><p className="mt-3 text-sm text-[var(--text-secondary)]">{item.notes ?? "No notes"}</p><div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]"><span>Due {formatDateTime(item.dueAt)}</span>{item.status === "Pending" && !closed && <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => onComplete(item)}>Complete</Button><Button size="sm" variant="outline" onClick={() => onReschedule(item)}>Reschedule</Button><Button size="sm" variant="danger" onClick={() => onCancel(item)}>Cancel</Button></div>}</div>{item.outcome && <p className="mt-3 rounded-lg bg-[var(--surface-glass)] p-3 text-sm text-[var(--text-secondary)]">Outcome: {item.outcome}</p>}</article>) : <Empty text="No follow-ups or tasks yet." />}</SectionList>;
 }
 
 function Visits({ items, closed, onAdd, onAction }: { items: SiteVisit[]; closed: boolean; onAdd: () => void; onAction: (type: "completeVisit" | "rescheduleVisit" | "closeVisit", item: SiteVisit, disposition?: "cancel" | "missed") => void }) {

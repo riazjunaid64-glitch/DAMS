@@ -1,3 +1,5 @@
+import { parseServerDateTime } from "../staff/staffAccessState.ts";
+
 export const leadStages = [
   "New",
   "FirstContactPending",
@@ -368,11 +370,14 @@ export const isClosedStage = (stage: string) =>
 /** Minute precision: a CRM timeline is read at a glance, and seconds are noise in every column
  *  that shows one. Locale order and 12/24-hour clock still follow the reader's own settings. */
 export const formatDateTime = (value?: string | null) =>
-  value
-    ? new Date(value).toLocaleString(undefined, {
-        year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit",
-      })
-    : "—";
+  parseServerDateTime(value)?.toLocaleString(undefined, {
+    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit",
+  }) ?? "—";
 
 export const formatShortDate = (value?: string | null) =>
-  value ? new Date(value).toLocaleDateString() : "—";
+  parseServerDateTime(value)?.toLocaleDateString() ?? "—";
+
+export const isPastServerTime = (value?: string | null, now: Date = new Date()) => {
+  const date = parseServerDateTime(value);
+  return date !== null && date < now;
+};

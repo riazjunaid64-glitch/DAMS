@@ -21,6 +21,7 @@ import HeldEnquiriesPanel from "../features/leads/HeldEnquiriesPanel.tsx";
 import {
   formatDateTime,
   isClosedStage,
+  isPastServerTime,
   leadStages,
   stageLabel,
   type ClosureReason,
@@ -216,7 +217,7 @@ function LeadTable({ leads }: { leads: Lead[] }) {
             <tbody>
               {leads.map((lead) => {
                 const closed = isClosedStage(lead.stage);
-                const overdue = lead.nextActionAt && new Date(lead.nextActionAt) < new Date() && !closed;
+                const overdue = isPastServerTime(lead.nextActionAt) && !closed;
                 return (
                   <tr key={lead.id} className="border-b border-[var(--border)] align-top transition last:border-0 hover:bg-[var(--surface-glass-hover)]">
                     <td className="px-4 py-4">
@@ -268,7 +269,7 @@ function Pipeline({ leads }: { leads: Lead[] }) {
                   <div className="flex items-start justify-between gap-2"><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><QualificationBadge value={lead.qualification} /></div>
                   <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.sourceName}</p>
                   <p className="mt-3 truncate text-xs text-[var(--text-secondary)]">{lead.interestedProjectName ?? "General property enquiry"}</p>
-                  <div className="mt-3 border-t border-[var(--border)] pt-2 text-xs text-[var(--text-muted)]"><p>{lead.assignedEmployeeName ?? "Unassigned"}</p><p className={lead.nextActionAt && new Date(lead.nextActionAt) < new Date() ? "mt-1 text-rose-400" : "mt-1"}>{lead.nextActionAt ? `Next: ${formatDateTime(lead.nextActionAt)}` : "No next action"}</p></div>
+                  <div className="mt-3 border-t border-[var(--border)] pt-2 text-xs text-[var(--text-muted)]"><p>{lead.assignedEmployeeName ?? "Unassigned"}</p><p className={isPastServerTime(lead.nextActionAt) ? "mt-1 text-rose-400" : "mt-1"}>{lead.nextActionAt ? `Next: ${formatDateTime(lead.nextActionAt)}` : "No next action"}</p></div>
                 </Link>
               ))}
             </div>
