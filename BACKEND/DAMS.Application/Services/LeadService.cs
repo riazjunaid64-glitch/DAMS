@@ -625,10 +625,28 @@ namespace DAMS.Application.Services
                     a.NewValue = trail;
                 });
 
-            await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
-                $"Repeat enquiry: {FullName(lead)}",
-                $"A new enquiry arrived through {source.Name} for a lead you own.",
-                $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}", cancellationToken);
+            // One alert per enquiry. A provider submission is its own identity; anything else
+            // falls back to the minute it arrived, so a double-submitted form alerts once.
+            var repeatSuffix = isExternal && provider != null && externalId != null
+                ? $"repeat:{provider}:{externalId}"
+                : $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}";
+
+            if (lead.AssignedEmployeeId == null)
+            {
+                // No salesperson owns it yet — unassigned, or parked on a team — so the people
+                // who hand it out hear instead: the queue's managers, or the team's.
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
+                    repeatSuffix, cancellationToken: cancellationToken);
+            }
+            else
+            {
+                await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead you own.",
+                    repeatSuffix, cancellationToken);
+            }
 
             await _context.SaveChangesAsync(cancellationToken);
 
