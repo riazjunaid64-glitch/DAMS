@@ -779,7 +779,8 @@ public sealed class LeadEngagementTests
         var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
         await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
 
-        var closed = await h.SiteVisits.LoadAsync(visit.Id);
+        var visits = await h.SiteVisits.GetForLeadAsync(leadId, h.Sales);
+        var closed = visits.First(v => v.Id == visit.Id);
         Assert.Equal(LeadSiteVisitStatus.Cancelled, closed.Status);
     }
 }
