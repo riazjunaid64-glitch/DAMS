@@ -104,6 +104,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ExternalIntegrationConnection> ExternalIntegrationConnections { get; set; }
         public DbSet<ExternalIntegrationResource> ExternalIntegrationResources { get; set; }
         public DbSet<ExternalIntegrationEvent> ExternalIntegrationEvents { get; set; }
+        public DbSet<ExternalIntegrationEventRetry> ExternalIntegrationEventRetries { get; set; }
         public DbSet<ExternalIntegrationOAuthState> ExternalIntegrationOAuthStates { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -2560,6 +2561,19 @@ namespace DAMS.Infrastructure.Data
                       .HasForeignKey(e => e.LeadId)
                       .OnDelete(DeleteBehavior.NoAction);
             });
+
+                modelBuilder.Entity<ExternalIntegrationEventRetry>(entity =>
+                {
+                    entity.HasIndex(r => new { r.ExternalIntegrationEventId, r.RequestedAt });
+                    entity.HasOne(r => r.Event)
+                        .WithMany()
+                        .HasForeignKey(r => r.ExternalIntegrationEventId)
+                        .OnDelete(DeleteBehavior.Restrict);
+                    entity.HasOne<User>()
+                        .WithMany()
+                        .HasForeignKey(r => r.RequestedByUserId)
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
 
             modelBuilder.Entity<ExternalIntegrationOAuthState>(entity =>
             {

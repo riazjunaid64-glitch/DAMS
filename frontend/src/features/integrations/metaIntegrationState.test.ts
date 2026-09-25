@@ -23,6 +23,8 @@ const connection = (overrides: Partial<MetaConnection> = {}): MetaConnection => 
   adAccountCount: 0,
   leadFormCount: 0,
   enabledResourceCount: 0,
+  pendingEventCount: 0,
+  failedEventCount: 0,
   ...overrides,
 });
 

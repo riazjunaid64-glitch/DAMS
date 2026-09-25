@@ -3146,6 +3146,113 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// Retry is an operator action guarded by the event rowversion. Two independent SQL Server
+    /// contexts may click it together, but exactly one append-only audit row and one requeue may
+    /// commit; the loser must reread the winner's pending state rather than fail the request.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TwoAdminsRetryingTheSameFailedMetaEvent_ProduceOneAuditAndOneRequeue()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        int adminUserId, connectionId, eventId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var admin = new User
+            {
+                FullName = "Retry Admin",
+                Email = "retry-admin@dams.test",
+                Password = "hash",
+                RoleId = 1
+            };
+            db.Users.Add(admin);
+            await db.SaveChangesAsync();
+            adminUserId = admin.UserId;
+
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalAccountId = "retry-race-account",
+                DisplayName = "Retry race",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            var page = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = IntegrationProviders.Meta,
+                ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = "retry-race-page",
+                IsEnabled = true,
+                IsActive = true
+            };
+            db.ExternalIntegrationResources.Add(page);
+            await db.SaveChangesAsync();
+
+            var integrationEvent = new ExternalIntegrationEvent
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalIntegrationConnectionId = connectionId,
+                ExternalIntegrationResourceId = page.Id,
+                EventType = "leadgen",
+                EventKey = "retry-race:event",
+                ResourceExternalId = page.ExternalId,
+                RawPayloadJson = "{\"leadgen_id\":\"retry-race-lead\"}",
+                Status = ExternalIntegrationEventStatus.Failed,
+                LastError = "temporary failure",
+                ProcessedAt = DateTime.UtcNow,
+                AvailableAt = DateTime.UtcNow
+            };
+            db.ExternalIntegrationEvents.Add(integrationEvent);
+            await db.SaveChangesAsync();
+            eventId = integrationEvent.Id;
+        }
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        var adminContext = new LeadUserContext
+        {
+            UserId = adminUserId,
+            Role = LeadRoles.Admin,
+            DisplayName = "Retry Admin"
+        };
+
+        async Task<MetaEventDto> RetryAsync()
+        {
+            await using var db = new AppDbContext(options);
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+            return await integration.RetryEventAsync(connectionId, eventId, adminContext);
+        }
+
+        var results = await Task.WhenAll(RetryAsync(), RetryAsync());
+
+        Assert.All(results, result =>
+        {
+            Assert.Equal(ExternalIntegrationEventStatus.Pending, result.Status);
+            Assert.Equal(1, result.RetryCount);
+        });
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEventRetries]"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT [RetryCount] FROM [ExternalIntegrationEvents] WHERE [Id] = " + eventId));
+    }
+
+    /// <summary>
     /// A webhook id longer than the event columns can hold used to fail the whole delivery's
     /// save, so Meta retried it forever and the valid lead beside it never got in. Only a
     /// provider that enforces column lengths can show that.

@@ -40,6 +40,8 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public int AdAccountCount { get; set; }
         public int LeadFormCount { get; set; }
         public int EnabledResourceCount { get; set; }
+        public int PendingEventCount { get; set; }
+        public int FailedEventCount { get; set; }
     }
 
     public class MetaResourceDto

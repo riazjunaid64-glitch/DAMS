@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import Button from "../../lib/Button.tsx";
 import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
-import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
+import type { MetaConnection, MetaEvent, MetaEventStatus, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
   connectionStatusLabel,
@@ -123,6 +123,7 @@ export default function MetaIntegrationsPanel() {
 function ConnectionCard({ connection, onChanged }: { connection: MetaConnection; onChanged: () => void }) {
   const [groups, setGroups] = useState<MetaResourceGroup[]>([]);
   const [events, setEvents] = useState<MetaEvent[]>([]);
+  const [eventFilter, setEventFilter] = useState<MetaEventStatus | "All">("All");
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,17 +131,17 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
 
   const loadResources = useCallback(async () => {
     setError(null);
-    try {
-      const [resourceGroups, eventRows] = await Promise.all([
-        listMetaResources(connection.id),
-        listMetaEvents(connection.id),
-      ]);
-      setGroups(resourceGroups);
-      setEvents(eventRows);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Resources could not be loaded.");
-    }
-  }, [connection.id]);
+    const [resourcesResult, eventsResult] = await Promise.allSettled([
+      listMetaResources(connection.id),
+      listMetaEvents(connection.id, eventFilter === "All" ? 25 : 200, eventFilter === "All" ? undefined : eventFilter),
+    ]);
+    const failures: string[] = [];
+    if (resourcesResult.status === "fulfilled") setGroups(resourcesResult.value);
+    else failures.push("Resources could not be loaded.");
+    if (eventsResult.status === "fulfilled") setEvents(eventsResult.value);
+    else failures.push("Lead events could not be loaded.");
+    if (failures.length > 0) setError(failures.join(" "));
+  }, [connection.id, eventFilter]);
 
   useEffect(() => {
     if (expanded) void loadResources();
@@ -177,6 +178,12 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           </p>
           <p className="mt-1 text-xs text-[var(--text-secondary)]">{summarizeCounts(connection)}</p>
           <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{deliverySummary(connection)}</p>
+          {(connection.failedEventCount || connection.pendingEventCount) ? (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              {connection.failedEventCount ? <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-red-300">{connection.failedEventCount} failed event{connection.failedEventCount === 1 ? "" : "s"}</span> : null}
+              {connection.pendingEventCount ? <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-amber-200">{connection.pendingEventCount} pending event{connection.pendingEventCount === 1 ? "" : "s"}</span> : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -242,6 +249,8 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           <EventList
             events={events}
             busy={busy}
+            filter={eventFilter}
+            onFilterChange={setEventFilter}
             onRetry={(eventId) => void run(`Event ${eventId}`, () => retryMetaEvent(connection.id, eventId))}
           />
         </div>
@@ -327,14 +336,30 @@ function ResourceGroup({
   );
 }
 
-function EventList({ events, busy, onRetry }: {
+function EventList({ events, busy, filter, onFilterChange, onRetry }: {
   events: MetaEvent[];
   busy: string | null;
+  filter: MetaEventStatus | "All";
+  onFilterChange: (filter: MetaEventStatus | "All") => void;
   onRetry: (eventId: number) => void;
 }) {
   return (
     <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Lead events</h3>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Lead events</h3>
+        <select
+          aria-label="Filter lead events"
+          value={filter}
+          onChange={(event) => onFilterChange(event.target.value as MetaEventStatus | "All")}
+          className="rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--text-secondary)]"
+        >
+          <option value="All">Recent</option>
+          <option value="Failed">Failed</option>
+          <option value="Pending">Pending</option>
+          <option value="Retry">Retrying</option>
+          <option value="Processing">Processing</option>
+        </select>
+      </div>
       {events.length === 0 ? (
         <p className="text-sm text-[var(--text-muted)]">No webhook events recorded for this connection.</p>
       ) : (

@@ -100,6 +100,8 @@ export interface MetaConnection {
   adAccountCount: number;
   leadFormCount: number;
   enabledResourceCount: number;
+  pendingEventCount?: number;
+  failedEventCount?: number;
 }
 
 export interface MetaResource {

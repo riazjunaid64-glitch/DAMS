@@ -278,7 +278,15 @@ namespace DAMS.Application.Services.Integrations
                     Resources = _context.ExternalIntegrationResources
                         .Where(r => r.ExternalIntegrationConnectionId == c.Id)
                         .Select(r => new { r.ResourceType, r.IsEnabled, r.IsActive })
-                        .ToList()
+                        .ToList(),
+                    PendingEventCount = _context.ExternalIntegrationEvents.Count(e =>
+                        e.ExternalIntegrationConnectionId == c.Id
+                        && (e.Status == ExternalIntegrationEventStatus.Pending
+                            || e.Status == ExternalIntegrationEventStatus.Retry
+                            || e.Status == ExternalIntegrationEventStatus.Processing)),
+                    FailedEventCount = _context.ExternalIntegrationEvents.Count(e =>
+                        e.ExternalIntegrationConnectionId == c.Id
+                        && e.Status == ExternalIntegrationEventStatus.Failed)
                 })
                 .ToListAsync(cancellationToken);
 
@@ -299,7 +307,9 @@ namespace DAMS.Application.Services.Integrations
                 InstagramCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.InstagramAccount),
                 AdAccountCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.AdAccount),
                 LeadFormCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.LeadForm),
-                EnabledResourceCount = row.Resources.Count(r => r.IsEnabled)
+                EnabledResourceCount = row.Resources.Count(r => r.IsEnabled),
+                PendingEventCount = row.PendingEventCount,
+                FailedEventCount = row.FailedEventCount
             }).ToList();
         }
 
@@ -378,38 +388,44 @@ namespace DAMS.Application.Services.Integrations
         };
 
         public async Task<List<MetaEventDto>> GetEventsAsync(
-            int connectionId, int take, CancellationToken cancellationToken = default)
+            int connectionId, int take, ExternalIntegrationEventStatus? status = null,
+            CancellationToken cancellationToken = default)
         {
             await EnsureConnectionExistsAsync(connectionId, cancellationToken);
 
-            return await _context.ExternalIntegrationEvents
+            var query = _context.ExternalIntegrationEvents
                 .AsNoTracking()
-                .Where(e => e.ExternalIntegrationConnectionId == connectionId)
+                .Where(e => e.ExternalIntegrationConnectionId == connectionId);
+            if (status.HasValue)
+                query = query.Where(e => e.Status == status.Value);
+
+            return await ProjectEvents(query
                 .OrderByDescending(e => e.ReceivedAt)
                 .ThenByDescending(e => e.Id)
-                .Take(Math.Clamp(take, 1, 200))
-                .Select(e => new MetaEventDto
-                {
-                    Id = e.Id,
-                    EventType = e.EventType,
-                    Status = e.Status,
-                    Attempts = e.Attempts,
-                    ReceivedAt = e.ReceivedAt,
-                    ProcessedAt = e.ProcessedAt,
-                    LeadId = e.LeadId,
-                    ResourceName = e.Resource != null ? e.Resource.Name : null,
-                    LastError = e.LastError,
-                    RetryCount = e.RetryCount,
-                    LastRetriedAt = e.LastRetriedAt,
-                    LastRetriedByName = e.LastRetriedByUserId.HasValue
-                        ? _context.Users
-                            .Where(u => u.UserId == e.LastRetriedByUserId.Value)
-                            .Select(u => u.FullName)
-                            .FirstOrDefault()
-                        : null
-                })
+                .Take(Math.Clamp(take, 1, 200)))
                 .ToListAsync(cancellationToken);
         }
+
+        private IQueryable<MetaEventDto> ProjectEvents(IQueryable<ExternalIntegrationEvent> query) => query.Select(e => new MetaEventDto
+        {
+            Id = e.Id,
+            EventType = e.EventType,
+            Status = e.Status,
+            Attempts = e.Attempts,
+            ReceivedAt = e.ReceivedAt,
+            ProcessedAt = e.ProcessedAt,
+            LeadId = e.LeadId,
+            ResourceName = e.Resource != null ? e.Resource.Name : null,
+            LastError = e.LastError,
+            RetryCount = e.RetryCount,
+            LastRetriedAt = e.LastRetriedAt,
+            LastRetriedByName = e.LastRetriedByUserId.HasValue
+                ? _context.Users
+                    .Where(u => u.UserId == e.LastRetriedByUserId.Value)
+                    .Select(u => u.FullName)
+                    .FirstOrDefault()
+                : null
+        });
 
         public async Task<MetaEventDto> RetryEventAsync(
             int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default)
@@ -420,6 +436,8 @@ namespace DAMS.Application.Services.Integrations
             await EnsureConnectionExistsAsync(connectionId, cancellationToken);
 
             var integrationEvent = await _context.ExternalIntegrationEvents
+                .Include(e => e.Connection)
+                .Include(e => e.Resource)
                 .FirstOrDefaultAsync(e => e.Id == eventId
                                           && e.Provider == IntegrationProviders.Meta
                                           && e.ExternalIntegrationConnectionId == connectionId,
@@ -430,6 +448,19 @@ namespace DAMS.Application.Services.Integrations
             // event to the queue, later clicks must not reset attempts or create another audit.
             if (integrationEvent.Status == ExternalIntegrationEventStatus.Failed)
             {
+                if (integrationEvent.Connection is null ||
+                    integrationEvent.Connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
+                    throw new InvalidOperationException(
+                        "Reconnect this Meta connection before retrying the event.");
+
+                if (integrationEvent.Resource is null || !integrationEvent.Resource.IsActive)
+                    throw new InvalidOperationException(
+                        "Sync this Meta connection before retrying the event because its Page is no longer available.");
+
+                if (!integrationEvent.Resource.IsEnabled)
+                    throw new InvalidOperationException(
+                        "Enable the Meta Page before retrying this event.");
+
                 integrationEvent.Status = ExternalIntegrationEventStatus.Pending;
                 integrationEvent.Attempts = 0;
                 integrationEvent.AvailableAt = DateTime.UtcNow;
@@ -440,6 +471,12 @@ namespace DAMS.Application.Services.Integrations
                 integrationEvent.RetryCount++;
                 integrationEvent.LastRetriedAt = DateTime.UtcNow;
                 integrationEvent.LastRetriedByUserId = actor.UserId;
+                _context.ExternalIntegrationEventRetries.Add(new ExternalIntegrationEventRetry
+                {
+                    ExternalIntegrationEventId = integrationEvent.Id,
+                    RequestedByUserId = actor.UserId,
+                    RequestedAt = integrationEvent.LastRetriedAt.Value
+                });
 
                 try
                 {
@@ -453,30 +490,12 @@ namespace DAMS.Application.Services.Integrations
                 }
             }
 
-            return await _context.ExternalIntegrationEvents
+            var result = await ProjectEvents(_context.ExternalIntegrationEvents
                 .AsNoTracking()
-                .Where(e => e.Id == eventId)
-                .Select(e => new MetaEventDto
-                {
-                    Id = e.Id,
-                    EventType = e.EventType,
-                    Status = e.Status,
-                    Attempts = e.Attempts,
-                    ReceivedAt = e.ReceivedAt,
-                    ProcessedAt = e.ProcessedAt,
-                    LeadId = e.LeadId,
-                    ResourceName = e.Resource != null ? e.Resource.Name : null,
-                    LastError = e.LastError,
-                    RetryCount = e.RetryCount,
-                    LastRetriedAt = e.LastRetriedAt,
-                    LastRetriedByName = e.LastRetriedByUserId.HasValue
-                        ? _context.Users
-                            .Where(u => u.UserId == e.LastRetriedByUserId.Value)
-                            .Select(u => u.FullName)
-                            .FirstOrDefault()
-                        : null
-                })
-                .SingleAsync(cancellationToken);
+                .Where(e => e.Id == eventId))
+                .SingleOrDefaultAsync(cancellationToken);
+
+            return result ?? throw new LeadNotFoundException("That Meta event no longer exists.");
         }
 
         // ── Enabling and disconnecting ──────────────────────────────────────────────
@@ -510,6 +529,7 @@ namespace DAMS.Application.Services.Integrations
                                    && r.Provider == IntegrationProviders.Meta
                                    && r.ResourceType == ExternalResourceTypes.FacebookPage
                                    && r.ExternalId == resource.ExternalId
+                                   && r.IsActive
                                    && r.IsEnabled, cancellationToken);
 
                 if (alreadyOwnedElsewhere)
@@ -530,8 +550,8 @@ namespace DAMS.Application.Services.Integrations
                                    && r.ExternalId == resource.ExternalId
                                    && r.IsEnabled, cancellationToken);
 
-                skipPageUnsubscribe = !resource.IsEnabled || ownedElsewhere;
-                if (skipPageUnsubscribe)
+                skipPageUnsubscribe = ownedElsewhere || (!resource.IsEnabled && !resource.IsSubscribed);
+                if (ownedElsewhere)
                     resource.IsSubscribed = false;
             }
 
