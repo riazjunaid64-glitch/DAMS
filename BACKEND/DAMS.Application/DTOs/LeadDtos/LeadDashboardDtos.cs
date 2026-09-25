@@ -191,6 +191,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     public class LeadAlertScanResultDto
     {
+        /// <summary>Count of leads newly evaluated for first contact overdue in this scan run.
+        /// Note: this is not the total number of currently overdue leads, but the count of leads
+        /// newly checked by this scan (moves through backlog in batches to avoid starvation).</summary>
         public int FirstContactOverdue { get; set; }
 
         public int FollowUpsDue { get; set; }
@@ -199,6 +202,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int FollowUpsMarkedMissed { get; set; }
 
+        /// <summary>Count of leads newly evaluated for inactivity in this scan run.
+        /// Note: this is not the total number of currently inactive leads, but the count of leads
+        /// newly checked by this scan (moves through backlog in batches to avoid starvation).</summary>
         public int InactiveLeads { get; set; }
 
         public int SiteVisitsToday { get; set; }

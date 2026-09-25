@@ -42,12 +42,34 @@ namespace DAMS.Application.Services
             var now = _clock.GetUtcNow().UtcDateTime;
             _checks.Clear();
 
-            await ScanFirstContactAsync(result, now, cancellationToken);
-            await ScanFollowUpsAsync(result, now, cancellationToken);
-            await ScanInactiveLeadsAsync(result, now, cancellationToken);
-            await ScanSiteVisitsAsync(result, now, cancellationToken);
+            var isSqlServer = _context.Database.IsSqlServer();
 
-            await _context.SaveChangesAsync(cancellationToken);
+            // Exclusive lock: only one scan runs at a time to prevent races (SQL Server only).
+            if (isSqlServer)
+            {
+                await _context.Database.ExecuteSqlRawAsync(
+                    "EXEC sp_getapplock @Resource = 'LeadAlertScan', @LockMode = 'Exclusive'",
+                    cancellationToken);
+            }
+
+            try
+            {
+                await ScanFirstContactAsync(result, now, cancellationToken);
+                await ScanFollowUpsAsync(result, now, cancellationToken);
+                await ScanInactiveLeadsAsync(result, now, cancellationToken);
+                await ScanSiteVisitsAsync(result, now, cancellationToken);
+
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            finally
+            {
+                if (isSqlServer)
+                {
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "EXEC sp_releaseapplock @Resource = 'LeadAlertScan'",
+                        cancellationToken);
+                }
+            }
 
             return result;
         }
@@ -185,7 +207,8 @@ namespace DAMS.Application.Services
                             && l.AssignedEmployeeId != null
                             && (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < cutoff
                             && !_context.LeadAlertChecks.Any(c => c.LeadId == l.Id && c.InactivityCheckedAt >= bucketStart))
-                .OrderBy(l => l.LastActivityAt)
+                .OrderBy(l => _context.LeadAlertChecks.Where(c => c.LeadId == l.Id).Select(c => c.InactivityCheckedAt).FirstOrDefault() != null ? 1 : 0)
+                .ThenBy(l => l.LastActivityAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
 
