@@ -52,6 +52,15 @@ namespace DAMS.Domain.Entities
         /// <summary>Sanitised message only — credentials are scrubbed before anything is stored here.</summary>
         public string? LastError { get; set; }
 
+        /// <summary>Number of operator-requested recovery attempts.</summary>
+        public int RetryCount { get; set; }
+
+        /// <summary>When an operator last moved this event back to the processing queue.</summary>
+        public DateTime? LastRetriedAt { get; set; }
+
+        /// <summary>The DAMS user who last requested recovery.</summary>
+        public int? LastRetriedByUserId { get; set; }
+
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
         public ExternalIntegrationConnection? Connection { get; set; }

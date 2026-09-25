@@ -2,6 +2,7 @@ import { apiJson, jsonRequest } from "../leads/leadApi.ts";
 import type {
   MetaConnectStart,
   MetaConnection,
+  MetaEvent,
   MetaResource,
   MetaResourceGroup,
   MetaSyncResult,
@@ -31,6 +32,17 @@ export function setMetaResourceEnabled(connectionId: number, resourceId: number,
 
 export function syncMetaConnection(connectionId: number) {
   return apiJson<MetaSyncResult>(`${base}/connections/${connectionId}/sync`, jsonRequest("POST", {}));
+}
+
+export function listMetaEvents(connectionId: number, take = 25) {
+  return apiJson<MetaEvent[]>(`${base}/connections/${connectionId}/events?take=${take}`);
+}
+
+export function retryMetaEvent(connectionId: number, eventId: number) {
+  return apiJson<MetaEvent>(
+    `${base}/connections/${connectionId}/events/${eventId}/retry`,
+    jsonRequest("POST", {}),
+  );
 }
 
 export function disconnectMetaConnection(connectionId: number) {

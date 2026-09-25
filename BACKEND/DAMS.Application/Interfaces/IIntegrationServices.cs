@@ -28,6 +28,9 @@ namespace DAMS.Application.Interfaces
 
         Task<List<MetaEventDto>> GetEventsAsync(int connectionId, int take, CancellationToken cancellationToken = default);
 
+        Task<MetaEventDto> RetryEventAsync(
+            int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default);
+
         Task DisconnectAsync(int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default);
     }
 

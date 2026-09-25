@@ -397,6 +397,47 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task AFailedEvent_IsVisibleAndCanBeRetriedByAnAdminIdempotently()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await h.ConnectPageAsync();
+
+        h.Graph.LeadFailures.Enqueue(new MetaTransientException("Meta is temporarily unavailable."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "recoverable-lead"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        var failed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, failed.Status);
+
+        var visible = await h.Integration.GetEventsAsync(connection.Id, 25);
+        Assert.Contains(visible, e => e.Id == failed.Id && e.Status == ExternalIntegrationEventStatus.Failed);
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Manager));
+
+        var queued = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, queued.Status);
+        Assert.Equal(1, queued.RetryCount);
+        Assert.Equal("Ayesha Admin", queued.LastRetriedByName);
+        Assert.Null(queued.LastError);
+
+        h.Graph.Leads["recoverable-lead"] = FakeMetaGraphClient.Lead(
+            "recoverable-lead", [("full_name", "Ali Khan"), ("email", "ali@example.com")], pageId: page.ExternalId);
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var processed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, processed.Status);
+        Assert.Null(processed.LastError);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+
+        var repeated = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, repeated.Status);
+        Assert.Equal(1, repeated.RetryCount);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
     public async Task DisablingANonOwningOrAlreadyDisabledPage_NeverUnsubscribesTheActiveOwner()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();

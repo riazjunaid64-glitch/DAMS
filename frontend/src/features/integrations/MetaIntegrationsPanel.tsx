@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import Button from "../../lib/Button.tsx";
 import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
-import type { MetaConnection, MetaResource, MetaResourceGroup } from "./types.ts";
+import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
   connectionStatusLabel,
@@ -15,8 +15,10 @@ import {
 } from "./metaIntegrationState.ts";
 import {
   disconnectMetaConnection,
+  listMetaEvents,
   listMetaConnections,
   listMetaResources,
+  retryMetaEvent,
   setMetaResourceEnabled,
   startMetaConnect,
   syncMetaConnection,
@@ -120,6 +122,7 @@ export default function MetaIntegrationsPanel() {
 
 function ConnectionCard({ connection, onChanged }: { connection: MetaConnection; onChanged: () => void }) {
   const [groups, setGroups] = useState<MetaResourceGroup[]>([]);
+  const [events, setEvents] = useState<MetaEvent[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +131,12 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
   const loadResources = useCallback(async () => {
     setError(null);
     try {
-      setGroups(await listMetaResources(connection.id));
+      const [resourceGroups, eventRows] = await Promise.all([
+        listMetaResources(connection.id),
+        listMetaEvents(connection.id),
+      ]);
+      setGroups(resourceGroups);
+      setEvents(eventRows);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Resources could not be loaded.");
     }
@@ -219,20 +227,23 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
             </p>
           ) : groups.length === 0 ? (
             <p className="text-sm text-[var(--text-muted)]">Nothing has been discovered yet. Try Sync now.</p>
-          ) : (
-            groups.map((group) => (
-              <ResourceGroup
-                key={group.resourceType}
-                group={group}
-                busy={busy}
-                onToggle={(resource, isEnabled) =>
-                  void run(`Resource ${resource.id}`, () =>
-                    setMetaResourceEnabled(connection.id, resource.id, isEnabled),
-                  )
-                }
-              />
-            ))
-          )}
+          ) : groups.map((group) => (
+            <ResourceGroup
+              key={group.resourceType}
+              group={group}
+              busy={busy}
+              onToggle={(resource, isEnabled) =>
+                void run(`Resource ${resource.id}`, () =>
+                  setMetaResourceEnabled(connection.id, resource.id, isEnabled),
+                )
+              }
+            />
+          ))}
+          <EventList
+            events={events}
+            busy={busy}
+            onRetry={(eventId) => void run(`Event ${eventId}`, () => retryMetaEvent(connection.id, eventId))}
+          />
         </div>
       )}
 
@@ -312,6 +323,49 @@ function ResourceGroup({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function EventList({ events, busy, onRetry }: {
+  events: MetaEvent[];
+  busy: string | null;
+  onRetry: (eventId: number) => void;
+}) {
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Lead events</h3>
+      {events.length === 0 ? (
+        <p className="text-sm text-[var(--text-muted)]">No webhook events recorded for this connection.</p>
+      ) : (
+        <div className="space-y-2">
+          {events.map((event) => (
+            <div key={event.id} className="rounded-xl border border-[var(--border)] px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-[var(--text-primary)]">{event.eventType} · #{event.id}</p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Received {formatDateTime(event.receivedAt)} · Attempts {event.attempts}
+                    {event.retryCount > 0 ? ` · Requeued ${event.retryCount} time${event.retryCount === 1 ? "" : "s"}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-full border px-2.5 py-0.5 text-xs ${event.status === "Failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : event.status === "Pending" || event.status === "Retry" ? "border-amber-500/30 bg-amber-500/10 text-amber-200" : "border-[var(--border)] text-[var(--text-muted)]"}`}>
+                    {event.status}
+                  </span>
+                  {event.status === "Failed" && (
+                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => onRetry(event.id)}>
+                      {busy === `Event ${event.id}` ? "Retrying…" : "Retry"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {event.lastError && <p className="mt-2 text-xs text-red-300">{event.lastError}</p>}
+              {event.lastRetriedAt && <p className="mt-1 text-xs text-[var(--text-muted)]">Last retry {formatDateTime(event.lastRetriedAt)}{event.lastRetriedByName ? ` by ${event.lastRetriedByName}` : ""}</p>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

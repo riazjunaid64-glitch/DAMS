@@ -398,9 +398,85 @@ namespace DAMS.Application.Services.Integrations
                     ProcessedAt = e.ProcessedAt,
                     LeadId = e.LeadId,
                     ResourceName = e.Resource != null ? e.Resource.Name : null,
-                    LastError = e.LastError
+                    LastError = e.LastError,
+                    RetryCount = e.RetryCount,
+                    LastRetriedAt = e.LastRetriedAt,
+                    LastRetriedByName = e.LastRetriedByUserId.HasValue
+                        ? _context.Users
+                            .Where(u => u.UserId == e.LastRetriedByUserId.Value)
+                            .Select(u => u.FullName)
+                            .FirstOrDefault()
+                        : null
                 })
                 .ToListAsync(cancellationToken);
+        }
+
+        public async Task<MetaEventDto> RetryEventAsync(
+            int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default)
+        {
+            if (!actor.IsAdmin)
+                throw new LeadAuthorizationException("Only an Admin can retry Meta integration events.");
+
+            await EnsureConnectionExistsAsync(connectionId, cancellationToken);
+
+            var integrationEvent = await _context.ExternalIntegrationEvents
+                .FirstOrDefaultAsync(e => e.Id == eventId
+                                          && e.Provider == IntegrationProviders.Meta
+                                          && e.ExternalIntegrationConnectionId == connectionId,
+                    cancellationToken)
+                ?? throw new LeadNotFoundException("That Meta event does not belong to this connection.");
+
+            // A retry request is deliberately idempotent. Once the first operator has moved the
+            // event to the queue, later clicks must not reset attempts or create another audit.
+            if (integrationEvent.Status == ExternalIntegrationEventStatus.Failed)
+            {
+                integrationEvent.Status = ExternalIntegrationEventStatus.Pending;
+                integrationEvent.Attempts = 0;
+                integrationEvent.AvailableAt = DateTime.UtcNow;
+                integrationEvent.LockedUntil = null;
+                integrationEvent.LockedBy = null;
+                integrationEvent.ProcessedAt = null;
+                integrationEvent.LastError = null;
+                integrationEvent.RetryCount++;
+                integrationEvent.LastRetriedAt = DateTime.UtcNow;
+                integrationEvent.LastRetriedByUserId = actor.UserId;
+
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Another Admin already requeued this event. Treat that race as the same
+                    // idempotent outcome as a repeated click and return the committed state.
+                    _context.ChangeTracker.Clear();
+                }
+            }
+
+            return await _context.ExternalIntegrationEvents
+                .AsNoTracking()
+                .Where(e => e.Id == eventId)
+                .Select(e => new MetaEventDto
+                {
+                    Id = e.Id,
+                    EventType = e.EventType,
+                    Status = e.Status,
+                    Attempts = e.Attempts,
+                    ReceivedAt = e.ReceivedAt,
+                    ProcessedAt = e.ProcessedAt,
+                    LeadId = e.LeadId,
+                    ResourceName = e.Resource != null ? e.Resource.Name : null,
+                    LastError = e.LastError,
+                    RetryCount = e.RetryCount,
+                    LastRetriedAt = e.LastRetriedAt,
+                    LastRetriedByName = e.LastRetriedByUserId.HasValue
+                        ? _context.Users
+                            .Where(u => u.UserId == e.LastRetriedByUserId.Value)
+                            .Select(u => u.FullName)
+                            .FirstOrDefault()
+                        : null
+                })
+                .SingleAsync(cancellationToken);
         }
 
         // ── Enabling and disconnecting ──────────────────────────────────────────────
