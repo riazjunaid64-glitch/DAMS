@@ -11,7 +11,8 @@ import {
   Label,
 } from "./CrmUi.tsx";
 import { initialForm } from "./leadActionDefaults.ts";
-import { apiJson, jsonRequest, loadUnits } from "./leadApi.ts";
+import { apiJson, jsonRequest, LeadConflictError, loadUnits } from "./leadApi.ts";
+import { describeEditConflict, mergeLeadEdit } from "./leadEditMerge.ts";
 import {
   enumLabel,
   leadStages,
@@ -58,11 +59,14 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
   const [error, setError] = useState<string | null>(null);
   const [customerResults, setCustomerResults] = useState<{ id: number; fullName: string; phone: string; email: string; cnic?: string | null }[]>([]);
   const [file, setFile] = useState<File | null>(null);
+  // The lead an edit is based on: the one the form opened with, or the newer copy merged in after a conflict.
+  const [editBase, setEditBase] = useState(lead);
 
   useEffect(() => {
     if (!action) return;
     setError(null); setFile(null); setCustomerResults([]);
     setForm(initialForm(action, lead));
+    setEditBase(lead);
   }, [action, lead]);
 
   const projectId = Number(form.projectId || form.interestedProjectId || lead.interestedProjectId || 0);
@@ -101,11 +105,26 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
     if (!action) return;
     setSaving(true); setError(null);
     try {
-      const destination = await performAction(action, lead, form, file, user.role);
+      const destination = await performAction(action, action.type === "edit" ? editBase : lead, form, file, user.role);
       await onSaved(destination);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The action could not be completed.");
+      if (action.type === "edit" && caught instanceof LeadConflictError) await mergeNewerLead();
+      else setError(caught instanceof Error ? caught.message : "The action could not be completed.");
     } finally { setSaving(false); }
+  };
+
+  // The lead changed after the form opened. Keep what was typed, take the newer values for
+  // everything else, and let the person review before saving against the newer version.
+  const mergeNewerLead = async () => {
+    try {
+      const latest = await apiJson<Lead>(`/api/leads/${lead.id}`);
+      const merged = mergeLeadEdit(editBase, latest, form);
+      setEditBase(latest);
+      setForm(merged.form);
+      setError(describeEditConflict(merged.conflicts));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The lead could not be reloaded.");
+    }
   };
 
   const searchCustomers = async () => {
@@ -332,7 +351,7 @@ async function performAction(action: LeadAction, lead: Lead, form: Record<string
   const dateOrNull = (key: string) => s(key) ? new Date(s(key)).toISOString() : null;
   switch (action.type) {
     case "edit":
-      await apiJson(`/api/leads/${lead.id}`, jsonRequest("PUT", { ...form, budgetMin: numberOrNull("budgetMin"), budgetMax: numberOrNull("budgetMax"), interestedProjectId: numberOrNull("interestedProjectId"), interestedUnitId: numberOrNull("interestedUnitId") })); break;
+      await apiJson(`/api/leads/${lead.id}`, jsonRequest("PUT", { ...form, budgetMin: numberOrNull("budgetMin"), budgetMax: numberOrNull("budgetMax"), interestedProjectId: numberOrNull("interestedProjectId"), interestedUnitId: numberOrNull("interestedUnitId"), concurrencyToken: lead.concurrencyToken })); break;
     case "assign":
       await apiJson(`/api/leads/${lead.id}/assign`, jsonRequest("POST", { employeeId: numberOrNull("employeeId"), teamId: numberOrNull("teamId"), reason: s("reason") })); break;
     case "stage":

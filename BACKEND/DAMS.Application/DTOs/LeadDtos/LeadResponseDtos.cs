@@ -126,6 +126,10 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public DateTime? UpdatedAt { get; set; }
 
+        // Base64 RowVersion. Sent back with an edit so a form opened before a newer change
+        // cannot silently overwrite it.
+        public string ConcurrencyToken { get; set; } = string.Empty;
+
         public int OpenFollowUpCount { get; set; }
 
         public int DocumentCount { get; set; }

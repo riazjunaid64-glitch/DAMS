@@ -304,7 +304,10 @@ public sealed class LeadIntakeAndDuplicateTests
         var mine = await h.Leads.IngestAsync(
             LeadTestHarness.Intake(firstName: "Mine", phone: null, email: "mine@example.com"), h.Admin);
 
-        var edit = new UpdateLeadDto { FirstName = "Mine", Email = "mine@example.com" };
+        var edit = new UpdateLeadDto
+        {
+            FirstName = "Mine", Email = "mine@example.com", ConcurrencyToken = mine.Lead!.ConcurrencyToken
+        };
         if (editedField == "phone") edit.Phone = "+92 300 1234567"; else edit.WhatsappNumber = "+92 300 1234567";
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(

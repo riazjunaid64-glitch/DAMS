@@ -79,6 +79,7 @@ namespace DAMS.Application.Services
                     .FirstOrDefault(),
                 CreatedAt = l.CreatedAt,
                 UpdatedAt = l.UpdatedAt,
+                ConcurrencyToken = Convert.ToBase64String(l.RowVersion),
                 OpenFollowUpCount = l.FollowUps.Count(f => f.Status == LeadFollowUpStatus.Pending),
                 DocumentCount = l.Documents.Count
             };

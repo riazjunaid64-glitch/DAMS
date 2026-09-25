@@ -7,7 +7,7 @@ namespace DAMS.Api.Controllers
 {
     /// <summary>
     /// Shared plumbing for the lead workspace: resolves who is calling and turns the
-    /// domain's three failure kinds into the right status codes, so individual actions stay
+    /// domain's failure kinds into the right status codes, so individual actions stay
     /// free of repeated try/catch blocks.
     /// </summary>
     [ApiController]
@@ -43,6 +43,10 @@ namespace DAMS.Api.Controllers
             {
                 return BusyResponse.From(this, ex);
             }
+            catch (LeadConcurrencyException ex)
+            {
+                return Conflict(new { message = ex.Message });
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
@@ -68,6 +72,10 @@ namespace DAMS.Api.Controllers
             catch (LeadIntakeBusyException ex)
             {
                 return BusyResponse.From(this, ex);
+            }
+            catch (LeadConcurrencyException ex)
+            {
+                return Conflict(new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {

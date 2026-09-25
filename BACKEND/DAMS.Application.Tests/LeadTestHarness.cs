@@ -111,6 +111,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
             // in-memory store has none, and ignoring the warning makes those calls no-ops
             // instead of exceptions.
             .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
+            .AddInterceptors(new LeadRowVersionInterceptor())
             .Options);
 
         // Applies the seeded roles, lead sources and closure reasons.
@@ -297,10 +298,46 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         return Db.Leads.AsNoTracking().FirstAsync(l => l.Id == leadId);
     }
 
+    /// <summary>The version an edit form opened now would send back with its save.</summary>
+    public async Task<string> ConcurrencyTokenAsync(int leadId) =>
+        (await Leads.GetByIdAsync(leadId, Admin))!.ConcurrencyToken;
+
     public Task<List<LeadActivity>> TimelineAsync(int leadId) =>
         Db.LeadActivities.AsNoTracking().Where(a => a.LeadId == leadId).ToListAsync();
 
     public ValueTask DisposeAsync() => Db.DisposeAsync();
+
+    /// <summary>
+    /// The in-memory store checks a concurrency token but never changes one, so every lead
+    /// would keep the same empty version forever and a stale edit could never be caught. This
+    /// gives each lead write a new version, exactly as SQL Server's rowversion column does.
+    /// </summary>
+    private sealed class LeadRowVersionInterceptor : SaveChangesInterceptor
+    {
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            Stamp(eventData.Context);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            Stamp(eventData.Context);
+            return ValueTask.FromResult(result);
+        }
+
+        private static void Stamp(DbContext? context)
+        {
+            if (context == null)
+                return;
+
+            context.ChangeTracker.DetectChanges();
+            foreach (var entry in context.ChangeTracker.Entries<Lead>()
+                         .Where(e => e.State is EntityState.Added or EntityState.Modified))
+                entry.Property(l => l.RowVersion).CurrentValue = Guid.NewGuid().ToByteArray();
+        }
+    }
 
     /// <summary>A clock the tests can hold still or move forward deliberately.</summary>
     internal sealed class FakeClock : TimeProvider

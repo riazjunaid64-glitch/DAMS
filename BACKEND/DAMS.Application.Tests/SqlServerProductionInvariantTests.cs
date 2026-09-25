@@ -2403,15 +2403,15 @@ public sealed class SqlServerProductionInvariantTests
         await using var database = await SqlTestDatabase.CreateAsync();
         var options = Options(database.ConnectionString);
         var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
-        int existingId;
+        LeadResponseDto existing;
         await using (var db = new AppDbContext(options))
         {
             await db.Database.MigrateAsync();
             using var dispatcher = SqlLeadDispatcher(db);
-            existingId = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            existing = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
             {
                 FirstName = "Existing", Email = "existing@example.com", SourceCode = "walk_in"
-            }, admin)).Lead!.Id;
+            }, admin)).Lead!;
         }
 
         Task<LeadResponseDto>? edit = null;
@@ -2423,9 +2423,10 @@ public sealed class SqlServerProductionInvariantTests
                 {
                     await using var db = new AppDbContext(options);
                     using var dispatcher = SqlLeadDispatcher(db);
-                    return await SqlLeadService(db, dispatcher).UpdateAsync(existingId, new UpdateLeadDto
+                    return await SqlLeadService(db, dispatcher).UpdateAsync(existing.Id, new UpdateLeadDto
                     {
-                        FirstName = "Existing", Email = "existing@example.com", Phone = "0300-1234567"
+                        FirstName = "Existing", Email = "existing@example.com", Phone = "0300-1234567",
+                        ConcurrencyToken = existing.ConcurrencyToken
                     }, admin);
                 });
                 Assert.True(await SomeoneIsWaitingOnAContactLockAsync(database.ConnectionString, edit, TimeSpan.FromSeconds(20)),
@@ -2445,6 +2446,52 @@ public sealed class SqlServerProductionInvariantTests
         await using var verify = new AppDbContext(options);
         var number = LeadContactNormalizer.NormalizeUsablePhoneOrNull("0300-1234567");
         Assert.Equal(1, await verify.Leads.CountAsync(l => l.NormalizedPhone == number || l.NormalizedWhatsapp == number));
+    }
+
+    /// <summary>
+    /// Two edit forms opened on the same version. The first save moves the real rowversion, so
+    /// the second is refused as a whole — neither its details nor its timeline entry are written.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TwoLeadEditFormsOpenedTogether_TheStaleSaveIsRefusedAtomically_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+        LeadResponseDto opened;
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            opened = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Existing", Email = "existing@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!;
+        }
+
+        UpdateLeadDto Edit(string city) => new()
+        {
+            FirstName = opened.FirstName, Email = opened.Email, City = city,
+            ConcurrencyToken = opened.ConcurrencyToken
+        };
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            await SqlLeadService(db, dispatcher).UpdateAsync(opened.Id, Edit("Lahore"), admin);
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            await Assert.ThrowsAsync<LeadConcurrencyException>(() =>
+                SqlLeadService(db, dispatcher).UpdateAsync(opened.Id, Edit("Karachi"), admin));
+        }
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal("Lahore", (await verify.Leads.SingleAsync(l => l.Id == opened.Id)).City);
+        Assert.Equal(1, await verify.LeadActivities.CountAsync(
+            a => a.LeadId == opened.Id && a.Type == LeadActivityType.DetailsUpdated));
     }
 
     [SqlServerFact]
