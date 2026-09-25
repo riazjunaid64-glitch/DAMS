@@ -504,6 +504,7 @@ namespace DAMS.Application.Services
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
+                includeQueueManagers: true,
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
@@ -628,7 +629,7 @@ namespace DAMS.Application.Services
             // One alert per enquiry. A provider submission is its own identity; anything else
             // falls back to the minute it arrived, so a double-submitted form alerts once.
             var repeatSuffix = isExternal && provider != null && externalId != null
-                ? $"repeat:{provider}:{externalId}"
+                ? BuildSubmissionDedupSuffix(provider, externalId)
                 : $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}";
 
             if (lead.AssignedEmployeeId == null)
@@ -638,7 +639,7 @@ namespace DAMS.Application.Services
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
                     $"Repeat enquiry: {FullName(lead)}",
                     $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
-                    repeatSuffix, cancellationToken: cancellationToken);
+                    repeatSuffix, includeQueueManagers: true, cancellationToken: cancellationToken);
             }
             else
             {
@@ -2448,6 +2449,22 @@ namespace DAMS.Application.Services
             if (!string.IsNullOrWhiteSpace(dto.ExternalProvider)) parts.Add($"provider: {dto.ExternalProvider.Trim()}");
             if (!string.IsNullOrWhiteSpace(dto.SourceDetails)) parts.Add(dto.SourceDetails.Trim());
             return string.Join(" | ", parts);
+        }
+
+        private static string BuildSubmissionDedupSuffix(string provider, string externalId)
+        {
+            var suffix = $"repeat:{provider}:{externalId}";
+            const int maxLength = 190;
+            if (suffix.Length <= maxLength)
+                return suffix;
+
+            // Hash long suffixes to stay under the DedupKey column limit (200 chars).
+            // The hash is stable (SHA256), ensuring the same submission always produces
+            // the same key, so dedup still works across retries.
+            var hash = System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(suffix))
+                [..16];
+            return $"repeat:h:{Convert.ToHexString(hash).ToLowerInvariant()}";
         }
 
         private async Task<Employee> LoadAssignableEmployeeAsync(int employeeId, LeadUserContext ctx, CancellationToken cancellationToken)

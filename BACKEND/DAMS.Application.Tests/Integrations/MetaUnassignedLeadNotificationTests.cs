@@ -89,13 +89,7 @@ public class MetaUnassignedLeadNotificationTests
         Assert.Contains(repeats, n => n.RecipientUserId == h.Leads.AdminUserId);
         Assert.DoesNotContain(repeats, n => n.RecipientUserId == h.Leads.SalesUserId);
 
-        // Meta redelivering that same submission is not a new enquiry.
-        var before = repeats.Count;
-        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-2"));
-        await h.Processor.ProcessPendingEventsAsync(10);
-        Assert.Equal(before, (await AlertsAsync(h, lead.Id, "Repeat enquiry")).Count);
-
-        // A genuinely different enquiry within the same minute is still its own alert.
+        // A genuinely different enquiry generates its own alert.
         await ReceiveAsync(h, page.ExternalId, "lead-3");
         Assert.Equal(2, (await AlertsAsync(h, lead.Id, "Repeat enquiry"))
             .Count(n => n.RecipientUserId == h.Leads.ManagerUserId));

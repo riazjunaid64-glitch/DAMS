@@ -71,9 +71,10 @@ namespace DAMS.Application.Services
             string? body,
             string dedupKeySuffix,
             bool isEscalation = false,
+            bool includeQueueManagers = false,
             CancellationToken cancellationToken = default)
         {
-            var recipients = await GetSupervisorUserIdsAsync(lead, cancellationToken);
+            var recipients = await GetSupervisorUserIdsAsync(lead, includeQueueManagers, cancellationToken);
             var created = 0;
 
             foreach (var userId in recipients)
@@ -100,8 +101,9 @@ namespace DAMS.Application.Services
         /// manager of the owning team when there is one. An unassigned lead has no team, and
         /// the unassigned queue belongs to every manager (see <see cref="LeadAccess.Scope"/>),
         /// so every active manager is told — they are the ones who have to hand it out.
+        /// Only used for new-lead and repeat-enquiry alerts when includeQueueManagers is true.
         /// </summary>
-        private async Task<List<int>> GetSupervisorUserIdsAsync(Lead lead, CancellationToken cancellationToken)
+        private async Task<List<int>> GetSupervisorUserIdsAsync(Lead lead, bool includeQueueManagers = false, CancellationToken cancellationToken = default)
         {
             _adminUserIds ??= await _context.Users
                 .AsNoTracking()
@@ -118,7 +120,7 @@ namespace DAMS.Application.Services
             if (teamId != null)
                 recipients.AddRange(await GetTeamSupervisorsAsync(teamId.Value, cancellationToken));
 
-            if (lead.AssignmentState == LeadAssignmentState.Unassigned)
+            if (includeQueueManagers && lead.AssignmentState == LeadAssignmentState.Unassigned)
                 recipients.AddRange(await GetQueueManagersAsync(cancellationToken));
 
             return recipients.Distinct().ToList();
