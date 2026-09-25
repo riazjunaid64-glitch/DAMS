@@ -69,12 +69,6 @@ namespace DAMS.Application.Services
                     });
             }
 
-            if (lead.NextActionAt == null || dto.ScheduledAt < lead.NextActionAt)
-            {
-                lead.NextActionAt = dto.ScheduledAt;
-                lead.NextActionSummary = $"Site visit at {visit.MeetingLocation}";
-            }
-
             lead.UpdatedAt = DateTime.UtcNow;
 
             var activity = LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitScheduled,
@@ -118,8 +112,6 @@ namespace DAMS.Application.Services
             visit.RescheduleCount++;
             visit.UpdatedAt = DateTime.UtcNow;
 
-            lead.NextActionAt = dto.ScheduledAt;
-            lead.NextActionSummary = $"Site visit at {visit.MeetingLocation}";
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitRescheduled,
@@ -187,6 +179,8 @@ namespace DAMS.Application.Services
                     a.NewValue = dto.Outcome.ToString();
                 });
 
+            await _context.SaveChangesAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);

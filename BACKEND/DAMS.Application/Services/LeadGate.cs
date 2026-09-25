@@ -198,10 +198,13 @@ namespace DAMS.Application.Services
                 .Select(v => new { At = (DateTime?)v.ScheduledAt, Summary = "Site visit at " + v.MeetingLocation })
                 .FirstOrDefaultAsync(cancellationToken);
 
+            // Only the latest communication's plan is outstanding — any later exchange with the
+            // customer has either carried it out or replaced it.
             var communication = await context.LeadCommunications
                 .AsNoTracking()
-                .Where(c => c.LeadId == leadId && c.NextActionAt != null)
-                .OrderBy(c => c.NextActionAt)
+                .Where(c => c.LeadId == leadId)
+                .OrderByDescending(c => c.OccurredAt)
+                .ThenByDescending(c => c.Id)
                 .Select(c => new { At = c.NextActionAt, Summary = c.NextAction ?? c.Summary })
                 .FirstOrDefaultAsync(cancellationToken);
 
