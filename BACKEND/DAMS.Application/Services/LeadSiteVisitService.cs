@@ -76,7 +76,6 @@ namespace DAMS.Application.Services
                 a => a.Notes = visit.MeetingLocation);
 
             await _context.SaveChangesAsync(cancellationToken);
-            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
 
             activity.SiteVisitId = visit.Id;
             await NotifyEmployeeAsync(lead, employeeId, ctx, NotificationType.SiteVisitScheduled,

@@ -31,6 +31,9 @@ namespace DAMS.Domain.Entities
 
         public DateTime? NextActionAt { get; set; }
 
+        /// <summary>False when the customer could not be reached (a contact attempt).</summary>
+        public bool Connected { get; set; } = true;
+
         // Set only when the record came from an external channel integration.
         public string? ExternalProvider { get; set; }
 

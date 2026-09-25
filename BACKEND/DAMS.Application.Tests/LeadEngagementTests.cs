@@ -662,4 +662,78 @@ public sealed class LeadEngagementTests
 
         Assert.Empty(h.DocumentStorage.Files);
     }
+
+    // ── KAN-24 regression tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnUnansweredAttempt_DoesNotClearThePlannedNextAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var callAt = DateTime.UtcNow.AddDays(1);
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Discussed pricing.",
+            NextAction = "Call tomorrow",
+            NextActionAt = callAt,
+            Connected = true
+        }, h.Sales);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Connected = false,
+            Summary = "No answer."
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(callAt, lead.NextActionAt);
+        Assert.Equal("Call tomorrow", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ReopeningADormantLead_ClearsTheRevisitAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true,
+            new CloseLeadDto { ClosureReasonId = reasonId, ReactivateOn = DateTime.UtcNow.AddDays(10) }, h.Sales);
+
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Called back." }, h.Manager);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task PlansFromBeforeClosure_DoNotComeBackAfterReopen()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Intro.",
+            NextAction = "Call tomorrow",
+            NextActionAt = DateTime.UtcNow.AddDays(1),
+            Connected = true
+        }, h.Sales);
+
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Back." }, h.Manager);
+
+        var due = DateTime.UtcNow.AddDays(5);
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto { Title = "Send brochure", DueAt = due }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(due, lead.NextActionAt);
+        Assert.Equal("Send brochure", lead.NextActionSummary);
+    }
 }
