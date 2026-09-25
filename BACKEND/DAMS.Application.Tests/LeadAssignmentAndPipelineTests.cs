@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -71,6 +72,72 @@ public sealed class LeadAssignmentAndPipelineTests
 
         var lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Manager);
         Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
+    }
+
+    [Fact]
+    public async Task ManagerCannotPairOwnTeamEmployeeWithUnmanagedTeam()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var unmanagedTeam = new Team { Name = "South Sales", IsActive = true };
+        h.Db.Teams.Add(unmanagedTeam);
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateLeadAsync();
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Leads.AssignAsync(leadId, new AssignLeadDto
+            {
+                EmployeeId = h.SalesEmployeeId,
+                TeamId = unmanagedTeam.Id
+            }, h.Manager));
+    }
+
+    [Fact]
+    public async Task ReassignmentRejectsEmployeeAndTeamFromDifferentTeams()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var otherTeam = new Team { Name = "South Sales", IsActive = true };
+        h.Db.Teams.Add(otherTeam);
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateLeadAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.AssignAsync(leadId, new AssignLeadDto
+            {
+                EmployeeId = h.SalesEmployeeId,
+                TeamId = otherTeam.Id
+            }, h.Admin));
+
+        Assert.Contains("not a member", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EmployeeOnlyCreationRejectsAnInactiveEmployeeTeam()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
+        team.IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        var dto = LeadTestHarness.Intake(phone: "0300-5555555", email: "inactive-team@example.com");
+        dto.AssignedEmployeeId = h.SalesEmployeeId;
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.IngestAsync(dto, h.Admin));
+
+        Assert.Contains("not active", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EmployeeCreationOnAnInactiveOwnTeamExplainsTheBlock()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
+        team.IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-6666666", email: "employee-inactive-team@example.com"), h.Sales));
+
+        Assert.Contains("cannot create leads", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

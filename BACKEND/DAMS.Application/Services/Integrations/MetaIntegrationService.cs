@@ -442,9 +442,27 @@ namespace DAMS.Application.Services.Integrations
                         "Disable it there first before enabling it here.");
             }
 
-            // Enabling a page is what actually starts lead delivery, so the subscription call
-            // has to succeed before the flag is trusted.
-            if (resource.ResourceType == ExternalResourceTypes.FacebookPage)
+            var skipPageUnsubscribe = false;
+            if (!isEnabled && resource.ResourceType == ExternalResourceTypes.FacebookPage)
+            {
+                // IsEnabled is the local ownership claim. A disabled copy has no authority to
+                // change the app-to-Page subscription, especially when another connection owns it.
+                var ownedElsewhere = await _context.ExternalIntegrationResources
+                    .AnyAsync(r => r.Id != resource.Id
+                                   && r.Provider == IntegrationProviders.Meta
+                                   && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                   && r.ExternalId == resource.ExternalId
+                                   && r.IsEnabled, cancellationToken);
+
+                skipPageUnsubscribe = !resource.IsEnabled || ownedElsewhere;
+                if (skipPageUnsubscribe)
+                    resource.IsSubscribed = false;
+            }
+
+            // Enabling a page, or disabling its current owner, is what changes lead delivery.
+            // Already-disabled and non-owning copies only update their local bookkeeping.
+            if (resource.ResourceType == ExternalResourceTypes.FacebookPage
+                && (isEnabled || !skipPageUnsubscribe))
                 await ApplyPageSubscriptionAsync(connection, resource, isEnabled, cancellationToken);
 
             resource.IsEnabled = isEnabled;

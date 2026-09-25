@@ -87,6 +87,20 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
     (user.role !== "Employee" ||
       member.userId === Number(user.userId) ||
       member.employeeId === lead.assignedEmployeeId));
+  const assignmentStaff = eligibleWorkers.filter((member) =>
+    !value("teamId") || member.teamId === Number(value("teamId")));
+  const setAssignmentTeam = (teamId: string) => setForm((current) => {
+    const employee = lookups.staff.find((member) => member.employeeId === Number(current.employeeId));
+    return {
+      ...current,
+      teamId,
+      employeeId: employee && teamId && employee.teamId !== Number(teamId) ? "" : current.employeeId,
+    };
+  });
+  const setAssignmentEmployee = (employeeId: string) => setForm((current) => {
+    const employee = lookups.staff.find((member) => member.employeeId === Number(employeeId));
+    return { ...current, employeeId, teamId: employee?.teamId?.toString() ?? current.teamId };
+  });
 
   const submit = async () => {
     if (!action) return;
@@ -150,8 +164,8 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
 
         {action.type === "assign" && (
           <>
-            <Select label="Team" value={value("teamId")} onChange={(v) => set("teamId", v)} allowEmpty emptyLabel="No team" options={lookups.teams.filter((t) => t.isActive).map((t) => ({ value: String(t.id), label: t.name }))} />
-            <Select label="Employee" value={value("employeeId")} onChange={(v) => set("employeeId", v)} allowEmpty emptyLabel="Unassigned" options={lookups.staff.filter((s) => s.canOwnLeads).map((s) => ({ value: String(s.employeeId), label: `${s.fullName}${s.teamName ? ` · ${s.teamName}` : ""}` }))} />
+            <Select label="Team" value={value("teamId")} onChange={setAssignmentTeam} allowEmpty emptyLabel="No team" options={lookups.teams.filter((t) => t.isActive).map((t) => ({ value: String(t.id), label: t.name }))} />
+            <Select label="Employee" value={value("employeeId")} onChange={setAssignmentEmployee} allowEmpty emptyLabel="Unassigned" options={assignmentStaff.map((s) => ({ value: String(s.employeeId), label: `${s.fullName}${s.teamName ? ` · ${s.teamName}` : ""}` }))} />
             <TextArea label="Reason for ownership change" required value={value("reason")} onChange={(v) => set("reason", v)} />
           </>
         )}

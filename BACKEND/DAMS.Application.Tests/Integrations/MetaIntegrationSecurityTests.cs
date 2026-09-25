@@ -397,6 +397,31 @@ public class MetaIntegrationSecurityTests
     }
 
     [Fact]
+    public async Task DisablingANonOwningOrAlreadyDisabledPage_NeverUnsubscribesTheActiveOwner()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (owner, ownerPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-owner", enabled: false);
+        var (nonOwner, nonOwnerPage) = await h.ConnectPageAsync(
+            pageId: "shared-page", externalAccountId: "meta-user-non-owner", enabled: false);
+
+        await h.Integration.SetResourceEnabledAsync(owner.Id, ownerPage.Id, isEnabled: true);
+        await h.Integration.SetResourceEnabledAsync(nonOwner.Id, nonOwnerPage.Id, isEnabled: false);
+        await h.Integration.SetResourceEnabledAsync(nonOwner.Id, nonOwnerPage.Id, isEnabled: false);
+
+        Assert.DoesNotContain("shared-page", h.Graph.UnsubscribedPages);
+        Assert.True(h.Graph.IsCurrentlySubscribed("shared-page"));
+
+        var reloadedOwner = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == ownerPage.Id);
+        Assert.True(reloadedOwner.IsEnabled);
+        Assert.True(reloadedOwner.IsSubscribed);
+
+        var reloadedNonOwner = await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == nonOwnerPage.Id);
+        Assert.False(reloadedNonOwner.IsEnabled);
+        Assert.False(reloadedNonOwner.IsSubscribed);
+    }
+
+    [Fact]
     public async Task AResourceBelongingToAnotherConnection_CannotBeToggled()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
