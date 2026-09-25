@@ -529,8 +529,9 @@ namespace DAMS.Application.Services
             if (ownerUserId == null)
                 return;
 
+            var dedupKey = BuildDedupKey(type, lead.Id, ownerUserId.Value, suffix);
             await _notifications.QueueAsync(lead.Id, ownerUserId.Value, type, title, body,
-                $"{type}:{lead.Id}:{ownerUserId.Value}:{suffix}", isEscalation, cancellationToken);
+                dedupKey, isEscalation, cancellationToken);
         }
 
         private async Task<LeadResponseDto> EnrichExistingLeadAsync(
@@ -629,7 +630,7 @@ namespace DAMS.Application.Services
             // One alert per enquiry. A provider submission is its own identity; anything else
             // falls back to the minute it arrived, so a double-submitted form alerts once.
             var repeatSuffix = isExternal && provider != null && externalId != null
-                ? BuildSubmissionDedupSuffix(provider, externalId)
+                ? $"repeat:{provider}:{externalId}"
                 : $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}";
 
             if (lead.AssignedEmployeeId == null)
@@ -2451,20 +2452,23 @@ namespace DAMS.Application.Services
             return string.Join(" | ", parts);
         }
 
-        private static string BuildSubmissionDedupSuffix(string provider, string externalId)
+        internal static string BuildDedupKey(NotificationType type, int leadId, int userId, string dedupKeySuffix)
         {
-            var suffix = $"repeat:{provider}:{externalId}";
-            const int maxLength = 190;
-            if (suffix.Length <= maxLength)
-                return suffix;
+            const int maxLength = 200;
+            var key = $"{type}:{leadId}:{userId}:{dedupKeySuffix}";
 
-            // Hash long suffixes to stay under the DedupKey column limit (200 chars).
-            // The hash is stable (SHA256), ensuring the same submission always produces
-            // the same key, so dedup still works across retries.
+            if (key.Length <= maxLength)
+                return key;
+
+            // Hash the suffix if the full key exceeds the DedupKey column limit (200 chars).
+            // DedupKey is unique in the database, so truncation risks collisions.
+            // Use stable SHA256 so the same suffix always produces the same hash.
             var hash = System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes(suffix))
-                [..16];
-            return $"repeat:h:{Convert.ToHexString(hash).ToLowerInvariant()}";
+                System.Text.Encoding.UTF8.GetBytes(dedupKeySuffix))
+                [..8];
+            var prefix = $"{type}:{leadId}:{userId}:";
+            var hashSuffix = $"h:{Convert.ToHexString(hash).ToLowerInvariant()}";
+            return prefix + hashSuffix;
         }
 
         private async Task<Employee> LoadAssignableEmployeeAsync(int employeeId, LeadUserContext ctx, CancellationToken cancellationToken)

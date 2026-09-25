@@ -79,8 +79,8 @@ namespace DAMS.Application.Services
 
             foreach (var userId in recipients)
             {
-                if (await QueueAsync(lead.Id, userId, type, title, body,
-                        $"{type}:{lead.Id}:{userId}:{dedupKeySuffix}", isEscalation, cancellationToken))
+                var dedupKey = LeadService.BuildDedupKey(type, lead.Id, userId, dedupKeySuffix);
+                if (await QueueAsync(lead.Id, userId, type, title, body, dedupKey, isEscalation, cancellationToken))
                     created++;
             }
 
