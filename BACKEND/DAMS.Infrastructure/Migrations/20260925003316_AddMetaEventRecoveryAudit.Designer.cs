@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925003316_AddMetaEventRecoveryAudit")]
+    partial class AddMetaEventRecoveryAudit
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3127,35 +3130,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "AvailableAt");
 
-                    b.HasIndex("ExternalIntegrationConnectionId", "Status", "ReceivedAt");
-
                     b.ToTable("ExternalIntegrationEvents");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationEventRetry", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<int>("ExternalIntegrationEventId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("RequestedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("RequestedByUserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RequestedByUserId");
-
-                    b.HasIndex("ExternalIntegrationEventId", "RequestedAt");
-
-                    b.ToTable("ExternalIntegrationEventRetries");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationOAuthState", b =>
@@ -4149,22 +4124,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("LeadId", "OccurredAt");
 
                     b.ToTable("LeadActivities");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.LeadAlertCheck", b =>
-                {
-                    b.Property<int>("LeadId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("FirstContactAssignmentCheckedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("InactivityCheckedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("LeadId");
-
-                    b.ToTable("LeadAlertChecks");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadAssignmentHistory", b =>
@@ -7772,23 +7731,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Resource");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationEventRetry", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.ExternalIntegrationEvent", "Event")
-                        .WithMany()
-                        .HasForeignKey("ExternalIntegrationEventId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("DAMS.Domain.Entities.User", null)
-                        .WithMany()
-                        .HasForeignKey("RequestedByUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Event");
-                });
-
             modelBuilder.Entity("DAMS.Domain.Entities.ExternalIntegrationOAuthState", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.User", null)
@@ -8027,17 +7969,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
                         .WithMany("Activities")
                         .HasForeignKey("LeadId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Lead");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.LeadAlertCheck", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
-                        .WithOne()
-                        .HasForeignKey("DAMS.Domain.Entities.LeadAlertCheck", "LeadId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 

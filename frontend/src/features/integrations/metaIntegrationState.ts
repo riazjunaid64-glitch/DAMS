@@ -1,4 +1,5 @@
 import type { MetaConnection, MetaConnectionStatus, MetaResource } from "../leads/types.ts";
+import type { MetaEventStatus } from "./types.ts";
 
 /**
  * The presentation logic behind the Integrations panel, kept as pure functions.
@@ -130,4 +131,52 @@ export function deliverySummary(connection: MetaConnection): string {
   if (connection.enabledResourceCount === 0) return "No Pages enabled, so no leads are being received.";
 
   return `Receiving leads from ${plural(connection.enabledResourceCount, "Page", "Pages")}.`;
+}
+
+/** The event list shows the latest events, or every event in one status. */
+export type MetaEventFilter = MetaEventStatus | "All";
+
+/** How many events the list asks for; the server caps any request at 200. */
+export function eventListLimit(filter: MetaEventFilter): number {
+  return filter === "All" ? 25 : 200;
+}
+
+const eventStatusWords: Record<MetaEventStatus, string> = {
+  Pending: "pending",
+  Processing: "processing",
+  Processed: "processed",
+  Retry: "retrying",
+  Failed: "failed",
+  Ignored: "ignored",
+};
+
+/** An empty filtered list means "none in this status", not "nothing ever arrived". */
+export function emptyEventsMessage(filter: MetaEventFilter): string {
+  return filter === "All"
+    ? "No webhook events recorded for this connection."
+    : `No ${eventStatusWords[filter]} events for this connection.`;
+}
+
+/** Says so when the list is cut off at its limit, so a full page is not read as the whole set. */
+export function eventListLimitNote(filter: MetaEventFilter, shown: number): string | null {
+  const limit = eventListLimit(filter);
+  if (shown < limit) return null;
+  return filter === "All"
+    ? `Showing the ${limit} most recent events.`
+    : `Showing the ${limit} most recent ${eventStatusWords[filter]} events; there may be more.`;
+}
+
+/**
+ * Lets only the newest of several overlapping loads apply its result. Switching the filter
+ * quickly starts a new request before the old one answers, and the older answer must not
+ * overwrite the newer one when it arrives last.
+ */
+export function createLatestRequestGuard() {
+  let latest = 0;
+  return {
+    begin(): () => boolean {
+      const id = ++latest;
+      return () => id === latest;
+    },
+  };
 }

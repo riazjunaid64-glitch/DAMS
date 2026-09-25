@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Interfaces
 {
@@ -26,7 +27,12 @@ namespace DAMS.Application.Interfaces
         Task<MetaResourceDto> SetResourceEnabledAsync(
             int connectionId, int resourceId, bool isEnabled, CancellationToken cancellationToken = default);
 
-        Task<List<MetaEventDto>> GetEventsAsync(int connectionId, int take, CancellationToken cancellationToken = default);
+        Task<List<MetaEventDto>> GetEventsAsync(
+            int connectionId, int take, ExternalIntegrationEventStatus? status = null,
+            CancellationToken cancellationToken = default);
+
+        Task<MetaEventDto> RetryEventAsync(
+            int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default);
 
         Task DisconnectAsync(int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default);
     }

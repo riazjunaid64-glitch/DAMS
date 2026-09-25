@@ -2903,6 +2903,77 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    /// <summary>
+    /// A small alert batch over a larger backlog must still reach every lead, on the real
+    /// query plan. The owner has no login, so nobody can be told about these leads — exactly
+    /// the rows that used to sit at the front of every batch for ever.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ASmallAlertScanWorksThroughTheWholeBacklog_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var now = DateTime.UtcNow;
+        await using (var db = new AppDbContext(options))
+        {
+            var owner = new Employee
+            {
+                FullName = "No Login",
+                JobTitle = "Sales Executive",
+                Department = "Sales",
+                Phone = "03001114444",
+                JoinDate = now.AddYears(-1),
+                Status = EmployeeStatus.Active
+            };
+            db.Employees.Add(owner);
+            await db.SaveChangesAsync();
+
+            var source = await db.LeadSources.FirstAsync(s => s.Code == "walk_in");
+            for (var i = 0; i < 5; i++)
+                db.Leads.Add(new Lead
+                {
+                    LeadReference = $"LD-SCAN-{i}",
+                    FirstName = $"Backlog {i}",
+                    LeadSourceId = source.Id,
+                    Stage = LeadStage.FirstContactPending,
+                    AssignmentState = LeadAssignmentState.Assigned,
+                    AssignedEmployeeId = owner.Id,
+                    AssignedAt = now.AddHours(-10).AddMinutes(i),
+                    LastActivityAt = now.AddDays(-30).AddMinutes(i),
+                    CreatedAt = now.AddDays(-30)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        async Task<LeadAlertScanResultDto> ScanAsync()
+        {
+            await using var db = new AppDbContext(options);
+            using var dispatcher = SqlLeadDispatcher(db);
+            var alerts = new LeadAlertService(db, new LeadNotificationService(db, dispatcher),
+                Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions { MaxRowsPerScan = 2 }),
+                TimeProvider.System);
+            return await alerts.RunScanAsync();
+        }
+
+        for (var i = 0; i < 3; i++)
+        {
+            var scan = await ScanAsync();
+            Assert.InRange(scan.FirstContactOverdue, 1, 2);
+            Assert.InRange(scan.InactiveLeads, 1, 2);
+        }
+
+        var settled = await ScanAsync();
+        Assert.Equal(0, settled.FirstContactOverdue);
+        Assert.Equal(0, settled.InactiveLeads);
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(5, await verify.LeadAlertChecks.CountAsync(c =>
+            c.FirstContactAssignmentCheckedAt == c.Lead.AssignedAt && c.InactivityCheckedAt != null));
+    }
+
     private static NotificationDispatcher SqlLeadDispatcher(AppDbContext db) => new(
         db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
         TimeProvider.System, new NotificationEligibilityPolicy(db),
@@ -3143,6 +3214,279 @@ public sealed class SqlServerProductionInvariantTests
             "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-unique%'"));
         Assert.Equal(1, await ScalarAsync(database.ConnectionString,
             "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [EventKey] LIKE '%lead-race%'"));
+    }
+
+    /// <summary>
+    /// Retry is an operator action guarded by the event rowversion. Two independent SQL Server
+    /// contexts may click it together, but exactly one append-only audit row and one requeue may
+    /// commit; the loser must reread the winner's pending state rather than fail the request.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TwoAdminsRetryingTheSameFailedMetaEvent_ProduceOneAuditAndOneRequeue()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        int adminUserId, connectionId, eventId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var admin = new User
+            {
+                FullName = "Retry Admin",
+                Email = "retry-admin@dams.test",
+                Password = "hash",
+                RoleId = 1
+            };
+            db.Users.Add(admin);
+            await db.SaveChangesAsync();
+            adminUserId = admin.UserId;
+
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalAccountId = "retry-race-account",
+                DisplayName = "Retry race",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            var page = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = IntegrationProviders.Meta,
+                ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = "retry-race-page",
+                IsEnabled = true,
+                IsActive = true
+            };
+            db.ExternalIntegrationResources.Add(page);
+            await db.SaveChangesAsync();
+
+            var integrationEvent = new ExternalIntegrationEvent
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalIntegrationConnectionId = connectionId,
+                ExternalIntegrationResourceId = page.Id,
+                EventType = "leadgen",
+                EventKey = "retry-race:event",
+                ResourceExternalId = page.ExternalId,
+                RawPayloadJson = "{\"leadgen_id\":\"retry-race-lead\"}",
+                Status = ExternalIntegrationEventStatus.Failed,
+                LastError = "temporary failure",
+                ProcessedAt = DateTime.UtcNow,
+                AvailableAt = DateTime.UtcNow
+            };
+            db.ExternalIntegrationEvents.Add(integrationEvent);
+            await db.SaveChangesAsync();
+            eventId = integrationEvent.Id;
+        }
+
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+        var adminContext = new LeadUserContext
+        {
+            UserId = adminUserId,
+            Role = LeadRoles.Admin,
+            DisplayName = "Retry Admin"
+        };
+
+        async Task<MetaEventDto> RetryAsync()
+        {
+            await using var db = new AppDbContext(options);
+            var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
+                db, graph, protector, sync, metaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+            return await integration.RetryEventAsync(connectionId, eventId, adminContext);
+        }
+
+        var results = await Task.WhenAll(RetryAsync(), RetryAsync());
+
+        Assert.All(results, result =>
+        {
+            Assert.Equal(ExternalIntegrationEventStatus.Pending, result.Status);
+            Assert.Equal(1, result.RetryCount);
+        });
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEventRetries]"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT [RetryCount] FROM [ExternalIntegrationEvents] WHERE [Id] = " + eventId));
+    }
+
+    /// <summary>
+    /// Event retention deletes old finished events in one set-based statement. Retry history
+    /// rows point at their event, so a restricting foreign key made that whole statement fail
+    /// once any old event had ever been retried — and since every later run hits the same row,
+    /// cleanup then never succeeded again. Only real SQL Server enforces the key.
+    /// </summary>
+    [SqlServerFact]
+    public async Task PruningOldEvents_AlsoRemovesTheRetryHistoryOfRetriedEvents()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var old = DateTime.UtcNow.AddDays(-40);
+        int recentId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var admin = new User
+            {
+                FullName = "Prune Admin", Email = "prune-admin@dams.test", Password = "hash", RoleId = 1
+            };
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = IntegrationProviders.Meta, ExternalAccountId = "prune-account",
+                DisplayName = "Prune", Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.Users.Add(admin);
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+
+            ExternalIntegrationEvent Event(string key, ExternalIntegrationEventStatus status, DateTime receivedAt) => new()
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalIntegrationConnectionId = connection.Id,
+                EventType = "leadgen",
+                EventKey = key,
+                ResourceExternalId = "prune-page",
+                RawPayloadJson = "{}",
+                Status = status,
+                ReceivedAt = receivedAt,
+                AvailableAt = receivedAt
+            };
+            var retriedThenProcessed = Event("prune:retried", ExternalIntegrationEventStatus.Processed, old);
+            var retriedThenFailed = Event("prune:failed-again", ExternalIntegrationEventStatus.Failed, old);
+            var neverRetried = Event("prune:plain", ExternalIntegrationEventStatus.Processed, old);
+            var recent = Event("prune:recent", ExternalIntegrationEventStatus.Processed, DateTime.UtcNow);
+            db.ExternalIntegrationEvents.AddRange(retriedThenProcessed, retriedThenFailed, neverRetried, recent);
+            await db.SaveChangesAsync();
+            recentId = recent.Id;
+
+            db.ExternalIntegrationEventRetries.AddRange(
+                new ExternalIntegrationEventRetry
+                    { ExternalIntegrationEventId = retriedThenProcessed.Id, RequestedByUserId = admin.UserId, RequestedAt = old },
+                new ExternalIntegrationEventRetry
+                    { ExternalIntegrationEventId = retriedThenFailed.Id, RequestedByUserId = admin.UserId, RequestedAt = old },
+                new ExternalIntegrationEventRetry
+                    { ExternalIntegrationEventId = retriedThenFailed.Id, RequestedByUserId = admin.UserId, RequestedAt = old.AddHours(1) },
+                new ExternalIntegrationEventRetry
+                    { ExternalIntegrationEventId = recent.Id, RequestedByUserId = admin.UserId, RequestedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        var retention = new MetaIntegrationOptions
+        {
+            AppId = SqlMetaOptions.AppId, AppSecret = SqlMetaOptions.AppSecret,
+            WebhookVerifyToken = SqlMetaOptions.WebhookVerifyToken, EventRetentionDays = 30
+        };
+        await using (var db = new AppDbContext(options))
+        {
+            var pruned = await MetaProcessor(db, new DAMS.Application.Tests.Integrations.FakeMetaGraphClient(), retention)
+                .PruneOldEventsAsync();
+            Assert.Equal(3, pruned);
+        }
+
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents]"));
+        Assert.Equal(recentId, await ScalarAsync(database.ConnectionString,
+            "SELECT [Id] FROM [ExternalIntegrationEvents]"));
+        // The recent event keeps its audit; the pruned events' audit went with them.
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEventRetries] WHERE [ExternalIntegrationEventId] = " + recentId));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEventRetries]"));
+    }
+
+    /// <summary>
+    /// The enable check treats a copy of the Page that Meta no longer returns for its own
+    /// connection (IsActive = false) as no real claim, but that copy still holds the filtered
+    /// unique index. Enabling here used to pass the check, subscribe the Page at Meta, and then
+    /// be refused by the index. The stale copy is now released in the same save; an active
+    /// enabled copy still blocks.
+    /// </summary>
+    [SqlServerFact]
+    public async Task EnablingAPageWhoseOtherEnabledCopyIsNoLongerReturnedByMeta_TakesItOverInOneSave()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        int staleId, takingId, blockedId, takingConnectionId, blockedConnectionId;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            ExternalIntegrationConnection Connection(string account) => new()
+            {
+                Provider = IntegrationProviders.Meta, ExternalAccountId = account, DisplayName = account,
+                Status = ExternalIntegrationConnectionStatus.Connected,
+                AccessTokenProtected = protector.Protect("token-" + account)
+            };
+            var staleOwner = Connection("stale-owner");
+            var taking = Connection("taking-over");
+            var blocked = Connection("blocked");
+            db.ExternalIntegrationConnections.AddRange(staleOwner, taking, blocked);
+            await db.SaveChangesAsync();
+            takingConnectionId = taking.Id;
+            blockedConnectionId = blocked.Id;
+
+            ExternalIntegrationResource Page(int connectionId, string pageId, bool enabled, bool active) => new()
+            {
+                ExternalIntegrationConnectionId = connectionId, Provider = IntegrationProviders.Meta,
+                ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = pageId,
+                IsEnabled = enabled, IsActive = active, IsSubscribed = enabled
+            };
+            var stale = Page(staleOwner.Id, "moved-page", enabled: true, active: false);
+            var takingPage = Page(taking.Id, "moved-page", enabled: false, active: true);
+            // Control: a Page still actively owned elsewhere must keep blocking.
+            var activeOwner = Page(staleOwner.Id, "owned-page", enabled: true, active: true);
+            var blockedPage = Page(blocked.Id, "owned-page", enabled: false, active: true);
+            db.ExternalIntegrationResources.AddRange(stale, takingPage, activeOwner, blockedPage);
+            await db.SaveChangesAsync();
+            staleId = stale.Id;
+            takingId = takingPage.Id;
+            blockedId = blockedPage.Id;
+        }
+
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        DAMS.Application.Services.Integrations.MetaIntegrationService Integration(AppDbContext db) => new(
+            db, graph, protector,
+            new DAMS.Application.Services.Integrations.MetaResourceSyncService(
+                db, graph, protector, SqlMetaOptions,
+                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance),
+            SqlMetaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
+
+        await using (var db = new AppDbContext(options))
+        {
+            var result = await Integration(db).SetResourceEnabledAsync(takingConnectionId, takingId, isEnabled: true);
+            Assert.True(result.IsEnabled);
+            Assert.True(result.IsSubscribed);
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                Integration(db).SetResourceEnabledAsync(blockedConnectionId, blockedId, isEnabled: true));
+            Assert.Contains("already enabled through another", blocked.Message);
+        }
+
+        Assert.Equal(["moved-page"], graph.SubscribedPages);
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT CAST([IsEnabled] AS int) + CAST([IsSubscribed] AS int) FROM [ExternalIntegrationResources] WHERE [Id] = " + staleId));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [ExternalId] = 'moved-page' AND [IsEnabled] = 1 AND [Id] = " + takingId));
+        Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationResources] WHERE [Id] = " + blockedId + " AND [IsEnabled] = 1"));
     }
 
     /// <summary>
@@ -3483,7 +3827,8 @@ public sealed class SqlServerProductionInvariantTests
 
     /// <summary>The event worker on the real lead ingestion path, wired the way the API wires it.</summary>
     private static DAMS.Application.Services.Integrations.MetaLeadEventProcessor MetaProcessor(
-        AppDbContext db, DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph)
+        AppDbContext db, DAMS.Application.Tests.Integrations.FakeMetaGraphClient graph,
+        MetaIntegrationOptions? metaOptions = null)
     {
         var clock = new LeadTestHarness.FakeClock(DateTime.UtcNow);
         var dispatcher = new NotificationDispatcher(db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
@@ -3495,7 +3840,8 @@ public sealed class SqlServerProductionInvariantTests
             new CustomerAccountLinkService(db, clock));
 
         return new DAMS.Application.Services.Integrations.MetaLeadEventProcessor(
-            db, graph, new DAMS.Application.Tests.Integrations.PlaintextSecretProtector(), leads, SqlMetaOptions,
+            db, graph, new DAMS.Application.Tests.Integrations.PlaintextSecretProtector(), leads,
+            metaOptions ?? SqlMetaOptions,
             NullLogger<DAMS.Application.Services.Integrations.MetaLeadEventProcessor>.Instance);
     }
 

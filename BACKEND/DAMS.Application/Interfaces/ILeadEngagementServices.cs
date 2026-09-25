@@ -72,8 +72,9 @@ namespace DAMS.Application.Interfaces
         /// </summary>
         Task<bool> QueueAsync(int leadId, int recipientUserId, NotificationType type, string title, string? body, string dedupKey, bool isEscalation = false, CancellationToken cancellationToken = default);
 
-        /// <summary>Notifies every admin and the owning manager(s) for a lead.</summary>
-        Task<int> QueueForSupervisorsAsync(Lead lead, NotificationType type, string title, string? body, string dedupKeySuffix, bool isEscalation = false, CancellationToken cancellationToken = default);
+        /// <summary>Notifies every admin and the owning manager(s) for a lead. When includeQueueManagers
+        /// is true, also notifies all managers who handle the unassigned queue.</summary>
+        Task<int> QueueForSupervisorsAsync(Lead lead, NotificationType type, string title, string? body, string dedupKeySuffix, bool isEscalation = false, bool includeQueueManagers = false, CancellationToken cancellationToken = default);
     }
 
     /// <summary>Time-based alerts and escalations. Safe to run repeatedly.</summary>

@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "../../lib/Button.tsx";
 import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
-import type { MetaConnection, MetaResource, MetaResourceGroup } from "./types.ts";
+import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
   connectionStatusLabel,
   connectionStatusTone,
+  createLatestRequestGuard,
+  emptyEventsMessage,
+  eventListLimit,
+  eventListLimitNote,
+  type MetaEventFilter,
   deliverySummary,
   isAwaitingFirstSync,
   isToggleable,
@@ -15,8 +20,10 @@ import {
 } from "./metaIntegrationState.ts";
 import {
   disconnectMetaConnection,
+  listMetaEvents,
   listMetaConnections,
   listMetaResources,
+  retryMetaEvent,
   setMetaResourceEnabled,
   startMetaConnect,
   syncMetaConnection,
@@ -120,6 +127,10 @@ export default function MetaIntegrationsPanel() {
 
 function ConnectionCard({ connection, onChanged }: { connection: MetaConnection; onChanged: () => void }) {
   const [groups, setGroups] = useState<MetaResourceGroup[]>([]);
+  // Tagged with the filter they were loaded for, so a list is never shown under the wrong one.
+  const [events, setEvents] = useState<{ filter: MetaEventFilter; items: MetaEvent[] | "failed" } | null>(null);
+  const [eventFilter, setEventFilter] = useState<MetaEventFilter>("All");
+  const loadGuard = useRef(createLatestRequestGuard());
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -127,12 +138,25 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
 
   const loadResources = useCallback(async () => {
     setError(null);
-    try {
-      setGroups(await listMetaResources(connection.id));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Resources could not be loaded.");
+    const isCurrent = loadGuard.current.begin();
+    const filter = eventFilter;
+    const [resourcesResult, eventsResult] = await Promise.allSettled([
+      listMetaResources(connection.id),
+      listMetaEvents(connection.id, eventListLimit(filter), filter === "All" ? undefined : filter),
+    ]);
+    // A newer load (another filter, or a refresh after an action) has started since; its
+    // answer is the one to show, even if this older one arrived after it.
+    if (!isCurrent()) return;
+    const failures: string[] = [];
+    if (resourcesResult.status === "fulfilled") setGroups(resourcesResult.value);
+    else failures.push("Resources could not be loaded.");
+    if (eventsResult.status === "fulfilled") setEvents({ filter, items: eventsResult.value });
+    else {
+      setEvents({ filter, items: "failed" });
+      failures.push("Lead events could not be loaded.");
     }
-  }, [connection.id]);
+    if (failures.length > 0) setError(failures.join(" "));
+  }, [connection.id, eventFilter]);
 
   useEffect(() => {
     if (expanded) void loadResources();
@@ -169,6 +193,12 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           </p>
           <p className="mt-1 text-xs text-[var(--text-secondary)]">{summarizeCounts(connection)}</p>
           <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{deliverySummary(connection)}</p>
+          {(connection.failedEventCount || connection.pendingEventCount) ? (
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              {connection.failedEventCount ? <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-red-300">{connection.failedEventCount} failed event{connection.failedEventCount === 1 ? "" : "s"}</span> : null}
+              {connection.pendingEventCount ? <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-amber-200">{connection.pendingEventCount} pending event{connection.pendingEventCount === 1 ? "" : "s"}</span> : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -219,20 +249,25 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
             </p>
           ) : groups.length === 0 ? (
             <p className="text-sm text-[var(--text-muted)]">Nothing has been discovered yet. Try Sync now.</p>
-          ) : (
-            groups.map((group) => (
-              <ResourceGroup
-                key={group.resourceType}
-                group={group}
-                busy={busy}
-                onToggle={(resource, isEnabled) =>
-                  void run(`Resource ${resource.id}`, () =>
-                    setMetaResourceEnabled(connection.id, resource.id, isEnabled),
-                  )
-                }
-              />
-            ))
-          )}
+          ) : groups.map((group) => (
+            <ResourceGroup
+              key={group.resourceType}
+              group={group}
+              busy={busy}
+              onToggle={(resource, isEnabled) =>
+                void run(`Resource ${resource.id}`, () =>
+                  setMetaResourceEnabled(connection.id, resource.id, isEnabled),
+                )
+              }
+            />
+          ))}
+          <EventList
+            events={events?.filter === eventFilter ? events.items : "loading"}
+            busy={busy}
+            filter={eventFilter}
+            onFilterChange={setEventFilter}
+            onRetry={(eventId) => void run(`Event ${eventId}`, () => retryMetaEvent(connection.id, eventId))}
+          />
         </div>
       )}
 
@@ -312,6 +347,72 @@ function ResourceGroup({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function EventList({ events, busy, filter, onFilterChange, onRetry }: {
+  events: MetaEvent[] | "loading" | "failed";
+  busy: string | null;
+  filter: MetaEventFilter;
+  onFilterChange: (filter: MetaEventFilter) => void;
+  onRetry: (eventId: number) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Lead events</h3>
+        <select
+          aria-label="Filter lead events"
+          value={filter}
+          onChange={(event) => onFilterChange(event.target.value as MetaEventFilter)}
+          className="rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--text-secondary)]"
+        >
+          <option value="All">Recent</option>
+          <option value="Failed">Failed</option>
+          <option value="Pending">Pending</option>
+          <option value="Retry">Retrying</option>
+          <option value="Processing">Processing</option>
+        </select>
+      </div>
+      {events === "loading" ? (
+        <p className="text-sm text-[var(--text-muted)]">Loading events…</p>
+      ) : events === "failed" ? (
+        <p className="text-sm text-[var(--text-muted)]">Events could not be loaded.</p>
+      ) : events.length === 0 ? (
+        <p className="text-sm text-[var(--text-muted)]">{emptyEventsMessage(filter)}</p>
+      ) : (
+        <div className="space-y-2">
+          {events.map((event) => (
+            <div key={event.id} className="rounded-xl border border-[var(--border)] px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-[var(--text-primary)]">{event.eventType} · #{event.id}</p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    Received {formatDateTime(event.receivedAt)} · Attempts {event.attempts}
+                    {event.retryCount > 0 ? ` · Requeued ${event.retryCount} time${event.retryCount === 1 ? "" : "s"}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-full border px-2.5 py-0.5 text-xs ${event.status === "Failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : event.status === "Pending" || event.status === "Retry" ? "border-amber-500/30 bg-amber-500/10 text-amber-200" : "border-[var(--border)] text-[var(--text-muted)]"}`}>
+                    {event.status}
+                  </span>
+                  {event.status === "Failed" && (
+                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => onRetry(event.id)}>
+                      {busy === `Event ${event.id}` ? "Retrying…" : "Retry"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {event.lastError && <p className="mt-2 text-xs text-red-300">{event.lastError}</p>}
+              {event.lastRetriedAt && <p className="mt-1 text-xs text-[var(--text-muted)]">Last retry {formatDateTime(event.lastRetriedAt)}{event.lastRetriedByName ? ` by ${event.lastRetriedByName}` : ""}</p>}
+            </div>
+          ))}
+          {eventListLimitNote(filter, events.length) && (
+            <p className="text-xs text-[var(--text-muted)]">{eventListLimitNote(filter, events.length)}</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

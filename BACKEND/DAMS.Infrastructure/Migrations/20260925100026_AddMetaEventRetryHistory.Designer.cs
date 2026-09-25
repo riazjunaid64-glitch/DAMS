@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260925100026_AddMetaEventRetryHistory")]
+    partial class AddMetaEventRetryHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -4151,22 +4154,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.ToTable("LeadActivities");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.LeadAlertCheck", b =>
-                {
-                    b.Property<int>("LeadId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("FirstContactAssignmentCheckedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime?>("InactivityCheckedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("LeadId");
-
-                    b.ToTable("LeadAlertChecks");
-                });
-
             modelBuilder.Entity("DAMS.Domain.Entities.LeadAssignmentHistory", b =>
                 {
                     b.Property<int>("Id")
@@ -8027,17 +8014,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
                         .WithMany("Activities")
                         .HasForeignKey("LeadId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Lead");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.LeadAlertCheck", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Lead", "Lead")
-                        .WithOne()
-                        .HasForeignKey("DAMS.Domain.Entities.LeadAlertCheck", "LeadId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 

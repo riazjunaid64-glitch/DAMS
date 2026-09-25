@@ -452,7 +452,21 @@ namespace DAMS.Application.Services
             {
                 var employee = await LoadAssignableEmployeeAsync(dto.AssignedEmployeeId.Value, actor, cancellationToken);
                 lead.AssignedEmployeeId = employee.Id;
-                lead.AssignedTeamId = dto.AssignedTeamId ?? employee.TeamId;
+
+                var teamId = dto.AssignedTeamId ?? employee.TeamId;
+                if (teamId.HasValue)
+                {
+                    var inactiveTeamMessage = employeeAutoAssigned && actor?.IsEmployee == true
+                        ? "Your assigned team is inactive, so you cannot create leads."
+                        : null;
+                    await EnsureTeamAssignableAsync(teamId.Value, actor!, cancellationToken, inactiveTeamMessage);
+                }
+
+                if (dto.AssignedTeamId.HasValue && employee.TeamId != dto.AssignedTeamId.Value)
+                    throw new InvalidOperationException(
+                        $"{employee.FullName} is not a member of that team.");
+
+                lead.AssignedTeamId = teamId;
             }
             else
             {
@@ -462,7 +476,7 @@ namespace DAMS.Application.Services
 
             lead.AssignmentState = LeadAssignmentState.Assigned;
             lead.AssignedAt = DateTime.UtcNow;
-            lead.AssignedByUserId = actor.UserId;
+            lead.AssignedByUserId = actor!.UserId;
             lead.Stage = LeadStage.FirstContactPending;
 
             _context.LeadAssignmentHistories.Add(new LeadAssignmentHistory
@@ -490,6 +504,7 @@ namespace DAMS.Application.Services
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
+                includeQueueManagers: true,
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
@@ -514,8 +529,9 @@ namespace DAMS.Application.Services
             if (ownerUserId == null)
                 return;
 
+            var dedupKey = BuildDedupKey(type, lead.Id, ownerUserId.Value, suffix);
             await _notifications.QueueAsync(lead.Id, ownerUserId.Value, type, title, body,
-                $"{type}:{lead.Id}:{ownerUserId.Value}:{suffix}", isEscalation, cancellationToken);
+                dedupKey, isEscalation, cancellationToken);
         }
 
         private async Task<LeadResponseDto> EnrichExistingLeadAsync(
@@ -611,10 +627,28 @@ namespace DAMS.Application.Services
                     a.NewValue = trail;
                 });
 
-            await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
-                $"Repeat enquiry: {FullName(lead)}",
-                $"A new enquiry arrived through {source.Name} for a lead you own.",
-                $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}", cancellationToken);
+            // One alert per enquiry. A provider submission is its own identity; anything else
+            // falls back to the minute it arrived, so a double-submitted form alerts once.
+            var repeatSuffix = isExternal && provider != null && externalId != null
+                ? $"repeat:{provider}:{externalId}"
+                : $"repeat:{DateTime.UtcNow:yyyyMMddHHmm}";
+
+            if (lead.AssignedEmployeeId == null)
+            {
+                // No salesperson owns it yet — unassigned, or parked on a team — so the people
+                // who hand it out hear instead: the queue's managers, or the team's.
+                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
+                    repeatSuffix, includeQueueManagers: true, cancellationToken: cancellationToken);
+            }
+            else
+            {
+                await NotifyOwnerAsync(lead, NotificationType.LeadCreated,
+                    $"Repeat enquiry: {FullName(lead)}",
+                    $"A new enquiry arrived through {source.Name} for a lead you own.",
+                    repeatSuffix, cancellationToken);
+            }
 
             await _context.SaveChangesAsync(cancellationToken);
 
@@ -1536,6 +1570,9 @@ namespace DAMS.Application.Services
                 if (teamId.HasValue)
                     await EnsureTeamAssignableAsync(teamId.Value, ctx, cancellationToken);
 
+                if (employee != null && dto.TeamId.HasValue && employee.TeamId != dto.TeamId.Value)
+                    throw new InvalidOperationException($"{employee.FullName} is not a member of that team.");
+
                 if (employee != null && previousEmployeeId == employee.Id && previousTeamId == teamId)
                     throw new InvalidOperationException("This lead is already assigned to that owner.");
 
@@ -2415,6 +2452,25 @@ namespace DAMS.Application.Services
             return string.Join(" | ", parts);
         }
 
+        internal static string BuildDedupKey(NotificationType type, int leadId, int userId, string dedupKeySuffix)
+        {
+            const int maxLength = 200;
+            var key = $"{type}:{leadId}:{userId}:{dedupKeySuffix}";
+
+            if (key.Length <= maxLength)
+                return key;
+
+            // Hash the suffix if the full key exceeds the DedupKey column limit (200 chars).
+            // DedupKey is unique in the database, so truncation risks collisions.
+            // Use stable SHA256 so the same suffix always produces the same hash.
+            var hash = System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(dedupKeySuffix))
+                [..8];
+            var prefix = $"{type}:{leadId}:{userId}:";
+            var hashSuffix = $"h:{Convert.ToHexString(hash).ToLowerInvariant()}";
+            return prefix + hashSuffix;
+        }
+
         private async Task<Employee> LoadAssignableEmployeeAsync(int employeeId, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var employee = await _context.Employees.FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
@@ -2447,13 +2503,14 @@ namespace DAMS.Application.Services
             return employee;
         }
 
-        private async Task EnsureTeamAssignableAsync(int teamId, LeadUserContext ctx, CancellationToken cancellationToken)
+        private async Task EnsureTeamAssignableAsync(
+            int teamId, LeadUserContext ctx, CancellationToken cancellationToken, string? inactiveMessage = null)
         {
             var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(t => t.Id == teamId, cancellationToken)
                 ?? throw new InvalidOperationException("Team not found.");
 
             if (!team.IsActive)
-                throw new InvalidOperationException($"Team '{team.Name}' is not active.");
+                throw new InvalidOperationException(inactiveMessage ?? $"Team '{team.Name}' is not active.");
 
             if (ctx.IsManager && !ctx.ManagedTeamIds.Contains(teamId))
                 throw new LeadAuthorizationException("You can only assign leads to a team you manage.");
