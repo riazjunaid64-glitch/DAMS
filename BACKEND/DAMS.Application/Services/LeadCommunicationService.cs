@@ -67,6 +67,7 @@ namespace DAMS.Application.Services
                 CustomerResponse = LeadContactNormalizer.Clean(dto.CustomerResponse),
                 NextAction = LeadContactNormalizer.Clean(dto.NextAction),
                 NextActionAt = dto.NextActionAt,
+                Connected = dto.Connected,
                 ExternalProvider = provider,
                 ExternalMessageId = externalMessageId,
                 CreatedAt = DateTime.UtcNow

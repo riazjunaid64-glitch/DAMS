@@ -342,6 +342,176 @@ public sealed class LeadEngagementTests
         await h.Leads.ChangeStageAsync(leadId, new ChangeLeadStageDto { Stage = LeadStage.Negotiation }, h.Sales);
     }
 
+    // ── Next action ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CompletingTheOnlyVisit_ClearsTheNextActionImmediately()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(1),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+
+        await h.SiteVisits.CompleteAsync(visit.Id, new CompleteSiteVisitDto
+        {
+            Outcome = LeadSiteVisitOutcome.Interested,
+            NextAction = "Follow up"
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task CompletingAVisit_HandsTheNextActionToTheEarliestRemainingWork()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUpDue = DateTime.UtcNow.AddDays(4);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(1),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Send brochure",
+            DueAt = followUpDue
+        }, h.Sales);
+
+        await h.SiteVisits.CompleteAsync(visit.Id, new CompleteSiteVisitDto
+        {
+            Outcome = LeadSiteVisitOutcome.Interested,
+            NextAction = "Follow up"
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(followUpDue, lead.NextActionAt);
+        Assert.Equal("Send brochure", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ReschedulingAVisitLater_DoesNotHideAnEarlierOutstandingFollowUp()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var followUpDue = DateTime.UtcNow.AddDays(3);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(1),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Send brochure",
+            DueAt = followUpDue
+        }, h.Sales);
+
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(6),
+            Reason = "Customer travelling."
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(followUpDue, lead.NextActionAt);
+        Assert.Equal("Send brochure", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ALaterCommunication_SupersedesTheEarlierOnesNextAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Discussed pricing.",
+            NextAction = "Call tomorrow",
+            NextActionAt = DateTime.UtcNow.AddDays(1)
+        }, h.Sales);
+
+        var rescheduledTo = DateTime.UtcNow.AddDays(5);
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Whatsapp,
+            Direction = LeadCommunicationDirection.Inbound,
+            Summary = "Customer asked to talk next week.",
+            NextAction = "Call next week",
+            NextActionAt = rescheduledTo
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(rescheduledTo, lead.NextActionAt);
+        Assert.Equal("Call next week", lead.NextActionSummary);
+
+        // A later exchange with no plan means the earlier plan was carried out.
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Called back as promised."
+        }, h.Sales);
+
+        lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task MixedWork_NextActionTracksTheEarliestOutstandingItem()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var callAt = DateTime.UtcNow.AddDays(2);
+        var visitAt = DateTime.UtcNow.AddDays(4);
+        var followUpDue = DateTime.UtcNow.AddDays(1);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Intro call.",
+            NextAction = "Share floor plans",
+            NextActionAt = callAt
+        }, h.Sales);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = visitAt,
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Confirm budget",
+            DueAt = followUpDue
+        }, h.Sales);
+
+        Assert.Equal(followUpDue, (await h.LoadLeadAsync(leadId)).NextActionAt);
+
+        await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto { Outcome = "Budget confirmed." }, h.Sales);
+        Assert.Equal(callAt, (await h.LoadLeadAsync(leadId)).NextActionAt);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Email,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Sent the floor plans."
+        }, h.Sales);
+        Assert.Equal(visitAt, (await h.LoadLeadAsync(leadId)).NextActionAt);
+
+        await h.SiteVisits.CompleteAsync(visit.Id, new CompleteSiteVisitDto
+        {
+            Outcome = LeadSiteVisitOutcome.Interested,
+            NextAction = "Follow up"
+        }, h.Sales);
+        Assert.Null((await h.LoadLeadAsync(leadId)).NextActionAt);
+    }
+
     [Fact]
     public async Task ACompletedVisitCannotBeCompletedOrCancelledAgain()
     {
@@ -491,5 +661,126 @@ public sealed class LeadEngagementTests
             leadId, upload, LeadDocumentCategory.Other, null, null, h.Sales));
 
         Assert.Empty(h.DocumentStorage.Files);
+    }
+
+    // ── KAN-24 regression tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task AnUnansweredAttempt_DoesNotClearThePlannedNextAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var callAt = DateTime.UtcNow.AddDays(1);
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Discussed pricing.",
+            NextAction = "Call tomorrow",
+            NextActionAt = callAt,
+            Connected = true
+        }, h.Sales);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Connected = false,
+            Summary = "No answer."
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(callAt, lead.NextActionAt);
+        Assert.Equal("Call tomorrow", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ReopeningADormantLead_ClearsTheRevisitAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true,
+            new CloseLeadDto { ClosureReasonId = reasonId, ReactivateOn = DateTime.UtcNow.AddDays(10) }, h.Sales);
+
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Called back." }, h.Manager);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task PlansFromBeforeClosure_DoNotComeBackAfterReopen()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Intro.",
+            NextAction = "Call tomorrow",
+            NextActionAt = DateTime.UtcNow.AddDays(1),
+            Connected = true
+        }, h.Sales);
+
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Back." }, h.Manager);
+
+        var due = DateTime.UtcNow.AddDays(5);
+        await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto { Title = "Send brochure", DueAt = due }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(due, lead.NextActionAt);
+        Assert.Equal("Send brochure", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ACallLoggedAfterReopen_WithAnEarlierOccurredAt_StillSetsTheNextAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Called back." }, h.Manager);
+
+        var quoteAt = DateTime.UtcNow.AddDays(2);
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Inbound,
+            OccurredAt = DateTime.UtcNow.AddMinutes(-15),
+            Summary = "Customer called back.",
+            NextAction = "Send quote",
+            NextActionAt = quoteAt,
+            Connected = true
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(quoteAt, lead.NextActionAt);
+        Assert.Equal("Send quote", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ClosingALead_CancelsMissedItems()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(1),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+
+        await h.SiteVisits.MarkMissedAsync(visit.Id, new CloseSiteVisitDto { Reason = "No-show" }, h.Sales);
+
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+
+        var visits = await h.SiteVisits.GetForLeadAsync(leadId, h.Sales);
+        var closed = visits.First(v => v.Id == visit.Id);
+        Assert.Equal(LeadSiteVisitStatus.Cancelled, closed.Status);
     }
 }

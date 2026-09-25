@@ -198,10 +198,24 @@ namespace DAMS.Application.Services
                 .Select(v => new { At = (DateTime?)v.ScheduledAt, Summary = "Site visit at " + v.MeetingLocation })
                 .FirstOrDefaultAsync(cancellationToken);
 
+            // Plans made before the lead was closed died with it; a reopen starts clean.
+            // Compare the recording time: a closed lead cannot receive communications, so anything
+            // recorded after the reopen belongs to it, even if it is logged with an earlier OccurredAt.
+            var reopenedAt = await context.LeadActivities
+                .AsNoTracking()
+                .Where(a => a.LeadId == leadId && a.Type == LeadActivityType.LeadReopened)
+                .MaxAsync(a => (DateTime?)a.OccurredAt, cancellationToken);
+
+            // Only the latest real exchange's plan is outstanding. A later conversation has either
+            // carried the plan out or replaced it; an unanswered attempt does neither unless it
+            // sets a plan of its own.
             var communication = await context.LeadCommunications
                 .AsNoTracking()
-                .Where(c => c.LeadId == leadId && c.NextActionAt != null)
-                .OrderBy(c => c.NextActionAt)
+                .Where(c => c.LeadId == leadId
+                            && (c.Connected || c.NextActionAt != null)
+                            && (reopenedAt == null || c.CreatedAt >= reopenedAt))
+                .OrderByDescending(c => c.OccurredAt)
+                .ThenByDescending(c => c.Id)
                 .Select(c => new { At = c.NextActionAt, Summary = c.NextAction ?? c.Summary })
                 .FirstOrDefaultAsync(cancellationToken);
 

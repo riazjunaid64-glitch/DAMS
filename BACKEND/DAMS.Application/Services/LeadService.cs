@@ -1869,6 +1869,8 @@ namespace DAMS.Application.Services
                 $"reopen:{DateTime.UtcNow:yyyyMMddHHmmss}", cancellationToken);
 
             await SaveWithConcurrencyGuardAsync(cancellationToken);
+            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+            await SaveWithConcurrencyGuardAsync(cancellationToken);
 
             return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
         }
@@ -2547,12 +2549,15 @@ namespace DAMS.Application.Services
         private async Task<int> CancelOpenWorkAsync(Lead lead, string reason, CancellationToken cancellationToken)
         {
             var followUps = await _context.LeadFollowUps
-                .Where(f => f.LeadId == lead.Id && f.Status == LeadFollowUpStatus.Pending)
+                .Where(f => f.LeadId == lead.Id
+                            && (f.Status == LeadFollowUpStatus.Pending || f.Status == LeadFollowUpStatus.Missed))
                 .ToListAsync(cancellationToken);
 
             var visits = await _context.LeadSiteVisits
                 .Where(v => v.LeadId == lead.Id
-                            && (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled))
+                            && (v.Status == LeadSiteVisitStatus.Scheduled
+                                || v.Status == LeadSiteVisitStatus.Rescheduled
+                                || v.Status == LeadSiteVisitStatus.Missed))
                 .ToListAsync(cancellationToken);
 
             var now = DateTime.UtcNow;

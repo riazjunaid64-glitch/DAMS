@@ -50,13 +50,6 @@ namespace DAMS.Application.Services
 
             _context.LeadFollowUps.Add(followUp);
 
-            // The lead's next action is always the earliest open follow-up.
-            if (lead.NextActionAt == null || dto.DueAt < lead.NextActionAt)
-            {
-                lead.NextActionAt = dto.DueAt;
-                lead.NextActionSummary = LeadContactNormalizer.Limit(followUp.Title, 300);
-            }
-
             lead.UpdatedAt = DateTime.UtcNow;
 
             var activity = LeadTimeline.Record(_context, lead,
