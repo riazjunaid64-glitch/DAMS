@@ -2494,6 +2494,65 @@ public sealed class SqlServerProductionInvariantTests
             a => a.LeadId == opened.Id && a.Type == LeadActivityType.DetailsUpdated));
     }
 
+    /// <summary>
+    /// An edit that shares no contact detail with an enquiry enriching the same lead. The contact
+    /// locks cannot order them, so the lead lock must: the edit waits for the enrichment to commit
+    /// and is then refused as stale, instead of saving first and failing the enquiry on its row version.
+    /// </summary>
+    [SqlServerFact]
+    public async Task AnEditWaitsBehindAnEnquiryEnrichingTheSameLead_AndIsThenRefusedAsStale_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+        LeadResponseDto opened;
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            using var dispatcher = SqlLeadDispatcher(db);
+            opened = (await SqlLeadService(db, dispatcher).IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Existing", Email = "existing@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!;
+        }
+
+        Task<LeadResponseDto>? edit = null;
+        var race = new RunBeforeSavingInterceptor(
+            context => context.ChangeTracker.Entries<Lead>().Any(e => e.State == EntityState.Modified),
+            async () =>
+            {
+                edit = Task.Run(async () =>
+                {
+                    await using var db = new AppDbContext(options);
+                    using var dispatcher = SqlLeadDispatcher(db);
+                    return await SqlLeadService(db, dispatcher).UpdateAsync(opened.Id, new UpdateLeadDto
+                    {
+                        FirstName = "Existing", Email = "renamed@example.com",
+                        ConcurrencyToken = opened.ConcurrencyToken
+                    }, admin);
+                });
+                Assert.True(await SomeoneIsWaitingOnAContactLockAsync(database.ConnectionString, edit, TimeSpan.FromSeconds(20)),
+                    "The edit never waited on the lead lock.");
+            });
+
+        await using (var db = new AppDbContext(Options(database.ConnectionString, race)))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var enquiry = ConcurrentEnquiry("enrich-race", phone: null);
+            enquiry.Email = "existing@example.com";
+            enquiry.City = "Islamabad";
+            var enriched = await SqlLeadService(db, dispatcher).IngestAsync(enquiry, actor: null, trustedExternal: true);
+            Assert.True(enriched.EnrichedExisting);
+        }
+
+        await Assert.ThrowsAsync<LeadConcurrencyException>(() => edit!);
+
+        await using var verify = new AppDbContext(options);
+        var stored = await verify.Leads.SingleAsync(l => l.Id == opened.Id);
+        Assert.Equal("Islamabad", stored.City);
+        Assert.Equal("existing@example.com", stored.Email);
+    }
+
     [SqlServerFact]
     public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
     {

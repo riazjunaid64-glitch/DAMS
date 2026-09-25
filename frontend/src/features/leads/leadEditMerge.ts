@@ -1,11 +1,12 @@
 import { initialForm } from "./leadActionDefaults.ts";
+import { LeadConflictError } from "./leadApi.ts";
 import type { Lead } from "./types.ts";
 
-type EditForm = Record<string, string | boolean>;
+export type EditForm = Record<string, string | boolean>;
 
 export type EditConflict = { label: string; theirs: string };
 
-const LABELS: Record<string, string> = {
+export const EDIT_LABELS: Record<string, string> = {
   firstName: "First name",
   lastName: "Last name",
   phone: "Phone",
@@ -31,10 +32,11 @@ const LABELS: Record<string, string> = {
 
 // A unit only means something within its project, so the two are merged as one choice:
 // taking a newer project while keeping this form's unit could pair a unit with the wrong project.
-const GROUPS: string[][] = [
-  ["interestedProjectId", "interestedUnitId"],
-  ...Object.keys(LABELS).filter((field) => !field.startsWith("interested")).map((field) => [field]),
-];
+const PAIRED = ["interestedProjectId", "interestedUnitId"];
+
+// Fields a repeat enquiry appends to (LeadService.Append joins with a newline) rather than
+// replaces, with their UpdateLeadDto length limits.
+const APPENDED: Record<string, number> = { notes: 2000, sourceDetails: 500 };
 
 /**
  * Merges an edit form whose save was refused because the lead changed after the form opened.
@@ -42,25 +44,45 @@ const GROUPS: string[][] = [
  *
  * A field left untouched in the form takes the newer value, so saving again cannot revert
  * someone else's change or an external enquiry's enrichment. A field changed only in the form
- * keeps the form's value. A field changed on both sides to different values keeps the form's
- * value and is reported, so replacing the other change is a decision made with it in view.
+ * keeps the form's value. Text an enquiry appended to notes or source details is appended to
+ * the form's edited text too. Anything else changed on both sides keeps the form's value and
+ * is reported, so replacing the other change is a decision made with it in view.
  */
-export function mergeLeadEdit(base: Lead, latest: Lead, mine: EditForm): { form: EditForm; conflicts: EditConflict[] } {
+export function mergeLeadEdit(base: Lead, latest: Lead, mine: EditForm) {
   const was = initialForm({ type: "edit" }, base);
   const now = initialForm({ type: "edit" }, latest);
   const form: EditForm = { ...mine };
   const conflicts: EditConflict[] = [];
 
-  for (const group of GROUPS) {
+  // Every field the edit form has, so a field added to the form later is merged too.
+  const groups = [PAIRED, ...Object.keys(was).filter((field) => !PAIRED.includes(field)).map((field) => [field])];
+  for (const group of groups) {
     const differs = (a: EditForm, b: EditForm) => group.some((field) => a[field] !== b[field]);
     if (!differs(mine, was)) {
       for (const field of group) form[field] = now[field];
-    } else if (differs(now, was) && differs(now, mine)) {
-      for (const field of group) conflicts.push({ label: LABELS[field], theirs: shown(field, latest, now) });
+      continue;
     }
+    if (!differs(now, was) || !differs(now, mine)) continue;
+
+    const [field] = group;
+    const rebased = group.length === 1 && field in APPENDED
+      ? reapplyAppended(String(was[field]), String(now[field]), String(mine[field]), APPENDED[field])
+      : null;
+    if (rebased !== null) form[field] = rebased;
+    else for (const f of group) conflicts.push({ label: EDIT_LABELS[f] ?? f, theirs: shown(f, latest, now) });
   }
 
-  return { form, conflicts };
+  return { form, conflicts, detailsChanged: Object.keys(was).some((field) => was[field] !== now[field]) };
+}
+
+// The text an enquiry added after `was`, put after the form's own edit. Null when the newer
+// value is not simply `was` plus an addition (someone rewrote it, or the server trimmed the
+// oldest text to fit), or when the result would no longer fit the field.
+function reapplyAppended(was: string, now: string, mine: string, max: number): string | null {
+  const addition = was === "" ? now : now.startsWith(`${was}\n`) ? now.slice(was.length + 1) : null;
+  if (addition === null) return null;
+  const result = mine.trim() ? `${mine}\n${addition}` : addition;
+  return result.length <= max ? result : null;
 }
 
 // The form holds ids for the project and unit; the person needs the names.
@@ -72,13 +94,47 @@ function shown(field: string, latest: Lead, now: EditForm) {
 
 /** What the person sees after the merge, before deciding whether to save again. */
 export function describeEditConflict(conflicts: EditConflict[]): string {
-  const intro = "Someone else updated this lead while you were editing. The newer details have been loaded into the form";
+  const intro = "This lead changed while you were editing, and the newer details have been loaded into the form";
   if (conflicts.length === 0)
-    return `${intro} and none of them clash with your changes. Review the form and save again.`;
+    return `${intro}. None of them clash with your changes. Review the form and save again.`;
+  return `${intro}. The fields below were also changed and still show your values. Saving again replaces the newer values with yours.`;
+}
 
-  const fields = conflicts
-    .map(({ label, theirs }) => `${label} (now ${theirs ? `"${theirs.length > 60 ? `${theirs.slice(0, 60)}…` : theirs}"` : "empty"})`)
-    .join(", ");
-  return `${intro}, but these fields were also changed and still show your values: ${fields}. ` +
-    "Saving again replaces the newer values with yours.";
+export type EditSaveOutcome =
+  | { saved: true }
+  | { saved: false; base: Lead; form: EditForm; conflicts: EditConflict[] };
+
+/**
+ * Saves an edit against the version it was opened on. A refusal only means the lead's version
+ * moved — which every call, comment, follow-up, visit or alert also does — so the lead is
+ * reloaded: when none of the details on the form changed, the same form is saved once more
+ * against the newer version; otherwise the merge is handed back for the person to review.
+ */
+export async function saveLeadEdit(
+  base: Lead,
+  form: EditForm,
+  put: (concurrencyToken: string) => Promise<unknown>,
+  reload: () => Promise<Lead>,
+): Promise<EditSaveOutcome> {
+  if (await savedOrConflict(() => put(base.concurrencyToken))) return { saved: true };
+
+  let latest = await reload();
+  let merged = mergeLeadEdit(base, latest, form);
+  if (!merged.detailsChanged) {
+    if (await savedOrConflict(() => put(latest.concurrencyToken))) return { saved: true };
+    latest = await reload();
+    merged = mergeLeadEdit(base, latest, form);
+  }
+
+  return { saved: false, base: latest, form: merged.form, conflicts: merged.conflicts };
+}
+
+async function savedOrConflict(save: () => Promise<unknown>) {
+  try {
+    await save();
+    return true;
+  } catch (caught) {
+    if (caught instanceof LeadConflictError) return false;
+    throw caught;
+  }
 }

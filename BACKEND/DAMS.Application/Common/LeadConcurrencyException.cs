@@ -11,8 +11,11 @@ namespace DAMS.Application.Common
     /// </summary>
     public class LeadConcurrencyException : InvalidOperationException
     {
-        public LeadConcurrencyException(
-            string message = "Someone else updated this lead while you were working on it. Reload and try again.")
+        // Not "someone else": the change may equally be an enquiry enriching the lead or the
+        // alert scan marking a follow-up missed.
+        public const string DefaultMessage = "This lead changed while you were working on it. Reload and try again.";
+
+        public LeadConcurrencyException(string message = DefaultMessage)
             : base(message)
         {
         }

@@ -5,6 +5,7 @@ using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -99,11 +100,13 @@ public sealed class LeadEditConcurrencyTests
         Assert.Equal("Quetta", current.City);
     }
 
+    // A client that does not say what version it saw has a bug; nothing changed underneath it,
+    // so this is a plain bad request, not the conflict a reload-and-merge would answer.
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("not base64!")]
-    public async Task AnEditWithoutAUsableVersion_IsRefused(string? token)
+    public async Task AnEditWithoutAUsableVersion_IsRefusedAsABadRequest(string? token)
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
@@ -111,14 +114,15 @@ public sealed class LeadEditConcurrencyTests
         var dto = Edit(lead!, city: "Lahore", notes: null);
         dto.ConcurrencyToken = token;
 
-        await Assert.ThrowsAsync<LeadConcurrencyException>(() => h.Leads.UpdateAsync(leadId, dto, h.Admin));
+        // Exactly InvalidOperationException (400), not its LeadConcurrencyException subclass (409).
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Leads.UpdateAsync(leadId, dto, h.Admin));
 
         h.Db.ChangeTracker.Clear();
         Assert.Null((await h.LoadLeadAsync(leadId)).City);
     }
 
     [Fact]
-    public async Task TheEndpointAnswersAStaleEditWith409_AndACurrentOneWith200()
+    public async Task TheEndpointAnswersAStaleEditWith409_AMissingVersionWith400_AndACurrentOneWith200()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
@@ -135,6 +139,27 @@ public sealed class LeadEditConcurrencyTests
         var stale = await controller.Update(leadId, Edit(second!, city: "Karachi", notes: null), CancellationToken.None);
         var conflict = Assert.IsType<ConflictObjectResult>(stale);
         Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+
+        h.Db.ChangeTracker.Clear();
+        var unversioned = Edit((await h.Leads.GetByIdAsync(leadId, h.Admin))!, city: "Quetta", notes: null);
+        unversioned.ConcurrencyToken = null;
+        Assert.IsType<BadRequestObjectResult>(await controller.Update(leadId, unversioned, CancellationToken.None));
+    }
+
+    // Calls, follow-ups, visits, comments and documents also write the lead row but let EF's own
+    // exception escape. A lost race there must read as a conflict, not a server error.
+    [Fact]
+    public async Task ARawRowVersionRaceFromAnyLeadEndpoint_Answers409()
+    {
+        var controller = new ProbeController
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var result = await controller.Probe(() => throw new DbUpdateConcurrencyException("lost race"));
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains(LeadConcurrencyException.DefaultMessage, conflict.Value!.ToString());
     }
 
     private static UpdateLeadDto Edit(LeadResponseDto lead, string? city, string? notes) => new()
@@ -162,6 +187,11 @@ public sealed class LeadEditConcurrencyTests
         Notes = notes,
         ConcurrencyToken = lead.ConcurrencyToken
     };
+
+    private sealed class ProbeController() : LeadControllerBase(new FixedResolver(new LeadUserContext { UserId = 1, Role = LeadRoles.Admin }))
+    {
+        public Task<IActionResult> Probe(Func<Task<int>> action) => RunAsync(_ => action(), CancellationToken.None);
+    }
 
     private sealed class FixedResolver(LeadUserContext ctx) : ILeadUserContextResolver
     {

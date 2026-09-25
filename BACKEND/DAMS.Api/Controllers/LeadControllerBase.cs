@@ -2,6 +2,7 @@ using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace DAMS.Api.Controllers
 {
@@ -47,6 +48,12 @@ namespace DAMS.Api.Controllers
             {
                 return Conflict(new { message = ex.Message });
             }
+            catch (DbUpdateConcurrencyException)
+            {
+                // The engagement services (calls, follow-ups, visits, comments, documents) also
+                // write the lead row and do not translate a lost race themselves.
+                return Conflict(new { message = LeadConcurrencyException.DefaultMessage });
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
@@ -76,6 +83,12 @@ namespace DAMS.Api.Controllers
             catch (LeadConcurrencyException ex)
             {
                 return Conflict(new { message = ex.Message });
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // The engagement services (calls, follow-ups, visits, comments, documents) also
+                // write the lead row and do not translate a lost race themselves.
+                return Conflict(new { message = LeadConcurrencyException.DefaultMessage });
             }
             catch (InvalidOperationException ex)
             {

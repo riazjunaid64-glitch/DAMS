@@ -2605,7 +2605,9 @@ namespace DAMS.Application.Services
         /// UPDATE carries it in its WHERE clause and a stale form fails on save instead of
         /// overwriting newer values. A missing token is tolerated only when the row has no
         /// version (the in-memory test store): once one exists, omitting it would make the
-        /// protection opt-out by simply not sending the field.
+        /// protection opt-out by simply not sending the field. A missing or malformed token is
+        /// a bad request, not a conflict — nothing changed, the caller just did not say what
+        /// version it saw.
         /// </summary>
         private void ApplyConcurrencyToken(Lead lead, string? token)
         {
@@ -2613,11 +2615,11 @@ namespace DAMS.Application.Services
             if (string.IsNullOrWhiteSpace(token))
             {
                 if (property.CurrentValue is { Length: > 0 })
-                    throw new LeadConcurrencyException("The lead version is missing. Reload the lead and try again.");
+                    throw new InvalidOperationException("The lead version is missing. Reload the lead and try again.");
                 return;
             }
             try { property.OriginalValue = Convert.FromBase64String(token); }
-            catch (FormatException) { throw new LeadConcurrencyException("The lead version is invalid. Reload the lead and try again."); }
+            catch (FormatException) { throw new InvalidOperationException("The lead version is invalid. Reload the lead and try again."); }
         }
 
         private async Task SaveWithConcurrencyGuardAsync(CancellationToken cancellationToken)

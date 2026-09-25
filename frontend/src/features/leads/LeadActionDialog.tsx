@@ -11,8 +11,8 @@ import {
   Label,
 } from "./CrmUi.tsx";
 import { initialForm } from "./leadActionDefaults.ts";
-import { apiJson, jsonRequest, LeadConflictError, loadUnits } from "./leadApi.ts";
-import { describeEditConflict, mergeLeadEdit } from "./leadEditMerge.ts";
+import { apiJson, jsonRequest, loadUnits } from "./leadApi.ts";
+import { describeEditConflict, saveLeadEdit, type EditConflict } from "./leadEditMerge.ts";
 import {
   enumLabel,
   leadStages,
@@ -61,10 +61,11 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
   const [file, setFile] = useState<File | null>(null);
   // The lead an edit is based on: the one the form opened with, or the newer copy merged in after a conflict.
   const [editBase, setEditBase] = useState(lead);
+  const [conflicts, setConflicts] = useState<EditConflict[]>([]);
 
   useEffect(() => {
     if (!action) return;
-    setError(null); setFile(null); setCustomerResults([]);
+    setError(null); setFile(null); setCustomerResults([]); setConflicts([]);
     setForm(initialForm(action, lead));
     setEditBase(lead);
   }, [action, lead]);
@@ -103,28 +104,29 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
 
   const submit = async () => {
     if (!action) return;
-    setSaving(true); setError(null);
+    setSaving(true); setError(null); setConflicts([]);
     try {
-      const destination = await performAction(action, action.type === "edit" ? editBase : lead, form, file, user.role);
+      if (action.type === "edit") {
+        const outcome = await saveLeadEdit(editBase, form,
+          (concurrencyToken) => apiJson(`/api/leads/${lead.id}`, jsonRequest("PUT", editPayload(form, concurrencyToken))),
+          () => apiJson<Lead>(`/api/leads/${lead.id}`));
+        if (!outcome.saved) {
+          // Keep what was typed, show the newer values for everything else, and let the
+          // person review before saving against the newer version.
+          setEditBase(outcome.base);
+          setForm(outcome.form);
+          setConflicts(outcome.conflicts);
+          setError(describeEditConflict(outcome.conflicts));
+          return;
+        }
+        await onSaved();
+        return;
+      }
+      const destination = await performAction(action, lead, form, file, user.role);
       await onSaved(destination);
     } catch (caught) {
-      if (action.type === "edit" && caught instanceof LeadConflictError) await mergeNewerLead();
-      else setError(caught instanceof Error ? caught.message : "The action could not be completed.");
+      setError(caught instanceof Error ? caught.message : "The action could not be completed.");
     } finally { setSaving(false); }
-  };
-
-  // The lead changed after the form opened. Keep what was typed, take the newer values for
-  // everything else, and let the person review before saving against the newer version.
-  const mergeNewerLead = async () => {
-    try {
-      const latest = await apiJson<Lead>(`/api/leads/${lead.id}`);
-      const merged = mergeLeadEdit(editBase, latest, form);
-      setEditBase(latest);
-      setForm(merged.form);
-      setError(describeEditConflict(merged.conflicts));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The lead could not be reloaded.");
-    }
   };
 
   const searchCustomers = async () => {
@@ -149,6 +151,16 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
     >
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }} className="space-y-4">
         {error && <ErrorBanner message={error} />}
+        {conflicts.length > 0 && (
+          <dl className="space-y-2 rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4 text-sm text-amber-100">
+            {conflicts.map((conflict) => (
+              <div key={conflict.label}>
+                <dt className="font-semibold">{conflict.label} — newer value</dt>
+                <dd className="whitespace-pre-wrap break-words">{conflict.theirs || "(empty)"}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
 
         {action.type === "edit" && (
           <div className="grid gap-4 sm:grid-cols-2">
@@ -345,13 +357,18 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
   );
 }
 
-async function performAction(action: LeadAction, lead: Lead, form: Record<string, string | boolean>, file: File | null, userRole: string): Promise<string | undefined> {
+function editPayload(form: Record<string, string | boolean>, concurrencyToken: string) {
+  const s = (key: string) => String(form[key] ?? "").trim();
+  const numberOrNull = (key: string) => s(key) ? Number(s(key)) : null;
+  return { ...form, budgetMin: numberOrNull("budgetMin"), budgetMax: numberOrNull("budgetMax"), interestedProjectId: numberOrNull("interestedProjectId"), interestedUnitId: numberOrNull("interestedUnitId"), concurrencyToken };
+}
+
+// Edits are saved by saveLeadEdit, which handles a lead that changed while the form was open.
+async function performAction(action: Exclude<LeadAction, { type: "edit" }>, lead: Lead, form: Record<string, string | boolean>, file: File | null, userRole: string): Promise<string | undefined> {
   const s = (key: string) => String(form[key] ?? "").trim();
   const numberOrNull = (key: string) => s(key) ? Number(s(key)) : null;
   const dateOrNull = (key: string) => s(key) ? new Date(s(key)).toISOString() : null;
   switch (action.type) {
-    case "edit":
-      await apiJson(`/api/leads/${lead.id}`, jsonRequest("PUT", { ...form, budgetMin: numberOrNull("budgetMin"), budgetMax: numberOrNull("budgetMax"), interestedProjectId: numberOrNull("interestedProjectId"), interestedUnitId: numberOrNull("interestedUnitId"), concurrencyToken: lead.concurrencyToken })); break;
     case "assign":
       await apiJson(`/api/leads/${lead.id}/assign`, jsonRequest("POST", { employeeId: numberOrNull("employeeId"), teamId: numberOrNull("teamId"), reason: s("reason") })); break;
     case "stage":
