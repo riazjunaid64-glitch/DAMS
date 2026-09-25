@@ -40,6 +40,7 @@ namespace DAMS.Application.Services
             // Every rule below is relative to one instant, so a scan cannot half-apply
             // across a midnight boundary.
             var now = _clock.GetUtcNow().UtcDateTime;
+            _checks.Clear();
 
             await ScanFirstContactAsync(result, now, cancellationToken);
             await ScanFollowUpsAsync(result, now, cancellationToken);
@@ -57,18 +58,23 @@ namespace DAMS.Application.Services
 
             // Only leads that are genuinely still waiting on a first conversation. A lead
             // that has visibly moved on (a booked visit, a negotiation) is not chased, even
-            // if nobody logged the call that got it there.
+            // if nobody logged the call that got it there. One already evaluated for its
+            // current assignment is skipped, so the batch always moves on to leads not yet seen.
             var overdue = await _context.Leads
                 .Where(l => l.FirstContactAt == null
                             && l.AssignedEmployeeId != null
                             && l.AssignedAt != null && l.AssignedAt < cutoff
-                            && (l.Stage == LeadStage.New || l.Stage == LeadStage.FirstContactPending))
+                            && (l.Stage == LeadStage.New || l.Stage == LeadStage.FirstContactPending)
+                            && !_context.LeadAlertChecks.Any(c => c.LeadId == l.Id && c.FirstContactAssignmentCheckedAt == l.AssignedAt))
                 .OrderBy(l => l.AssignedAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
 
+            await LoadChecksAsync(overdue, cancellationToken);
+
             foreach (var lead in overdue)
             {
+                _checks[lead.Id].FirstContactAssignmentCheckedAt = lead.AssignedAt;
                 result.FirstContactOverdue++;
 
                 var name = Name(lead);
@@ -170,17 +176,24 @@ namespace DAMS.Application.Services
         {
             var cutoff = now.AddDays(-_options.InactivityDays);
             var bucket = now.ToString("yyyy-MM-dd");
+            var bucketStart = now.Date;
 
+            // A lead already evaluated today is skipped, so the batch reaches the rest of the
+            // quiet leads instead of re-reading the same oldest ones every scan.
             var stale = await _context.Leads
                 .Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage)
                             && l.AssignedEmployeeId != null
-                            && (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < cutoff)
+                            && (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < cutoff
+                            && !_context.LeadAlertChecks.Any(c => c.LeadId == l.Id && c.InactivityCheckedAt >= bucketStart))
                 .OrderBy(l => l.LastActivityAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
 
+            await LoadChecksAsync(stale, cancellationToken);
+
             foreach (var lead in stale)
             {
+                _checks[lead.Id].InactivityCheckedAt = now;
                 result.InactiveLeads++;
 
                 var name = Name(lead);
@@ -268,6 +281,28 @@ namespace DAMS.Application.Services
             lead.AssignedEmployeeId == null
                 ? Task.FromResult<int?>(null)
                 : EmployeeUserIdAsync(lead.AssignedEmployeeId.Value, cancellationToken);
+
+        // Both lead scans can reach the same lead in one run; each gets one tracked row.
+        private readonly Dictionary<int, LeadAlertCheck> _checks = new();
+
+        private async Task LoadChecksAsync(List<Lead> leads, CancellationToken cancellationToken)
+        {
+            var missing = leads.Select(l => l.Id).Where(id => !_checks.ContainsKey(id)).ToList();
+            if (missing.Count == 0)
+                return;
+
+            foreach (var check in await _context.LeadAlertChecks
+                         .Where(c => missing.Contains(c.LeadId))
+                         .ToListAsync(cancellationToken))
+                _checks[check.LeadId] = check;
+
+            foreach (var leadId in missing.Where(id => !_checks.ContainsKey(id)))
+            {
+                var check = new LeadAlertCheck { LeadId = leadId };
+                _context.LeadAlertChecks.Add(check);
+                _checks[leadId] = check;
+            }
+        }
 
         // A scan touches the same handful of employees over and over; look each up once.
         private readonly Dictionary<int, int?> _employeeUserIds = new();

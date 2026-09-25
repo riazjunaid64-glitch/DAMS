@@ -102,6 +102,91 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(notificationCount, await h.Db.Notifications.CountAsync());
     }
 
+    // ── Scan progress ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AlreadyAlertedLeadsDoNotStopASmallFirstContactScanReachingTheRest()
+    {
+        await using var h = await LeadTestHarness.CreateAsync(new LeadAlertOptions { MaxRowsPerScan = 2 });
+        var leadIds = new List<int>();
+        for (var i = 0; i < 5; i++)
+        {
+            var leadId = await h.CreateLeadAsync(LeadTestHarness.Intake(
+                phone: $"0300-100000{i}", email: $"first{i}@example.com"));
+            await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+            // Oldest first, so the earliest leads are the ones that used to fill every batch.
+            await AgeAssignmentAsync(h, leadId, hours: 50 - i);
+            leadIds.Add(leadId);
+        }
+
+        var scans = new List<LeadAlertScanResultDto>();
+        for (var i = 0; i < 3; i++)
+            scans.Add(await h.Alerts.RunScanAsync());
+
+        Assert.All(scans, s => Assert.InRange(s.FirstContactOverdue, 1, 2));
+        Assert.All(leadIds, leadId => Assert.Equal(1, FirstContactAlertsFor(h, leadId)));
+
+        // Everything has been seen: further scans do nothing and nobody is told twice.
+        var settled = await h.Alerts.RunScanAsync();
+        Assert.Equal(0, settled.FirstContactOverdue);
+        Assert.Equal(0, settled.NotificationsCreated);
+        Assert.All(leadIds, leadId => Assert.Equal(1, FirstContactAlertsFor(h, leadId)));
+    }
+
+    [Fact]
+    public async Task AReassignedUncontactedLeadIsEvaluatedAgainForItsNewOwner()
+    {
+        await using var h = await LeadTestHarness.CreateAsync(new LeadAlertOptions { MaxRowsPerScan = 1 });
+        var leadId = await h.CreateLeadAsync();
+        await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+        await AgeAssignmentAsync(h, leadId, hours: 10);
+        await h.Alerts.RunScanAsync();
+
+        await h.Leads.AssignAsync(leadId,
+            new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "handover" }, h.Admin);
+        await AgeAssignmentAsync(h, leadId, hours: 5);
+        var result = await h.Alerts.RunScanAsync();
+
+        Assert.Equal(1, result.FirstContactOverdue);
+        Assert.True(await h.Db.Notifications.AnyAsync(
+            n => n.RecipientUserId == h.OtherSalesUserId && n.Type == NotificationType.FirstContactOverdue));
+    }
+
+    [Fact]
+    public async Task ASmallInactivityScanCoversEveryQuietLeadEachDay_AndStillAlertsOncePerDay()
+    {
+        await using var h = await LeadTestHarness.CreateAsync(new LeadAlertOptions { MaxRowsPerScan = 2 });
+        var leadIds = new List<int>();
+        for (var i = 0; i < 5; i++)
+        {
+            var leadId = await h.CreateWorkedLeadAsync(phone: $"0300-200000{i}");
+            await SetLastActivityAsync(h, leadId, DateTime.UtcNow.AddDays(-30 + i));
+            leadIds.Add(leadId);
+        }
+
+        for (var i = 0; i < 3; i++)
+            Assert.InRange((await h.Alerts.RunScanAsync()).InactiveLeads, 1, 2);
+        Assert.All(leadIds, leadId => Assert.Equal(1, InactivityAlertsFor(h, leadId)));
+
+        var settled = await h.Alerts.RunScanAsync();
+        Assert.Equal(0, settled.InactiveLeads);
+        Assert.Equal(0, settled.NotificationsCreated);
+
+        // A new day starts a new round, and the whole backlog is reached again.
+        h.Clock.Set(h.Clock.UtcNow.AddDays(1));
+        for (var i = 0; i < 3; i++)
+            await h.Alerts.RunScanAsync();
+        Assert.All(leadIds, leadId => Assert.Equal(2, InactivityAlertsFor(h, leadId)));
+    }
+
+    private static int FirstContactAlertsFor(LeadTestHarness h, int leadId) =>
+        h.Db.Notifications.Count(n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId
+                                      && n.Type == NotificationType.FirstContactOverdue);
+
+    private static int InactivityAlertsFor(LeadTestHarness h, int leadId) =>
+        h.Db.Notifications.Count(n => n.EntityType == NotificationEntityType.Lead && n.EntityId == leadId
+                                      && n.Type == NotificationType.LeadInactive);
+
     [Fact]
     public async Task AClosedLeadStopsGeneratingAlerts()
     {

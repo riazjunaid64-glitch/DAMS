@@ -2903,6 +2903,77 @@ public sealed class SqlServerProductionInvariantTests
         }
     }
 
+    /// <summary>
+    /// A small alert batch over a larger backlog must still reach every lead, on the real
+    /// query plan. The owner has no login, so nobody can be told about these leads — exactly
+    /// the rows that used to sit at the front of every batch for ever.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ASmallAlertScanWorksThroughTheWholeBacklog_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var now = DateTime.UtcNow;
+        await using (var db = new AppDbContext(options))
+        {
+            var owner = new Employee
+            {
+                FullName = "No Login",
+                JobTitle = "Sales Executive",
+                Department = "Sales",
+                Phone = "03001114444",
+                JoinDate = now.AddYears(-1),
+                Status = EmployeeStatus.Active
+            };
+            db.Employees.Add(owner);
+            await db.SaveChangesAsync();
+
+            var source = await db.LeadSources.FirstAsync(s => s.Code == "walk_in");
+            for (var i = 0; i < 5; i++)
+                db.Leads.Add(new Lead
+                {
+                    LeadReference = $"LD-SCAN-{i}",
+                    FirstName = $"Backlog {i}",
+                    LeadSourceId = source.Id,
+                    Stage = LeadStage.FirstContactPending,
+                    AssignmentState = LeadAssignmentState.Assigned,
+                    AssignedEmployeeId = owner.Id,
+                    AssignedAt = now.AddHours(-10).AddMinutes(i),
+                    LastActivityAt = now.AddDays(-30).AddMinutes(i),
+                    CreatedAt = now.AddDays(-30)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        async Task<LeadAlertScanResultDto> ScanAsync()
+        {
+            await using var db = new AppDbContext(options);
+            using var dispatcher = SqlLeadDispatcher(db);
+            var alerts = new LeadAlertService(db, new LeadNotificationService(db, dispatcher),
+                Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions { MaxRowsPerScan = 2 }),
+                TimeProvider.System);
+            return await alerts.RunScanAsync();
+        }
+
+        for (var i = 0; i < 3; i++)
+        {
+            var scan = await ScanAsync();
+            Assert.InRange(scan.FirstContactOverdue, 1, 2);
+            Assert.InRange(scan.InactiveLeads, 1, 2);
+        }
+
+        var settled = await ScanAsync();
+        Assert.Equal(0, settled.FirstContactOverdue);
+        Assert.Equal(0, settled.InactiveLeads);
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(5, await verify.LeadAlertChecks.CountAsync(c =>
+            c.FirstContactAssignmentCheckedAt == c.Lead.AssignedAt && c.InactivityCheckedAt != null));
+    }
+
     private static NotificationDispatcher SqlLeadDispatcher(AppDbContext db) => new(
         db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
         TimeProvider.System, new NotificationEligibilityPolicy(db),
