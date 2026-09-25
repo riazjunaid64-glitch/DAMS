@@ -69,6 +69,11 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         [StringLength(2000)]
         public string? Notes { get; set; }
+
+        // Base64 RowVersion from the lead the edit form was opened with. An edit replaces every
+        // field above, so one made from an older copy is refused rather than reverting changes
+        // saved since — by another user, or by an external enquiry enriching the lead.
+        public string? ConcurrencyToken { get; set; }
     }
 
     public class AssignLeadDto

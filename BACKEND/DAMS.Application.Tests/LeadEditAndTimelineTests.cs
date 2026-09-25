@@ -13,7 +13,8 @@ public sealed class LeadEditAndTimelineTests
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
 
-        var updated = await h.Leads.UpdateAsync(leadId, Update(email: "new@example.com"), h.Sales);
+        var updated = await h.Leads.UpdateAsync(leadId,
+            Update(await h.ConcurrencyTokenAsync(leadId), email: "new@example.com"), h.Sales);
 
         Assert.Equal("new@example.com", updated.Email);
         Assert.Equal(500_000m, updated.BudgetMin);
@@ -27,9 +28,10 @@ public sealed class LeadEditAndTimelineTests
         await using var h = await LeadTestHarness.CreateAsync();
         var first = await h.CreateWorkedLeadAsync();
         var second = await h.CreateWorkedLeadAsync("03219998888");
+        var token = await h.ConcurrencyTokenAsync(second);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.UpdateAsync(second, Update(phone: "0300-1234567"), h.Admin));
+            h.Leads.UpdateAsync(second, Update(token, phone: "0300-1234567"), h.Admin));
 
         Assert.Contains("Another open lead", error.Message);
 
@@ -47,7 +49,7 @@ public sealed class LeadEditAndTimelineTests
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
 
-        var dto = Update();
+        var dto = Update(await h.ConcurrencyTokenAsync(leadId));
         dto.BudgetMin = 9_000_000m;
         dto.BudgetMax = 1_000_000m;
 
@@ -134,8 +136,9 @@ public sealed class LeadEditAndTimelineTests
         Assert.Equal("website", lead.SourceCode);
     }
 
-    private static UpdateLeadDto Update(string phone = "0300-1234567", string? email = "bilal@example.com") => new()
+    private static UpdateLeadDto Update(string token, string phone = "0300-1234567", string? email = "bilal@example.com") => new()
     {
+        ConcurrencyToken = token,
         FirstName = "Bilal",
         LastName = "Khan",
         Phone = phone,

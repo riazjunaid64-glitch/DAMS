@@ -75,6 +75,8 @@ export interface Lead {
   bookingRequestId?: number | null;
   createdAt: string;
   updatedAt?: string | null;
+  // The version this copy was read at; an edit sends it back so a stale form cannot overwrite newer changes.
+  concurrencyToken: string;
   openFollowUpCount: number;
   documentCount: number;
 }

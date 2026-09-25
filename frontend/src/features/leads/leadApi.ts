@@ -8,13 +8,16 @@ import type {
   UnitLookup,
 } from "./types.ts";
 
+/** The record changed since it was read (HTTP 409), so the write was refused rather than overwriting it. */
+export class LeadConflictError extends Error {}
+
 export async function apiJson<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await api(endpoint, options);
   if (!response.ok) {
     const body = await response.json().catch(() => ({})) as { message?: string; title?: string };
     if (response.status === 403) throw new Error("You do not have permission to perform this action.");
     if (response.status === 404) throw new Error(body.message ?? "The requested record was not found.");
-    if (response.status === 409) throw new Error(body.message ?? "This record changed. Reload and try again.");
+    if (response.status === 409) throw new LeadConflictError(body.message ?? "This record changed. Reload and try again.");
     throw new Error(body.message ?? body.title ?? `Request failed (HTTP ${response.status}).`);
   }
   if (response.status === 204) return undefined as T;

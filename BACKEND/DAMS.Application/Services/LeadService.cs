@@ -1429,9 +1429,12 @@ namespace DAMS.Application.Services
 
             // The clash check and the write share one transaction under the same contact locks
             // intake takes, so an enquiry for the new number cannot create a lead in between.
+            // The lead lock then queues this edit behind any enquiry enriching the same lead,
+            // so the edit is judged against what the enquiry wrote instead of failing it.
             return await RunContactWriteAtomicallyAsync(async ct =>
             {
                 await LockContactsAsync(null, null, normalizedPhone, normalizedWhatsappEdit, normalizedEmailEdit, ct);
+                await LockLeadAsync(id, ct);
                 return await UpdateUnderLockAsync(id, dto, ctx, normalizedPhone, normalizedWhatsappEdit, normalizedEmailEdit, ct);
             }, cancellationToken);
         }
@@ -1447,6 +1450,8 @@ namespace DAMS.Application.Services
                     lead.Stage == LeadStage.Won
                         ? "A converted lead is kept as history and can no longer be edited."
                         : $"This lead is {lead.Stage}. Reopen it before editing.");
+
+            ApplyConcurrencyToken(lead, dto.ConcurrencyToken);
 
             // Editing must not strand a lead with no way to reach the person, even though a
             // lead may legitimately have arrived without a phone number.
@@ -2595,6 +2600,28 @@ namespace DAMS.Application.Services
             });
         }
 
+        /// <summary>
+        /// Pins the version the caller's form was opened with onto the tracked lead, so the
+        /// UPDATE carries it in its WHERE clause and a stale form fails on save instead of
+        /// overwriting newer values. A missing token is tolerated only when the row has no
+        /// version (the in-memory test store): once one exists, omitting it would make the
+        /// protection opt-out by simply not sending the field. A missing or malformed token is
+        /// a bad request, not a conflict — nothing changed, the caller just did not say what
+        /// version it saw.
+        /// </summary>
+        private void ApplyConcurrencyToken(Lead lead, string? token)
+        {
+            var property = _context.Entry(lead).Property(l => l.RowVersion);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                if (property.CurrentValue is { Length: > 0 })
+                    throw new InvalidOperationException("The lead version is missing. Reload the lead and try again.");
+                return;
+            }
+            try { property.OriginalValue = Convert.FromBase64String(token); }
+            catch (FormatException) { throw new InvalidOperationException("The lead version is invalid. Reload the lead and try again."); }
+        }
+
         private async Task SaveWithConcurrencyGuardAsync(CancellationToken cancellationToken)
         {
             try
@@ -2603,8 +2630,7 @@ namespace DAMS.Application.Services
             }
             catch (DbUpdateConcurrencyException)
             {
-                throw new InvalidOperationException(
-                    "Someone else updated this lead while you were working on it. Reload and try again.");
+                throw new LeadConcurrencyException();
             }
         }
 
