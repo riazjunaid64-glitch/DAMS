@@ -4446,6 +4446,11 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Channel")
                         .HasColumnType("int");
 
+                    b.Property<bool>("Connected")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 

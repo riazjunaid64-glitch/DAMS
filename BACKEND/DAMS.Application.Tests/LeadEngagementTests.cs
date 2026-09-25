@@ -736,4 +736,50 @@ public sealed class LeadEngagementTests
         Assert.Equal(due, lead.NextActionAt);
         Assert.Equal("Send brochure", lead.NextActionSummary);
     }
+
+    [Fact]
+    public async Task ACallLoggedAfterReopen_WithAnEarlierOccurredAt_StillSetsTheNextAction()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+        await h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "Called back." }, h.Manager);
+
+        var quoteAt = DateTime.UtcNow.AddDays(2);
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Inbound,
+            OccurredAt = DateTime.UtcNow.AddMinutes(-15),
+            Summary = "Customer called back.",
+            NextAction = "Send quote",
+            NextActionAt = quoteAt,
+            Connected = true
+        }, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(quoteAt, lead.NextActionAt);
+        Assert.Equal("Send quote", lead.NextActionSummary);
+    }
+
+    [Fact]
+    public async Task ClosingALead_CancelsMissedItems()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(1),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+
+        await h.SiteVisits.MarkMissedAsync(visit.Id, new CloseSiteVisitDto { Reason = "No-show" }, h.Sales);
+
+        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+
+        var closed = await h.SiteVisits.LoadAsync(visit.Id);
+        Assert.Equal(LeadSiteVisitStatus.Cancelled, closed.Status);
+    }
 }

@@ -199,6 +199,8 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(cancellationToken);
 
             // Plans made before the lead was closed died with it; a reopen starts clean.
+            // Compare the recording time: a closed lead cannot receive communications, so anything
+            // recorded after the reopen belongs to it, even if it is logged with an earlier OccurredAt.
             var reopenedAt = await context.LeadActivities
                 .AsNoTracking()
                 .Where(a => a.LeadId == leadId && a.Type == LeadActivityType.LeadReopened)
@@ -211,7 +213,7 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .Where(c => c.LeadId == leadId
                             && (c.Connected || c.NextActionAt != null)
-                            && (reopenedAt == null || c.OccurredAt >= reopenedAt))
+                            && (reopenedAt == null || c.CreatedAt >= reopenedAt))
                 .OrderByDescending(c => c.OccurredAt)
                 .ThenByDescending(c => c.Id)
                 .Select(c => new { At = c.NextActionAt, Summary = c.NextAction ?? c.Summary })

@@ -18,13 +18,13 @@ namespace DAMS.Infrastructure.Migrations
                 nullable: false,
                 defaultValue: true);
 
-            // Mark old contact attempts (failed calls, etc.) as not connected.
-            // ContactAttempt = 5 (from LeadActivityType enum)
+            // Mark historical contact attempts (customer not reached) as not connected.
+            // LeadActivityType.ContactAttempt = 6
             migrationBuilder.Sql(@"
 UPDATE c SET c.Connected = 0
 FROM LeadCommunications c
 JOIN LeadActivities a ON a.CommunicationId = c.Id
-WHERE a.Type = 5;");
+WHERE a.Type = 6;");
 
             // KAN-24: recompute next action for open leads (Won=9, Lost=10, Dormant=11 excluded).
             // This brings existing production leads into compliance with the new rules.
@@ -52,7 +52,7 @@ OUTER APPLY (
                        FROM LeadCommunications c
                        WHERE c.LeadId = l.Id
                          AND (c.Connected = 1 OR c.NextActionAt IS NOT NULL)
-                         AND (r.ReopenedAt IS NULL OR c.OccurredAt >= r.ReopenedAt)
+                         AND (r.ReopenedAt IS NULL OR c.CreatedAt >= r.ReopenedAt)
                        ORDER BY c.OccurredAt DESC, c.Id DESC) cm
     ) x
     WHERE x.At IS NOT NULL
