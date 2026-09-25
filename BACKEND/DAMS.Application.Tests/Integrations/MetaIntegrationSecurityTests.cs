@@ -357,6 +357,33 @@ public class MetaIntegrationSecurityTests
         Assert.Contains("could not be told to stop", updated.LastError);
     }
 
+    /// <summary>
+    /// A disconnect whose unsubscribe Meta refused leaves a disabled Page still flagged as
+    /// subscribed. Unchecking it again (from a stale tab, or the API directly) used to try Meta
+    /// with credentials the disconnect had already deleted, and that failure marked the
+    /// connection NeedsReauthorization, undoing the disconnect.
+    /// </summary>
+    [Fact]
+    public async Task DisablingAPageOnADisconnectedConnection_LeavesItDisconnectedAndNeverCallsMeta()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync(pageId: "page-1", enabled: true);
+        h.Graph.UnsubscribeFailure = new MetaTransientException("Meta could not be reached.");
+        await h.Integration.DisconnectAsync(connection.Id, h.Leads.Admin);
+        h.Graph.UnsubscribeFailure = null;
+        var callsBefore = h.Graph.SubscriptionCallLog.Count;
+
+        var result = await h.Integration.SetResourceEnabledAsync(connection.Id, page.Id, isEnabled: false);
+
+        Assert.False(result.IsEnabled);
+        Assert.Equal(callsBefore, h.Graph.SubscriptionCallLog.Count);
+        h.Db.ChangeTracker.Clear();
+        var reloaded = await h.Db.ExternalIntegrationConnections.SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Disconnected, reloaded.Status);
+        // Still the record of what Meta may be holding, for the sync after a reconnect.
+        Assert.True((await h.Db.ExternalIntegrationResources.SingleAsync(r => r.Id == page.Id)).IsSubscribed);
+    }
+
     [Fact]
     public async Task EnablingAPage_SubscribesItForLeadDelivery()
     {

@@ -29,7 +29,7 @@ namespace DAMS.Infrastructure.Migrations
                         column: x => x.ExternalIntegrationEventId,
                         principalTable: "ExternalIntegrationEvents",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
+                        onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_ExternalIntegrationEventRetries_Users_RequestedByUserId",
                         column: x => x.RequestedByUserId,
@@ -37,6 +37,11 @@ namespace DAMS.Infrastructure.Migrations
                         principalColumn: "UserId",
                         onDelete: ReferentialAction.Restrict);
                 });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExternalIntegrationEvents_ExternalIntegrationConnectionId_Status_ReceivedAt",
+                table: "ExternalIntegrationEvents",
+                columns: new[] { "ExternalIntegrationConnectionId", "Status", "ReceivedAt" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ExternalIntegrationEventRetries_ExternalIntegrationEventId_RequestedAt",
@@ -54,6 +59,10 @@ namespace DAMS.Infrastructure.Migrations
         {
             migrationBuilder.DropTable(
                 name: "ExternalIntegrationEventRetries");
+
+            migrationBuilder.DropIndex(
+                name: "IX_ExternalIntegrationEvents_ExternalIntegrationConnectionId_Status_ReceivedAt",
+                table: "ExternalIntegrationEvents");
         }
     }
 }

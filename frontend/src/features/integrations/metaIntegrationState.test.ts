@@ -3,6 +3,10 @@ import type { MetaConnection, MetaResource } from "../leads/types.ts";
 import {
   canSync,
   connectionStatusLabel,
+  createLatestRequestGuard,
+  emptyEventsMessage,
+  eventListLimit,
+  eventListLimitNote,
   deliverySummary,
   isAwaitingFirstSync,
   isToggleable,
@@ -123,5 +127,32 @@ describe("resource presentation", () => {
     expect(resourceTypeLabel("instagram_account")).toBe("Instagram account");
     expect(resourceTypeLabel("ad_set")).toBe("Ad set");
     expect(resourceTypeLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("event list", () => {
+  it("says an empty filtered list has none in that status, not that nothing ever arrived", () => {
+    expect(emptyEventsMessage("All")).toBe("No webhook events recorded for this connection.");
+    expect(emptyEventsMessage("Failed")).toBe("No failed events for this connection.");
+    expect(emptyEventsMessage("Retry")).toBe("No retrying events for this connection.");
+  });
+
+  it("says when a list is cut off at its limit", () => {
+    expect(eventListLimit("All")).toBe(25);
+    expect(eventListLimit("Failed")).toBe(200);
+    expect(eventListLimitNote("Failed", 199)).toBeNull();
+    expect(eventListLimitNote("Failed", 200)).toBe(
+      "Showing the 200 most recent failed events; there may be more.",
+    );
+    expect(eventListLimitNote("All", 25)).toBe("Showing the 25 most recent events.");
+  });
+
+  it("lets only the newest of overlapping loads apply", () => {
+    const guard = createLatestRequestGuard();
+    const first = guard.begin();
+    const second = guard.begin();
+    // The first request answering last must be ignored.
+    expect(second()).toBe(true);
+    expect(first()).toBe(false);
   });
 });

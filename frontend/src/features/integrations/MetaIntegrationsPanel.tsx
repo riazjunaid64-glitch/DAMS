@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "../../lib/Button.tsx";
 import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
-import type { MetaConnection, MetaEvent, MetaEventStatus, MetaResource, MetaResourceGroup } from "./types.ts";
+import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
   connectionStatusLabel,
   connectionStatusTone,
+  createLatestRequestGuard,
+  emptyEventsMessage,
+  eventListLimit,
+  eventListLimitNote,
+  type MetaEventFilter,
   deliverySummary,
   isAwaitingFirstSync,
   isToggleable,
@@ -122,8 +127,10 @@ export default function MetaIntegrationsPanel() {
 
 function ConnectionCard({ connection, onChanged }: { connection: MetaConnection; onChanged: () => void }) {
   const [groups, setGroups] = useState<MetaResourceGroup[]>([]);
-  const [events, setEvents] = useState<MetaEvent[]>([]);
-  const [eventFilter, setEventFilter] = useState<MetaEventStatus | "All">("All");
+  // Tagged with the filter they were loaded for, so a list is never shown under the wrong one.
+  const [events, setEvents] = useState<{ filter: MetaEventFilter; items: MetaEvent[] | "failed" } | null>(null);
+  const [eventFilter, setEventFilter] = useState<MetaEventFilter>("All");
+  const loadGuard = useRef(createLatestRequestGuard());
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -131,15 +138,23 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
 
   const loadResources = useCallback(async () => {
     setError(null);
+    const isCurrent = loadGuard.current.begin();
+    const filter = eventFilter;
     const [resourcesResult, eventsResult] = await Promise.allSettled([
       listMetaResources(connection.id),
-      listMetaEvents(connection.id, eventFilter === "All" ? 25 : 200, eventFilter === "All" ? undefined : eventFilter),
+      listMetaEvents(connection.id, eventListLimit(filter), filter === "All" ? undefined : filter),
     ]);
+    // A newer load (another filter, or a refresh after an action) has started since; its
+    // answer is the one to show, even if this older one arrived after it.
+    if (!isCurrent()) return;
     const failures: string[] = [];
     if (resourcesResult.status === "fulfilled") setGroups(resourcesResult.value);
     else failures.push("Resources could not be loaded.");
-    if (eventsResult.status === "fulfilled") setEvents(eventsResult.value);
-    else failures.push("Lead events could not be loaded.");
+    if (eventsResult.status === "fulfilled") setEvents({ filter, items: eventsResult.value });
+    else {
+      setEvents({ filter, items: "failed" });
+      failures.push("Lead events could not be loaded.");
+    }
     if (failures.length > 0) setError(failures.join(" "));
   }, [connection.id, eventFilter]);
 
@@ -247,7 +262,7 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
             />
           ))}
           <EventList
-            events={events}
+            events={events?.filter === eventFilter ? events.items : "loading"}
             busy={busy}
             filter={eventFilter}
             onFilterChange={setEventFilter}
@@ -337,10 +352,10 @@ function ResourceGroup({
 }
 
 function EventList({ events, busy, filter, onFilterChange, onRetry }: {
-  events: MetaEvent[];
+  events: MetaEvent[] | "loading" | "failed";
   busy: string | null;
-  filter: MetaEventStatus | "All";
-  onFilterChange: (filter: MetaEventStatus | "All") => void;
+  filter: MetaEventFilter;
+  onFilterChange: (filter: MetaEventFilter) => void;
   onRetry: (eventId: number) => void;
 }) {
   return (
@@ -350,7 +365,7 @@ function EventList({ events, busy, filter, onFilterChange, onRetry }: {
         <select
           aria-label="Filter lead events"
           value={filter}
-          onChange={(event) => onFilterChange(event.target.value as MetaEventStatus | "All")}
+          onChange={(event) => onFilterChange(event.target.value as MetaEventFilter)}
           className="rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--text-secondary)]"
         >
           <option value="All">Recent</option>
@@ -360,8 +375,12 @@ function EventList({ events, busy, filter, onFilterChange, onRetry }: {
           <option value="Processing">Processing</option>
         </select>
       </div>
-      {events.length === 0 ? (
-        <p className="text-sm text-[var(--text-muted)]">No webhook events recorded for this connection.</p>
+      {events === "loading" ? (
+        <p className="text-sm text-[var(--text-muted)]">Loading events…</p>
+      ) : events === "failed" ? (
+        <p className="text-sm text-[var(--text-muted)]">Events could not be loaded.</p>
+      ) : events.length === 0 ? (
+        <p className="text-sm text-[var(--text-muted)]">{emptyEventsMessage(filter)}</p>
       ) : (
         <div className="space-y-2">
           {events.map((event) => (
@@ -389,6 +408,9 @@ function EventList({ events, busy, filter, onFilterChange, onRetry }: {
               {event.lastRetriedAt && <p className="mt-1 text-xs text-[var(--text-muted)]">Last retry {formatDateTime(event.lastRetriedAt)}{event.lastRetriedByName ? ` by ${event.lastRetriedByName}` : ""}</p>}
             </div>
           ))}
+          {eventListLimitNote(filter, events.length) && (
+            <p className="text-xs text-[var(--text-muted)]">{eventListLimitNote(filter, events.length)}</p>
+          )}
         </div>
       )}
     </div>

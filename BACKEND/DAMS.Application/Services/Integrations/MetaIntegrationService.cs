@@ -522,20 +522,31 @@ namespace DAMS.Application.Services.Integrations
             // disconnecting one silently unsubscribe leads for the other, since Meta only knows
             // one relationship exists. Ownership is therefore kept exclusive at the point a Page
             // is turned on, rather than left for the webhook to guess between candidates later.
+            //
+            // Ownership is exactly what UX_ExternalIntegrationResources_EnabledFacebookPage says it
+            // is: the one enabled copy of the Page, active or not. An enabled copy that Meta no
+            // longer returns for its own connection (IsActive = false) cannot deliver leads there
+            // (intake and the processor both require IsActive), so it is not a real claim — but it
+            // still holds the index. It is therefore released in this same save rather than
+            // ignored, otherwise the check below would pass, Meta would be subscribed, and the
+            // save would still be refused by the index.
+            var staleClaims = new List<ExternalIntegrationResource>();
             if (isEnabled && resource.ResourceType == ExternalResourceTypes.FacebookPage)
             {
-                var alreadyOwnedElsewhere = await _context.ExternalIntegrationResources
-                    .AnyAsync(r => r.Id != resource.Id
-                                   && r.Provider == IntegrationProviders.Meta
-                                   && r.ResourceType == ExternalResourceTypes.FacebookPage
-                                   && r.ExternalId == resource.ExternalId
-                                   && r.IsActive
-                                   && r.IsEnabled, cancellationToken);
+                var enabledElsewhere = await _context.ExternalIntegrationResources
+                    .Where(r => r.Id != resource.Id
+                                && r.Provider == IntegrationProviders.Meta
+                                && r.ResourceType == ExternalResourceTypes.FacebookPage
+                                && r.ExternalId == resource.ExternalId
+                                && r.IsEnabled)
+                    .ToListAsync(cancellationToken);
 
-                if (alreadyOwnedElsewhere)
+                if (enabledElsewhere.Any(r => r.IsActive))
                     throw new InvalidOperationException(
                         "This Facebook Page is already enabled through another DAMS connection. " +
                         "Disable it there first before enabling it here.");
+
+                staleClaims = enabledElsewhere;
             }
 
             var skipPageUnsubscribe = false;
@@ -550,7 +561,15 @@ namespace DAMS.Application.Services.Integrations
                                    && r.ExternalId == resource.ExternalId
                                    && r.IsEnabled, cancellationToken);
 
-                skipPageUnsubscribe = ownedElsewhere || (!resource.IsEnabled && !resource.IsSubscribed);
+                // A Disconnected connection has no credentials left (DisconnectAsync cleared them),
+                // so it cannot reach Meta, and trying would mark it NeedsReauthorization and
+                // undo the disconnect. A Page still flagged IsSubscribed there is the record of
+                // an unsubscribe Meta refused during the disconnect; it is left as it is for the
+                // sync after a reconnect to take down.
+                var disconnected = connection.Status == ExternalIntegrationConnectionStatus.Disconnected;
+
+                skipPageUnsubscribe = ownedElsewhere || disconnected
+                                      || (!resource.IsEnabled && !resource.IsSubscribed);
                 if (ownedElsewhere)
                     resource.IsSubscribed = false;
             }
@@ -560,6 +579,17 @@ namespace DAMS.Application.Services.Integrations
             if (resource.ResourceType == ExternalResourceTypes.FacebookPage
                 && (isEnabled || !skipPageUnsubscribe))
                 await ApplyPageSubscriptionAsync(connection, resource, isEnabled, cancellationToken);
+
+            // Released only once Meta has accepted this connection's Subscribe: a refusal above
+            // saves the connection's NeedsReauthorization state, and must not save this with it.
+            // The subscription is app-to-Page, so this connection's Subscribe is what now keeps
+            // the Page delivering; the stale copy no longer holds it.
+            foreach (var staleClaim in staleClaims)
+            {
+                staleClaim.IsEnabled = false;
+                staleClaim.IsSubscribed = false;
+                staleClaim.UpdatedAt = DateTime.UtcNow;
+            }
 
             resource.IsEnabled = isEnabled;
             resource.UpdatedAt = DateTime.UtcNow;
@@ -806,6 +836,11 @@ namespace DAMS.Application.Services.Integrations
         private async Task MarkNeedsReauthorizationAsync(
             ExternalIntegrationConnection connection, string reason, CancellationToken cancellationToken)
         {
+            // Disconnecting is a deliberate, final choice: only a reconnect may bring the
+            // connection back, never a failed call that happened to run against it afterwards.
+            if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
+                return;
+
             connection.Status = ExternalIntegrationConnectionStatus.NeedsReauthorization;
             connection.LastErrorAt = DateTime.UtcNow;
             connection.LastError = MetaCredentialScrubber.ScrubAndLimit(reason, 1000);

@@ -3130,6 +3130,8 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("Status", "AvailableAt");
 
+                    b.HasIndex("ExternalIntegrationConnectionId", "Status", "ReceivedAt");
+
                     b.ToTable("ExternalIntegrationEvents");
                 });
 
@@ -7762,7 +7764,7 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasOne("DAMS.Domain.Entities.ExternalIntegrationEvent", "Event")
                         .WithMany()
                         .HasForeignKey("ExternalIntegrationEventId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.HasOne("DAMS.Domain.Entities.User", null)
