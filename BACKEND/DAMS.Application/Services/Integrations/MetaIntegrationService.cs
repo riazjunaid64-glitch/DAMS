@@ -83,14 +83,31 @@ namespace DAMS.Application.Services.Integrations
                 $"&redirect_uri={Uri.EscapeDataString(_options.OAuthCallbackUrl!)}" +
                 $"&state={Uri.EscapeDataString(rawState)}" +
                 $"&response_type=code" +
-                // Meta silently skips any permission this person declined before unless the
-                // dialog is told to ask again. Without it, "Reconnect" could never recover a
-                // declined lead-critical scope and the connection would stay stuck in
-                // NeedsReauthorization.
-                $"&auth_type=rerequest" +
-                $"&scope={Uri.EscapeDataString(MetaScopes.Joined)}";
+                PermissionRequest();
 
             return new MetaConnectStartDto { AuthorizationUrl = url, ExpiresAt = expiresAt };
+        }
+
+        /// <summary>
+        /// How the dialog is told which permissions to ask for. A Business app logs in through
+        /// Facebook Login for Business, where the login configuration named by config_id owns the
+        /// permission list; Meta recommends leaving scope off, and sending only scope to such an
+        /// app stops the dialog at "Feature unavailable" before any callback reaches DAMS.
+        /// auth_type=rerequest belongs to the scope-driven dialog and is not documented for a
+        /// configuration, so it is not sent there. The token exchange and the LeadCritical check
+        /// in the callback are identical either way.
+        /// </summary>
+        private string PermissionRequest()
+        {
+            if (!string.IsNullOrWhiteSpace(_options.LoginConfigId))
+                return $"&config_id={Uri.EscapeDataString(_options.LoginConfigId.Trim())}";
+
+            // Meta silently skips any permission this person declined before unless the
+            // dialog is told to ask again. Without it, "Reconnect" could never recover a
+            // declined lead-critical scope and the connection would stay stuck in
+            // NeedsReauthorization.
+            return "&auth_type=rerequest" +
+                   $"&scope={Uri.EscapeDataString(MetaScopes.Joined)}";
         }
 
         public async Task<string> CompleteCallbackAsync(
