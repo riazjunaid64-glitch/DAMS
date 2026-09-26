@@ -102,6 +102,106 @@ public sealed class BlankEmailEndpointTests : IClassFixture<IdempotentMoneyOpera
     }
 
     [Fact]
+    public async Task EditingALeadWithoutEmail_KeepsExistingEmailAndUnchangedFields()
+    {
+        var client = Admin();
+        var phone = UniquePhone();
+        var email = $"{Guid.NewGuid():N}@example.com";
+        var created = await CreatedLeadAsync(await client.PostAsync("/api/leads", Json(
+            $$"""{"firstName":"Partial Lead","lastName":"Original","phone":"{{phone}}","email":"{{email}}","sourceCode":"manual"}""")));
+        var id = created.GetProperty("id").GetInt32();
+
+        var response = await client.PutAsync($"/api/leads/{id}", Json(JsonSerializer.Serialize(new
+        {
+            city = "Lahore",
+            concurrencyToken = created.GetProperty("concurrencyToken").GetString()
+        })));
+
+        Assert.True(response.IsSuccessStatusCode,
+            $"Expected success, got {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        var stored = await StoredAsync(id);
+        Assert.Equal(email, stored.Email);
+        Assert.Equal("Partial Lead", stored.FirstName);
+        Assert.Equal("Original", stored.LastName);
+        Assert.Equal("Lahore", stored.City);
+    }
+
+    [Fact]
+    public async Task EditingACustomerWithoutEmail_KeepsExistingEmailAndUnchangedFields()
+    {
+        var client = Admin();
+        var phone = UniquePhone();
+        var email = $"{Guid.NewGuid():N}@example.com";
+        var create = await client.PostAsync("/api/Customer", Json(JsonSerializer.Serialize(new
+        {
+            fullName = "Partial Customer",
+            phone,
+            email
+        })));
+        var createBody = await create.Content.ReadAsStringAsync();
+        Assert.True(create.IsSuccessStatusCode, $"Expected success, got {create.StatusCode}: {createBody}");
+        var id = JsonDocument.Parse(createBody).RootElement.GetProperty("id").GetInt32();
+
+        var response = await client.PutAsync($"/api/Customer/{id}", Json("{\"notes\":\"Call tomorrow\"}"));
+
+        Assert.True(response.IsSuccessStatusCode,
+            $"Expected success, got {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        using var scope = _factory.Services.CreateScope();
+        var stored = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Customers
+            .AsNoTracking().SingleAsync(c => c.Id == id);
+        Assert.Equal(email, stored.Email);
+        Assert.Equal("Partial Customer", stored.FullName);
+        Assert.Equal(phone, stored.Phone);
+        Assert.Equal("Call tomorrow", stored.Notes);
+    }
+
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("null")]
+    public async Task PartialLeadUpdate_CanExplicitlyClearEmail(string emailJson)
+    {
+        var client = Admin();
+        var phone = UniquePhone();
+        var created = await CreatedLeadAsync(await client.PostAsync("/api/leads", Json(
+            $$"""{"firstName":"Clear Lead","phone":"{{phone}}","email":"{{Guid.NewGuid():N}}@example.com","sourceCode":"manual"}""")));
+        var id = created.GetProperty("id").GetInt32();
+
+        var token = created.GetProperty("concurrencyToken").GetString();
+        var response = await client.PutAsync($"/api/leads/{id}", Json(
+            $$"""{"email":{{emailJson}},"concurrencyToken":"{{token}}"}"""));
+
+        Assert.True(response.IsSuccessStatusCode,
+            $"Expected success, got {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        Assert.Null((await StoredAsync(id)).Email);
+    }
+
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("null")]
+    public async Task PartialCustomerUpdate_CanExplicitlyClearEmail(string emailJson)
+    {
+        var client = Admin();
+        var create = await client.PostAsync("/api/Customer", Json(JsonSerializer.Serialize(new
+        {
+            fullName = "Clear Customer",
+            phone = UniquePhone(),
+            email = $"{Guid.NewGuid():N}@example.com"
+        })));
+        var createBody = await create.Content.ReadAsStringAsync();
+        Assert.True(create.IsSuccessStatusCode, $"Expected success, got {create.StatusCode}: {createBody}");
+        var id = JsonDocument.Parse(createBody).RootElement.GetProperty("id").GetInt32();
+
+        var response = await client.PutAsync($"/api/Customer/{id}", Json($$"""{"email":{{emailJson}}}"""));
+
+        Assert.True(response.IsSuccessStatusCode,
+            $"Expected success, got {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        using var scope = _factory.Services.CreateScope();
+        var stored = await scope.ServiceProvider.GetRequiredService<AppDbContext>().Customers
+            .AsNoTracking().SingleAsync(c => c.Id == id);
+        Assert.Null(stored.Email);
+    }
+
+    [Fact]
     public async Task AnInvalidEmail_IsStillRejected_OnCreateAndOnEdit()
     {
         var client = Admin();

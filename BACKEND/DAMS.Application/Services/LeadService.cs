@@ -1518,46 +1518,52 @@ namespace DAMS.Application.Services
 
             ApplyConcurrencyToken(lead, dto.ConcurrencyToken);
 
+            var targetPhone = dto.WasProvided(nameof(dto.Phone)) ? normalizedPhone : lead.NormalizedPhone;
+            var targetWhatsapp = dto.WasProvided(nameof(dto.WhatsappNumber)) ? normalizedWhatsappEdit : lead.NormalizedWhatsapp;
+            var targetEmail = dto.WasProvided(nameof(dto.Email)) ? normalizedEmailEdit : lead.NormalizedEmail;
+
             // Editing must not strand a lead with no way to reach the person, even though a
             // lead may legitimately have arrived without a phone number.
-            if (normalizedPhone == null && normalizedWhatsappEdit == null && normalizedEmailEdit == null)
+            if (targetPhone == null && targetWhatsapp == null && targetEmail == null)
                 throw new InvalidOperationException(
                     "A lead must keep at least one way to reach the person: a phone number, a WhatsApp number, or an email address.");
 
-            if (dto.BudgetMin.HasValue && dto.BudgetMax.HasValue && dto.BudgetMin > dto.BudgetMax)
+            var targetBudgetMin = dto.WasProvided(nameof(dto.BudgetMin)) ? dto.BudgetMin : lead.BudgetMin;
+            var targetBudgetMax = dto.WasProvided(nameof(dto.BudgetMax)) ? dto.BudgetMax : lead.BudgetMax;
+            if (targetBudgetMin.HasValue && targetBudgetMax.HasValue && targetBudgetMin > targetBudgetMax)
                 throw new InvalidOperationException("The minimum budget cannot be greater than the maximum budget.");
 
             // Editing a contact field must not achieve what creation refuses: two open leads
             // for the same person. Checked against every channel that changed, not phone alone
             // — matching FindDuplicateAsync's rule that a number collides with either field,
             // whichever field it is entered in.
-            if (normalizedPhone != null && normalizedPhone != lead.NormalizedPhone)
+            if (targetPhone != null && targetPhone != lead.NormalizedPhone)
             {
                 var clash = await _context.Leads.AnyAsync(
                     l => l.Id != lead.Id
-                         && (l.NormalizedPhone == normalizedPhone || l.NormalizedWhatsapp == normalizedPhone)
+                         && (l.NormalizedPhone == targetPhone || l.NormalizedWhatsapp == targetPhone)
                          && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
 
                 if (clash)
                     throw new InvalidOperationException("Another open lead already uses that phone number.");
             }
 
-            if (normalizedWhatsappEdit != null && normalizedWhatsappEdit != lead.NormalizedWhatsapp)
+            if (targetWhatsapp != null && targetWhatsapp != lead.NormalizedWhatsapp)
             {
                 var clash = await _context.Leads.AnyAsync(
                     l => l.Id != lead.Id
-                         && (l.NormalizedWhatsapp == normalizedWhatsappEdit || l.NormalizedPhone == normalizedWhatsappEdit)
+                         && (l.NormalizedWhatsapp == targetWhatsapp || l.NormalizedPhone == targetWhatsapp)
                          && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
 
                 if (clash)
                     throw new InvalidOperationException("Another open lead already uses that WhatsApp number.");
             }
 
-            if (normalizedEmailEdit != null && normalizedEmailEdit != lead.NormalizedEmail)
+            if (targetEmail != null && targetEmail != lead.NormalizedEmail)
             {
                 var clash = await _context.Leads.AnyAsync(
                     l => l.Id != lead.Id
-                         && l.NormalizedEmail == normalizedEmailEdit
+                         && l.NormalizedEmail == targetEmail
                          && !LeadStageRules.ClosedStages.Contains(l.Stage), cancellationToken);
 
                 if (clash)
@@ -1565,33 +1571,42 @@ namespace DAMS.Application.Services
             }
 
             var changes = new List<string>();
-            if (lead.NormalizedPhone != normalizedPhone) changes.Add("phone");
-            if (lead.Email != normalizedEmailEdit) changes.Add("email");
+            if (lead.NormalizedPhone != targetPhone) changes.Add("phone");
+            if (lead.Email != targetEmail) changes.Add("email");
 
-            lead.FirstName = dto.FirstName.Trim();
-            lead.LastName = LeadContactNormalizer.Clean(dto.LastName);
-            lead.Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone);
-            lead.NormalizedPhone = normalizedPhone;
-            lead.WhatsappNumber = normalizedWhatsappEdit == null ? null : LeadContactNormalizer.Clean(dto.WhatsappNumber);
-            lead.NormalizedWhatsapp = normalizedWhatsappEdit;
-            lead.Email = LeadContactNormalizer.NormalizeEmail(dto.Email);
-            lead.NormalizedEmail = lead.Email;
-            lead.Address = LeadContactNormalizer.Clean(dto.Address);
-            lead.City = LeadContactNormalizer.Clean(dto.City);
-            lead.PreferredContactMethod = dto.PreferredContactMethod;
-            lead.PreferredContactTime = LeadContactNormalizer.Clean(dto.PreferredContactTime);
-            lead.SourceDetails = LeadContactNormalizer.Clean(dto.SourceDetails);
-            lead.CampaignName = LeadContactNormalizer.Clean(dto.CampaignName);
-            lead.CampaignReference = LeadContactNormalizer.Clean(dto.CampaignReference);
-            lead.AdReference = LeadContactNormalizer.Clean(dto.AdReference);
-            lead.InterestedProjectId = dto.InterestedProjectId;
-            lead.InterestedUnitId = dto.InterestedUnitId;
-            lead.PropertyType = LeadContactNormalizer.Clean(dto.PropertyType);
-            lead.PreferredLocation = LeadContactNormalizer.Clean(dto.PreferredLocation);
-            lead.BudgetMin = dto.BudgetMin;
-            lead.BudgetMax = dto.BudgetMax;
-            lead.PurchaseIntent = dto.PurchaseIntent;
-            lead.Notes = LeadContactNormalizer.Clean(dto.Notes);
+            if (dto.WasProvided(nameof(dto.FirstName))) lead.FirstName = dto.FirstName.Trim();
+            if (dto.WasProvided(nameof(dto.LastName))) lead.LastName = LeadContactNormalizer.Clean(dto.LastName);
+            if (dto.WasProvided(nameof(dto.Phone)))
+            {
+                lead.Phone = normalizedPhone == null ? null : LeadContactNormalizer.Clean(dto.Phone);
+                lead.NormalizedPhone = targetPhone;
+            }
+            if (dto.WasProvided(nameof(dto.WhatsappNumber)))
+            {
+                lead.WhatsappNumber = normalizedWhatsappEdit == null ? null : LeadContactNormalizer.Clean(dto.WhatsappNumber);
+                lead.NormalizedWhatsapp = targetWhatsapp;
+            }
+            if (dto.WasProvided(nameof(dto.Email)))
+            {
+                lead.Email = LeadContactNormalizer.NormalizeEmail(dto.Email);
+                lead.NormalizedEmail = lead.Email;
+            }
+            if (dto.WasProvided(nameof(dto.Address))) lead.Address = LeadContactNormalizer.Clean(dto.Address);
+            if (dto.WasProvided(nameof(dto.City))) lead.City = LeadContactNormalizer.Clean(dto.City);
+            if (dto.WasProvided(nameof(dto.PreferredContactMethod))) lead.PreferredContactMethod = dto.PreferredContactMethod;
+            if (dto.WasProvided(nameof(dto.PreferredContactTime))) lead.PreferredContactTime = LeadContactNormalizer.Clean(dto.PreferredContactTime);
+            if (dto.WasProvided(nameof(dto.SourceDetails))) lead.SourceDetails = LeadContactNormalizer.Clean(dto.SourceDetails);
+            if (dto.WasProvided(nameof(dto.CampaignName))) lead.CampaignName = LeadContactNormalizer.Clean(dto.CampaignName);
+            if (dto.WasProvided(nameof(dto.CampaignReference))) lead.CampaignReference = LeadContactNormalizer.Clean(dto.CampaignReference);
+            if (dto.WasProvided(nameof(dto.AdReference))) lead.AdReference = LeadContactNormalizer.Clean(dto.AdReference);
+            if (dto.WasProvided(nameof(dto.InterestedProjectId))) lead.InterestedProjectId = dto.InterestedProjectId;
+            if (dto.WasProvided(nameof(dto.InterestedUnitId))) lead.InterestedUnitId = dto.InterestedUnitId;
+            if (dto.WasProvided(nameof(dto.PropertyType))) lead.PropertyType = LeadContactNormalizer.Clean(dto.PropertyType);
+            if (dto.WasProvided(nameof(dto.PreferredLocation))) lead.PreferredLocation = LeadContactNormalizer.Clean(dto.PreferredLocation);
+            if (dto.WasProvided(nameof(dto.BudgetMin))) lead.BudgetMin = dto.BudgetMin;
+            if (dto.WasProvided(nameof(dto.BudgetMax))) lead.BudgetMax = dto.BudgetMax;
+            if (dto.WasProvided(nameof(dto.PurchaseIntent))) lead.PurchaseIntent = dto.PurchaseIntent;
+            if (dto.WasProvided(nameof(dto.Notes))) lead.Notes = LeadContactNormalizer.Clean(dto.Notes);
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.DetailsUpdated,
