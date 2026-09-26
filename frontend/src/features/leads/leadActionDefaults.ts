@@ -28,9 +28,9 @@ export function initialForm(action: LeadAction, lead: Lead): Record<string, stri
     case "completeFollowUp": return { outcome: "", nextFollowUpAt: "", nextFollowUpTitle: "" };
     case "rescheduleFollowUp": return { dueAt: toLocalInput(action.item.dueAt), reason: "" };
     case "cancelFollowUp": return { reason: "" };
-    case "siteVisit": return { projectId: lead.interestedProjectId?.toString() ?? "", unitId: lead.interestedUnitId?.toString() ?? "", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", scheduledAt: toLocalInput(oneHourFromNow()), meetingLocation: "", customerAttendees: lead.fullName, internalAttendees: "", notes: "" };
+    case "siteVisit": return { projectId: lead.interestedProjectId?.toString() ?? "", unitId: lead.interestedUnitId?.toString() ?? "", assignedEmployeeId: lead.assignedEmployeeId?.toString() ?? "", scheduledAt: toLocalInput(oneHourFromNow()), remindAt: "", meetingLocation: "", customerAttendees: lead.fullName, internalAttendees: "", notes: "" };
     case "completeVisit": return { outcome: "Interested", outcomeNotes: "", customerFeedback: "", nextAction: "" };
-    case "rescheduleVisit": return { scheduledAt: toLocalInput(action.item.scheduledAt), meetingLocation: action.item.meetingLocation, reason: "" };
+    case "rescheduleVisit": return { scheduledAt: toLocalInput(action.item.scheduledAt), remindAt: action.item.remindAt ? toLocalInput(action.item.remindAt) : "", meetingLocation: action.item.meetingLocation, reason: "" };
     case "closeVisit": return { reason: "" };
     case "comment": return { body: "", managerReview: false, decisionRecord: false, mentionedUserIds: "" };
     case "document": return { category: "Quotation", description: "" };

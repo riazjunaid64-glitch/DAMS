@@ -239,7 +239,7 @@ namespace DAMS.Application.Common
 
             yield return new(NotificationType.SiteVisitReminder, NotificationCategory.SiteVisits, NotificationModule.Leads,
                 NotificationPriority.High, appPush, false, "Site Visit Reminder",
-                "Site visit today: {{leadName}}",
+                "Site visit reminder: {{leadName}}",
                 "Hello {{employeeName}}, your site visit for {{leadName}} is at {{visitDate}}, {{location}}.",
                 "Open lead", visit);
 
