@@ -1,4 +1,5 @@
 import type { MetaConnection, MetaConnectionStatus, MetaResource } from "../leads/types.ts";
+import { parseServerDateTime } from "../staff/staffAccessState.ts";
 import type {
   LeadFormAnswerTarget,
   LeadFormMapping,
@@ -153,24 +154,27 @@ export function deliverySummary(connection: MetaConnection): string {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Days before expiry the sign-in is called out; the server alerts Admins on the same default. */
-export const SIGN_IN_WARNING_DAYS = 7;
+/** Used only if the server did not say; it is the server's own default. */
+const DEFAULT_SIGN_IN_WARNING_DAYS = 7;
 
 export type SignInExpiry = { text: string; tone: "normal" | "warning" | "expired" };
 
 /**
  * When the account's own Meta sign-in runs out. Leads are fetched with Page tokens that outlive
- * it, but discovery stops, so it is worth reconnecting before the date.
+ * it, but discovery stops, so it is worth reconnecting before the date. The warning window is
+ * the server's, so the panel turns amber exactly when Admins are alerted.
  */
 export function signInExpiry(connection: MetaConnection, now: Date = new Date()): SignInExpiry | null {
-  if (connection.status === "Disconnected" || !connection.tokenExpiresAt) return null;
-  const expiresAt = new Date(connection.tokenExpiresAt);
-  if (Number.isNaN(expiresAt.getTime())) return null;
+  if (connection.status === "Disconnected") return null;
+  // The server sends UTC without a "Z"; read as local time it would be five hours off in Pakistan.
+  const expiresAt = parseServerDateTime(connection.tokenExpiresAt);
+  if (!expiresAt) return null;
 
   const date = expiresAt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const left = expiresAt.getTime() - now.getTime();
   if (left <= 0) return { text: `Meta sign-in expired ${date}`, tone: "expired" };
-  if (left <= SIGN_IN_WARNING_DAYS * DAY_MS) {
+  const warningDays = connection.signInWarningDays ?? DEFAULT_SIGN_IN_WARNING_DAYS;
+  if (left <= warningDays * DAY_MS) {
     const days = Math.ceil(left / DAY_MS);
     return { text: `Meta sign-in expires ${date} (${days} day${days === 1 ? "" : "s"} left)`, tone: "warning" };
   }

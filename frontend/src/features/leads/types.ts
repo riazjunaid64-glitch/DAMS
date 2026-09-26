@@ -100,9 +100,11 @@ export interface MetaConnection {
   lastErrorAt?: string | null;
   lastError?: string | null;
   tokenExpiresAt?: string | null;
+  /** Days before tokenExpiresAt the sign-in is called out; the server's setting, shared with the Admin alert. 0: never. */
+  signInWarningDays?: number;
   /** Set while Meta refuses the account's sign-in during sync but leads still arrive through the Page tokens. */
   syncRejectedAt?: string | null;
-  /** When Meta last delivered a lead webhook for this connection. */
+  /** When Meta last delivered a lead webhook for a Page this connection takes leads from. */
   lastLeadReceivedAt?: string | null;
   grantedScopes: string[];
   pageCount: number;

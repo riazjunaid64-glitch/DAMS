@@ -134,45 +134,134 @@ public class MetaIntegrationHealthTests
         Assert.Equal(ExternalIntegrationEventStatus.Retry, (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
     }
 
-    // ── Reconnecting releases the backlog ──────────────────────────────────────
-
     [Fact]
-    public async Task AfterAReconnect_ParkedEventsAreProcessedOnTheNextTick()
+    public async Task TheLastLeadReceived_IgnoresDeliveriesForPagesNotEnabled_AndCarriesTheWarningWindow()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
-        var (_, page) = await h.ConnectPageAsync();
-        h.Graph.LeadFailures.Enqueue(Expired());
-        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
-        await h.Processor.ProcessPendingEventsAsync(10);
+        var (connection, page) = await h.ConnectPageAsync();
+        var processedAt = DateTime.UtcNow.AddDays(-2);
+        await AddEventAsync(h, connection, page, "lead-1", ExternalIntegrationEventStatus.Processed, processedAt);
+        await AddEventAsync(h, connection, page, "lead-2", ExternalIntegrationEventStatus.Ignored, DateTime.UtcNow);
+        h.Options.TokenExpiryWarningDays = 10;
 
-        var parked = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
-        Assert.True(parked.AvailableAt > DateTime.UtcNow.AddHours(5));
+        var shown = Assert.Single(await h.Integration.GetConnectionsAsync());
+
+        Assert.Equal(processedAt, shown.LastLeadReceivedAt!.Value, TimeSpan.FromSeconds(1));
+        Assert.Equal(10, shown.SignInWarningDays);
+    }
+
+    // ── Reconnecting releases the backlog ──────────────────────────────────────
+
+    /// <summary>
+    /// The real recovery path: Meta revoked the sign-in and its Page token with it, so only the
+    /// Page token the first sync after the reconnect fetches works. Every tick handles events
+    /// before it syncs, so nothing may be fetched with the old one in between — that would put
+    /// the connection straight back into NeedsReauthorization, where the sync never runs.
+    /// </summary>
+    [Fact]
+    public async Task AfterAReconnect_LeadsWaitForTheSyncThatReplacesThePageToken_ThenRunOnTheNextTick()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var page = await ParkBehindARevokedPageTokenAsync(h, "lead-1");
 
         await ReconnectAsync(h);
+        // Nothing released yet: the only Page token on file is still the revoked one.
+        Assert.True((await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).AvailableAt > DateTime.UtcNow.AddHours(5));
 
-        var released = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
-        Assert.Equal(ExternalIntegrationEventStatus.Retry, released.Status);
-        Assert.True(released.AvailableAt <= DateTime.UtcNow);
-        Assert.Equal(0, released.Attempts);
+        // A lead arriving before that sync waits for it too, instead of being fetched with the old token.
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-2"));
+        var requestsBefore = h.Graph.LeadRequests.Count;
+        Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+        Assert.Equal(requestsBefore, h.Graph.LeadRequests.Count);
+        var waiting = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.EventKey.EndsWith("lead-2"));
+        Assert.Equal(ExternalIntegrationEventStatus.Retry, waiting.Status);
+        Assert.Equal(0, waiting.Attempts);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected,
+            (await h.Db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).Status);
+
+        // The worker's sync: due because the reconnect cleared LastSyncedAt.
+        h.Graph.Pages = [new() { ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = page.ExternalId, Name = page.Name, ResourceToken = "page-token-fresh" }];
+        Assert.Equal(1, await h.Sync.SyncDueConnectionsAsync());
+        h.Db.ChangeTracker.Clear();
+
+        var released = await h.Db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+        Assert.All(released, e =>
+        {
+            Assert.Equal(ExternalIntegrationEventStatus.Retry, e.Status);
+            Assert.True(e.AvailableAt <= DateTime.UtcNow);
+            Assert.Equal(0, e.Attempts);
+        });
 
         h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", Fields, pageId: page.ExternalId);
-        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
-        Assert.Equal(1, await h.Db.Leads.CountAsync());
+        h.Graph.Leads["lead-2"] = FakeMetaGraphClient.Lead("lead-2",
+            [("full_name", "Sara Ahmed"), ("phone_number", "+92 301 7654321"), ("email", "sara@example.com")], pageId: page.ExternalId);
+        Assert.Equal(2, await h.Processor.ProcessPendingEventsAsync(10));
+        Assert.Equal(2, await h.Db.Leads.CountAsync());
+        Assert.Contains(("lead-1", "page-token-fresh"), h.Graph.LeadRequests);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected,
+            (await h.Db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).Status);
+
+        // And the reconnect was not undone, so there is nothing new to tell Admins.
+        Assert.Equal(0, await h.Alerts.RaiseAlertsAsync());
     }
 
     [Fact]
     public async Task AReconnectStillMissingAPermission_LeavesParkedEventsWaiting()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
-        var (_, page) = await h.ConnectPageAsync();
-        h.Graph.LeadFailures.Enqueue(Expired());
-        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
-        await h.Processor.ProcessPendingEventsAsync(10);
+        await ParkBehindARevokedPageTokenAsync(h, "lead-1");
 
         h.Graph.Authorization.GrantedScopes = [MetaScopes.PagesShowList];
         await ReconnectAsync(h);
 
+        // Not Connected, so no sync runs and nothing is released.
+        Assert.Equal(0, await h.Sync.SyncDueConnectionsAsync());
         Assert.True((await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).AvailableAt > DateTime.UtcNow.AddHours(5));
+    }
+
+    [Fact]
+    public async Task AFirstSyncMetaRefuses_DoesNotReleaseTheBacklog()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        await ParkBehindARevokedPageTokenAsync(h, "lead-1");
+        await ReconnectAsync(h);
+
+        h.Graph.DiscoveryFailure = Expired();
+        await h.Sync.SyncDueConnectionsAsync();
+
+        Assert.True((await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).AvailableAt > DateTime.UtcNow.AddHours(5));
+    }
+
+    [Theory]
+    // Just reconnected; the Page token came from the sign-in before it: wait.
+    [InlineData(-60, null, null, 0, true)]
+    // The Page token is newer than the sign-in (the sync already replaced it): go.
+    [InlineData(1, null, null, 0, false)]
+    // Never synced, so its age is unknown: go, as before.
+    [InlineData(null, null, null, 0, false)]
+    // The first sync finished without returning this Page: no newer token is coming.
+    [InlineData(-60, 0, null, 0, false)]
+    // The first sync was refused: the old token is all there is.
+    [InlineData(-60, null, 0, 0, false)]
+    // The first sync has not got through for longer than the grace: try the old token rather than wait unseen.
+    [InlineData(-120, null, null, -45, false)]
+    public void ALeadWaitsForAFreshPageTokenOnlyWhileOneIsActuallyComing(
+        int? pageSyncedMinutes, int? connectionSyncedMinutes, int? rejectedMinutes, int connectedMinutes, bool waits)
+    {
+        var now = DateTime.UtcNow;
+        var connectedAt = now.AddMinutes(connectedMinutes);
+        var connection = new ExternalIntegrationConnection
+        {
+            ConnectedAt = connectedAt,
+            LastSyncedAt = connectionSyncedMinutes is { } synced ? now.AddMinutes(synced) : null,
+            SyncRejectedAt = rejectedMinutes is { } rejected ? now.AddMinutes(rejected) : null
+        };
+        var page = new ExternalIntegrationResource
+        {
+            LastSyncedAt = pageSyncedMinutes is { } pageSynced ? connectedAt.AddMinutes(pageSynced) : null
+        };
+
+        Assert.Equal(waits, MetaLeadEventProcessor.AwaitsFreshPageToken(connection, page, now));
     }
 
     [Fact]
@@ -406,6 +495,30 @@ public class MetaIntegrationHealthTests
         var redirect = await h.Integration.CompleteCallbackAsync("code-1", Uri.UnescapeDataString(state), null);
         Assert.Contains("meta=connected", redirect);
         h.Db.ChangeTracker.Clear();
+    }
+
+    /// <summary>
+    /// A connection that has synced (so its Page token has a known age) and whose Page token Meta
+    /// now refuses every time, with one lead parked behind it.
+    /// </summary>
+    private static async Task<ExternalIntegrationResource> ParkBehindARevokedPageTokenAsync(
+        MetaIntegrationHarness h, string leadgenId)
+    {
+        var (connection, page) = await h.ConnectPageAsync();
+        connection.ConnectedAt = DateTime.UtcNow.AddDays(-60);
+        connection.LastSyncedAt = DateTime.UtcNow.AddHours(-1);
+        page.LastSyncedAt = DateTime.UtcNow.AddHours(-1);
+        await h.Db.SaveChangesAsync();
+        h.Graph.RejectedLeadTokens.Add("page-token-page-1");
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, leadgenId));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        Assert.Equal(ExternalIntegrationConnectionStatus.NeedsReauthorization,
+            (await h.Db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).Status);
+        Assert.True((await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).AvailableAt > DateTime.UtcNow.AddHours(5));
+        h.Db.ChangeTracker.Clear();
+        return page;
     }
 
     private static async Task MarkNeedsReauthorizationAsync(MetaIntegrationHarness h, string reason)

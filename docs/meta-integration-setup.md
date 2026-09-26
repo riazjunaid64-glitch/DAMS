@@ -98,7 +98,12 @@ are fetched with the **Page** tokens that `me/accounts` returns, and those do no
   leads keep arriving through the Page tokens. The sync tries again after the normal interval.
 - Only when a Page token itself is refused (or no Page token is stored) does the connection
   go to **Needs reconnection**. Its leads are then parked, not lost.
-- Reconnecting releases the parked leads, so they are fetched on the worker's next tick.
+- Reconnecting stores a new user token only. The worker's first sync after it (within a
+  minute) fetches new Page tokens, and at the end of that sync the parked leads are released
+  and fetched on the next tick. Leads that arrive between the reconnect and that sync wait for
+  it too, rather than being fetched with a Page token the old sign-in handed out. If that sync
+  has not got through within 30 minutes, leads are tried with the old token anyway.
+- The panel's sign-in warning uses the same `TokenExpiryWarningDays` window as the alert below.
 
 Every active Admin gets one notification (category **Integrations**, email and push if
 those are switched on) when:

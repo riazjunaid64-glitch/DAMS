@@ -68,11 +68,13 @@ function SettingsWorkspace({ user }: { user: User }) {
     return params.get("tab") === "integrations" || params.has("meta") ? "integrations" : "staff";
   });
   // An integration alert links here while the page may already be open; that navigation keeps
-  // it mounted, so the initial tab alone would never see the link's tab.
+  // it mounted, so the initial tab alone would never see the link's tab. Keyed on the navigation,
+  // not the URL: a second alert to the same ?tab=integrations, after the Admin moved to another
+  // tab, changes no URL but is still a new navigation.
   const route = useLocation();
-  const [linkedSearch, setLinkedSearch] = useState(route.search);
-  if (route.search !== linkedSearch) {
-    setLinkedSearch(route.search);
+  const [linkedNavigation, setLinkedNavigation] = useState(route.key);
+  if (route.key !== linkedNavigation) {
+    setLinkedNavigation(route.key);
     if (new URLSearchParams(route.search).get("tab") === "integrations") setTab("integrations");
   }
   const [staff, setStaff] = useState<StaffAccount[]>([]);

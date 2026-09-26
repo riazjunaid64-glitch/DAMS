@@ -37,12 +37,22 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public DateTime? TokenExpiresAt { get; set; }
 
         /// <summary>
+        /// Days before TokenExpiresAt the panel warns, from the same setting the Admin alert uses
+        /// (MetaIntegrationOptions.TokenExpiryWarningDays), so the two cannot disagree. Zero: no warning.
+        /// </summary>
+        public int SignInWarningDays { get; set; }
+
+        /// <summary>
         /// Set while Meta refuses the account's own sign-in during sync but lead delivery carries
         /// on with the Page tokens: a warning to reconnect, not an outage.
         /// </summary>
         public DateTime? SyncRejectedAt { get; set; }
 
-        /// <summary>When Meta last delivered a lead webhook for this connection, whatever became of it.</summary>
+        /// <summary>
+        /// When Meta last delivered a lead webhook for a Page this connection takes leads from.
+        /// Deliveries ignored because their Page was not enabled do not count: they would make a
+        /// connection that captures nothing look alive.
+        /// </summary>
         public DateTime? LastLeadReceivedAt { get; set; }
 
         public List<string> GrantedScopes { get; set; } = [];

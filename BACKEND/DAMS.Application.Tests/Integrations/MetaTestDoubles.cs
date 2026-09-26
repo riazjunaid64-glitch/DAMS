@@ -43,6 +43,10 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     /// <summary>Thrown by the next GetLeadAsync call, then discarded. Lets one test drive one failure.</summary>
     public Queue<Exception> LeadFailures { get; } = new();
 
+    /// <summary>Tokens GetLeadAsync refuses every time, as Meta does a revoked Page token — unlike
+    /// LeadFailures, which fails the next call whatever token it carries.</summary>
+    public HashSet<string> RejectedLeadTokens { get; } = [];
+
     public Exception? DiscoveryFailure { get; set; }
 
     /// <summary>Run synchronously at the very start of GetPagesAsync, before DiscoveryFailure is
@@ -124,6 +128,9 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
     public Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default)
     {
         LeadRequests.Add((leadgenId, accessToken));
+
+        if (RejectedLeadTokens.Contains(accessToken))
+            throw new MetaAuthorizationException("Error validating access token: The session has been invalidated.", code: 190, subCode: 460);
 
         if (LeadFailures.Count > 0)
             throw LeadFailures.Dequeue();
