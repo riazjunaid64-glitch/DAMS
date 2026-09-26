@@ -4387,7 +4387,8 @@ public sealed class SqlServerProductionInvariantTests
         graph.Pages = [new() { ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = "page-health", Name = "Health", ResourceToken = "page-token-fresh" }];
         await using (var db = new AppDbContext(options))
         {
-            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance);
+            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions,
+                Integrations.NoBackfill.Instance, NullLogger<MetaResourceSyncService>.Instance);
             Assert.Equal(1, await sync.SyncDueConnectionsAsync());
         }
 
