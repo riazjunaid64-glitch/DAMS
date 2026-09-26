@@ -58,7 +58,6 @@ function LeadsWorkspace({ user }: { user: User }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const view = params.get("view") === "pipeline" ? "pipeline" : "list";
   const page = Number(params.get("page") ?? 1);
 
   const updateParam = (key: string, value: string) => {
@@ -79,9 +78,9 @@ function LeadsWorkspace({ user }: { user: User }) {
       if (value) q.set(key, value);
     }
     q.set("page", String(Number.isFinite(page) && page > 0 ? page : 1));
-    q.set("pageSize", view === "pipeline" ? "100" : "20");
+    q.set("pageSize", "20");
     return q.toString();
-  }, [page, params, view]);
+  }, [page, params]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -244,33 +243,6 @@ function LeadTable({ leads }: { leads: Lead[] }) {
         ))}
       </div>
     </>
-  );
-}
-
-function Pipeline({ leads }: { leads: Lead[] }) {
-  const activeStages = leadStages.filter((stage) => !isClosedStage(stage));
-  return (
-    <div className="flex snap-x gap-3 overflow-x-auto pb-3" aria-label="Lead pipeline">
-      {activeStages.map((stage) => {
-        const items = leads.filter((lead) => lead.stage === stage);
-        return (
-          <section key={stage} className="w-[290px] shrink-0 snap-start rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] p-3">
-            <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-[var(--text-heading)]">{stageLabel(stage)}</h2><span className="rounded-full bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{items.length}</span></div>
-            <div className="space-y-2">
-              {items.length === 0 && <p className="rounded-xl border border-dashed border-[var(--border)] px-3 py-8 text-center text-xs text-[var(--text-muted)]">No leads</p>}
-              {items.map((lead) => (
-                <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="block rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3 transition hover:border-[var(--accent)]/40">
-                  <div className="flex items-start justify-between gap-2"><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><QualificationBadge value={lead.qualification} /></div>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.sourceName}</p>
-                  <p className="mt-3 truncate text-xs text-[var(--text-secondary)]">{lead.interestedProjectName ?? "General property enquiry"}</p>
-                  <div className="mt-3 border-t border-[var(--border)] pt-2 text-xs text-[var(--text-muted)]"><p>{lead.assignedEmployeeName ?? "Unassigned"}</p><p className={isPastServerTime(lead.nextActionAt) ? "mt-1 text-rose-400" : "mt-1"}>{lead.nextActionAt ? `Next: ${formatDateTime(lead.nextActionAt)}` : "No next action"}</p></div>
-                </Link>
-              ))}
-            </div>
-          </section>
-        );
-      })}
-    </div>
   );
 }
 
@@ -482,19 +454,6 @@ function BarSelect({ label, icon, value, onChange, options }: { label: string; i
       </AppSelect>
       <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconChevronDown className="h-3.5 w-3.5" /></span>
     </div>
-  );
-}
-
-function ViewButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`cursor-pointer rounded-lg px-4 py-1.5 text-sm font-semibold transition ${active ? "bg-[var(--accent)] text-[#1c1810]" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}
-    >
-      {children}
-    </button>
   );
 }
 
