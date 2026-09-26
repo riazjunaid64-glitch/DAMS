@@ -489,12 +489,13 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
-    public async Task OnlyAdminsCanChangeConfiguration()
+    public async Task OnlyAdminsAndManagersCanChangeConfiguration()
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
+        await h.Configuration.CreateSourceAsync(new CreateLeadSourceDto { Code = "x", Name = "X" }, h.Manager);
         await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Configuration.CreateSourceAsync(
-            new CreateLeadSourceDto { Code = "x", Name = "X" }, h.Manager));
+            new CreateLeadSourceDto { Code = "z", Name = "Z" }, h.Sales));
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Configuration.CreateClosureReasonAsync(
             new CreateLeadClosureReasonDto { Code = "y", Name = "Y" }, h.Sales));

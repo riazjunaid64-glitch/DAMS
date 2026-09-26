@@ -547,7 +547,7 @@ public class MetaIntegrationSecurityTests
         Assert.Contains(visible, e => e.Id == failed.Id && e.Status == ExternalIntegrationEventStatus.Failed);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Manager));
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Sales));
 
         var queued = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
         Assert.Equal(ExternalIntegrationEventStatus.Pending, queued.Status);

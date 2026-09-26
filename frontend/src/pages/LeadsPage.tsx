@@ -115,7 +115,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         role={user.role}
         actions={
           <>
-            {user.role === "Admin" && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
+            {user.role !== "Employee" && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
             <Button onClick={() => setCreateOpen(true)}><IconPlus className="h-4 w-4" />New lead</Button>
           </>
         }

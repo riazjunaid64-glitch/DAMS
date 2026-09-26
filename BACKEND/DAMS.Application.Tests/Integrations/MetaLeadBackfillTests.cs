@@ -220,12 +220,14 @@ public class MetaLeadBackfillTests
     }
 
     [Fact]
-    public async Task AnImport_IsForAdminsAndForEnabledPagesOnly()
+    public async Task AnImport_IsForAdminsAndManagersAndForEnabledPagesOnly()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (connection, page) = await SetUpAsync(h, enabled: false);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Sales));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Manager));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Admin));

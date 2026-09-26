@@ -97,8 +97,8 @@ namespace DAMS.Application.Common
 
         public static void EnsureCanConfigure(LeadUserContext ctx)
         {
-            if (!ctx.IsAdmin)
-                throw new LeadAuthorizationException("Only an admin can change lead configuration.");
+            if (!ctx.IsAdmin && !ctx.IsManager)
+                throw new LeadAuthorizationException("Only an admin or manager can change lead configuration.");
         }
 
         /// <summary>

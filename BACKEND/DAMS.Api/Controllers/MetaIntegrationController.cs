@@ -8,13 +8,13 @@ using Microsoft.AspNetCore.Mvc;
 namespace DAMS.Api.Controllers
 {
     /// <summary>
-    /// Admin control panel for connected Meta accounts.
+    /// Admin and Sales Manager control panel for connected Meta accounts.
     ///
     /// No response from this controller ever carries a token, and none of its DTOs has a field
     /// capable of holding one.
     /// </summary>
     [Route("api/integrations/meta")]
-    [Authorize(Roles = LeadRoles.Admin)]
+    [Authorize(Roles = LeadRoles.AdminOrManager)]
     public class MetaIntegrationController : LeadControllerBase
     {
         private readonly IMetaIntegrationService _integration;

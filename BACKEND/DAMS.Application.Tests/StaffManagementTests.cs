@@ -296,18 +296,56 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
-    public async Task Only_an_admin_can_provision_or_resend_staff_access()
+    public async Task Salespeople_cannot_provision_or_resend_staff_access()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var invitations = new FakeInvitations();
         var service = new StaffManagementService(h.Db, invitations);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            service.CreateAsync(h.Manager, NewStaff()));
+            service.CreateAsync(h.Sales, NewStaff()));
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
             service.ResendInvitationAsync(h.Sales, h.SalesEmployeeId));
 
         Assert.Empty(invitations.Calls);
+    }
+
+    [Fact]
+    public async Task A_manager_can_provision_staff_but_never_hand_out_or_touch_the_Admin_role()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var service = new StaffManagementService(h.Db, invitations);
+
+        var created = await service.CreateAsync(h.Manager, NewStaff(teamId: h.TeamId));
+        Assert.Equal(LeadRoles.Employee, created.Account.Role);
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.CreateAsync(h.Manager, NewStaff(name: "Would Be Admin", email: "wba@example.com", role: LeadRoles.Admin)));
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.UpdateAsync(h.Manager, h.SalesEmployeeId, new UpdateStaffAccountDto { Role = LeadRoles.Admin }));
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.UpdateAsync(h.Manager, h.ManagerEmployeeId, new UpdateStaffAccountDto { Role = LeadRoles.Admin }));
+
+        // An unlinked Admin login is neither offered to nor linkable by a manager.
+        Assert.DoesNotContain(await service.GetLinkableUsersAsync(h.Manager), u => u.UserId == h.AdminUserId);
+        Assert.Contains(await service.GetLinkableUsersAsync(h.Admin), u => u.UserId == h.AdminUserId);
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.CreateAsync(h.Manager, NewStaff(existingUserId: h.AdminUserId)));
+
+        // An Admin who is also an employee cannot be demoted by a manager.
+        var adminEmployee = new Employee
+        {
+            UserId = h.AdminUserId, FullName = "Ayesha Admin", Email = "admin-employee@dams.test",
+            Phone = "03000000000", JobTitle = "Director", Department = "Management", Status = EmployeeStatus.Active
+        };
+        h.Db.Employees.Add(adminEmployee);
+        await h.Db.SaveChangesAsync();
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.UpdateAsync(h.Manager, adminEmployee.Id, new UpdateStaffAccountDto { Role = LeadRoles.Employee }));
+
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(LeadRoles.Admin, (await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == h.AdminUserId)).Role.Role_name);
     }
 
     [Fact]
@@ -461,7 +499,7 @@ public sealed class StaffManagementTests
         user.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1);
         await h.Db.SaveChangesAsync();
 
-        var updated = await service.UpdateAsync(h.SalesEmployeeId, new UpdateStaffAccountDto
+        var updated = await service.UpdateAsync(h.Admin, h.SalesEmployeeId, new UpdateStaffAccountDto
         {
             Role = LeadRoles.Manager,
             TeamId = h.TeamId
@@ -578,7 +616,7 @@ public sealed class StaffManagementTests
         var staff = new StaffManagementService(h.Db, new FakeInvitations());
 
         var roleError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            staff.UpdateAsync(h.ManagerEmployeeId, new UpdateStaffAccountDto
+            staff.UpdateAsync(h.Admin, h.ManagerEmployeeId, new UpdateStaffAccountDto
             {
                 Role = LeadRoles.Employee,
                 TeamId = h.TeamId,
