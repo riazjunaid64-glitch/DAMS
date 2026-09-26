@@ -246,6 +246,69 @@ public class MetaGraphClientHttpTests
         Assert.DoesNotContain(handler.Requests, r => r.RequestUri!.Host == "evil.example.com");
     }
 
+    [Fact]
+    public async Task ReadingLeadForms_KeepsEachFormsQuestionsAndOptions()
+    {
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""
+                { "data": [{
+                    "id": "1180848317322015", "name": "Floria form", "status": "ACTIVE",
+                    "questions": [
+                      { "key": "are_you_buying_for_?", "label": "Are you buying for ?", "type": "CUSTOM",
+                        "options": [ { "key": "investment", "value": "Investment" },
+                                     { "key": "personal_living", "value": "Personal Living" } ] },
+                      { "key": "full_name", "label": "Full name", "type": "FULL_NAME" }
+                    ] }] }
+                """)
+        });
+
+        var result = await LeadFormClient(handler).GetLeadFormsAsync("page-1", FakeAccessToken, CancellationToken.None);
+
+        Assert.Contains("questions{key,label,type,options{key,value}}",
+            Uri.UnescapeDataString(Assert.Single(handler.Requests).RequestUri!.Query));
+        var questions = LeadFormQuestions.Read(Assert.Single(result.Items).MetadataJson);
+        Assert.Equal(2, questions.Count);
+        Assert.Equal("Are you buying for ?", questions[0].Label);
+        Assert.Equal(["investment", "personal_living"], questions[0].Options.Select(o => o.Key));
+        Assert.Equal("Personal Living", questions[0].Options[1].Value);
+        Assert.Empty(questions[1].Options);
+    }
+
+    [Fact]
+    public async Task LeadFormsWhoseQuestionsMetaRefuses_AreStillRead_WithoutThem()
+    {
+        var handler = new FakeHandler(request =>
+            Uri.UnescapeDataString(request.RequestUri!.Query).Contains("questions")
+                ? new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{ "error": { "message": "(#100) Tried accessing nonexisting field (questions)", "code": 100 } }""")
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{ "data": [{ "id": "form-1", "name": "Floria form", "status": "ACTIVE" }] }""")
+                });
+
+        var result = await LeadFormClient(handler).GetLeadFormsAsync("page-1", FakeAccessToken, CancellationToken.None);
+
+        var form = Assert.Single(result.Items);
+        Assert.Equal("form-1", form.ExternalId);
+        // No questions read means nothing to store — an earlier sync's questions are kept.
+        Assert.Null(form.MetadataJson);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    private static MetaGraphClient LeadFormClient(FakeHandler handler) => new(
+        new HttpClient(handler) { BaseAddress = new Uri("https://graph.facebook.com/v21.0/") },
+        new MetaIntegrationOptions
+        {
+            AppId = "app-id",
+            AppSecret = FakeAppSecret,
+            WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        },
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<MetaGraphClient>.Instance);
+
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<HttpRequestMessage> Requests { get; } = [];

@@ -49,6 +49,7 @@ export interface Lead {
   budgetMin?: number | null;
   budgetMax?: number | null;
   purchaseIntent: string;
+  paymentPreference: string;
   notes?: string | null;
   assignedEmployeeId?: number | null;
   assignedEmployeeName?: string | null;
@@ -120,6 +121,9 @@ export interface MetaResource {
   isActive: boolean;
   isSubscribed: boolean;
   lastSeenAt?: string | null;
+  /** Lead forms only: whether an administrator has linked it to a project or its answers to lead fields. */
+  hasFormMapping?: boolean;
+  formMappingProjectName?: string | null;
 }
 
 export interface MetaResourceGroup {
@@ -141,6 +145,10 @@ export interface ExternalFieldAnswer {
   name: string;
   value?: string | null;
   isMapped: boolean;
+  /** The question as the form words it, from the synced form. Absent until the form is synced. */
+  label?: string | null;
+  /** The chosen option's text, when the answer is one of the form's options. */
+  valueLabel?: string | null;
 }
 
 export interface ExternalSubmission {
@@ -385,6 +393,9 @@ export const stageLabel = (stage: string) =>
   stage.replace(/([a-z])([A-Z])/g, "$1 $2");
 
 export const enumLabel = stageLabel;
+
+/** Lead.PaymentPreference, in the order the server defines it. */
+export const paymentPreferences = ["Unknown", "Installments", "NeedsDetails", "Cash"] as const;
 
 export const isClosedStage = (stage: string) =>
   stage === "Won" || stage === "Lost" || stage === "Dormant";

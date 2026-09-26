@@ -29,3 +29,49 @@ export interface MetaEvent {
   lastRetriedAt?: string | null;
   lastRetriedByName?: string | null;
 }
+
+/** The lead fields a lead form's answers can fill. */
+export type LeadFormAnswerTarget = "PropertyType" | "PurchaseIntent" | "PaymentPreference";
+
+export interface LeadFormOption {
+  key: string;
+  /** The option's text as the person saw it. */
+  value?: string | null;
+}
+
+export interface LeadFormQuestion {
+  key: string;
+  label?: string | null;
+  type?: string | null;
+  options: LeadFormOption[];
+}
+
+export interface LeadFormOptionMapping {
+  optionKey: string;
+  optionLabel?: string | null;
+  value: string;
+}
+
+export interface LeadFormAnswerMapping {
+  questionKey: string;
+  target: LeadFormAnswerTarget;
+  options: LeadFormOptionMapping[];
+}
+
+export interface LeadFormMapping {
+  formExternalId: string;
+  formName?: string | null;
+  /** Empty until a sync has read the form's questions. */
+  questions: LeadFormQuestion[];
+  interestedProjectId?: number | null;
+  interestedProjectName?: string | null;
+  answers: LeadFormAnswerMapping[];
+  version?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface SaveLeadFormMapping {
+  interestedProjectId: number | null;
+  answers: LeadFormAnswerMapping[];
+  version: string | null;
+}

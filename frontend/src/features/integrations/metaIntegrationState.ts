@@ -1,5 +1,11 @@
 import type { MetaConnection, MetaConnectionStatus, MetaResource } from "../leads/types.ts";
-import type { MetaEventStatus } from "./types.ts";
+import type {
+  LeadFormAnswerTarget,
+  LeadFormMapping,
+  LeadFormQuestion,
+  MetaEventStatus,
+  SaveLeadFormMapping,
+} from "./types.ts";
 
 /**
  * The presentation logic behind the Integrations panel, kept as pure functions.
@@ -96,6 +102,18 @@ export function isToggleable(resource: MetaResource): boolean {
   return resource.resourceType === "facebook_page";
 }
 
+/** Lead forms can be linked to a project and have their answers mapped to lead fields. */
+export function isMappableForm(resource: MetaResource): boolean {
+  return resource.resourceType === "lead_form";
+}
+
+export function formMappingSummary(resource: MetaResource): string {
+  if (!resource.hasFormMapping) return "Not linked to a project";
+  return resource.formMappingProjectName
+    ? `Project: ${resource.formMappingProjectName}`
+    : "Answers mapped · no project";
+}
+
 export function canSync(connection: MetaConnection): boolean {
   return connection.status === "Connected" || connection.status === "Error";
 }
@@ -178,5 +196,87 @@ export function createLatestRequestGuard() {
       const id = ++latest;
       return () => id === latest;
     },
+  };
+}
+
+export const answerTargetLabels: Record<LeadFormAnswerTarget, string> = {
+  PropertyType: "Property type",
+  PurchaseIntent: "Purchase intent",
+  PaymentPreference: "Payment preference",
+};
+
+/** The values a choice field accepts. Property type is free text, so it has none. */
+export const answerTargetValues: Record<Exclude<LeadFormAnswerTarget, "PropertyType">, string[]> = {
+  PurchaseIntent: ["SelfUse", "Investment", "Rental", "Resale"],
+  PaymentPreference: ["Installments", "NeedsDetails", "Cash"],
+};
+
+export type QuestionMappingDraft = { target: LeadFormAnswerTarget | ""; values: Record<string, string> };
+
+/** The mapping being edited: a project, and per question key the field it fills and each option's value. */
+export type FormMappingDraft = { projectId: string; questions: Record<string, QuestionMappingDraft> };
+
+export const questionText = (question: LeadFormQuestion) => question.label || question.key;
+
+/** Only multiple-choice questions can be mapped; a typed answer has no options to give values to. */
+export function mappableQuestions(mapping: LeadFormMapping): LeadFormQuestion[] {
+  return mapping.questions.filter((question) => question.options.length > 0);
+}
+
+export function draftFromMapping(mapping: LeadFormMapping): FormMappingDraft {
+  const questions: Record<string, QuestionMappingDraft> = {};
+  for (const answer of mapping.answers) {
+    questions[answer.questionKey] = {
+      target: answer.target,
+      values: Object.fromEntries(answer.options.map((option) => [option.optionKey, option.value])),
+    };
+  }
+  return { projectId: mapping.interestedProjectId ? String(mapping.interestedProjectId) : "", questions };
+}
+
+/** A new field means different values, so choosing one starts that question's values afresh. */
+export function withQuestionTarget(
+  draft: FormMappingDraft,
+  questionKey: string,
+  target: LeadFormAnswerTarget | "",
+): FormMappingDraft {
+  return { ...draft, questions: { ...draft.questions, [questionKey]: { target, values: {} } } };
+}
+
+export function withOptionValue(
+  draft: FormMappingDraft,
+  questionKey: string,
+  optionKey: string,
+  value: string,
+): FormMappingDraft {
+  const question = draft.questions[questionKey] ?? { target: "", values: {} };
+  return {
+    ...draft,
+    questions: { ...draft.questions, [questionKey]: { ...question, values: { ...question.values, [optionKey]: value } } },
+  };
+}
+
+/**
+ * What to save. A question with no field chosen is left out, and so is an option with no value:
+ * its answers then stay unmapped rather than being given a value nobody picked.
+ */
+export function buildFormMappingRequest(mapping: LeadFormMapping, draft: FormMappingDraft): SaveLeadFormMapping {
+  const answers = mappableQuestions(mapping).flatMap((question) => {
+    const chosen = draft.questions[question.key];
+    if (!chosen?.target) return [];
+    const target = chosen.target;
+    return [{
+      questionKey: question.key,
+      target,
+      options: question.options
+        .filter((option) => chosen.values[option.key]?.trim())
+        .map((option) => ({ optionKey: option.key, optionLabel: option.value ?? null, value: chosen.values[option.key].trim() })),
+    }];
+  });
+
+  return {
+    interestedProjectId: draft.projectId ? Number(draft.projectId) : null,
+    answers,
+    version: mapping.version ?? null,
   };
 }

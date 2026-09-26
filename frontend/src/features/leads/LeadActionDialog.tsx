@@ -16,6 +16,7 @@ import { describeEditConflict, saveLeadEdit, type EditConflict } from "./leadEdi
 import {
   enumLabel,
   leadStages,
+  paymentPreferences,
   stageLabel,
   type FollowUp,
   type Lead,
@@ -184,6 +185,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
             <Field label="Minimum budget" type="number" value={value("budgetMin")} onChange={(v) => set("budgetMin", v)} />
             <Field label="Maximum budget" type="number" value={value("budgetMax")} onChange={(v) => set("budgetMax", v)} />
             <Select label="Purchase intent" value={value("purchaseIntent")} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"]} />
+            <Select label="Payment preference" value={value("paymentPreference")} onChange={(v) => set("paymentPreference", v)} options={[...paymentPreferences]} />
             <TextArea label="Notes" value={value("notes")} onChange={(v) => set("notes", v)} wide />
           </div>
         )}

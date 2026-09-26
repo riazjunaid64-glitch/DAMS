@@ -107,6 +107,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ExternalIntegrationEvent> ExternalIntegrationEvents { get; set; }
         public DbSet<ExternalIntegrationEventRetry> ExternalIntegrationEventRetries { get; set; }
         public DbSet<ExternalIntegrationOAuthState> ExternalIntegrationOAuthStates { get; set; }
+        public DbSet<ExternalLeadFormMapping> ExternalLeadFormMappings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -1984,6 +1985,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(l => l.BudgetMax).HasColumnType("decimal(18,2)");
                 entity.Property(l => l.PreferredContactMethod).HasConversion<int>();
                 entity.Property(l => l.PurchaseIntent).HasConversion<int>();
+                entity.Property(l => l.PaymentPreference).HasConversion<int>();
                 entity.Property(l => l.AssignmentState).HasConversion<int>();
                 entity.Property(l => l.Stage).HasConversion<int>();
                 entity.Property(l => l.Qualification).HasConversion<int>();
@@ -2538,6 +2540,21 @@ namespace DAMS.Infrastructure.Data
                       .WithMany(c => c.Resources)
                       .HasForeignKey(r => r.ExternalIntegrationConnectionId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<ExternalLeadFormMapping>(entity =>
+            {
+                entity.Property(m => m.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(m => m.FormExternalId).IsRequired().HasMaxLength(200);
+                entity.Property(m => m.RowVersion).IsRowVersion();
+
+                // One setting per form, whichever connection or resource row it was seen through.
+                entity.HasIndex(m => new { m.Provider, m.FormExternalId }).IsUnique();
+
+                entity.HasOne(m => m.InterestedProject)
+                      .WithMany()
+                      .HasForeignKey(m => m.InterestedProjectId)
+                      .OnDelete(DeleteBehavior.SetNull);
             });
 
             modelBuilder.Entity<ExternalIntegrationEvent>(entity =>

@@ -27,6 +27,7 @@ export const EDIT_LABELS: Record<string, string> = {
   budgetMin: "Minimum budget",
   budgetMax: "Maximum budget",
   purchaseIntent: "Purchase intent",
+  paymentPreference: "Payment preference",
   notes: "Notes",
 };
 

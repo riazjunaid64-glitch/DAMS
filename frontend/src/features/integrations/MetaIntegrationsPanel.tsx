@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "../../lib/Button.tsx";
 import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
+import LeadFormMappingDialog from "./LeadFormMappingDialog.tsx";
 import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
@@ -14,7 +15,9 @@ import {
   type MetaEventFilter,
   deliverySummary,
   isAwaitingFirstSync,
+  formMappingSummary,
   isToggleable,
+  isMappableForm,
   readCallbackResult,
   summarizeCounts,
 } from "./metaIntegrationState.ts";
@@ -259,6 +262,7 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
                   setMetaResourceEnabled(connection.id, resource.id, isEnabled),
                 )
               }
+              onMapped={() => void loadResources()}
             />
           ))}
           <EventList
@@ -308,11 +312,15 @@ function ResourceGroup({
   group,
   busy,
   onToggle,
+  onMapped,
 }: {
   group: MetaResourceGroup;
   busy: string | null;
   onToggle: (resource: MetaResource, isEnabled: boolean) => void;
+  onMapped: () => void;
 }) {
+  const [mappingForm, setMappingForm] = useState<MetaResource | null>(null);
+
   return (
     <div>
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{group.label}</h3>
@@ -341,12 +349,29 @@ function ResourceGroup({
                 />
                 {resource.isEnabled ? "Receiving leads" : "Enable"}
               </label>
+            ) : isMappableForm(resource) ? (
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="text-xs text-[var(--text-muted)]">{formMappingSummary(resource)}</span>
+                <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setMappingForm(resource)}>
+                  Map answers
+                </Button>
+              </div>
             ) : (
               <span className="shrink-0 text-xs text-[var(--text-muted)]">Discovered for attribution</span>
             )}
           </div>
         ))}
       </div>
+      {mappingForm && (
+        <LeadFormMappingDialog
+          form={mappingForm}
+          onClose={() => setMappingForm(null)}
+          onSaved={() => {
+            setMappingForm(null);
+            onMapped();
+          }}
+        />
+      )}
     </div>
   );
 }

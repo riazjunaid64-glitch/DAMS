@@ -86,6 +86,8 @@ namespace DAMS.Domain.Entities
 
         public LeadPurchaseIntent PurchaseIntent { get; set; } = LeadPurchaseIntent.Unknown;
 
+        public LeadPaymentPreference PaymentPreference { get; set; } = LeadPaymentPreference.Unknown;
+
         public string? Notes { get; set; }
 
         // ── Ownership ──

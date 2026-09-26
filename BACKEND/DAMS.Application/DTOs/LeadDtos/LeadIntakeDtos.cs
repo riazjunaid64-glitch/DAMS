@@ -83,6 +83,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public LeadPurchaseIntent PurchaseIntent { get; set; } = LeadPurchaseIntent.Unknown;
 
+        public LeadPaymentPreference PaymentPreference { get; set; } = LeadPaymentPreference.Unknown;
+
         [StringLength(2000)]
         public string? Notes { get; set; }
 

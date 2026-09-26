@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.Extensions.Logging;
 
@@ -284,18 +285,71 @@ namespace DAMS.Application.Services.Integrations
             string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
         {
             var resources = new List<MetaDiscoveredResource>();
+            var page = Uri.EscapeDataString(pageExternalId);
 
-            var (items, truncated) = await CollectAsync(
-                $"{Uri.EscapeDataString(pageExternalId)}/leadgen_forms?fields=id,name,status&limit=100",
-                pageAccessToken, cancellationToken);
+            (List<JsonElement> Items, bool Truncated) result;
+            try
+            {
+                result = await CollectAsync(
+                    $"{page}/leadgen_forms?fields=id,name,status,questions{{key,label,type,options{{key,value}}}}&limit=100",
+                    pageAccessToken, cancellationToken);
+            }
+            catch (MetaPermanentException ex)
+            {
+                // The questions only make answers readable and mappable; they must never cost
+                // the forms themselves. Without them, whatever an earlier sync stored is kept.
+                _logger.LogWarning(ex,
+                    "Reading lead forms with their questions failed for page {PageId}. Retrying without them.",
+                    pageExternalId);
+                result = await CollectAsync(
+                    $"{page}/leadgen_forms?fields=id,name,status&limit=100", pageAccessToken, cancellationToken);
+            }
+
+            var (items, truncated) = result;
 
             foreach (var form in items)
             {
-                if (ReadString(form, "id") is { Length: > 0 } id)
-                    resources.Add(Child(ExternalResourceTypes.LeadForm, id, pageExternalId, form));
+                if (ReadString(form, "id") is not { Length: > 0 } id)
+                    continue;
+
+                var resource = Child(ExternalResourceTypes.LeadForm, id, pageExternalId, form);
+                if (form.TryGetProperty("questions", out var questions) && questions.ValueKind == JsonValueKind.Array)
+                    resource.MetadataJson = LeadFormQuestions.Serialize(ReadQuestions(questions));
+                resources.Add(resource);
             }
 
             return new MetaDiscoveryPage { Items = resources, Truncated = truncated };
+        }
+
+        private static List<LeadFormQuestionDto> ReadQuestions(JsonElement questions)
+        {
+            var read = new List<LeadFormQuestionDto>();
+
+            foreach (var question in questions.EnumerateArray())
+            {
+                if (question.ValueKind != JsonValueKind.Object || ReadString(question, "key") is not { Length: > 0 } key)
+                    continue;
+
+                var item = new LeadFormQuestionDto
+                {
+                    Key = key,
+                    Label = ReadString(question, "label"),
+                    Type = ReadString(question, "type")
+                };
+
+                if (question.TryGetProperty("options", out var options) && options.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var option in options.EnumerateArray())
+                    {
+                        if (option.ValueKind == JsonValueKind.Object && ReadString(option, "key") is { Length: > 0 } optionKey)
+                            item.Options.Add(new LeadFormOptionDto { Key = optionKey, Value = ReadString(option, "value") });
+                    }
+                }
+
+                read.Add(item);
+            }
+
+            return read;
         }
 
         // ── Leads ───────────────────────────────────────────────────────────────────

@@ -27,6 +27,17 @@ namespace DAMS.Application.Interfaces
         Task<MetaResourceDto> SetResourceEnabledAsync(
             int connectionId, int resourceId, bool isEnabled, CancellationToken cancellationToken = default);
 
+        /// <summary>A discovered lead form's questions and what an administrator has mapped them to.</summary>
+        Task<LeadFormMappingDto> GetLeadFormMappingAsync(string formExternalId, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Links a lead form to a project and its answers to lead fields, for submissions that
+        /// arrive from now on. An empty mapping removes it.
+        /// </summary>
+        Task<LeadFormMappingDto> SaveLeadFormMappingAsync(
+            string formExternalId, SaveLeadFormMappingDto dto, LeadUserContext actor,
+            CancellationToken cancellationToken = default);
+
         Task<List<MetaEventDto>> GetEventsAsync(
             int connectionId, int take, ExternalIntegrationEventStatus? status = null,
             CancellationToken cancellationToken = default);

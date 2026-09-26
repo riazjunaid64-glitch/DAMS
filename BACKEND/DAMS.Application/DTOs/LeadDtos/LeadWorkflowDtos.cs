@@ -15,6 +15,7 @@ namespace DAMS.Application.DTOs.LeadDtos
         private decimal? _budgetMin, _budgetMax;
         private LeadContactMethod _preferredContactMethod = LeadContactMethod.Phone;
         private LeadPurchaseIntent _purchaseIntent = LeadPurchaseIntent.Unknown;
+        private LeadPaymentPreference _paymentPreference = LeadPaymentPreference.Unknown;
 
         [StringLength(100)]
         public string FirstName { get => _firstName; set { _provided.Add(nameof(FirstName)); _firstName = value; } }
@@ -74,6 +75,8 @@ namespace DAMS.Application.DTOs.LeadDtos
         public decimal? BudgetMax { get => _budgetMax; set { _provided.Add(nameof(BudgetMax)); _budgetMax = value; } }
 
         public LeadPurchaseIntent PurchaseIntent { get => _purchaseIntent; set { _provided.Add(nameof(PurchaseIntent)); _purchaseIntent = value; } }
+
+        public LeadPaymentPreference PaymentPreference { get => _paymentPreference; set { _provided.Add(nameof(PaymentPreference)); _paymentPreference = value; } }
 
         [StringLength(2000)]
         public string? Notes { get => _notes; set { _provided.Add(nameof(Notes)); _notes = value; } }

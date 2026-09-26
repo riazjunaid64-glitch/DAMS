@@ -411,6 +411,7 @@ namespace DAMS.Application.Services
                 BudgetMin = dto.BudgetMin,
                 BudgetMax = dto.BudgetMax,
                 PurchaseIntent = dto.PurchaseIntent,
+                PaymentPreference = dto.PaymentPreference,
                 Notes = LeadContactNormalizer.Clean(dto.Notes),
                 Stage = LeadStage.New,
                 AssignmentState = LeadAssignmentState.Unassigned,
@@ -595,6 +596,9 @@ namespace DAMS.Application.Services
 
             if (lead.PurchaseIntent == LeadPurchaseIntent.Unknown)
                 lead.PurchaseIntent = dto.PurchaseIntent;
+
+            if (lead.PaymentPreference == LeadPaymentPreference.Unknown)
+                lead.PaymentPreference = dto.PaymentPreference;
 
             if (isExternal)
                 AddExternalReceipt(lead, dto, attribution);
@@ -1240,6 +1244,9 @@ namespace DAMS.Application.Services
             if (filter.ProjectId.HasValue)
                 query = query.Where(l => l.InterestedProjectId == filter.ProjectId.Value);
 
+            if (filter.PaymentPreference.HasValue)
+                query = query.Where(l => l.PaymentPreference == filter.PaymentPreference.Value);
+
             if (!string.IsNullOrWhiteSpace(filter.CampaignName))
             {
                 var campaign = filter.CampaignName.Trim();
@@ -1439,6 +1446,19 @@ namespace DAMS.Application.Services
                 })
                 .ToListAsync(cancellationToken);
 
+            // Question wording and option text come from the form as last synced, so a receipt
+            // stored before the form was ever read is described too — without rewriting it.
+            var questionsByProvider = new Dictionary<string, Dictionary<string, List<LeadFormQuestionDto>>>();
+            foreach (var provider in rows.Where(s => s.ExternalFormReference != null).Select(s => s.Provider).Distinct())
+            {
+                var formIds = rows
+                    .Where(s => s.Provider == provider && s.ExternalFormReference != null)
+                    .Select(s => s.ExternalFormReference!)
+                    .Distinct()
+                    .ToList();
+                questionsByProvider[provider] = await LeadFormQuestions.LoadAsync(_context, provider, formIds, cancellationToken);
+            }
+
             return rows.Select(s => new LeadExternalSubmissionDto
             {
                 Id = s.Id,
@@ -1455,8 +1475,20 @@ namespace DAMS.Application.Services
                 AdName = s.AdName,
                 ExternalSubmittedAt = s.ExternalSubmittedAt,
                 ReceivedAt = s.ReceivedAt,
-                FieldData = ReadFieldData(s.FieldDataJson)
+                FieldData = DescribeFieldData(ReadFieldData(s.FieldDataJson),
+                    s.ExternalFormReference != null
+                    && questionsByProvider.TryGetValue(s.Provider, out var forms)
+                    && forms.TryGetValue(s.ExternalFormReference, out var questions)
+                        ? questions
+                        : [])
             }).ToList();
+        }
+
+        private static List<ExternalFieldAnswerDto> DescribeFieldData(
+            List<ExternalFieldAnswerDto> answers, List<LeadFormQuestionDto> questions)
+        {
+            LeadFormQuestions.Describe(answers, questions);
+            return answers;
         }
 
         /// <summary>
@@ -1606,6 +1638,7 @@ namespace DAMS.Application.Services
             if (dto.WasProvided(nameof(dto.BudgetMin))) lead.BudgetMin = dto.BudgetMin;
             if (dto.WasProvided(nameof(dto.BudgetMax))) lead.BudgetMax = dto.BudgetMax;
             if (dto.WasProvided(nameof(dto.PurchaseIntent))) lead.PurchaseIntent = dto.PurchaseIntent;
+            if (dto.WasProvided(nameof(dto.PaymentPreference))) lead.PaymentPreference = dto.PaymentPreference;
             if (dto.WasProvided(nameof(dto.Notes))) lead.Notes = LeadContactNormalizer.Clean(dto.Notes);
             lead.UpdatedAt = DateTime.UtcNow;
 

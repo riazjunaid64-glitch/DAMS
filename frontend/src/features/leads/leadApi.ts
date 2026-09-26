@@ -25,12 +25,12 @@ export async function apiJson<T>(endpoint: string, options?: RequestInit): Promi
 }
 
 export async function loadCrmLookups() {
-  const [sources, reasons, teams, staff, projectsRaw] = await Promise.all([
+  const [sources, reasons, teams, staff, projects] = await Promise.all([
     apiJson<LeadSource[]>("/api/lead-config/sources"),
     apiJson<ClosureReason[]>("/api/lead-config/closure-reasons"),
     apiJson<Team[]>("/api/lead-config/teams"),
     apiJson<StaffMember[]>("/api/staff/directory"),
-    apiJson<unknown>("/api/Project"),
+    loadProjects(),
   ]);
 
   return {
@@ -38,8 +38,12 @@ export async function loadCrmLookups() {
     reasons,
     teams,
     staff,
-    projects: normalizeProjects(projectsRaw),
+    projects,
   };
+}
+
+export async function loadProjects(): Promise<ProjectLookup[]> {
+  return normalizeProjects(await apiJson<unknown>("/api/Project"));
 }
 
 export async function loadUnits(projectId: number): Promise<UnitLookup[]> {

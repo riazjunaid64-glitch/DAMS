@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DAMS.Application.DTOs.IntegrationDtos;
+using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Services.Integrations
 {
@@ -12,6 +13,13 @@ namespace DAMS.Application.Services.Integrations
         public string? WhatsappNumber { get; set; }
         public string? Email { get; set; }
         public string? City { get; set; }
+
+        // Filled only by an administrator's mapping for the form (LeadFormAnswerMapper), never
+        // from question wording.
+        public int? InterestedProjectId { get; set; }
+        public string? PropertyType { get; set; }
+        public LeadPurchaseIntent PurchaseIntent { get; set; } = LeadPurchaseIntent.Unknown;
+        public LeadPaymentPreference PaymentPreference { get; set; } = LeadPaymentPreference.Unknown;
 
         /// <summary>Every answer, in order, each flagged with whether DAMS understood it.</summary>
         public List<ExternalFieldAnswerDto> AllAnswers { get; set; } = [];
@@ -29,7 +37,9 @@ namespace DAMS.Application.Services.Integrations
     /// is preserved verbatim and shown on the lead, unmapped and honest.
     ///
     /// Adding a mapping later is a line in <see cref="Mappings"/>, not a change to how
-    /// ingestion works.
+    /// ingestion works. Questions that only mean something on one form — which apartment,
+    /// cash or installments — are mapped per form by an administrator instead, in
+    /// <see cref="LeadFormAnswerMapper"/>.
     /// </summary>
     public static class MetaLeadFieldMapper
     {
@@ -109,7 +119,7 @@ namespace DAMS.Application.Services.Integrations
         /// Reducing them to lowercase words joined by underscores lets one table entry cover all
         /// of them without resorting to fuzzy matching.
         /// </summary>
-        private static string Normalize(string name)
+        internal static string Normalize(string name)
         {
             var cleaned = new string(name.Select(c => char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ').ToArray());
             return string.Join('_', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries));

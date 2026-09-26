@@ -1,11 +1,13 @@
 import { apiJson, jsonRequest } from "../leads/leadApi.ts";
 import type {
+  LeadFormMapping,
   MetaConnectStart,
   MetaConnection,
   MetaEvent,
   MetaResource,
   MetaResourceGroup,
   MetaSyncResult,
+  SaveLeadFormMapping,
 } from "./types.ts";
 
 const base = "/api/integrations/meta";
@@ -49,4 +51,16 @@ export function retryMetaEvent(connectionId: number, eventId: number) {
 
 export function disconnectMetaConnection(connectionId: number) {
   return apiJson<void>(`${base}/connections/${connectionId}/disconnect`, jsonRequest("POST", {}));
+}
+
+/** Keyed by the form's Meta id, not a connection, so the mapping survives a reconnect. */
+export function getLeadFormMapping(formExternalId: string) {
+  return apiJson<LeadFormMapping>(`${base}/lead-forms/${encodeURIComponent(formExternalId)}/mapping`);
+}
+
+export function saveLeadFormMapping(formExternalId: string, mapping: SaveLeadFormMapping) {
+  return apiJson<LeadFormMapping>(
+    `${base}/lead-forms/${encodeURIComponent(formExternalId)}/mapping`,
+    jsonRequest("PUT", mapping),
+  );
 }

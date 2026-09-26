@@ -235,6 +235,7 @@ function Overview({ lead }: { lead: Lead }) {
         <Info label="Preferred location" value={lead.preferredLocation} />
         <Info label="Budget" value={lead.budgetMin || lead.budgetMax ? `${lead.budgetMin?.toLocaleString() ?? "—"} – ${lead.budgetMax?.toLocaleString() ?? "—"}` : null} />
         <Info label="Purchase intent" value={enumLabel(lead.purchaseIntent)} />
+        <Info label="Payment preference" value={enumLabel(lead.paymentPreference)} />
       </InfoSection>
       <div className="lg:col-span-3">
         <InfoSection title="Notes and outcome">
@@ -336,10 +337,10 @@ function ExternalSubmissions({ items, leadId, role }: { items: ExternalSubmissio
                 {item.fieldData.map((answer, index) => (
                   <div key={`${answer.name}-${index}`}>
                     <dt className="text-xs text-[var(--text-muted)]">
-                      {answer.name}
+                      {answer.label ?? answer.name}
                       {!answer.isMapped && <span className="ml-1.5 opacity-70">· not mapped</span>}
                     </dt>
-                    <dd className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{answer.value || "—"}</dd>
+                    <dd className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{answer.valueLabel || answer.value || "—"}</dd>
                   </div>
                 ))}
               </dl>

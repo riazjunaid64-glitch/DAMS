@@ -311,6 +311,7 @@ namespace DAMS.Application.Services.Integrations
                 return await FailAsync(integrationEvent, "Meta returned a lead id longer than DAMS can store.", cancellationToken);
 
             var mapped = MetaLeadFieldMapper.Map(lead.FieldData);
+            await ApplyFormMappingAsync(mapped, lead.FormId, cancellationToken);
             var platform = ResolvePlatform(lead, resource);
 
             // Every value below is provider-controlled and bounded to the Lead column it lands
@@ -331,6 +332,10 @@ namespace DAMS.Application.Services.Integrations
                 WhatsappNumber = FitOrNull(mapped.WhatsappNumber, 50),
                 Email = FitOrNull(mapped.Email, 200),
                 City = LeadContactNormalizer.LimitOrNull(mapped.City, 100),
+                InterestedProjectId = mapped.InterestedProjectId,
+                PropertyType = LeadContactNormalizer.LimitOrNull(mapped.PropertyType, 100),
+                PurchaseIntent = mapped.PurchaseIntent,
+                PaymentPreference = mapped.PaymentPreference,
                 SourceCode = ResolveSourceCode(platform),
                 SourceDetails = BuildSourceDetails(lead, resource),
                 CampaignName = LeadContactNormalizer.LimitOrNull(lead.CampaignName, 200),
@@ -475,6 +480,29 @@ namespace DAMS.Application.Services.Integrations
             RawPayloadJson = lead.RawJson,
             FieldDataJson = mapped.ToFieldDataJson()
         };
+
+        /// <summary>
+        /// Applies whatever an administrator has said this form means, as it stands now. A later
+        /// change to the mapping reaches only later submissions; nothing stored is re-mapped.
+        /// </summary>
+        private async Task ApplyFormMappingAsync(
+            MappedMetaFields mapped, string? formId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(formId))
+                return;
+
+            var mapping = await _context.ExternalLeadFormMappings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Provider == IntegrationProviders.Meta
+                                          && m.FormExternalId == formId, cancellationToken);
+            if (mapping is null)
+                return;
+
+            var questions = await LeadFormQuestions.LoadAsync(
+                _context, IntegrationProviders.Meta, [formId], cancellationToken);
+
+            LeadFormAnswerMapper.Apply(mapped, mapping, questions.GetValueOrDefault(formId) ?? []);
+        }
 
         private async Task<string?> LookUpResourceNameAsync(
             string resourceType, string? externalId, CancellationToken cancellationToken)

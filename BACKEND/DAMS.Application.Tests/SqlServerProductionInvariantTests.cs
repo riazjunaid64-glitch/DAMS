@@ -2766,6 +2766,143 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     [SqlServerFact]
+    public async Task ALeadFormMapping_IsOnePerForm_RefusesAStaleSave_AndMapsTheNextLead_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var protector = new PlaintextSecretProtector();
+        var graph = new FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions { MaxAttempts = 3, BaseRetryDelaySeconds = 1 };
+        const string buyingFor = "are_you_buying_for_?";
+        int projectId;
+        LeadUserContext admin;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var user = new User
+            {
+                RoleId = 1, FullName = "Mapping admin", Email = "mapping-admin@dams.test",
+                Password = "test-hash", AccountStatus = UserAccountStatus.Active
+            };
+            db.Users.Add(user);
+            await db.SaveChangesAsync();
+
+            var project = new Project { ProjectName = "Floria Heights", Location = "Lahore", CreatedById = user.UserId };
+            db.Projects.Add(project);
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = "meta", ExternalAccountId = "mapping-account",
+                DisplayName = "Mapping account", AccessTokenProtected = protector.Protect("token")
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                Connection = connection, Provider = "meta", ResourceType = "facebook_page",
+                ExternalId = "mapping-page", Name = "Mapping page", IsEnabled = true,
+                IsActive = true, ResourceTokenProtected = protector.Protect("page-token")
+            });
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                Connection = connection, Provider = "meta", ResourceType = "lead_form",
+                ExternalId = "mapping-form", ParentExternalId = "mapping-page", Name = "Floria form",
+                IsActive = true, LastSyncedAt = DateTime.UtcNow,
+                MetadataJson = LeadFormQuestions.Serialize(
+                [
+                    new LeadFormQuestionDto
+                    {
+                        Key = buyingFor, Label = "Are you buying for ?",
+                        Options =
+                        [
+                            new LeadFormOptionDto { Key = "investment", Value = "Investment" },
+                            new LeadFormOptionDto { Key = "personal_living", Value = "Personal Living" }
+                        ]
+                    }
+                ])
+            });
+            await db.SaveChangesAsync();
+            projectId = project.Id;
+            admin = new LeadUserContext { UserId = user.UserId, Role = LeadRoles.Admin, DisplayName = "Mapping admin" };
+
+            var intake = new MetaWebhookIntakeService(db, NullLogger<MetaWebhookIntakeService>.Instance);
+            await intake.RecordAsync(MetaIntegrationHarness.WebhookBody("mapping-page", "mapping-lead", "mapping-form"));
+        }
+
+        var answers = new List<LeadFormAnswerMappingDto>
+        {
+            new()
+            {
+                QuestionKey = buyingFor, Target = LeadFormAnswerTarget.PurchaseIntent,
+                Options =
+                [
+                    new LeadFormOptionMappingDto { OptionKey = "investment", Value = "Investment" },
+                    new LeadFormOptionMappingDto { OptionKey = "personal_living", Value = "SelfUse" }
+                ]
+            }
+        };
+
+        await using (var db = new AppDbContext(options))
+        {
+            var integration = new MetaIntegrationService(db, graph, protector,
+                new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance),
+                metaOptions, NullLogger<MetaIntegrationService>.Instance);
+
+            var first = await integration.SaveLeadFormMappingAsync("mapping-form",
+                new SaveLeadFormMappingDto { InterestedProjectId = projectId }, admin);
+            Assert.False(string.IsNullOrEmpty(first.Version));
+            db.ChangeTracker.Clear();
+
+            // A screen opened before any mapping existed has not seen the one it would replace.
+            await Assert.ThrowsAsync<LeadConcurrencyException>(() => integration.SaveLeadFormMappingAsync("mapping-form",
+                new SaveLeadFormMappingDto { Answers = answers }, admin));
+            db.ChangeTracker.Clear();
+
+            await integration.SaveLeadFormMappingAsync("mapping-form",
+                new SaveLeadFormMappingDto { InterestedProjectId = projectId, Answers = answers, Version = first.Version },
+                admin);
+            db.ChangeTracker.Clear();
+
+            // The first version has moved on; saving over it again is refused by the rowversion.
+            await Assert.ThrowsAsync<LeadConcurrencyException>(() => integration.SaveLeadFormMappingAsync("mapping-form",
+                new SaveLeadFormMappingDto { Version = first.Version }, admin));
+            db.ChangeTracker.Clear();
+
+            // And the database itself allows one mapping per form, whatever the application checks.
+            db.ExternalLeadFormMappings.Add(new ExternalLeadFormMapping { Provider = "meta", FormExternalId = "mapping-form" });
+            var duplicate = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+            Assert.Contains("IX_ExternalLeadFormMappings_Provider_FormExternalId", duplicate.InnerException?.Message);
+        }
+
+        // Sent as the option's text, as the live API has been reported to do.
+        graph.Leads["mapping-lead"] = FakeMetaGraphClient.Lead("mapping-lead",
+            [("full_name", "Ali Khan"), ("email", "ali@example.com"), (buyingFor, "Personal Living")],
+            pageId: "mapping-page", formId: "mapping-form");
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            var processor = new MetaLeadEventProcessor(db, graph, protector, leads, dispatcher, metaOptions,
+                NullLogger<MetaLeadEventProcessor>.Instance);
+            Assert.Equal(1, await processor.ProcessPendingEventsAsync(1));
+
+            var lead = await db.Leads.AsNoTracking().SingleAsync();
+            Assert.Equal(projectId, lead.InterestedProjectId);
+            Assert.Equal(LeadPurchaseIntent.SelfUse, lead.PurchaseIntent);
+            Assert.Equal(LeadPaymentPreference.Unknown, lead.PaymentPreference);
+
+            var answer = (await leads.GetExternalSubmissionsAsync(lead.Id, admin)).Single().FieldData
+                .Single(a => a.Name == buyingFor);
+            Assert.True(answer.IsMapped);
+            Assert.Equal("Are you buying for ?", answer.Label);
+            Assert.Equal("Personal Living", answer.ValueLabel);
+
+            var filtered = await leads.GetLeadsAsync(new LeadFilterDto { ProjectId = projectId }, admin);
+            Assert.Equal(lead.Id, Assert.Single(filtered.Items).Id);
+        }
+    }
+
+    [SqlServerFact]
     public async Task TheMetaWorker_StartedWhileTheDatabaseIsDown_ResumesOnItsOwnWhenItRecovers()
     {
         await using var database = await SqlTestDatabase.CreateAsync();

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.IntegrationDtos
@@ -56,6 +57,12 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public bool IsActive { get; set; }
         public bool IsSubscribed { get; set; }
         public DateTime? LastSeenAt { get; set; }
+
+        /// <summary>Lead forms only: whether an administrator has linked it to a project or its answers to lead fields.</summary>
+        public bool HasFormMapping { get; set; }
+
+        /// <summary>Lead forms only: the project its leads are linked to.</summary>
+        public string? FormMappingProjectName { get; set; }
     }
 
     public class MetaResourceGroupDto
@@ -103,6 +110,88 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public string? Value { get; set; }
         /// <summary>False when DAMS kept the answer but has no field to put it in.</summary>
         public bool IsMapped { get; set; }
+
+        /// <summary>
+        /// The question as the form words it, and the chosen option's text, looked up from the
+        /// synced form when the answer is read. Never stored: the stored answer stays exactly
+        /// as the provider sent it.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? Label { get; set; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? ValueLabel { get; set; }
+    }
+
+    /// <summary>One question on a provider lead form, as read by the form sync.</summary>
+    public class LeadFormQuestionDto
+    {
+        public string Key { get; set; } = string.Empty;
+        public string? Label { get; set; }
+        public string? Type { get; set; }
+        public List<LeadFormOptionDto> Options { get; set; } = [];
+    }
+
+    public class LeadFormOptionDto
+    {
+        public string Key { get; set; } = string.Empty;
+        /// <summary>The option's text as the person saw it.</summary>
+        public string? Value { get; set; }
+    }
+
+    /// <summary>Which lead field one question fills, and the value each of its options stands for.</summary>
+    public class LeadFormAnswerMappingDto
+    {
+        [Required]
+        [StringLength(200)]
+        public string QuestionKey { get; set; } = string.Empty;
+
+        public LeadFormAnswerTarget Target { get; set; }
+
+        public List<LeadFormOptionMappingDto> Options { get; set; } = [];
+    }
+
+    public class LeadFormOptionMappingDto
+    {
+        [Required]
+        [StringLength(200)]
+        public string OptionKey { get; set; } = string.Empty;
+
+        /// <summary>The option's text when the mapping was saved, so an answer sent as text still matches.</summary>
+        [StringLength(300)]
+        public string? OptionLabel { get; set; }
+
+        /// <summary>A PurchaseIntent or PaymentPreference name, or the property type text.</summary>
+        [Required]
+        [StringLength(100)]
+        public string Value { get; set; } = string.Empty;
+    }
+
+    public class LeadFormMappingDto
+    {
+        public string FormExternalId { get; set; } = string.Empty;
+        public string? FormName { get; set; }
+
+        /// <summary>Empty until a sync has read the form's questions.</summary>
+        public List<LeadFormQuestionDto> Questions { get; set; } = [];
+
+        public int? InterestedProjectId { get; set; }
+        public string? InterestedProjectName { get; set; }
+        public List<LeadFormAnswerMappingDto> Answers { get; set; } = [];
+
+        /// <summary>Base64 RowVersion of the saved mapping; null while none has been saved.</summary>
+        public string? Version { get; set; }
+        public DateTime? UpdatedAt { get; set; }
+    }
+
+    public class SaveLeadFormMappingDto
+    {
+        public int? InterestedProjectId { get; set; }
+
+        public List<LeadFormAnswerMappingDto> Answers { get; set; } = [];
+
+        /// <summary>The version the mapping was loaded with; null when there was none yet.</summary>
+        public string? Version { get; set; }
     }
 
     public class LeadExternalSubmissionDto

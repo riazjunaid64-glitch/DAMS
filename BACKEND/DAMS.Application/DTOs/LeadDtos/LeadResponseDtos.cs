@@ -72,6 +72,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public LeadPurchaseIntent PurchaseIntent { get; set; }
 
+        public LeadPaymentPreference PaymentPreference { get; set; }
+
         public string? Notes { get; set; }
 
         public int? AssignedEmployeeId { get; set; }
@@ -165,6 +167,8 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int? ProjectId { get; set; }
 
         public string? CampaignName { get; set; }
+
+        public LeadPaymentPreference? PaymentPreference { get; set; }
 
         public bool? Unassigned { get; set; }
 

@@ -17,7 +17,7 @@ namespace DAMS.Application.Services.Integrations
     /// The admin side of the Meta integration: connecting, inspecting what was found,
     /// choosing which pages are live, and disconnecting.
     /// </summary>
-    public sealed class MetaIntegrationService : IMetaIntegrationService
+    public sealed partial class MetaIntegrationService : IMetaIntegrationService
     {
         /// <summary>Fixed vocabulary for callback outcomes. A provider message is never echoed into a URL.</summary>
         private static class Reasons
@@ -356,6 +356,29 @@ namespace DAMS.Application.Services.Integrations
                     LastSeenAt = r.LastSeenAt
                 })
                 .ToListAsync(cancellationToken);
+
+            var formIds = resources
+                .Where(r => r.ResourceType == ExternalResourceTypes.LeadForm)
+                .Select(r => r.ExternalId)
+                .ToList();
+            if (formIds.Count > 0)
+            {
+                var mappings = await _context.ExternalLeadFormMappings
+                    .AsNoTracking()
+                    .Where(m => m.Provider == IntegrationProviders.Meta && formIds.Contains(m.FormExternalId))
+                    .Select(m => new
+                    {
+                        m.FormExternalId,
+                        ProjectName = m.InterestedProject != null ? m.InterestedProject.ProjectName : null
+                    })
+                    .ToDictionaryAsync(m => m.FormExternalId, m => m.ProjectName, cancellationToken);
+
+                foreach (var form in resources.Where(r => r.ResourceType == ExternalResourceTypes.LeadForm))
+                {
+                    form.HasFormMapping = mappings.TryGetValue(form.ExternalId, out var projectName);
+                    form.FormMappingProjectName = projectName;
+                }
+            }
 
             // Fixed order and labels, so the screen reads the same whatever Meta returned.
             string[] order =

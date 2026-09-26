@@ -71,6 +71,19 @@ namespace DAMS.Api.Controllers
             int id, int resourceId, [FromBody] SetMetaResourceEnabledDto dto, CancellationToken cancellationToken) =>
             RunAsync(_ => _integration.SetResourceEnabledAsync(id, resourceId, dto.IsEnabled, cancellationToken), cancellationToken);
 
+        /// <summary>
+        /// Keyed by the form's own Meta id rather than a connection, so the mapping survives a
+        /// reconnect or a resync.
+        /// </summary>
+        [HttpGet("lead-forms/{formId}/mapping")]
+        public Task<IActionResult> LeadFormMapping(string formId, CancellationToken cancellationToken) =>
+            RunAsync(_ => _integration.GetLeadFormMappingAsync(formId, cancellationToken), cancellationToken);
+
+        [HttpPut("lead-forms/{formId}/mapping")]
+        public Task<IActionResult> SaveLeadFormMapping(
+            string formId, [FromBody] SaveLeadFormMappingDto dto, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _integration.SaveLeadFormMappingAsync(formId, dto, ctx, cancellationToken), cancellationToken);
+
         [HttpPost("connections/{id:int}/sync")]
         public Task<IActionResult> Sync(int id, CancellationToken cancellationToken) =>
             RunAsync(_ => _sync.SyncNowAsync(id, cancellationToken), cancellationToken);

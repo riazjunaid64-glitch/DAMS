@@ -49,6 +49,7 @@ namespace DAMS.Application.Services
                 BudgetMin = l.BudgetMin,
                 BudgetMax = l.BudgetMax,
                 PurchaseIntent = l.PurchaseIntent,
+                PaymentPreference = l.PaymentPreference,
                 Notes = l.Notes,
                 AssignedEmployeeId = l.AssignedEmployeeId,
                 AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,

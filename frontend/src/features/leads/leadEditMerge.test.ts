@@ -6,7 +6,7 @@ import type { Lead } from "./types.ts";
 
 const opened = {
   id: 7, firstName: "Ayesha", lastName: "Khan", phone: "03001234567", email: "ayesha@example.com",
-  city: null, preferredContactMethod: "Phone", purchaseIntent: "Unknown", sourceDetails: "Walk-in",
+  city: null, preferredContactMethod: "Phone", purchaseIntent: "Unknown", paymentPreference: "Unknown", sourceDetails: "Walk-in",
   interestedProjectId: 1, interestedProjectName: "Skyline", interestedUnitId: 10, interestedUnitNumber: "A-10",
   budgetMax: null, notes: "Prefers evenings", concurrencyToken: "v1",
 } as Lead;

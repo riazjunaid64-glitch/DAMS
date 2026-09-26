@@ -23,6 +23,7 @@ import {
   isClosedStage,
   isPastServerTime,
   leadStages,
+  paymentPreferences,
   stageLabel,
   type ClosureReason,
   type Lead,
@@ -71,7 +72,7 @@ function LeadsWorkspace({ user }: { user: User }) {
   // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
   // exactly as it did, and the server contract is unchanged.
   const query = useMemo(() => {
-    const allowed = ["search", "stage", "qualification", "sourceId", "employeeId", "teamId", "projectId", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
+    const allowed = ["search", "stage", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
     const q = new URLSearchParams();
     for (const key of allowed) {
       const value = params.get(key);
@@ -163,6 +164,7 @@ function LeadsWorkspace({ user }: { user: User }) {
               <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />
               <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
               <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
+              <BarSelect label="Payment" icon={<IconWallet className="h-4 w-4" />} value={params.get("paymentPreference") ?? ""} onChange={(v) => updateParam("paymentPreference", v)} options={paymentPreferences.filter((v) => v !== "Unknown").map((v) => [v, stageLabel(v)])} />
             </div>
           </div>
         </section>
@@ -247,7 +249,7 @@ function LeadTable({ leads }: { leads: Lead[] }) {
 }
 
 function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { open: boolean; onClose: () => void; lookups: Lookups; canAssign: boolean; onCreated: (id: number) => void }) {
-  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", notes: "", assignedEmployeeId: "", assignedTeamId: "" };
+  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "", assignedTeamId: "" };
   const [form, setForm] = useState(initial);
   const [units, setUnits] = useState<UnitLookup[]>([]);
   const [saving, setSaving] = useState(false);
@@ -387,6 +389,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           <TextField label="Minimum budget" value={form.budgetMin} onChange={(v) => set("budgetMin", v)} type="number" />
           <TextField label="Maximum budget" value={form.budgetMax} onChange={(v) => set("budgetMax", v)} type="number" />
           <SelectField label="Purchase intent" value={form.purchaseIntent} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"].map((v) => [v, stageLabel(v)])} />
+          <SelectField label="Payment preference" value={form.paymentPreference} onChange={(v) => set("paymentPreference", v)} options={paymentPreferences.map((v) => [v, stageLabel(v)])} />
         </FormSection>
         {canAssign && <FormSection title="Ownership"><SelectField label="Team" value={form.assignedTeamId} onChange={setAssignmentTeam} options={lookups.teams.filter((v) => v.isActive).map((v) => [String(v.id), v.name])} /><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
         <div><Label>Initial notes</Label><textarea className={`${inputClass} min-h-24 resize-y`} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></div>
@@ -481,6 +484,7 @@ function IconChevronDown({ className }: IconProps) { return <svg {...ico(classNa
 function IconLayers({ className }: IconProps) { return <svg {...ico(className)}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 14 9 5 9-5" /></svg>; }
 function IconMegaphone({ className }: IconProps) { return <svg {...ico(className)}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 9a4 4 0 0 1 0 6" /><path d="M19 6a8 8 0 0 1 0 12" /></svg>; }
 function IconBuilding({ className }: IconProps) { return <svg {...ico(className)}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1" /><path d="M10 21v-3h4v3" /></svg>; }
+function IconWallet({ className }: IconProps) { return <svg {...ico(className)}><path d="M4 7a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v2" /><rect x="3" y="8" width="18" height="12" rx="2" /><path d="M16 14h.01" /></svg>; }
 function IconUsers({ className }: IconProps) { return <svg {...ico(className)}><circle cx="9" cy="8" r="3.2" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16.5 5.5a3.2 3.2 0 0 1 0 5.6" /><path d="M18 14.6A6 6 0 0 1 21 20" /></svg>; }
 function IconTrophy({ className }: IconProps) { return <svg {...ico(className)}><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" /><path d="M7 6H4v1a3 3 0 0 0 3 3" /><path d="M17 6h3v1a3 3 0 0 1-3 3" /><path d="M12 14v3" /><path d="M8.5 20h7" /><path d="M10 17h4l.5 3h-5l.5-3Z" /></svg>; }
 function IconCircleX({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></svg>; }
