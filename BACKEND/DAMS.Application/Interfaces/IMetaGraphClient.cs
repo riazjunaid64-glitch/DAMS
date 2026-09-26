@@ -27,8 +27,14 @@ namespace DAMS.Application.Interfaces
         Task<MetaDiscoveryPage> GetLeadFormsAsync(
             string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default);
 
-        /// <summary>Retrieves the actual lead behind a leadgen id, preserving the full response.</summary>
+        /// <summary>
+        /// Retrieves the actual lead behind a leadgen id, preserving the full response. Its ad,
+        /// ad set and campaign ids are included only when Meta shares them; its ad names never are.
+        /// </summary>
         Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default);
+
+        /// <summary>The names of the ad, ad set and campaign a lead came from. Needs ads_management on Meta's side.</summary>
+        Task<MetaLeadAdNames> GetLeadAdNamesAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default);
 
         /// <summary>Starts or stops leadgen webhook delivery for a page.</summary>
         Task SubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default);

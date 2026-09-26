@@ -10,6 +10,8 @@ using DAMS.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Data;
 using System.Data.Common;
@@ -36,6 +38,7 @@ namespace DAMS.Application.Services
         private readonly ILeadNotificationService _notifications;
         private readonly ICustomerAccountLinkService? _accountLinks;
         private readonly LeadAlertOptions _alertOptions;
+        private readonly ILogger<LeadService> _logger;
 
         /// <param name="accountLinks">
         /// Optional so the many lead tests that never convert a website request do not have to
@@ -49,7 +52,8 @@ namespace DAMS.Application.Services
             IBookingService bookingService,
             ILeadNotificationService notifications,
             IOptions<LeadAlertOptions> alertOptions,
-            ICustomerAccountLinkService? accountLinks = null)
+            ICustomerAccountLinkService? accountLinks = null,
+            ILogger<LeadService>? logger = null)
         {
             _context = context;
             _customerService = customerService;
@@ -57,6 +61,7 @@ namespace DAMS.Application.Services
             _notifications = notifications;
             _accountLinks = accountLinks;
             _alertOptions = alertOptions.Value;
+            _logger = logger ?? NullLogger<LeadService>.Instance;
         }
 
         // ── Ingestion ───────────────────────────────────────────────────────────────
@@ -82,7 +87,7 @@ namespace DAMS.Application.Services
 
             EnsureContactable(isExternal, normalizedPhone, normalizedWhatsapp, normalizedEmail, dto.Phone);
 
-            var source = await ResolveSourceAsync(dto.SourceCode, cancellationToken);
+            var source = await ResolveSourceAsync(dto.SourceCode, isExternal, cancellationToken);
 
             // Assignment writes into the dto, so a retried attempt must start from what was asked.
             var requestedEmployeeId = dto.AssignedEmployeeId;
@@ -1063,12 +1068,24 @@ namespace DAMS.Application.Services
             ex.InnerException is SqlException { Number: 2601 or 2627 } sql
             && sql.Message.Contains("LeadIntakeHolds", StringComparison.OrdinalIgnoreCase);
 
-        private async Task<LeadSource> ResolveSourceAsync(string? code, CancellationToken cancellationToken)
+        private async Task<LeadSource> ResolveSourceAsync(string? code, bool isExternal, CancellationToken cancellationToken)
         {
             var wanted = string.IsNullOrWhiteSpace(code) ? DefaultSourceCode : code.Trim().ToLowerInvariant();
 
             var source = await _context.LeadSources.FirstOrDefaultAsync(s => s.Code == wanted, cancellationToken)
                 ?? throw new InvalidOperationException($"Unknown lead source '{wanted}'.");
+
+            // A provider's enquiry is resolved to its integration source by code, not chosen by a
+            // person, so switching that source off cannot mean "stop taking these leads" — only
+            // disconnecting can. LeadConfigurationService refuses the switch while Meta is
+            // connected; this covers a source already off, or turned off while disconnected.
+            if (!source.IsActive && isExternal && IntegrationSourceCodes.All.Contains(source.Code))
+            {
+                _logger.LogWarning(
+                    "Lead source '{SourceCode}' is inactive, but an integration lead resolved to it is kept. " +
+                    "Reactivate it in CRM settings.", source.Code);
+                return source;
+            }
 
             if (!source.IsActive)
                 throw new InvalidOperationException($"Lead source '{source.Name}' is no longer active.");

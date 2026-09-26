@@ -125,6 +125,24 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
             : throw new MetaPermanentException($"Lead {leadgenId} does not exist.");
     }
 
+    /// <summary>Ad names Meta would share for a lead, keyed by leadgen id. Absent means none.</summary>
+    public Dictionary<string, MetaLeadAdNames> AdNames { get; } = [];
+
+    /// <summary>Thrown by the next GetLeadAdNamesAsync call, then discarded.</summary>
+    public Queue<Exception> AdNameFailures { get; } = new();
+
+    public List<string> AdNameRequests { get; } = [];
+
+    public Task<MetaLeadAdNames> GetLeadAdNamesAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default)
+    {
+        AdNameRequests.Add(leadgenId);
+
+        if (AdNameFailures.Count > 0)
+            throw AdNameFailures.Dequeue();
+
+        return Task.FromResult(AdNames.GetValueOrDefault(leadgenId) ?? new MetaLeadAdNames(null, null, null));
+    }
+
     public Task SubscribePageAsync(string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
     {
         OnSubscribePage?.Invoke();

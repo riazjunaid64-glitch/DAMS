@@ -338,20 +338,27 @@ public class MetaGraphClientHttpTests
     internal static bool AsksForAdNames(HttpRequestMessage request) =>
         RequestedFields(request).Split(',').Any(f => f is "ad_name" or "adset_name" or "campaign_name");
 
+    /// <summary>Everything Meta's Retrieving Leads guide puts behind ads_management: the names and the ids.</summary>
+    internal static bool AsksForAdFields(HttpRequestMessage request) =>
+        AsksForAdNames(request)
+        || RequestedFields(request).Split(',').Any(f => f is "ad_id" or "adset_id" or "campaign_id");
+
     internal static HttpResponseMessage GraphJson(string json, HttpStatusCode status = HttpStatusCode.OK) =>
         new(status) { Content = new StringContent(json) };
 
-    internal static HttpResponseMessage GraphError(HttpStatusCode status, int code, string message) =>
-        GraphJson($$"""{ "error": { "message": "{{message}}", "type": "OAuthException", "code": {{code}} } }""", status);
+    internal static HttpResponseMessage GraphError(HttpStatusCode status, int code, string message, int? subCode = null) =>
+        GraphJson($$"""
+            { "error": { "message": "{{message}}", "type": "OAuthException", "code": {{code}}{{(subCode is null ? "" : $", \"error_subcode\": {subCode}")}} } }
+            """, status);
+
+    internal const string AdsManagementRefusal = "(#200) Requires ads_management permission to manage the object";
 
     [Theory]
     [InlineData("fb")]
     [InlineData("ig")]
     public async Task ReadingALead_ParsesARealFloriaHeightsResponse(string platform)
     {
-        var handler = new FakeHandler(request => RequestedFields(request).Contains("field_data")
-            ? GraphJson(FloriaLeadJson(platform))
-            : GraphJson(FloriaAdNamesJson));
+        var handler = new FakeHandler(_ => GraphJson(FloriaLeadJson(platform)));
 
         var lead = await DirectClient(handler).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None);
 
@@ -382,91 +389,80 @@ public class MetaGraphClientHttpTests
         Assert.Equal("120212345678900001", lead.AdId);
         Assert.Equal("120212345678900002", lead.AdSetId);
         Assert.Equal("120212345678900003", lead.CampaignId);
-        Assert.Equal("Floria 2BR Reel", lead.AdName);
-        Assert.Equal("Lahore 25-45", lead.AdSetName);
-        Assert.Equal("Floria Heights Launch", lead.CampaignName);
         Assert.Contains(FloriaLeadgenId, lead.RawJson, StringComparison.Ordinal);
 
-        // The lead is asked for without any ad name; the names come from a call of their own.
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.DoesNotContain("_name", RequestedFields(handler.Requests[0]), StringComparison.Ordinal);
-        Assert.Equal("ad_name,adset_name,campaign_name", RequestedFields(handler.Requests[1]));
-        Assert.All(handler.Requests, r => Assert.Equal(FakeAccessToken, r.Headers.Authorization?.Parameter));
+        // One call, and it never asks for an ad name: that alone is what Meta refuses without
+        // ads_management, and it would take the whole lead down with it.
+        var request = Assert.Single(handler.Requests);
+        Assert.False(AsksForAdNames(request));
+        Assert.Null(lead.AdName);
+        Assert.Null(lead.AdSetName);
+        Assert.Null(lead.CampaignName);
+        Assert.Equal(FakeAccessToken, request.Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public async Task ReadingALeadsAdNames_AsksForThemAlone()
+    {
+        var handler = new FakeHandler(_ => GraphJson(FloriaAdNamesJson));
+
+        var names = await DirectClient(handler).GetLeadAdNamesAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None);
+
+        Assert.Equal(new MetaLeadAdNames("Floria 2BR Reel", "Lahore 25-45", "Floria Heights Launch"), names);
+        Assert.Equal("ad_name,adset_name,campaign_name", RequestedFields(Assert.Single(handler.Requests)));
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.Forbidden, 200, "(#200) Requires ads_management permission to manage the object")]
-    [InlineData(HttpStatusCode.BadRequest, 100, "(#100) Tried accessing nonexisting field (campaign_name) on node type (LeadgenQualifier)")]
-    [InlineData(HttpStatusCode.ServiceUnavailable, 2, "An unexpected error has occurred. Please retry your request later.")]
-    public async Task ALeadWhoseAdNamesMetaRefuses_IsStillRead_WithoutThem_AndTheRefusalIsLogged(
+    [InlineData(HttpStatusCode.Forbidden, 200, AdsManagementRefusal)]
+    [InlineData(HttpStatusCode.Forbidden, 10, "(#10) Application does not have permission for this action")]
+    [InlineData(HttpStatusCode.BadRequest, 100, "(#100) Tried accessing nonexisting field (adset_id) on node type (LeadgenQualifier)")]
+    public async Task ALeadWhoseAdIdsMetaRefuses_IsReadWithoutThem_AndTheRefusalIsLoggedWithoutAStackTrace(
         HttpStatusCode status, int code, string message)
     {
-        // Meta refuses the whole call over one field, so any request naming an ad is refused.
-        var handler = new FakeHandler(request => AsksForAdNames(request)
+        // If Meta holds even the ids back — a permission, or a field renamed in a later Graph
+        // version — the lead must still come through rather than parking the whole connection.
+        var handler = new FakeHandler(request => RequestedFields(request).Contains("campaign_id")
             ? GraphError(status, code, message)
-            : GraphJson(FloriaLeadJson()));
+            : GraphJson(FloriaLeadJson(withAdIds: false)));
         var logs = new CapturingLoggerProvider();
 
         var lead = await DirectClient(handler, logs).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None);
 
-        Assert.Equal(FloriaLeadgenId, lead.LeadgenId);
-        Assert.Equal(5, lead.FieldData.Count);
-        Assert.Equal("120212345678900003", lead.CampaignId);
-        Assert.Null(lead.CampaignName);
-        Assert.Null(lead.AdSetName);
-        Assert.Null(lead.AdName);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Contains(logs.Messages, m => m.StartsWith("[Warning]", StringComparison.Ordinal)
-                                            && m.Contains("names of lead", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task ALeadWhoseAdIdsMetaRefuses_IsReadWithoutThem()
-    {
-        // If Meta holds even the ids back without ads permissions, the lead must still come
-        // through — just unattributed — rather than parking the whole connection.
-        var handler = new FakeHandler(request => RequestedFields(request).Contains("campaign_id")
-            ? GraphError(HttpStatusCode.Forbidden, 200, "(#200) Requires ads_management permission to manage the object")
-            : GraphJson(FloriaLeadJson(withAdIds: false)));
-
-        var lead = await DirectClient(handler).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None);
-
         Assert.Equal(5, lead.FieldData.Count);
         Assert.Null(lead.CampaignId);
         Assert.Null(lead.AdId);
-        // Nothing left to name, so no names call is made.
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal("id,created_time,field_data,form_id,platform,is_organic", RequestedFields(handler.Requests[1]));
-    }
 
-    [Fact]
-    public async Task AnOrganicLead_IsReadInOneCall()
-    {
-        var handler = new FakeHandler(_ => GraphJson(FloriaLeadJson(withAdIds: false)));
-
-        var lead = await DirectClient(handler).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None);
-
-        Assert.Equal(FloriaLeadgenId, lead.LeadgenId);
-        Assert.Single(handler.Requests);
+        var warning = Assert.Single(logs.Messages, m => m.StartsWith("[Warning]", StringComparison.Ordinal));
+        Assert.Contains("refused the ad ids", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("[exception:", warning, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest, 190, "Error validating access token: The session has been invalidated.", typeof(MetaAuthorizationException), 2)]
-    [InlineData(HttpStatusCode.Forbidden, 200, "(#200) Requires leads_retrieval permission", typeof(MetaAuthorizationException), 2)]
-    [InlineData(HttpStatusCode.BadRequest, 100, "Unsupported get request. Object with ID '12345678901234567' does not exist.", typeof(MetaPermanentException), 2)]
-    [InlineData(HttpStatusCode.BadRequest, 17, "User request limit reached", typeof(MetaTransientException), 1)]
-    [InlineData(HttpStatusCode.InternalServerError, 1, "An unknown error occurred", typeof(MetaTransientException), 1)]
+    // A dead session, or a lead that no longer exists, fails the same with or without the ids:
+    // asked once, believed at once.
+    [InlineData(HttpStatusCode.BadRequest, 190, null, "Error validating access token: The session has been invalidated.", typeof(MetaAuthorizationException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 102, null, "Session key invalid or no longer valid", typeof(MetaAuthorizationException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 200, 460, "The session has been invalidated because the user changed their password.", typeof(MetaAuthorizationException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 100, 33, "Unsupported get request. Object with ID '12345678901234567' does not exist.", typeof(MetaPermanentException), 1)]
+    // A permission refusal might be over the ids alone, so it is asked again without them;
+    // failing that too, it is about the lead itself and is reported as such.
+    [InlineData(HttpStatusCode.Forbidden, 200, null, "(#200) Requires leads_retrieval permission", typeof(MetaAuthorizationException), 2)]
+    // Not refusals at all: left for the event processor's own backoff.
+    [InlineData(HttpStatusCode.BadRequest, 17, null, "User request limit reached", typeof(MetaTransientException), 1)]
+    [InlineData(HttpStatusCode.InternalServerError, 1, null, "An unknown error occurred", typeof(MetaTransientException), 1)]
     public async Task ALeadMetaRefusesOutright_IsClassifiedByItsGraphError(
-        HttpStatusCode status, int code, string message, Type expected, int expectedRequests)
+        HttpStatusCode status, int code, int? subCode, string message, Type expected, int expectedRequests)
     {
-        var handler = new FakeHandler(_ => GraphError(status, code, message));
+        var handler = new FakeHandler(_ => GraphError(status, code, message, subCode));
 
         var thrown = await Assert.ThrowsAnyAsync<MetaGraphException>(() =>
             DirectClient(handler).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None));
 
         Assert.IsType(expected, thrown);
-        // A refusal is retried once without the ad ids before it is believed; a transient error
-        // is not a refusal and is left for the event processor's own backoff.
+        Assert.Equal(code, thrown.Code);
+        Assert.Equal(subCode, thrown.SubCode);
         Assert.Equal(expectedRequests, handler.Requests.Count);
     }
 
@@ -495,7 +491,7 @@ public class MetaGraphClientHttpTests
         }
     }
 
-    private sealed class CapturingLoggerProvider : ILoggerProvider
+    internal sealed class CapturingLoggerProvider : ILoggerProvider
     {
         public List<string> Messages { get; } = [];
 
@@ -516,7 +512,8 @@ public class MetaGraphClientHttpTests
                 Func<TState, Exception?, string> formatter)
             {
                 lock (sink)
-                    sink.Add($"[{logLevel}] [{category}] {formatter(state, exception)}");
+                    sink.Add($"[{logLevel}] [{category}] {formatter(state, exception)}" +
+                             (exception is null ? "" : $" [exception: {exception.GetType().Name}]"));
             }
         }
 

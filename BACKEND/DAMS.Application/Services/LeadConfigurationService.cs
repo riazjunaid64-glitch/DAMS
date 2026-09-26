@@ -75,8 +75,9 @@ namespace DAMS.Application.Services
             var source = await _context.LeadSources.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Lead source not found.");
 
-            // Integration intake resolves these sources by code and refuses an inactive one, so
-            // switching one off while Meta is connected would fail every lead from that platform.
+            // Meta intake resolves these sources by code and keeps using them even when inactive,
+            // so switching one off while Meta is connected would not stop a single lead — only
+            // look as if it had. Refused with the step that actually does stop them.
             if (source.IsActive && !dto.IsActive
                 && IntegrationSourceCodes.All.Contains(source.Code)
                 && await _context.ExternalIntegrationConnections.AnyAsync(

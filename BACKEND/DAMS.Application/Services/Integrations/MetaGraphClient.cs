@@ -360,23 +360,13 @@ namespace DAMS.Application.Services.Integrations
 
         /// <summary>
         /// Meta puts ad-specific lead fields behind ads_management, which DAMS does not request,
-        /// and refuses the whole call when it refuses one field. So the lead is read on its own
-        /// terms first and its ad attribution is only ever added on top: an attribution Meta will
-        /// not share must cost the names, never the lead, and never the connection's status.
+        /// and refuses the whole call when it refuses one field. So the lead is asked for with
+        /// its ad ids only — never the names, which come from <see cref="GetLeadAdNamesAsync"/>
+        /// — and if Meta refuses even the ids, it is asked for again without them: attribution
+        /// Meta will not share must never cost the lead.
         /// </summary>
         public async Task<MetaLead> GetLeadAsync(
             string leadgenId, string accessToken, CancellationToken cancellationToken = default)
-        {
-            var lead = await ReadLeadAsync(leadgenId, accessToken, cancellationToken);
-
-            if (lead.AdId is not null || lead.AdSetId is not null || lead.CampaignId is not null)
-                await ReadAdNamesAsync(lead, accessToken, cancellationToken);
-
-            return lead;
-        }
-
-        private async Task<MetaLead> ReadLeadAsync(
-            string leadgenId, string accessToken, CancellationToken cancellationToken)
         {
             var path = $"{Uri.EscapeDataString(leadgenId)}?fields=";
 
@@ -386,14 +376,12 @@ namespace DAMS.Application.Services.Integrations
                 document = await GetAsync(
                     WithProof($"{path}{LeadFields},{LeadAdIdFields}", accessToken), accessToken, cancellationToken);
             }
-            catch (Exception ex) when (ex is MetaAuthorizationException or MetaPermanentException)
+            catch (MetaGraphException ex) when (IsFieldRefusal(ex))
             {
-                // The ids are what tie a lead to its campaign, but whether Meta shares even them
-                // without ads permissions is not something DAMS can count on. If this retry also
-                // fails, the lead itself is unreadable and that exception is the real one.
-                _logger.LogWarning(ex,
-                    "Reading lead {LeadgenId} with its ad, ad set and campaign ids failed. Retrying without them.",
-                    leadgenId);
+                // Once per lead, so the message alone: a stack trace would say nothing new.
+                _logger.LogWarning(
+                    "Meta refused the ad ids of lead {LeadgenId} ({Reason}). Retrying without them.",
+                    leadgenId, ex.Message);
                 document = await GetAsync(WithProof($"{path}{LeadFields}", accessToken), accessToken, cancellationToken);
             }
 
@@ -401,30 +389,34 @@ namespace DAMS.Application.Services.Integrations
                 return ReadLead(document.RootElement, leadgenId);
         }
 
-        private async Task ReadAdNamesAsync(MetaLead lead, string accessToken, CancellationToken cancellationToken)
+        public async Task<MetaLeadAdNames> GetLeadAdNamesAsync(
+            string leadgenId, string accessToken, CancellationToken cancellationToken = default)
         {
-            try
-            {
-                using var document = await GetAsync(
-                    WithProof($"{Uri.EscapeDataString(lead.LeadgenId)}?fields={LeadAdNameFields}", accessToken),
-                    accessToken,
-                    cancellationToken);
+            using var document = await GetAsync(
+                WithProof($"{Uri.EscapeDataString(leadgenId)}?fields={LeadAdNameFields}", accessToken),
+                accessToken,
+                cancellationToken);
 
-                var root = document.RootElement;
-                lead.AdName = ReadString(root, "ad_name");
-                lead.AdSetName = ReadString(root, "adset_name");
-                lead.CampaignName = ReadString(root, "campaign_name");
-            }
-            catch (MetaGraphException ex)
-            {
-                // Whatever the reason — a permission, a renamed field, Meta being busy — the names
-                // are only labels. The lead goes ahead without them, and the event processor falls
-                // back to whatever resource sync has discovered for these ids.
-                _logger.LogWarning(ex,
-                    "Reading the ad, ad set and campaign names of lead {LeadgenId} failed. Continuing without them.",
-                    lead.LeadgenId);
-            }
+            var root = document.RootElement;
+            return new MetaLeadAdNames(
+                ReadString(root, "ad_name"), ReadString(root, "adset_name"), ReadString(root, "campaign_name"));
         }
+
+        /// <summary>
+        /// Meta refusing some of the fields asked for, rather than the token or the lead: a
+        /// permission error (#10, #200–#299) or an unknown field (#100). An expired or
+        /// invalidated session (#190, #102, or a 458–467 subcode) and a lead that does not exist
+        /// (#100 subcode 33) fail the same way with or without the ids, so asking again would be
+        /// a wasted call.
+        /// </summary>
+        private static bool IsFieldRefusal(MetaGraphException ex) =>
+            ex.SubCode is not (>= 458 and <= 467)
+            && ex.Code switch
+            {
+                10 or (>= 200 and <= 299) => true,
+                100 => ex.SubCode != 33,
+                _ => false
+            };
 
         private static MetaLead ReadLead(JsonElement root, string leadgenId)
         {
@@ -655,18 +647,19 @@ namespace DAMS.Application.Services.Integrations
             if (code is { } errorCode)
             {
                 if (AuthorizationCodes.Contains(errorCode) || subCode is >= 458 and <= 467)
-                    throw new MetaAuthorizationException(detail);
+                    throw new MetaAuthorizationException(detail, code: code, subCode: subCode);
 
                 if (TransientCodes.Contains(errorCode))
-                    throw new MetaTransientException(detail);
+                    throw new MetaTransientException(detail, code: code, subCode: subCode);
             }
 
             throw response.StatusCode switch
             {
-                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new MetaAuthorizationException(detail),
-                HttpStatusCode.TooManyRequests => new MetaTransientException(detail),
-                >= HttpStatusCode.InternalServerError => new MetaTransientException(detail),
-                _ => (MetaGraphException)new MetaPermanentException(detail)
+                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
+                    new MetaAuthorizationException(detail, code: code, subCode: subCode),
+                HttpStatusCode.TooManyRequests => new MetaTransientException(detail, code: code, subCode: subCode),
+                >= HttpStatusCode.InternalServerError => new MetaTransientException(detail, code: code, subCode: subCode),
+                _ => (MetaGraphException)new MetaPermanentException(detail, code: code, subCode: subCode)
             };
         }
 

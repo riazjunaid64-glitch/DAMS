@@ -97,7 +97,7 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
     }
 
     /// <summary>The exact body shape Meta posts for a lead-ad submission.</summary>
-    public static string WebhookBody(string pageId, string leadgenId, string formId = "form-1") => $$"""
+    public static string WebhookBody(string pageId, string leadgenId, string formId = "form-1", string? adId = null) => $$"""
         {
           "object": "page",
           "entry": [{
@@ -106,6 +106,7 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
             "changes": [{
               "field": "leadgen",
               "value": {
+                {{(adId is null ? "" : $"\"ad_id\": \"{adId}\",")}}
                 "page_id": "{{pageId}}",
                 "form_id": "{{formId}}",
                 "leadgen_id": "{{leadgenId}}",

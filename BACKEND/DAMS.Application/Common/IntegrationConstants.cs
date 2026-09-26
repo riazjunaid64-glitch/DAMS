@@ -24,7 +24,11 @@ namespace DAMS.Application.Common
         /// </summary>
         public const string Meta = "meta";
 
-        /// <summary>Every source a Meta lead can resolve to; intake fails if any of them is inactive.</summary>
+        /// <summary>
+        /// Every source a Meta lead can resolve to. They stay usable by integration intake even
+        /// when inactive (LeadService.ResolveSourceAsync), and cannot be switched off while Meta
+        /// is connected (LeadConfigurationService.UpdateSourceAsync).
+        /// </summary>
         public static readonly string[] All = [Facebook, Instagram, Meta];
     }
 
