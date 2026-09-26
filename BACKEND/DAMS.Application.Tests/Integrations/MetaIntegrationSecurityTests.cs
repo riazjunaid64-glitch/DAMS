@@ -136,6 +136,8 @@ public class MetaIntegrationSecurityTests
     [InlineData("", true)]
     [InlineData("not-a-config-id", false)]
     [InlineData("123&scope=ads_management", false)]
+    // \d would accept these Arabic-Indic digits; a configuration ID is ASCII only.
+    [InlineData("١٢٣", false)]
     public void TheLoginConfigId_IsValidatedAtStartup(string loginConfigId, bool starts)
     {
         using var factory = new MetaWebhookEndpointTests.MetaApiFactory()
