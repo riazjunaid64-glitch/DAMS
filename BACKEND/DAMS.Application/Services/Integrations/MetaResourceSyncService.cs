@@ -25,6 +25,7 @@ namespace DAMS.Application.Services.Integrations
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
         private readonly MetaIntegrationOptions _options;
+        private readonly IMetaLeadBackfillService _backfill;
         private readonly ILogger<MetaResourceSyncService> _logger;
 
         public MetaResourceSyncService(
@@ -32,12 +33,14 @@ namespace DAMS.Application.Services.Integrations
             IMetaGraphClient graph,
             IIntegrationSecretProtector protector,
             MetaIntegrationOptions options,
+            IMetaLeadBackfillService backfill,
             ILogger<MetaResourceSyncService> logger)
         {
             _context = context;
             _graph = graph;
             _protector = protector;
             _options = options;
+            _backfill = backfill;
             _logger = logger;
         }
 
@@ -380,6 +383,26 @@ namespace DAMS.Application.Services.Integrations
             await _context.SaveChangesAsync(cancellationToken);
 
             result.SyncedAt = now;
+
+            // Only once the sync's own changes are saved, since each recovered lead is saved as it
+            // is found. It runs on the Page tokens, so a refused account token does not stop it.
+            try
+            {
+                var recovered = await _backfill.ReconcileAsync(connection.Id, cancellationToken);
+                if (recovered.New > 0)
+                    _logger.LogInformation(
+                        "Reconciliation queued {Count} Meta lead(s) the webhook had not delivered for connection {ConnectionId}.",
+                        recovered.New, connection.Id);
+                if (recovered.Warning is not null)
+                    result.Warning = Combine(result.Warning, recovered.Warning);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // The sync itself is saved and stands; the next one reconciles the same window again.
+                _logger.LogError(ex, "Reconciling Meta leads for connection {ConnectionId} failed.", connection.Id);
+                result.Warning = Combine(result.Warning, "Missed leads could not be checked for this sync; the next sync will try again.");
+            }
+
             return result;
         }
 

@@ -185,8 +185,9 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
                    && o.MaxGraphPages is >= 1 and <= 200,
         "Meta integration request limits are outside the supported range.")
     .Validate(o => o.TokenExpiryWarningDays is >= 0 and <= 60
-                   && o.QuietPageAlertDays is >= 0 and <= 365,
-        "Meta integration alert settings are outside the supported range.")
+                   && o.QuietPageAlertDays is >= 0 and <= 365
+                   && o.ReconciliationLookbackHours is >= 0 and <= MetaIntegrationOptions.MaxImportDays * 24,
+        "Meta integration alert and reconciliation settings are outside the supported range.")
     .Validate(o => System.Text.RegularExpressions.Regex.IsMatch(o.GraphApiVersion ?? "", @"^v\d+\.\d+$"),
         "MetaIntegration:GraphApiVersion must look like \"v21.0\".")
     .Validate(o => string.IsNullOrWhiteSpace(o.LoginConfigId)
@@ -297,6 +298,7 @@ builder.Services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =
     client.BaseAddress = new Uri($"https://graph.facebook.com/{meta.GraphApiVersion}/");
     client.Timeout = TimeSpan.FromSeconds(meta.RequestTimeoutSeconds);
 });
+builder.Services.AddScoped<IMetaLeadBackfillService, MetaLeadBackfillService>();
 builder.Services.AddScoped<IMetaResourceSyncService, MetaResourceSyncService>();
 builder.Services.AddScoped<IMetaIntegrationService, MetaIntegrationService>();
 builder.Services.AddScoped<IMetaWebhookIntakeService, MetaWebhookIntakeService>();

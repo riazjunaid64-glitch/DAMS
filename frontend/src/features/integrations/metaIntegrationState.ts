@@ -4,6 +4,7 @@ import type {
   LeadFormMapping,
   LeadFormQuestion,
   MetaEventStatus,
+  MetaLeadImportResult,
   SaveLeadFormMapping,
 } from "./types.ts";
 
@@ -192,6 +193,33 @@ export function syncRejectionWarning(connection: MetaConnection): string | null 
   if (!connection.syncRejectedAt || connection.status !== "Connected") return null;
   return "Meta refused this account's sign-in, so its Pages and lead forms are no longer refreshed. " +
     "Leads still arrive through the Page tokens. Reconnect the account with Connect Meta to restore syncing.";
+}
+
+/** Meta keeps a lead readable through its form for this many days. */
+export const MAX_IMPORT_DAYS = 90;
+
+/** A local calendar date as YYYY-MM-DD, `daysBack` days before `now`. */
+export function importDate(daysBack: number, now: Date = new Date()): string {
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** The earliest date an import may start from; the server holds the same 90-day line. */
+export function earliestImportDate(now: Date = new Date()): string {
+  return importDate(MAX_IMPORT_DAYS - 1, now);
+}
+
+/** What an import did, in one line an admin can act on. */
+export function importSummary(result: MetaLeadImportResult): string {
+  const parts = [
+    `${result.found} found`,
+    `${result.new} new`,
+    `${result.alreadyInDams} already in DAMS`,
+  ];
+  if (result.failed > 0) parts.push(`${result.failed} failed`);
+  const summary = parts.join(" · ");
+  return result.new > 0 ? `${summary}. New leads appear within a minute.` : summary;
 }
 
 /** The event list shows the latest events, or every event in one status. */

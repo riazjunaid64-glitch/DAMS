@@ -1,6 +1,8 @@
 import { apiJson, jsonRequest } from "../leads/leadApi.ts";
 import type {
+  ImportMetaLeadsRequest,
   LeadFormMapping,
+  MetaLeadImportResult,
   MetaConnectStart,
   MetaConnection,
   MetaEvent,
@@ -63,4 +65,9 @@ export function saveLeadFormMapping(formExternalId: string, mapping: SaveLeadFor
     `${base}/lead-forms/${encodeURIComponent(formExternalId)}/mapping`,
     jsonRequest("PUT", mapping),
   );
+}
+
+/** Recovers leads the webhook missed. Safe to repeat: leads already in DAMS are only counted. */
+export function importMetaLeads(connectionId: number, request: ImportMetaLeadsRequest) {
+  return apiJson<MetaLeadImportResult>(`${base}/connections/${connectionId}/import`, jsonRequest("POST", request));
 }

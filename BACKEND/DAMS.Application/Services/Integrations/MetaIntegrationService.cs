@@ -369,7 +369,8 @@ namespace DAMS.Application.Services.Integrations
                         e.ExternalIntegrationConnectionId == c.Id
                         && e.Status == ExternalIntegrationEventStatus.Failed),
                     LastLeadReceivedAt = _context.ExternalIntegrationEvents
-                        .Where(e => e.ExternalIntegrationConnectionId == c.Id)
+                        .Where(e => e.ExternalIntegrationConnectionId == c.Id
+                                    && e.EventType != MetaLeadBackfillService.BackfillEventType)
                         .Max(e => (DateTime?)e.ReceivedAt)
                 })
                 .ToListAsync(cancellationToken);

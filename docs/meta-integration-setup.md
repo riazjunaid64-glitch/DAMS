@@ -115,3 +115,32 @@ good reason. Set it to the number of days the business considers too long.
 
 A system-user token (see section 2) would remove the 60-day expiry and is still the preferred
 long-term fix. It needs the live checks listed there before it can be supported.
+
+## 5. Recovering leads the webhook missed
+
+Meta retries a failed webhook for about 36 hours and then gives up. It keeps every lead
+readable through its form (`GET /{form-id}/leads`) for 90 days, and DAMS uses that to recover
+leads that never arrived:
+
+- **Reconciliation.** Every resource sync (every 6 hours) reads the last
+  `MetaIntegration:ReconciliationLookbackHours` (default 48; 0 = off) of every lead form on
+  every enabled Page, with the Page's own token.
+- **Import.** CRM settings → Integrations → Manage resources → **Import leads** on an enabled
+  Page reads its synced forms back to a chosen date, at most 90 days ago, and reports how many
+  leads were found, new, already in DAMS, and failed. Run **Sync now** first if the Page's forms
+  are not listed yet.
+
+Each recovered lead is queued as a `leadgen_backfill` event under the same key the webhook
+would have used, so a lead the webhook already delivered is counted, never added twice. A lead
+the webhook recorded while its Page was off is picked up again once the Page is enabled.
+After that, the normal processor handles it exactly like a webhook lead: duplicates, held
+enquiries, attribution and the "new lead" notification. The lead keeps Meta's `created_time`
+as its submission time. First-response alerts are timed from when DAMS assigns the lead, so a
+recovered lead is not reported overdue on arrival.
+
+Not built yet:
+
+- Importing Meta's CSV exports for leads older than 90 days (needs a product decision).
+- Meta's docs list `pages_manage_ads` for bulk lead reads. DAMS does not ask for it. If the
+  staging test shows it is needed, the import and reconciliation report Meta's permission
+  error; add the scope only with that evidence (see `MetaScopes`).

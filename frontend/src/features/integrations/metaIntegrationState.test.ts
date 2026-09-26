@@ -9,6 +9,9 @@ import {
   eventListLimitNote,
   deliverySummary,
   isAwaitingFirstSync,
+  earliestImportDate,
+  importDate,
+  importSummary,
   isToggleable,
   lastLeadSummary,
   readCallbackResult,
@@ -185,5 +188,22 @@ describe("sign-in health", () => {
     expect(syncRejectionWarning(connection())).toBeNull();
     expect(syncRejectionWarning(connection({ syncRejectedAt: "2026-09-26T10:00:00Z" }))).toContain("Leads still arrive");
     expect(syncRejectionWarning(connection({ status: "NeedsReauthorization", syncRejectedAt: "2026-09-26T10:00:00Z" }))).toBeNull();
+  });
+});
+
+describe("lead import", () => {
+  const now = new Date(2026, 8, 26, 15, 0, 0);
+
+  it("offers dates back to the 90-day line Meta keeps leads for, and no further", () => {
+    expect(importDate(0, now)).toBe("2026-09-26");
+    expect(importDate(7, now)).toBe("2026-09-19");
+    expect(earliestImportDate(now)).toBe("2026-06-29");
+  });
+
+  it("reports every outcome, and failures only when there are some", () => {
+    expect(importSummary({ found: 3, new: 1, alreadyInDams: 2, failed: 0 }))
+      .toBe("3 found · 1 new · 2 already in DAMS. New leads appear within a minute.");
+    expect(importSummary({ found: 0, new: 0, alreadyInDams: 0, failed: 1 }))
+      .toBe("0 found · 0 new · 0 already in DAMS · 1 failed");
   });
 });

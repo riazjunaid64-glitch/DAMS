@@ -2846,7 +2846,9 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             var integration = new MetaIntegrationService(db, graph, protector,
-                new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance),
+                new MetaResourceSyncService(db, graph, protector, metaOptions,
+                    new MetaLeadBackfillService(db, graph, protector, metaOptions, NullLogger<MetaLeadBackfillService>.Instance),
+                    NullLogger<MetaResourceSyncService>.Instance),
                 metaOptions, NullLogger<MetaIntegrationService>.Instance);
 
             var first = await integration.SaveLeadFormMappingAsync("mapping-form",
@@ -3757,7 +3759,7 @@ public sealed class SqlServerProductionInvariantTests
             await using var db = new AppDbContext(options);
             var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                 db, graph, protector, metaOptions,
-                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
             var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                 db, graph, protector, sync, metaOptions,
                 NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
@@ -3917,7 +3919,7 @@ public sealed class SqlServerProductionInvariantTests
             db, graph, protector,
             new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                 db, graph, protector, SqlMetaOptions,
-                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance),
+                Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance),
             SqlMetaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
 
         await using (var db = new AppDbContext(options))
@@ -4345,7 +4347,9 @@ public sealed class SqlServerProductionInvariantTests
 
         await using (var db = new AppDbContext(options))
         {
-            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance);
+            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions,
+                    new MetaLeadBackfillService(db, graph, protector, metaOptions, NullLogger<MetaLeadBackfillService>.Instance),
+                    NullLogger<MetaResourceSyncService>.Instance);
             graph.DiscoveryFailure = new MetaAuthorizationException("Session has expired.", code: 190);
             await sync.SyncConnectionAsync(connectionId);
             Assert.Equal(0, await sync.SyncDueConnectionsAsync());
@@ -4354,7 +4358,9 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             var integration = new MetaIntegrationService(db, graph, protector,
-                new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance),
+                new MetaResourceSyncService(db, graph, protector, metaOptions,
+                    new MetaLeadBackfillService(db, graph, protector, metaOptions, NullLogger<MetaLeadBackfillService>.Instance),
+                    NullLogger<MetaResourceSyncService>.Instance),
                 metaOptions, NullLogger<MetaIntegrationService>.Instance);
             var shown = Assert.Single(await integration.GetConnectionsAsync());
             Assert.Equal(ExternalIntegrationConnectionStatus.Connected, shown.Status);
@@ -4373,6 +4379,72 @@ public sealed class SqlServerProductionInvariantTests
             var parked = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Status == ExternalIntegrationEventStatus.Retry);
             Assert.True(parked.AvailableAt <= DateTime.UtcNow);
             Assert.Null((await db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).SyncRejectedAt);
+        }
+    }
+
+    /// <summary>
+    /// KAN-35 on SQL Server: the form lookup, the submission check, reopening an event the webhook
+    /// ignored, and the unique event key keeping a repeated import from queueing a lead twice.
+    /// </summary>
+    [SqlServerFact]
+    public async Task MetaLeadBackfill_RecoversMissedLeadsWithoutDuplicatesOnSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+        int connectionId, pageId;
+        await using (var db = new AppDbContext(options))
+        {
+            await SeedMetaPageAsync(db, "page-backfill");
+            var page = await db.ExternalIntegrationResources.SingleAsync();
+            connectionId = page.ExternalIntegrationConnectionId;
+            pageId = page.Id;
+            db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId, Provider = "meta", ResourceType = "lead_form",
+                ExternalId = "form-backfill", ParentExternalId = "page-backfill", IsActive = true
+            });
+            // What the webhook recorded while the Page was still off.
+            db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+            {
+                Provider = "meta", ExternalIntegrationConnectionId = connectionId, ExternalIntegrationResourceId = pageId,
+                EventType = "leadgen", EventKey = MetaWebhookIntakeService.EventKey(connectionId, "page-backfill", "lead-ignored"),
+                RawPayloadJson = "{}", Status = ExternalIntegrationEventStatus.Ignored, ProcessedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        MetaLead Lead(string id) => new() { LeadgenId = id, FormId = "form-backfill", CreatedTime = DateTime.UtcNow.AddDays(-2), RawJson = "{}" };
+        graph.FormLeads["form-backfill"] = [Lead("lead-ignored"), Lead("lead-missed")];
+        var metaOptions = new MetaIntegrationOptions { AppId = "a", AppSecret = "s", WebhookVerifyToken = "v", OAuthCallbackUrl = "https://dams.test/cb" };
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin };
+        var request = new ImportMetaLeadsDto { ResourceId = pageId, Since = DateOnly.FromDateTime(PakistanTime.Today.AddDays(-7)) };
+
+        await using (var db = new AppDbContext(options))
+        {
+            var backfill = new MetaLeadBackfillService(db, graph, protector, metaOptions, NullLogger<MetaLeadBackfillService>.Instance);
+            var first = await backfill.ImportAsync(connectionId, request, admin);
+            Assert.Equal((2, 2, 0), (first.Found, first.New, first.AlreadyInDams));
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var backfill = new MetaLeadBackfillService(db, graph, protector, metaOptions, NullLogger<MetaLeadBackfillService>.Instance);
+            var again = await backfill.ImportAsync(connectionId, request, admin);
+            Assert.Equal((2, 0, 2), (again.Found, again.New, again.AlreadyInDams));
+            Assert.Equal(0, (await backfill.ReconcileAsync(connectionId)).New);
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var events = await db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+            Assert.Equal(2, events.Count);
+            Assert.All(events, e => Assert.Equal(ExternalIntegrationEventStatus.Pending, e.Status));
+            Assert.Contains(events, e => e.EventType == MetaLeadBackfillService.BackfillEventType);
         }
     }
 
@@ -4463,7 +4535,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
-                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                db, graph, protector, metaOptions, Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
             var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                 db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
 
@@ -4477,7 +4549,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
-                db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                db, graph, protector, metaOptions, Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
             var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                 db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
 
@@ -4612,7 +4684,7 @@ public sealed class SqlServerProductionInvariantTests
 
         await using var loserDb = new AppDbContext(Options(database.ConnectionString, interceptor));
         var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
-            loserDb, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            loserDb, graph, protector, metaOptions, Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
         var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
             loserDb, graph, protector, loserSync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
 
@@ -4697,7 +4769,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                 loserDb, graph, protector, metaOptions,
-                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
             var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                 loserDb, graph, protector, loserSync, metaOptions,
                 NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
@@ -4717,7 +4789,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             var loserSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                 loserDb, graph, protector, metaOptions,
-                NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
             var loserIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                 loserDb, graph, protector, loserSync, metaOptions,
                 NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
@@ -4778,7 +4850,7 @@ public sealed class SqlServerProductionInvariantTests
         var interceptor = new InsertCollidingConnectionInterceptor(database.ConnectionString, "race-account");
         await using var db = new AppDbContext(Options(database.ConnectionString, interceptor));
         var sync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
-            db, graph, protector, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+            db, graph, protector, metaOptions, Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
         var integration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
             db, graph, protector, sync, metaOptions, NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
 
@@ -7080,7 +7152,7 @@ public sealed class SqlServerProductionInvariantTests
                     new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
                 var racerSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                     racer, _graph, _protector, _metaOptions,
-                    NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                    Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
                 var racerIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                     racer, _graph, _protector, racerSync, _metaOptions,
                     NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);
@@ -7146,7 +7218,7 @@ public sealed class SqlServerProductionInvariantTests
                     new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
                 var racerSync = new DAMS.Application.Services.Integrations.MetaResourceSyncService(
                     racer, _graph, _protector, _metaOptions,
-                    NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
+                    Integrations.NoBackfill.Instance, NullLogger<DAMS.Application.Services.Integrations.MetaResourceSyncService>.Instance);
                 var racerIntegration = new DAMS.Application.Services.Integrations.MetaIntegrationService(
                     racer, _graph, _protector, racerSync, _metaOptions,
                     NullLogger<DAMS.Application.Services.Integrations.MetaIntegrationService>.Instance);

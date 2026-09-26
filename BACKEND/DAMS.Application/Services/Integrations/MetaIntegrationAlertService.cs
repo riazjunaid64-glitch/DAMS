@@ -231,7 +231,11 @@ namespace DAMS.Application.Services.Integrations
             var pageIds = pages.Select(p => p.Id).ToList();
             var lastReceived = await _context.ExternalIntegrationEvents
                 .AsNoTracking()
-                .Where(e => e.ExternalIntegrationResourceId != null && pageIds.Contains(e.ExternalIntegrationResourceId.Value))
+                // Webhook deliveries only: leads recovered by reconciliation are exactly what a
+                // dropped subscription produces, and must not make it look healthy.
+                .Where(e => e.ExternalIntegrationResourceId != null
+                            && pageIds.Contains(e.ExternalIntegrationResourceId.Value)
+                            && e.EventType != MetaLeadBackfillService.BackfillEventType)
                 .GroupBy(e => e.ExternalIntegrationResourceId!.Value)
                 .Select(g => new { PageId = g.Key, LastReceivedAt = g.Max(e => e.ReceivedAt) })
                 .ToDictionaryAsync(x => x.PageId, x => x.LastReceivedAt, cancellationToken);
