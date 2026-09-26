@@ -40,6 +40,7 @@ namespace DAMS.Application.Services.Integrations
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
         private readonly ILeadService _leads;
+        private readonly INotificationDispatcher _notifications;
         private readonly MetaIntegrationOptions _options;
         private readonly ILogger<MetaLeadEventProcessor> _logger;
 
@@ -48,6 +49,7 @@ namespace DAMS.Application.Services.Integrations
             IMetaGraphClient graph,
             IIntegrationSecretProtector protector,
             ILeadService leads,
+            INotificationDispatcher notifications,
             MetaIntegrationOptions options,
             ILogger<MetaLeadEventProcessor> logger)
         {
@@ -55,6 +57,7 @@ namespace DAMS.Application.Services.Integrations
             _graph = graph;
             _protector = protector;
             _leads = leads;
+            _notifications = notifications;
             _options = options;
             _logger = logger;
         }
@@ -364,6 +367,7 @@ namespace DAMS.Application.Services.Integrations
                 integrationEvent.LeadId = null;
                 integrationEvent.LastError = null;
                 ReleaseLease(integrationEvent);
+                await QueueHeldEnquiryAlertsAsync(hold, dto, resource, cancellationToken);
                 await _context.SaveChangesAsync(cancellationToken);
                 return false;
             }
@@ -381,6 +385,37 @@ namespace DAMS.Application.Services.Integrations
 
             await _context.SaveChangesAsync(cancellationToken);
             return true;
+        }
+
+        private async Task QueueHeldEnquiryAlertsAsync(
+            LeadIntakeHold hold, LeadIntakeDto enquiry, ExternalIntegrationResource resource,
+            CancellationToken cancellationToken)
+        {
+            var adminIds = await _context.Users.AsNoTracking()
+                .Where(u => u.Role.Role_name == LeadRoles.Admin
+                            && u.AccountStatus == UserAccountStatus.Active)
+                .Select(u => u.UserId)
+                .ToListAsync(cancellationToken);
+
+            var name = LeadContactNormalizer.Clean($"{enquiry.FirstName} {enquiry.LastName}") ?? "Unnamed enquiry";
+            var sourceName = LeadContactNormalizer.Clean(resource.Name) ?? "Meta";
+            var reference = $"#{hold.Id}";
+            await _notifications.QueueManyAsync(adminIds.Select(userId => new NotificationRequest
+            {
+                Type = NotificationType.LeadHeldForReview,
+                RecipientUserId = userId,
+                DedupKey = $"LeadHeldForReview:{hold.Id}:{userId}",
+                Title = $"Meta enquiry held for review: {name}",
+                Message = $"Enquiry {reference} from {sourceName} matches multiple open leads. Review it in the Leads page.",
+                EntityType = NotificationEntityType.LeadIntakeHold,
+                EntityId = hold.Id,
+                Data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["enquiryName"] = name,
+                    ["holdReference"] = reference,
+                    ["sourceName"] = sourceName
+                }
+            }), cancellationToken);
         }
 
         /// <summary>

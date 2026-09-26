@@ -1,4 +1,5 @@
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.NotificationDtos;
 using DAMS.Application.Services.Integrations;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -139,6 +140,82 @@ public class MetaLeadIngestionTests
         Assert.NotNull(submission.ExternalIntegrationConnectionId);
         Assert.NotNull(submission.RawPayloadJson);
         Assert.Contains("Ali Khan", submission.FieldDataJson);
+    }
+
+    [Fact]
+    public async Task ANewHeldMetaEnquiry_NotifiesEveryAdminWithReviewContext()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+        var secondAdmin = new User { RoleId = 1, FullName = "Second Admin", Email = "second-admin@dams.test" };
+        var disabledAdmin = new User
+        {
+            RoleId = 1, FullName = "Disabled Admin", Email = "disabled-admin@dams.test",
+            AccountStatus = UserAccountStatus.Disabled
+        };
+        h.Db.Users.AddRange(secondAdmin, disabledAdmin);
+        await h.Db.SaveChangesAsync();
+
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Phone Owner", phone: "0300-1234567", email: "someone@example.com"), h.Leads.Admin);
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Email Owner", phone: "0321-7654321", email: "ali@example.com"), h.Leads.Admin);
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+
+        Assert.Equal(0, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync();
+        var alerts = await h.Db.Notifications.AsNoTracking()
+            .Where(n => n.Type == NotificationType.LeadHeldForReview).ToListAsync();
+        Assert.Equal(2, alerts.Count);
+        Assert.Equal(new[] { h.Leads.AdminUserId, secondAdmin.UserId }.OrderBy(id => id),
+            alerts.Select(n => n.RecipientUserId!.Value).OrderBy(id => id));
+        foreach (var alert in alerts)
+        {
+            Assert.Equal(hold.Id, alert.EntityId);
+            Assert.Equal(NotificationEntityType.LeadIntakeHold, alert.EntityType);
+            Assert.Equal("/crm", alert.DeepLink);
+            Assert.Contains("Ali Khan", alert.Title + " " + alert.Message);
+            Assert.Contains("Page page-1", alert.Message);
+            Assert.Contains($"#{hold.Id}", alert.Message);
+        }
+
+        var adminContext = new NotificationUserContext { UserId = h.Leads.AdminUserId, Role = LeadRoles.Admin };
+        var managerContext = new NotificationUserContext { UserId = h.Leads.ManagerUserId, Role = LeadRoles.Manager };
+        var adminInbox = await h.Leads.Inbox.GetAsync(adminContext, new NotificationFilterDto());
+        Assert.Contains(adminInbox.Items, item => item.Id == alerts.Single(a => a.RecipientUserId == h.Leads.AdminUserId).Id);
+        var managerInbox = await h.Leads.Inbox.GetAsync(managerContext, new NotificationFilterDto());
+        Assert.DoesNotContain(managerInbox.Items, item => item.Type == NotificationType.LeadHeldForReview);
+        var opened = await h.Leads.Inbox.OpenAsync(alerts.Single(a => a.RecipientUserId == h.Leads.AdminUserId).Id, adminContext);
+        Assert.True(opened.Allowed);
+        Assert.Equal("/crm", opened.DeepLink);
+    }
+
+    [Fact]
+    public async Task ReprocessingAHeldMetaEnquiry_DoesNotNotifyAnAdminTwice()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Phone Owner", phone: "0300-1234567", email: "someone@example.com"), h.Leads.Admin);
+        await h.Leads.Leads.IngestAsync(
+            LeadTestHarness.Intake(firstName: "Email Owner", phone: "0321-7654321", email: "ali@example.com"), h.Leads.Admin);
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        var integrationEvent = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        integrationEvent.Status = ExternalIntegrationEventStatus.Retry;
+        integrationEvent.AvailableAt = DateTime.UtcNow.AddMinutes(-1);
+        integrationEvent.LockedUntil = null;
+        await h.Db.SaveChangesAsync();
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        var alerts = await h.Db.Notifications.AsNoTracking()
+            .Where(n => n.Type == NotificationType.LeadHeldForReview).ToListAsync();
+        Assert.Single(alerts);
+        Assert.Equal(h.Leads.AdminUserId, alerts[0].RecipientUserId);
     }
 
     [Fact]

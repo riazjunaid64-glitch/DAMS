@@ -90,6 +90,7 @@ namespace DAMS.Application.Common
             string[] booking = { "customerName", "bookingReference", "projectName", "unitNumber", "status", "reason" };
             string[] installment = { "customerName", "installmentAmount", "dueDate", "bookingReference", "projectName", "unitNumber", "installmentNumber" };
             string[] lead = { "leadName", "leadReference", "employeeName", "managerName", "stage", "reason" };
+            string[] heldEnquiry = { "enquiryName", "holdReference", "sourceName" };
             string[] followUp = { "leadName", "leadReference", "employeeName", "followUpTitle", "dueDate" };
             string[] visit = { "leadName", "leadReference", "employeeName", "visitDate", "location", "projectName" };
 
@@ -200,6 +201,12 @@ namespace DAMS.Application.Common
                 "First contact overdue: {{leadName}}",
                 "Hello {{employeeName}}, lead {{leadName}} ({{leadReference}}) has passed its first-response target with no contact recorded.",
                 "Open lead", lead);
+
+            yield return new(NotificationType.LeadHeldForReview, NotificationCategory.LeadAssignments, NotificationModule.Leads,
+                NotificationPriority.High, appPush, false, "Meta Enquiry Held for Review",
+                "Meta enquiry {{holdReference}} needs review",
+                "{{enquiryName}} from {{sourceName}} matches multiple leads. Choose the correct lead in the Leads page.",
+                "Review enquiry", heldEnquiry);
 
             yield return new(NotificationType.FollowUpAssigned, NotificationCategory.FollowUps, NotificationModule.Leads,
                 NotificationPriority.Normal, appPush, false, "Follow-up Assigned",

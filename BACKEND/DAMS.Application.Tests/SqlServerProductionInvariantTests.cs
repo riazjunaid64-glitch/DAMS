@@ -2732,7 +2732,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             using var dispatcher = SqlLeadDispatcher(db);
             var processor = new MetaLeadEventProcessor(db, graph, protector,
-                SqlLeadService(db, dispatcher), metaOptions,
+                SqlLeadService(db, dispatcher), dispatcher, metaOptions,
                 NullLogger<MetaLeadEventProcessor>.Instance);
             Assert.Equal(0, await processor.ProcessPendingEventsAsync(1));
         }
@@ -2752,7 +2752,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             using var dispatcher = SqlLeadDispatcher(db);
             var processor = new MetaLeadEventProcessor(db, graph, protector,
-                SqlLeadService(db, dispatcher), metaOptions,
+                SqlLeadService(db, dispatcher), dispatcher, metaOptions,
                 NullLogger<MetaLeadEventProcessor>.Instance);
             Assert.Equal(1, await processor.ProcessPendingEventsAsync(1));
             Assert.Equal(0, await processor.ProcessPendingEventsAsync(1));
@@ -2810,7 +2810,8 @@ public sealed class SqlServerProductionInvariantTests
         {
             var db = sp.GetRequiredService<AppDbContext>();
             return new MetaLeadEventProcessor(db, graph, protector,
-                SqlLeadService(db, sp.GetRequiredService<NotificationDispatcher>()), metaOptions,
+                SqlLeadService(db, sp.GetRequiredService<NotificationDispatcher>()),
+                sp.GetRequiredService<NotificationDispatcher>(), metaOptions,
                 NullLogger<MetaLeadEventProcessor>.Instance);
         });
         services.AddScoped<IMetaResourceSyncService, NoDueResourceSync>();
@@ -4152,7 +4153,7 @@ public sealed class SqlServerProductionInvariantTests
             new CustomerAccountLinkService(db, clock));
 
         return new DAMS.Application.Services.Integrations.MetaLeadEventProcessor(
-            db, graph, new DAMS.Application.Tests.Integrations.PlaintextSecretProtector(), leads,
+            db, graph, new DAMS.Application.Tests.Integrations.PlaintextSecretProtector(), leads, dispatcher,
             metaOptions ?? SqlMetaOptions,
             NullLogger<DAMS.Application.Services.Integrations.MetaLeadEventProcessor>.Instance);
     }

@@ -285,6 +285,13 @@ namespace DAMS.Application.Services.Notifications
                         ? await CheckAnnouncementAccessAsync(notification.DeepLink, ctx, cancellationToken)
                         : (false, denied);
 
+                case NotificationEntityType.LeadIntakeHold:
+                    if (!ctx.IsAdmin)
+                        return (false, denied);
+                    return await _context.LeadIntakeHolds.AsNoTracking()
+                        .AnyAsync(h => h.Id == id, cancellationToken)
+                        ? (true, "Opened.") : (false, gone);
+
                 case NotificationEntityType.Lead:
                 case NotificationEntityType.LeadFollowUp:
                 case NotificationEntityType.LeadSiteVisit:

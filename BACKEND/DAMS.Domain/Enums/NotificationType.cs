@@ -33,6 +33,7 @@ namespace DAMS.Domain.Enums
         LeadInactive = 36,
         FirstContactDue = 37,
         FirstContactOverdue = 38,
+        LeadHeldForReview = 39,
 
         // Follow-ups
         FollowUpAssigned = 40,
