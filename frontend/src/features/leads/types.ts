@@ -338,6 +338,7 @@ export interface SiteVisit {
   unitNumber?: string | null;
   assignedEmployeeName?: string | null;
   scheduledAt: string;
+  remindAt?: string | null;
   meetingLocation: string;
   status: string;
   notes?: string | null;

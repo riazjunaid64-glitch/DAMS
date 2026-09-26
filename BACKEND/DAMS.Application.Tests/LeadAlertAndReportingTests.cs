@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.DTOs.NotificationDtos;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -449,6 +450,216 @@ public sealed class LeadAlertAndReportingTests
         Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.SiteVisitReminder
             && n.Message.StartsWith($"{slot.AddHours(5):HH:mm}")));
     }
+
+    [Fact]
+    public async Task SiteVisitAdvanceReminderUsesConfiguredLeadDays()
+    {
+        Assert.Equal("Site visit reminder: {{leadName}}",
+            NotificationCatalog.GetRequired(NotificationType.SiteVisitReminder).DefaultSubject);
+        await using var h = await LeadTestHarness.CreateAsync();
+        h.Db.NotificationRules.Add(new NotificationRule
+        {
+            Type = NotificationType.SiteVisitReminder, ReminderLeadDays = 2, RemindOnDueDate = false
+        });
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-3));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(0, await SiteVisitRemindersAsync(h));
+
+        h.Clock.Set(slot.AddDays(-2));
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(1, await SiteVisitRemindersAsync(h));
+    }
+
+    [Fact]
+    public async Task SiteVisitLeadDaysUsePakistanCalendarDate()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(20).AddMinutes(30);
+        await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        // These UTC instants fall on consecutive Pakistan business dates.
+        h.Clock.Set(slot.AddDays(-1));
+        await h.Alerts.RunScanAsync();
+
+        Assert.Equal(1, await SiteVisitRemindersAsync(h));
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task SiteVisitSameDayReminderFollowsRule(bool remindOnDueDate, int expected)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        h.Db.NotificationRules.Add(new NotificationRule
+        {
+            Type = NotificationType.SiteVisitReminder, ReminderLeadDays = 0,
+            RemindOnDueDate = remindOnDueDate
+        });
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-1));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(0, await SiteVisitRemindersAsync(h));
+
+        h.Clock.Set(slot.AddHours(-2));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(expected, await SiteVisitRemindersAsync(h));
+    }
+
+    [Fact]
+    public async Task SiteVisitOwnReminderTimeOverridesLeadDaysAndStillAllowsSameDayReminder()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        h.Db.NotificationRules.Add(new NotificationRule
+        {
+            Type = NotificationType.SiteVisitReminder, ReminderLeadDays = 3, RemindOnDueDate = true
+        });
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        var reminder = slot.AddDays(-1);
+        await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, RemindAt = reminder, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-3));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(0, await SiteVisitRemindersAsync(h));
+
+        h.Clock.Set(reminder);
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(1, await SiteVisitRemindersAsync(h));
+
+        h.Clock.Set(slot.AddHours(-2));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(2, await SiteVisitRemindersAsync(h));
+    }
+
+    [Fact]
+    public async Task DisabledSiteVisitReminderRuleStillAllowsMissedVisitEscalation()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        h.Db.NotificationRules.Add(new NotificationRule
+        {
+            Type = NotificationType.SiteVisitReminder, IsEnabled = false,
+            ReminderLeadDays = 3, RemindOnDueDate = true
+        });
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, RemindAt = slot.AddDays(-2), MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-2));
+        await h.Alerts.RunScanAsync();
+        h.Clock.Set(slot.AddHours(-2));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(0, await SiteVisitRemindersAsync(h));
+
+        h.Clock.Set(slot.AddHours(10));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).SiteVisitsMarkedMissed);
+        Assert.Equal(LeadSiteVisitStatus.Missed,
+            (await h.Db.LeadSiteVisits.AsNoTracking().SingleAsync(v => v.Id == visit.Id)).Status);
+        Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.SiteVisitMissed
+            && n.RecipientUserId == h.ManagerUserId));
+    }
+
+    [Fact]
+    public async Task ReschedulingAfterAnAdvanceReminderAllowsOneNewAdvanceReminder()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        h.Db.NotificationRules.Add(new NotificationRule
+        {
+            Type = NotificationType.SiteVisitReminder, ReminderLeadDays = 2, RemindOnDueDate = false
+        });
+        await h.Db.SaveChangesAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-2));
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(1, await SiteVisitRemindersAsync(h));
+
+        var nextSlot = slot.AddDays(2);
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = nextSlot, Reason = "Customer delayed"
+        }, h.Sales);
+        h.Clock.Set(nextSlot.AddDays(-2));
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+        Assert.Equal(2, await SiteVisitRemindersAsync(h));
+    }
+
+    [Fact]
+    public async Task RepeatedLimitedScansReachLaterDueVisits()
+    {
+        await using var h = await LeadTestHarness.CreateAsync(new LeadAlertOptions { MaxRowsPerScan = 1 });
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        var firstLead = await h.CreateWorkedLeadAsync();
+        var secondLead = await h.CreateWorkedLeadAsync(phone: "0300-7654321");
+        await h.SiteVisits.ScheduleAsync(firstLead, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "First office"
+        }, h.Sales);
+        await h.SiteVisits.ScheduleAsync(secondLead, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot.AddHours(1), MeetingLocation = "Second office"
+        }, h.Sales);
+
+        h.Clock.Set(slot.AddDays(-1));
+        await h.Alerts.RunScanAsync();
+        await h.Alerts.RunScanAsync();
+
+        Assert.Equal(2, await SiteVisitRemindersAsync(h));
+    }
+
+    [Fact]
+    public async Task RescheduledVisitRejectsReminderAfterItsNewTime()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var slot = DateTime.UtcNow.Date.AddDays(5).AddHours(10);
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = slot, MeetingLocation = "Site office"
+        }, h.Sales);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.SiteVisits.RescheduleAsync(
+            visit.Id, new RescheduleSiteVisitDto
+            {
+                ScheduledAt = slot.AddHours(1), RemindAt = slot.AddHours(2), Reason = "Customer delayed"
+            }, h.Sales));
+    }
+
+    private static Task<int> SiteVisitRemindersAsync(LeadTestHarness h) =>
+        h.Db.Notifications.CountAsync(n => n.Type == NotificationType.SiteVisitReminder);
 
     [Fact]
     public async Task AMissedSiteVisitThatIsRescheduledAndMissedAgainEscalatesAgain()

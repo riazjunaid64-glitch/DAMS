@@ -162,15 +162,15 @@ namespace DAMS.Application.Services
             if (customer == null)
                 throw new InvalidOperationException("Customer not found.");
 
-            customer.FullName = dto.FullName.Trim();
-            customer.FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim();
-            customer.Phone = NormalizePhone(dto.Phone);
-            customer.CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim();
-            customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant();
-            customer.Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim();
-            customer.Status = dto.Status;
-            customer.SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim();
-            customer.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+            if (dto.WasProvided(nameof(dto.FullName))) customer.FullName = dto.FullName.Trim();
+            if (dto.WasProvided(nameof(dto.FatherName))) customer.FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim();
+            if (dto.WasProvided(nameof(dto.Phone))) customer.Phone = NormalizePhone(dto.Phone);
+            if (dto.WasProvided(nameof(dto.CNIC))) customer.CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim();
+            if (dto.WasProvided(nameof(dto.Email))) customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant();
+            if (dto.WasProvided(nameof(dto.Address))) customer.Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim();
+            if (dto.WasProvided(nameof(dto.Status))) customer.Status = dto.Status;
+            if (dto.WasProvided(nameof(dto.SourceNotes))) customer.SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim();
+            if (dto.WasProvided(nameof(dto.Notes))) customer.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             customer.UpdatedAt = DateTime.UtcNow;
             // Customer.UserId is absent from the list above, and that omission is the rule rather
             // than an oversight: contact details describe how to reach somebody, ownership

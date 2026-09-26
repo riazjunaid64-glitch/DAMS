@@ -1,6 +1,7 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Interfaces;
+using DAMS.Application.Services.Notifications;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -231,13 +232,36 @@ namespace DAMS.Application.Services
         private async Task ScanSiteVisitsAsync(LeadAlertScanResultDto result, DateTime now, CancellationToken cancellationToken)
         {
             var missedCutoff = now.AddHours(-_options.SiteVisitMissedAfterHours);
-            var endOfDay = now.Date.AddDays(1);
-            var bucket = now.ToString("yyyy-MM-dd");
+            var rule = await _context.NotificationRules.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Type == NotificationType.SiteVisitReminder, cancellationToken);
+            var remindersEnabled = rule?.IsEnabled ?? true;
+            var leadDays = Math.Max(rule?.ReminderLeadDays
+                ?? NotificationConfigurationService.DefaultLeadDays(NotificationType.SiteVisitReminder), 0);
+            var remindOnDueDate = rule?.RemindOnDueDate ?? true;
+            var today = PakistanTime.ToBusinessDate(now);
+            var dayStart = PakistanTime.StartOfBusinessDateUtc(today);
+            var nextDayStart = dayStart.AddDays(1);
+            var advanceEnd = nextDayStart.AddDays(leadDays);
+            var bucket = today.ToString("yyyy-MM-dd");
+
+            result.SiteVisitsToday = await _context.LeadSiteVisits.AsNoTracking()
+                .CountAsync(v => (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled)
+                                 && v.ScheduledAt >= now && v.ScheduledAt >= dayStart
+                                 && v.ScheduledAt < nextDayStart, cancellationToken);
 
             var visits = await _context.LeadSiteVisits
                 .Include(v => v.Lead)
                 .Where(v => (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled)
-                            && v.ScheduledAt < endOfDay)
+                            && (v.ScheduledAt < missedCutoff
+                                || (remindersEnabled && v.ScheduledAt >= now && v.AssignedEmployee.UserId != null
+                                    && (((v.RemindAt != null && v.RemindAt <= now)
+                                         || (v.RemindAt == null && leadDays > 0
+                                             && v.ScheduledAt >= nextDayStart && v.ScheduledAt < advanceEnd))
+                                        && !_context.Notifications.Any(n => n.DedupKey ==
+                                            "SiteVisitAdvance:" + v.Id + ":" + v.AssignedEmployee.UserId + ":" + v.RescheduleCount)
+                                        || (remindOnDueDate && v.ScheduledAt >= dayStart && v.ScheduledAt < nextDayStart
+                                            && !_context.Notifications.Any(n => n.DedupKey ==
+                                                "SiteVisitToday:" + v.Id + ":" + v.AssignedEmployee.UserId + ":" + bucket + ":" + v.RescheduleCount))))))
                 .OrderBy(v => v.ScheduledAt)
                 .Take(_options.MaxRowsPerScan)
                 .ToListAsync(cancellationToken);
@@ -274,9 +298,19 @@ namespace DAMS.Application.Services
                 }
                 else if (visit.ScheduledAt >= now)
                 {
-                    result.SiteVisitsToday++;
+                    var advanceReady = visit.RemindAt.HasValue
+                        ? visit.RemindAt <= now
+                        : leadDays > 0 && visit.ScheduledAt >= nextDayStart && visit.ScheduledAt < advanceEnd;
 
-                    if (ownerUserId.HasValue &&
+                    if (remindersEnabled && ownerUserId.HasValue && advanceReady &&
+                        await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
+                            $"Site visit coming up: {name}",
+                            $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC at {visit.MeetingLocation}.",
+                            $"SiteVisitAdvance:{visit.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
+                        result.NotificationsCreated++;
+
+                    if (remindersEnabled && ownerUserId.HasValue && remindOnDueDate
+                        && visit.ScheduledAt >= dayStart && visit.ScheduledAt < nextDayStart &&
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit today: {name}",
                             $"{visit.ScheduledAt:HH:mm} UTC at {visit.MeetingLocation}.",
