@@ -44,6 +44,17 @@ namespace DAMS.Application.Common
             _ => throw new ArgumentOutOfRangeException(nameof(group), group, "Unknown lead stage group.")
         };
 
+        /// <summary>
+        /// The simple stage a detailed stage belongs to. The server is the only place this mapping
+        /// lives: lead responses carry the result, so the salesperson screens never keep a copy.
+        /// </summary>
+        public static LeadStageGroup GroupOf(LeadStage stage) =>
+            Array.IndexOf(NewStages, stage) >= 0 ? LeadStageGroup.New :
+            Array.IndexOf(InProgressStages, stage) >= 0 ? LeadStageGroup.InProgress :
+            Array.IndexOf(WonStages, stage) >= 0 ? LeadStageGroup.Won :
+            Array.IndexOf(LostStages, stage) >= 0 ? LeadStageGroup.Lost :
+            throw new ArgumentOutOfRangeException(nameof(stage), stage, "Stage has no simple stage; add it to one of the groups.");
+
         public static readonly IReadOnlySet<LeadStage> ReopenableStages =
             new HashSet<LeadStage> { LeadStage.Lost, LeadStage.Dormant };
 

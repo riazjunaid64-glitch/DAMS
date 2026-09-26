@@ -812,7 +812,23 @@ public sealed class LeadAlertAndReportingTests
                 .Where(g => LeadStageRules.StagesIn(g).Contains(stage))
                 .ToList();
             Assert.True(groups.Count == 1, $"{stage} sits in {groups.Count} simple stages.");
+            Assert.Equal(groups[0], LeadStageRules.GroupOf(stage));
         }
+    }
+
+    [Fact]
+    public async Task KAN39_LeadResponsesCarryTheSimpleStage_SoTheScreensNeverRegroupIt()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var fresh = await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Sana", phone: "03001112222", email: "s@x.com"));
+        var worked = await h.CreateWorkedLeadAsync("03002223333");
+
+        var list = await h.Leads.GetLeadsAsync(new LeadFilterDto(), h.Admin);
+        Assert.Equal(LeadStageGroup.New, list.Items.Single(l => l.Id == fresh).StageGroup);
+        Assert.Equal(LeadStageGroup.InProgress, list.Items.Single(l => l.Id == worked).StageGroup);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(list.Items.Single(l => l.Id == worked));
+        Assert.Contains("\"StageGroup\"", json);
     }
 
     [Fact]

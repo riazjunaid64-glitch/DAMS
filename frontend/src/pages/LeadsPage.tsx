@@ -25,7 +25,6 @@ import {
   leadStageGroups,
   leadStages,
   paymentPreferences,
-  stageGroupOf,
   stageLabel,
   type ClosureReason,
   type Lead,
@@ -45,6 +44,9 @@ type Lookups = {
   staff: StaffMember[];
   projects: ProjectLookup[];
 };
+
+/** Every list filter the page reads from the URL, whether or not the bar shows a control for it. */
+const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
 
 const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], teams: [], staff: [], projects: [] };
 
@@ -73,13 +75,23 @@ function LeadsWorkspace({ user }: { user: User }) {
     setParams(next);
   };
 
+  // Clears every filter, including the ones with no control on the bar (an old bookmark's
+  // "qualification" or "overdue"), so a list that looks filtered for no visible reason can be reset.
+  // Sorting is not a filter and stays.
+  const hasFilters = FILTER_KEYS.some((key) => params.get(key));
+  const clearFilters = () => {
+    const next = new URLSearchParams(params);
+    for (const key of FILTER_KEYS) next.delete(key);
+    next.set("page", "1");
+    setParams(next);
+  };
+
   // The bar exposes search, stage, source and project (and payment, for admins and managers). The rest stay honoured because the URL is
   // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
   // exactly as it did, and the server contract is unchanged.
   const query = useMemo(() => {
-    const allowed = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
     const q = new URLSearchParams();
-    for (const key of allowed) {
+    for (const key of [...FILTER_KEYS, "sortBy", "sortDesc"]) {
       const value = params.get(key);
       if (value) q.set(key, value);
     }
@@ -169,6 +181,7 @@ function LeadsWorkspace({ user }: { user: User }) {
               <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
               <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
               {!isSalesperson && <BarSelect label="Payment" icon={<IconWallet className="h-4 w-4" />} value={params.get("paymentPreference") ?? ""} onChange={(v) => updateParam("paymentPreference", v)} options={paymentPreferences.filter((v) => v !== "Unknown").map((v) => [v, stageLabel(v)])} />}
+              {hasFilters && <Button variant="ghost" onClick={clearFilters}>Clear filters</Button>}
             </div>
           </div>
         </section>
@@ -176,7 +189,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         {loading && !data ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-32 animate-pulse rounded-2xl bg-[var(--surface-glass)]" />)}</div>
         ) : !data || data.items.length === 0 ? (
-          <StatePanel title="No leads found" message="No accessible leads match these filters. Clear the filters or capture a new enquiry." action={<Button onClick={() => setCreateOpen(true)}>Create lead</Button>} />
+          <StatePanel title="No leads found" message={hasFilters ? "No accessible leads match these filters. Clear the filters or capture a new enquiry." : "No leads yet. Capture a new enquiry to start."} action={hasFilters ? <Button variant="outline" onClick={clearFilters}>Clear filters</Button> : <Button onClick={() => setCreateOpen(true)}>Create lead</Button>} />
         ) : (
           <LeadTable leads={data.items} simple={isSalesperson} />
         )}
@@ -239,7 +252,7 @@ function LeadTable({ leads, simple }: { leads: Lead[]; simple: boolean }) {
                     </td>
                     {simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.sourceName}</td>}
                     <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="mt-1 text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
-                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={simple ? stageGroupOf(lead.stage) : lead.stage} /></td>
+                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={simple ? lead.stageGroup : lead.stage} /></td>
                     {!simple && <td className="whitespace-nowrap px-4 py-4"><QualificationBadge value={lead.qualification} /></td>}
                     {!simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="mt-1 text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>}
                     <td className="max-w-[220px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}<p className="mt-1 text-xs text-[var(--text-muted)]">{formatDateTime(lead.lastActivityAt)}</p></td>
@@ -257,7 +270,7 @@ function LeadTable({ leads, simple }: { leads: Lead[]; simple: boolean }) {
       <div className="grid gap-3 md:hidden">
         {leads.map((lead) => (
           <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{simple ? `${lead.sourceName} · ${contactOf(lead) ?? "No contact details"}` : `${lead.leadReference} · ${contactOf(lead) ?? "No contact details"}`}</p></div><StageBadge stage={simple ? stageGroupOf(lead.stage) : lead.stage} /></div>
+            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{simple ? `${lead.sourceName} · ${contactOf(lead) ?? "No contact details"}` : `${lead.leadReference} · ${contactOf(lead) ?? "No contact details"}`}</p></div><StageBadge stage={simple ? lead.stageGroup : lead.stage} /></div>
             <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]">
               {simple
                 ? <div><p className="uppercase">Last activity</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}</p></div>

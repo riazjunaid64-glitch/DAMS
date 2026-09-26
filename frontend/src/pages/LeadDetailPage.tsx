@@ -19,7 +19,6 @@ import {
   formatDateTime,
   isClosedStage,
   isPastServerTime,
-  stageGroupOf,
   type AssignmentHistory,
   type ClosureReason,
   type Communication,
@@ -151,7 +150,10 @@ function LeadDetailWorkspace({ user }: { user: User }) {
             <Button variant="outline" onClick={() => navigate("/crm")}>← Leads</Button>
             {!closed && <Button variant="outline" onClick={() => setAction({ type: "communication" })}>Log activity</Button>}
             {!closed && <Button variant="outline" onClick={() => setAction({ type: "followUp" })}>Follow-up</Button>}
-            {!closed && <Button onClick={() => setAction({ type: "stage" })}>Move stage</Button>}
+            {/* A salesperson's lead moves on its own: a logged conversation takes it to In Progress,
+                site visits advance it, "Lost / dormant" closes it and conversion wins it. The detailed
+                stage picker is for admins and managers. */}
+            {!isSalesperson && !closed && <Button onClick={() => setAction({ type: "stage" })}>Move stage</Button>}
           </>
         }
       />
@@ -162,7 +164,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
         <section className={`grid gap-3 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
           <SummaryCard label="Pipeline">
             {isSalesperson
-              ? <><StageBadge stage={stageGroupOf(lead.stage)} /><small className="mt-1 block text-xs font-normal text-[var(--text-muted)]">{enumLabel(lead.stage)}</small></>
+              ? <><StageBadge stage={lead.stageGroup} /><small className="mt-1 block text-xs font-normal text-[var(--text-muted)]">{enumLabel(lead.stage)}</small></>
               : <StageBadge stage={lead.stage} />}
           </SummaryCard>
           {!isSalesperson && <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>}
