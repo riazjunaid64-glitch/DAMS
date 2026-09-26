@@ -381,7 +381,8 @@ namespace DAMS.Application.Services.Integrations
             };
 
             var result = await _leads.IngestAsync(
-                dto, actor: null, trustedExternal: true, cancellationToken: cancellationToken);
+                dto, actor: null, trustedExternal: true,
+                announce: !IsOldRecoveredLead(integrationEvent, lead, _options), cancellationToken: cancellationToken);
 
             // Its details match more than one open lead, so it waits for an administrator in the
             // held-enquiry review. The event itself is done: retrying could never pick a lead.
@@ -418,6 +419,19 @@ namespace DAMS.Application.Services.Integrations
             await _context.SaveChangesAsync(cancellationToken);
             return true;
         }
+
+        /// <summary>
+        /// A lead recovered from a form's edge that Meta says is older than
+        /// MetaIntegration:BackfillAlertCutoffHours. It is added without a "new lead" alert, so an
+        /// import of weeks of leads does not flood supervisors. Webhook leads always alert.
+        /// </summary>
+        internal static bool IsOldRecoveredLead(ExternalIntegrationEvent integrationEvent, MetaLead lead, MetaIntegrationOptions options) =>
+            integrationEvent.EventType == MetaLeadBackfillService.BackfillEventType
+            && lead.CreatedTime is { } submittedAt
+            && IsOlderThanAlertCutoff(submittedAt, options);
+
+        internal static bool IsOlderThanAlertCutoff(DateTime submittedAt, MetaIntegrationOptions options) =>
+            submittedAt < DateTime.UtcNow.AddHours(-options.BackfillAlertCutoffHours);
 
         private async Task QueueHeldEnquiryAlertsAsync(
             LeadIntakeHold hold, LeadIntakeDto enquiry, ExternalIntegrationResource resource,

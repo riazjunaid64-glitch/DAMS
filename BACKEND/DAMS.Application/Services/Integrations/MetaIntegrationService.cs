@@ -317,6 +317,7 @@ namespace DAMS.Application.Services.Integrations
                         && e.Status == ExternalIntegrationEventStatus.Failed),
                     LastLeadReceivedAt = _context.ExternalIntegrationEvents
                         .Where(e => e.ExternalIntegrationConnectionId == c.Id
+                                    && e.EventType != MetaLeadBackfillService.BackfillEventType
                                     && e.Status != ExternalIntegrationEventStatus.Ignored)
                         .Max(e => (DateTime?)e.ReceivedAt)
                 })

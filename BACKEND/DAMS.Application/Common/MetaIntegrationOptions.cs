@@ -118,6 +118,25 @@ namespace DAMS.Application.Common
         /// </summary>
         public int QuietPageAlertDays { get; set; } = 0;
 
+        /// <summary>
+        /// How far back each resource sync asks every enabled Page's lead forms for leads, to
+        /// recover any the webhook missed. Meta retries a webhook for about 36 hours, so the
+        /// default 48 covers a delivery it gave up on. Zero switches reconciliation off.
+        /// </summary>
+        public int ReconciliationLookbackHours { get; set; } = 48;
+
+        /// <summary>
+        /// A recovered lead Meta says was submitted more than this many hours ago is added quietly:
+        /// no "new lead" or repeat-enquiry notification, and its timeline says it was imported. A
+        /// 90-day import would otherwise flood supervisors about people who may have been called
+        /// long ago. Younger recovered leads still need a call now, so they alert like any other.
+        /// Zero adds every recovered lead quietly.
+        /// </summary>
+        public int BackfillAlertCutoffHours { get; set; } = 48;
+
+        /// <summary>Meta keeps a lead readable through its form for 90 days; an import cannot reach further.</summary>
+        public const int MaxImportDays = 90;
+
         /// <summary>True only when every credential needed to talk to Meta is present.</summary>
         public bool IsConfigured =>
             !string.IsNullOrWhiteSpace(AppId)

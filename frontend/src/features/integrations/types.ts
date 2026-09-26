@@ -75,3 +75,23 @@ export interface SaveLeadFormMapping {
   answers: LeadFormAnswerMapping[];
   version: string | null;
 }
+
+/** An admin's "import leads since…": one Page (every synced form) or one form. */
+export interface ImportMetaLeadsRequest {
+  resourceId?: number | null;
+  formExternalId?: string | null;
+  /** A date (YYYY-MM-DD), at most 90 days back. */
+  since: string;
+}
+
+export interface MetaLeadImportResult {
+  found: number;
+  new: number;
+  /** Of `new`, older leads added without a new-lead alert; they need assigning by hand. */
+  addedWithoutAlert: number;
+  alreadyInDams: number;
+  /** Delivered before but their event failed, so not in DAMS; retried from the event list. */
+  previouslyFailed: number;
+  failed: number;
+  warning?: string | null;
+}

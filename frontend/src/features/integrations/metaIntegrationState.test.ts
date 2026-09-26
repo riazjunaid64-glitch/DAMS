@@ -9,6 +9,9 @@ import {
   eventListLimitNote,
   deliverySummary,
   isAwaitingFirstSync,
+  earliestImportDate,
+  importDate,
+  importSummary,
   isToggleable,
   lastLeadSummary,
   readCallbackResult,
@@ -200,5 +203,35 @@ describe("sign-in health", () => {
     expect(syncRejectionWarning(connection())).toBeNull();
     expect(syncRejectionWarning(connection({ syncRejectedAt: "2026-09-26T10:00:00Z" }))).toContain("Leads still arrive");
     expect(syncRejectionWarning(connection({ status: "NeedsReauthorization", syncRejectedAt: "2026-09-26T10:00:00Z" }))).toBeNull();
+  });
+});
+
+describe("lead import", () => {
+  const now = new Date(2026, 8, 26, 15, 0, 0);
+
+  it("offers dates back to the 90-day line Meta keeps leads for, and no further", () => {
+    expect(importDate(0, now)).toBe("2026-09-26");
+    expect(importDate(7, now)).toBe("2026-09-19");
+    expect(earliestImportDate(now)).toBe("2026-06-29");
+  });
+
+  const empty = { found: 0, new: 0, addedWithoutAlert: 0, alreadyInDams: 0, previouslyFailed: 0, failed: 0 };
+
+  it("reports every outcome, and failures only when there are some", () => {
+    expect(importSummary({ ...empty, found: 3, new: 1, alreadyInDams: 2 }))
+      .toBe("3 found · 1 new · 2 already in DAMS. New leads appear within a minute.");
+    expect(importSummary({ ...empty, failed: 1 }))
+      .toBe("0 found · 0 new · 0 already in DAMS · 1 failed");
+  });
+
+  it("keeps leads whose event failed apart from those already in DAMS", () => {
+    expect(importSummary({ ...empty, found: 2, alreadyInDams: 1, previouslyFailed: 1 }))
+      .toBe("2 found · 0 new · 1 already in DAMS · 1 previously failed – retry from the event list");
+  });
+
+  it("says which new leads arrive without an alert, so they get assigned", () => {
+    expect(importSummary({ ...empty, found: 3, new: 3, addedWithoutAlert: 2 }))
+      .toBe("3 found · 3 new · 0 already in DAMS. New leads appear within a minute. " +
+        "2 older leads are added without a new-lead alert; assign them from the Leads queue.");
   });
 });

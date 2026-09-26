@@ -40,7 +40,11 @@ namespace DAMS.Application.Services.Integrations
             ExternalIntegrationConnectionStatus Status,
             DateTime ConnectedAt,
             DateTime? TokenExpiresAt,
-            string? LastError);
+            string? LastError,
+            DateTime? ReconciledAt,
+            string? ReconciliationError,
+            DateTime? ReconciliationFailingSince,
+            int ReconciliationMissedLeads);
 
         /// <summary>One condition on one connection. <see cref="Episode"/> keeps a repeat of it apart from this one.</summary>
         private sealed record Alert(int ConnectionId, string ConnectionName, string Episode, string Title, string Message);
@@ -52,7 +56,9 @@ namespace DAMS.Application.Services.Integrations
                 .AsNoTracking()
                 .Where(c => c.Provider == IntegrationProviders.Meta
                             && c.Status != ExternalIntegrationConnectionStatus.Disconnected)
-                .Select(c => new ConnectionState(c.Id, c.DisplayName, c.Status, c.ConnectedAt, c.TokenExpiresAt, c.LastError))
+                .Select(c => new ConnectionState(
+                    c.Id, c.DisplayName, c.Status, c.ConnectedAt, c.TokenExpiresAt, c.LastError,
+                    c.ReconciledAt, c.ReconciliationError, c.ReconciliationFailingSince, c.ReconciliationMissedLeads))
                 .ToListAsync(cancellationToken);
 
             if (connections.Count == 0)
@@ -68,6 +74,11 @@ namespace DAMS.Application.Services.Integrations
                 // Reconnecting is already asked for above, and replaces the token anyway.
                 else if (TokenExpiryAlert(connection, now) is { } expiry)
                     alerts.Add(expiry);
+
+                if (ReconciliationFailingAlert(connection) is { } failing)
+                    alerts.Add(failing);
+                if (MissedLeadsAlert(connection) is { } missed)
+                    alerts.Add(missed);
             }
 
             alerts.AddRange(await FailedEventAlertsAsync(connections, now, cancellationToken));
@@ -156,6 +167,55 @@ namespace DAMS.Application.Services.Integrations
         }
 
         /// <summary>
+        /// Reconciliation that failed on two runs in a row — a transient Graph error clears itself
+        /// on the next one. The first failure of the run is the episode. A connection waiting to be
+        /// reconnected is left out: reconnecting is already asked for, and reconciliation waits on it.
+        /// </summary>
+        private Alert? ReconciliationFailingAlert(ConnectionState connection)
+        {
+            if (_options.ReconciliationLookbackHours <= 0
+                || connection.Status != ExternalIntegrationConnectionStatus.Connected
+                || connection.ReconciliationFailingSince is not { } failingSince
+                || connection.ReconciledAt is not { } reconciledAt
+                || reconciledAt <= failingSince)
+                return null;
+
+            var reason = LeadContactNormalizer.Clean(connection.ReconciliationError);
+            return new Alert(
+                connection.Id,
+                connection.Name,
+                $"ReconciliationFailing:{failingSince.Ticks}",
+                $"Missed Meta leads cannot be recovered: {connection.Name}",
+                $"Since {FormatDate(failingSince)}, DAMS has not been able to check {connection.Name}'s lead forms for " +
+                "leads the webhook missed, so any it misses are not being recovered. Leads the webhook delivers still " +
+                $"arrive. Check the account in {Settings}." +
+                (reason is null ? string.Empty : $" Reason: {LeadContactNormalizer.Limit(reason, 500)}"));
+        }
+
+        /// <summary>
+        /// Reconciliation found leads the webhook never delivered — not ones it delivered while their
+        /// Page was off. One alert per connection per business day on which that happened.
+        /// </summary>
+        private Alert? MissedLeadsAlert(ConnectionState connection)
+        {
+            if (_options.ReconciliationLookbackHours <= 0
+                || connection.ReconciliationMissedLeads <= 0
+                || connection.ReconciledAt is not { } reconciledAt)
+                return null;
+
+            var count = connection.ReconciliationMissedLeads;
+            var day = PakistanTime.ToBusinessDate(reconciledAt);
+            return new Alert(
+                connection.Id,
+                connection.Name,
+                $"MissedLeads:{day.ToString("yyyyMMdd", CultureInfo.InvariantCulture)}",
+                $"Meta webhook missed leads: {connection.Name}",
+                $"{count} lead{(count == 1 ? "" : "s")} from {connection.Name} never arrived through the webhook and " +
+                $"{(count == 1 ? "was" : "were")} recovered on {FormatBusinessDate(day)}. If no Page was enabled " +
+                $"just before, the webhook is dropping leads: check each Page's lead delivery in {Settings}.");
+        }
+
+        /// <summary>
         /// One alert per connection per business day with failures. A failure nobody retried stays
         /// Failed for good, so an episode keyed on the failures still open would never end — and
         /// would swallow every later one. The day keeps new failures audible without an alert per
@@ -231,7 +291,11 @@ namespace DAMS.Application.Services.Integrations
             var pageIds = pages.Select(p => p.Id).ToList();
             var lastReceived = await _context.ExternalIntegrationEvents
                 .AsNoTracking()
-                .Where(e => e.ExternalIntegrationResourceId != null && pageIds.Contains(e.ExternalIntegrationResourceId.Value))
+                // Webhook deliveries only: leads recovered by reconciliation are exactly what a
+                // dropped subscription produces, and must not make it look healthy.
+                .Where(e => e.ExternalIntegrationResourceId != null
+                            && pageIds.Contains(e.ExternalIntegrationResourceId.Value)
+                            && e.EventType != MetaLeadBackfillService.BackfillEventType)
                 .GroupBy(e => e.ExternalIntegrationResourceId!.Value)
                 .Select(g => new { PageId = g.Key, LastReceivedAt = g.Max(e => e.ReceivedAt) })
                 .ToDictionaryAsync(x => x.PageId, x => x.LastReceivedAt, cancellationToken);

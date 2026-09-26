@@ -19,15 +19,18 @@ namespace DAMS.Api.Controllers
     {
         private readonly IMetaIntegrationService _integration;
         private readonly IMetaResourceSyncService _sync;
+        private readonly IMetaLeadBackfillService _backfill;
 
         public MetaIntegrationController(
             ILeadUserContextResolver resolver,
             IMetaIntegrationService integration,
-            IMetaResourceSyncService sync)
+            IMetaResourceSyncService sync,
+            IMetaLeadBackfillService backfill)
             : base(resolver)
         {
             _integration = integration;
             _sync = sync;
+            _backfill = backfill;
         }
 
         /// <summary>
@@ -87,6 +90,14 @@ namespace DAMS.Api.Controllers
         [HttpPost("connections/{id:int}/sync")]
         public Task<IActionResult> Sync(int id, CancellationToken cancellationToken) =>
             RunAsync(_ => _sync.SyncNowAsync(id, cancellationToken), cancellationToken);
+
+        /// <summary>
+        /// Recovers a Page's or one form's leads from Meta, at most 90 days back. Safe to repeat:
+        /// a lead already in DAMS is counted, never queued again.
+        /// </summary>
+        [HttpPost("connections/{id:int}/import")]
+        public Task<IActionResult> ImportLeads(int id, [FromBody] ImportMetaLeadsDto dto, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _backfill.ImportAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
         [HttpGet("connections/{id:int}/events")]
         public Task<IActionResult> Events(

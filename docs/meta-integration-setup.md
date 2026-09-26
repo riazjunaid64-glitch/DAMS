@@ -120,3 +120,55 @@ good reason. Set it to the number of days the business considers too long.
 
 A system-user token (see section 2) would remove the 60-day expiry and is still the preferred
 long-term fix. It needs the live checks listed there before it can be supported.
+
+## 5. Recovering leads the webhook missed
+
+Meta retries a failed webhook for about 36 hours and then gives up. It keeps every lead
+readable through its form (`GET /{form-id}/leads`) for 90 days, and DAMS uses that to recover
+leads that never arrived:
+
+- **Reconciliation.** Every resource sync (every 6 hours) reads the last
+  `MetaIntegration:ReconciliationLookbackHours` (default 48; 0 = off) of every lead form on
+  every enabled Page, with the Page's own token. It stops 15 minutes short of now: those leads
+  are the webhook's, and reading them too would drop their webhook as a duplicate.
+- **Import.** CRM settings → Integrations → Manage resources → **Import leads** on an enabled
+  Page reads its synced forms back to a chosen date, at most 90 days ago, and reports how many
+  leads were found, new, already in DAMS, previously failed and failed. Run **Sync now** first if
+  the Page's forms are not listed yet. "Previously failed" leads were delivered but their event
+  failed; retry them from the event list.
+
+A window with more leads than one read allows (`MaxGraphPages` pages of 100) is split in halves
+and each half read on its own, so older leads are not skipped. Only an hour with more leads than
+one read allows is reported as incomplete.
+
+Each recovered lead is queued as a `leadgen_backfill` event under the same key the webhook
+would have used, so a lead the webhook already delivered is counted, never added twice. A lead
+the webhook recorded while its Page was off is picked up again once the Page is enabled.
+After that, the normal processor handles it exactly like a webhook lead: duplicates, held
+enquiries and attribution. The lead keeps Meta's `created_time` as its submission time.
+
+**Alerts for recovered leads.** A recovered lead Meta says was submitted more than
+`MetaIntegration:BackfillAlertCutoffHours` ago (default 48; 0 = every recovered lead) is added
+without a "new lead" or repeat-enquiry notification, and its timeline says it was imported. The
+import reports how many were added this way, so a manager can assign them from the Leads queue.
+Younger recovered leads still need a call now, and notify as usual. Webhook leads always notify.
+This follows the recommendation on KAN-35, which is still waiting for the product owner's
+confirmation. First-response alerts are timed from when DAMS assigns the lead, so a recovered
+lead is not reported overdue on arrival.
+
+**Admin alerts.** Each reconciliation's outcome is kept on the connection, and every Admin is
+told through the notification system when:
+
+- reconciliation fails on two runs in a row, for example a Page credential that can no longer be
+  read, or Meta refusing the lead read (see `pages_manage_ads` below). The alert includes
+  Meta's reason.
+- reconciliation finds leads the webhook never delivered (once per day). Unless a Page was just
+  enabled, this means the webhook is dropping leads.
+
+Not built yet:
+
+- Importing Meta's CSV exports for leads older than 90 days (needs a product decision).
+- Meta's docs list `pages_manage_ads` for bulk lead reads. DAMS does not ask for it. If the
+  staging test shows it is needed, a manual import shows Meta's permission error and scheduled
+  reconciliation raises the Admin alert above. Add the scope only with that evidence (see
+  `MetaScopes`).
