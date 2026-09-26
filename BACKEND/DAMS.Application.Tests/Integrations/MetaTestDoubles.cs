@@ -140,29 +140,40 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
             : throw new MetaPermanentException($"Lead {leadgenId} does not exist.");
     }
 
-    /// <summary>Leads each form holds, keyed by form id; returned when created after the requested instant.</summary>
+    /// <summary>Leads each form holds, keyed by form id; returned when created inside the requested window.</summary>
     public Dictionary<string, List<MetaLead>> FormLeads { get; } = [];
 
     /// <summary>Thrown by every form-leads read while set.</summary>
     public Exception? FormLeadsFailure { get; set; }
 
-    public bool FormLeadsTruncated { get; set; }
+    /// <summary>
+    /// The most leads one read returns, as MaxGraphPages caps a real one; the newest are kept and
+    /// the read is marked truncated. Null reads everything.
+    /// </summary>
+    public int? FormLeadsPerRead { get; set; }
 
-    public List<(string FormId, DateTime Since, string Token)> FormLeadRequests { get; } = [];
+    public List<(string FormId, DateTime Since, DateTime Until, string Token)> FormLeadRequests { get; } = [];
 
     public Task<MetaFormLeadPage> GetFormLeadsAsync(
-        string formExternalId, DateTime since, string accessToken, CancellationToken cancellationToken = default)
+        string formExternalId, DateTime since, DateTime until, string accessToken, CancellationToken cancellationToken = default)
     {
-        FormLeadRequests.Add((formExternalId, since, accessToken));
+        FormLeadRequests.Add((formExternalId, since, until, accessToken));
         if (FormLeadsFailure is not null)
             throw FormLeadsFailure;
 
+        // Meta compares whole seconds, strictly on both sides.
+        static long Seconds(DateTime value) => new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)).ToUnixTimeSeconds();
+        var inWindow = FormLeads.GetValueOrDefault(formExternalId, [])
+            .Where(l => l.CreatedTime is null
+                        || (Seconds(l.CreatedTime.Value) > Seconds(since) && Seconds(l.CreatedTime.Value) < Seconds(until)))
+            .OrderByDescending(l => l.CreatedTime)
+            .ToList();
+        var truncated = FormLeadsPerRead is { } cap && inWindow.Count > cap;
+
         return Task.FromResult(new MetaFormLeadPage
         {
-            Leads = FormLeads.GetValueOrDefault(formExternalId, [])
-                .Where(l => l.CreatedTime is null || l.CreatedTime > since)
-                .ToList(),
-            Truncated = FormLeadsTruncated
+            Leads = truncated ? inWindow.Take(FormLeadsPerRead!.Value).ToList() : inWindow,
+            Truncated = truncated
         });
     }
 

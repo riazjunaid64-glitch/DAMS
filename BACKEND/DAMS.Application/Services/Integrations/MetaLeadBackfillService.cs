@@ -24,6 +24,16 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>Tells a recovered lead apart from a delivered one in the event list; processed identically.</summary>
         public const string BackfillEventType = "leadgen_backfill";
 
+        /// <summary>
+        /// Leads newer than this are left to the webhook, which normally delivers within seconds.
+        /// Reading right up to now would queue a lead just before its webhook arrives, and that
+        /// webhook would then be dropped as a duplicate, never counting as a delivery.
+        /// </summary>
+        public const int WebhookGraceMinutes = 15;
+
+        /// <summary>A window with more leads than one read allows is halved until it fits or is this short.</summary>
+        private static readonly TimeSpan SmallestWindow = TimeSpan.FromHours(1);
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -100,31 +110,81 @@ namespace DAMS.Application.Services.Integrations
                 formIds = [form.ExternalId];
             }
 
-            var result = new MetaLeadImportResultDto();
-            await ImportFormsAsync(connection, page, formIds, since, result, cancellationToken);
-            return result;
+            var run = new Run();
+            await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run, cancellationToken);
+            return run.Result;
         }
 
         public async Task<MetaLeadImportResultDto> ReconcileAsync(int connectionId, CancellationToken cancellationToken = default)
         {
-            var result = new MetaLeadImportResultDto();
+            var run = new Run();
             if (_options.ReconciliationLookbackHours <= 0)
-                return result;
+                return run.Result;
 
             var connection = await _context.ExternalIntegrationConnections
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == connectionId && c.Provider == IntegrationProviders.Meta, cancellationToken);
             if (connection is null || connection.Status != ExternalIntegrationConnectionStatus.Connected)
-                return result;
+                return run.Result;
 
-            var since = DateTime.UtcNow.AddHours(-_options.ReconciliationLookbackHours);
+            var now = DateTime.UtcNow;
+            var since = now.AddHours(-_options.ReconciliationLookbackHours);
             foreach (var page in await EnabledPagesAsync(connectionId, cancellationToken))
             {
                 var formIds = await FormIdsAsync(connectionId, [page.ExternalId], cancellationToken);
-                await ImportFormsAsync(connection, page, formIds, since, result, cancellationToken);
+                await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run, cancellationToken);
             }
 
-            return result;
+            await RecordReconciliationAsync(connectionId, run, now, cancellationToken);
+            return run.Result;
+        }
+
+        /// <summary>
+        /// Kept on the connection because the scheduled sync has nobody to show its result to:
+        /// MetaIntegrationAlertService reads it and tells every Admin when reconciliation keeps
+        /// failing, or finds leads the webhook never delivered.
+        /// </summary>
+        private async Task RecordReconciliationAsync(int connectionId, Run run, DateTime now, CancellationToken cancellationToken)
+        {
+            var connection = await _context.ExternalIntegrationConnections
+                .FirstOrDefaultAsync(c => c.Id == connectionId, cancellationToken);
+            if (connection is null)
+                return;
+
+            var error = MetaCredentialScrubber.ScrubAndLimit(run.Result.Warning, 1000);
+            connection.ReconciledAt = now;
+            connection.ReconciliationError = error;
+            connection.ReconciliationFailingSince = error is null ? null : connection.ReconciliationFailingSince ?? now;
+            connection.ReconciliationMissedLeads = run.NeverDelivered;
+
+            if (error is not null)
+                _logger.LogWarning("Reconciling Meta leads for connection {ConnectionId} was incomplete: {Reason}", connectionId, error);
+            if (run.NeverDelivered > 0)
+                _logger.LogWarning(
+                    "Reconciliation found {Count} Meta lead(s) the webhook never delivered for connection {ConnectionId}.",
+                    run.NeverDelivered, connectionId);
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Changed meanwhile — reconnected or disconnected. The next reconciliation records
+                // its own outcome; a stale copy left tracked would fail the next save in this scope.
+                _context.Entry(connection).State = EntityState.Detached;
+            }
+        }
+
+        private static DateTime WindowEnd(DateTime now) => now.AddMinutes(-WebhookGraceMinutes);
+
+        /// <summary>One import or reconciliation's counts, plus what only reconciliation keeps.</summary>
+        private sealed class Run
+        {
+            public MetaLeadImportResultDto Result { get; } = new();
+
+            /// <summary>Queued under a key the webhook never recorded, as opposed to reopened after it was Ignored.</summary>
+            public int NeverDelivered { get; set; }
         }
 
         private Task<List<ExternalIntegrationResource>> EnabledPagesAsync(int connectionId, CancellationToken cancellationToken) =>
@@ -157,9 +217,11 @@ namespace DAMS.Application.Services.Integrations
             ExternalIntegrationResource page,
             List<string> formIds,
             DateTime since,
-            MetaLeadImportResultDto result,
+            DateTime until,
+            Run run,
             CancellationToken cancellationToken)
         {
+            var result = run.Result;
             var token = _protector.TryUnprotect(page.ResourceTokenProtected)
                         ?? _protector.TryUnprotect(connection.AccessTokenProtected);
             if (token is null)
@@ -167,15 +229,18 @@ namespace DAMS.Application.Services.Integrations
                 result.Failed += formIds.Count;
                 result.Warning = Combine(result.Warning,
                     $"The stored credential for \"{page.Name ?? page.ExternalId}\" could not be read; reconnect the account.");
+                _logger.LogWarning(
+                    "The stored credential for Meta Page {PageId} on connection {ConnectionId} could not be read, so its leads were not read.",
+                    page.ExternalId, connection.Id);
                 return;
             }
 
             foreach (var formId in formIds)
             {
-                MetaFormLeadPage leads;
+                List<MetaLead> leads;
                 try
                 {
-                    leads = await _graph.GetFormLeadsAsync(formId, since, token, cancellationToken);
+                    leads = await ReadWindowAsync(formId, since, until, token, result, cancellationToken);
                 }
                 catch (MetaGraphException ex)
                 {
@@ -187,48 +252,125 @@ namespace DAMS.Application.Services.Integrations
                     continue;
                 }
 
-                if (leads.Truncated)
-                    result.Warning = Combine(result.Warning,
-                        $"Form {formId} has more leads in this window than one read allows; import a shorter window for the rest.");
-
-                foreach (var lead in leads.Leads)
+                var unqueued = 0;
+                foreach (var lead in leads)
                 {
                     result.Found++;
-                    switch (await RecordAsync(page, formId, lead, cancellationToken))
+                    Outcome outcome;
+                    try
                     {
-                        case Outcome.Queued: result.New++; break;
+                        outcome = await RecordAsync(page, formId, lead, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // One lead the database would not take must not cost the rest, nor the
+                        // counts of what was already queued.
+                        _logger.LogError(ex, "Queuing Meta lead {LeadgenId} of form {FormId} failed.", lead.LeadgenId, formId);
+                        DetachUnsavedEvents();
+                        unqueued++;
+                        outcome = Outcome.Failed;
+                    }
+
+                    switch (outcome)
+                    {
+                        case Outcome.Queued or Outcome.Reopened:
+                            result.New++;
+                            if (outcome == Outcome.Queued)
+                                run.NeverDelivered++;
+                            if (lead.CreatedTime is { } submittedAt
+                                && MetaLeadEventProcessor.IsOlderThanAlertCutoff(submittedAt, _options))
+                                result.AddedWithoutAlert++;
+                            break;
                         case Outcome.AlreadyInDams: result.AlreadyInDams++; break;
+                        case Outcome.PreviouslyFailed: result.PreviouslyFailed++; break;
                         default: result.Failed++; break;
                     }
                 }
+
+                if (unqueued > 0)
+                    result.Warning = Combine(result.Warning,
+                        $"{unqueued} lead(s) of form {formId} could not be queued; run the import again to retry them.");
             }
         }
 
-        private enum Outcome { Queued, AlreadyInDams, Unstorable }
+        /// <summary>
+        /// A form's leads submitted after <paramref name="since"/> and before <paramref name="until"/>.
+        /// A window holding more than one read allows (MaxGraphPages) is halved and each half read
+        /// on its own, rather than trusting the order Meta returns them in, so no part of the window
+        /// is skipped. Only an hour with more leads than one read allows is reported as incomplete.
+        /// </summary>
+        private async Task<List<MetaLead>> ReadWindowAsync(
+            string formId, DateTime since, DateTime until, string token, MetaLeadImportResultDto result,
+            CancellationToken cancellationToken)
+        {
+            since = WholeSeconds(since);
+            until = WholeSeconds(until);
+            if (since >= until)
+                return [];
+
+            var read = await _graph.GetFormLeadsAsync(formId, since, until, token, cancellationToken);
+            if (!read.Truncated)
+                return read.Leads;
+
+            if (until - since <= SmallestWindow)
+            {
+                result.Warning = Combine(result.Warning,
+                    $"Form {formId} received more leads within one hour on {PakistanTime.ToBusinessDate(since):d MMM yyyy} " +
+                    "than one read allows; some of them could not be read.");
+                return read.Leads;
+            }
+
+            // Meta filters to the second, strictly on both sides: the older half runs to just past
+            // the middle second and the newer half starts after it, so each lead is read once.
+            var middle = WholeSeconds(since + (until - since) / 2);
+            var older = await ReadWindowAsync(formId, since, middle.AddSeconds(1), token, result, cancellationToken);
+            var newer = await ReadWindowAsync(formId, middle, until, token, result, cancellationToken);
+            return [.. older, .. newer];
+        }
+
+        private static DateTime WholeSeconds(DateTime value) =>
+            new(value.Ticks - value.Ticks % TimeSpan.TicksPerSecond, value.Kind);
+
+        /// <summary>What a failed save left tracked would otherwise ride along with the next lead's save.</summary>
+        private void DetachUnsavedEvents()
+        {
+            foreach (var entry in _context.ChangeTracker.Entries<ExternalIntegrationEvent>()
+                         .Where(e => e.State is EntityState.Added or EntityState.Modified)
+                         .ToList())
+                entry.State = EntityState.Detached;
+        }
+
+        private enum Outcome { Queued, Reopened, AlreadyInDams, PreviouslyFailed, Failed }
 
         /// <summary>
         /// One event per lead, saved on its own so a clash on one never costs the others. An event
         /// the webhook recorded as Ignored — the Page was off when the lead arrived — is exactly
-        /// what this exists to recover, so it is reopened rather than counted as already handled.
+        /// what this exists to recover, so it is reopened rather than counted as already handled,
+        /// and becomes a recovery: an old one is then added without a "new lead" alert. A Failed
+        /// event is not in DAMS either, but why it failed is on the event, and retrying it is the
+        /// event list's job — so it is counted apart, never as already in DAMS.
         /// </summary>
         private async Task<Outcome> RecordAsync(
             ExternalIntegrationResource page, string formId, MetaLead lead, CancellationToken cancellationToken)
         {
             if (lead.LeadgenId.Length > MetaLeadEventProcessor.MaxExternalIdLength)
-                return Outcome.Unstorable;
+                return Outcome.Failed;
 
             var eventKey = MetaWebhookIntakeService.EventKey(page.ExternalIntegrationConnectionId, page.ExternalId, lead.LeadgenId);
             if (eventKey.Length > 300)
-                return Outcome.Unstorable;
+                return Outcome.Failed;
 
             var existing = await _context.ExternalIntegrationEvents
                 .FirstOrDefaultAsync(e => e.Provider == IntegrationProviders.Meta && e.EventKey == eventKey, cancellationToken);
 
             if (existing is not null)
             {
+                if (existing.Status == ExternalIntegrationEventStatus.Failed)
+                    return Outcome.PreviouslyFailed;
                 if (existing.Status != ExternalIntegrationEventStatus.Ignored)
                     return Outcome.AlreadyInDams;
 
+                existing.EventType = BackfillEventType;
                 existing.ExternalIntegrationConnectionId = page.ExternalIntegrationConnectionId;
                 existing.ExternalIntegrationResourceId = page.Id;
                 existing.Status = ExternalIntegrationEventStatus.Pending;
@@ -238,7 +380,7 @@ namespace DAMS.Application.Services.Integrations
                 existing.LastError = null;
                 existing.LockedUntil = null;
                 existing.LockedBy = null;
-                return await SaveAsync(existing, cancellationToken);
+                return await SaveAsync(existing, Outcome.Reopened, cancellationToken);
             }
 
             // Arrived some other way — through another connection before this one owned the Page.
@@ -270,16 +412,17 @@ namespace DAMS.Application.Services.Integrations
                 AvailableAt = DateTime.UtcNow
             };
             _context.ExternalIntegrationEvents.Add(added);
-            return await SaveAsync(added, cancellationToken);
+            return await SaveAsync(added, Outcome.Queued, cancellationToken);
         }
 
         /// <summary>A concurrent webhook or sweep that saved the same event first is the same lead, already in hand.</summary>
-        private async Task<Outcome> SaveAsync(ExternalIntegrationEvent integrationEvent, CancellationToken cancellationToken)
+        private async Task<Outcome> SaveAsync(
+            ExternalIntegrationEvent integrationEvent, Outcome saved, CancellationToken cancellationToken)
         {
             try
             {
                 await _context.SaveChangesAsync(cancellationToken);
-                return Outcome.Queued;
+                return saved;
             }
             catch (DbUpdateConcurrencyException)
             {

@@ -529,7 +529,8 @@ function ImportLeadsDialog({ connectionId, page, onClose }: {
     <CrmModal
       open
       title={`Import leads from ${page.name ?? page.externalId}`}
-      subtitle={`Meta keeps leads for ${MAX_IMPORT_DAYS} days. Leads already in DAMS are counted, never added twice.`}
+      subtitle={`Meta keeps leads for ${MAX_IMPORT_DAYS} days. Leads already in DAMS are counted, never added twice; ` +
+        "those from the last 15 minutes are left to the webhook."}
       onClose={onClose}
       footer={
         <div className="flex justify-end gap-2">

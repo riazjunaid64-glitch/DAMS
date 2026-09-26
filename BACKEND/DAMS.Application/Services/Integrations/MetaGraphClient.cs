@@ -392,14 +392,15 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>
         /// The same fields and the same fallback as <see cref="GetLeadAsync"/>: if Meta refuses the
         /// ad ids, the leads are read again without them rather than not at all. Meta's filter is
-        /// strictly after <paramref name="since"/>, to the second.
+        /// strictly after <paramref name="since"/> and strictly before <paramref name="until"/>, to the second.
         /// </summary>
         public async Task<MetaFormLeadPage> GetFormLeadsAsync(
-            string formExternalId, DateTime since, string accessToken, CancellationToken cancellationToken = default)
+            string formExternalId, DateTime since, DateTime until, string accessToken, CancellationToken cancellationToken = default)
         {
             var sinceUnix = new DateTimeOffset(DateTime.SpecifyKind(since, DateTimeKind.Utc)).ToUnixTimeSeconds();
+            var untilUnix = new DateTimeOffset(DateTime.SpecifyKind(until, DateTimeKind.Utc)).ToUnixTimeSeconds();
             var filtering = Uri.EscapeDataString(
-                $$"""[{"field":"time_created","operator":"GREATER_THAN","value":{{sinceUnix}}}]""");
+                $$"""[{"field":"time_created","operator":"GREATER_THAN","value":{{sinceUnix}}},{"field":"time_created","operator":"LESS_THAN","value":{{untilUnix}}}]""");
             string Path(string fields) =>
                 $"{Uri.EscapeDataString(formExternalId)}/leads?fields={fields}&filtering={filtering}&limit=100";
 

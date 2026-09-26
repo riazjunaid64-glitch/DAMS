@@ -4387,7 +4387,8 @@ public sealed class SqlServerProductionInvariantTests
         graph.Pages = [new() { ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = "page-health", Name = "Health", ResourceToken = "page-token-fresh" }];
         await using (var db = new AppDbContext(options))
         {
-            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance);
+            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions,
+                Integrations.NoBackfill.Instance, NullLogger<MetaResourceSyncService>.Instance);
             Assert.Equal(1, await sync.SyncDueConnectionsAsync());
         }
 
@@ -4460,7 +4461,13 @@ public sealed class SqlServerProductionInvariantTests
             var events = await db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
             Assert.Equal(2, events.Count);
             Assert.All(events, e => Assert.Equal(ExternalIntegrationEventStatus.Pending, e.Status));
-            Assert.Contains(events, e => e.EventType == MetaLeadBackfillService.BackfillEventType);
+            Assert.All(events, e => Assert.Equal(MetaLeadBackfillService.BackfillEventType, e.EventType));
+
+            // What the reconciliation found is kept on the connection for the Admin alerts.
+            var connection = await db.ExternalIntegrationConnections.AsNoTracking().SingleAsync(c => c.Id == connectionId);
+            Assert.NotNull(connection.ReconciledAt);
+            Assert.Null(connection.ReconciliationError);
+            Assert.Equal(0, connection.ReconciliationMissedLeads);
         }
     }
 

@@ -402,7 +402,7 @@ namespace DAMS.Application.Services.Integrations
                 var recovered = await _backfill.ReconcileAsync(connection.Id, cancellationToken);
                 if (recovered.New > 0)
                     _logger.LogInformation(
-                        "Reconciliation queued {Count} Meta lead(s) the webhook had not delivered for connection {ConnectionId}.",
+                        "Reconciliation queued {Count} Meta lead(s) for connection {ConnectionId}.",
                         recovered.New, connection.Id);
                 if (recovered.Warning is not null)
                     result.Warning = Combine(result.Warning, recovered.Warning);

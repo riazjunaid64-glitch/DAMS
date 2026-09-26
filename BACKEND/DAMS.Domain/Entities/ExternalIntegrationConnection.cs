@@ -61,6 +61,27 @@ namespace DAMS.Domain.Entities
         /// </summary>
         public DateTime? SyncRejectedAt { get; set; }
 
+        /// <summary>
+        /// When the scheduled reconciliation of this connection's Pages last ran. It runs after
+        /// each resource sync and reads the forms' own lead edges for leads the webhook missed.
+        /// </summary>
+        public DateTime? ReconciledAt { get; set; }
+
+        /// <summary>What the last reconciliation could not do, sanitised. Null when it read every form.</summary>
+        public string? ReconciliationError { get; set; }
+
+        /// <summary>
+        /// The first reconciliation of the current unbroken run of failures; null once one gets
+        /// through. It is what tells one failing episode from the next when every Admin is alerted.
+        /// </summary>
+        public DateTime? ReconciliationFailingSince { get; set; }
+
+        /// <summary>
+        /// Leads the last reconciliation found that the webhook had never delivered at all — not
+        /// ones delivered while their Page was off. Above zero, the webhook is dropping leads.
+        /// </summary>
+        public int ReconciliationMissedLeads { get; set; }
+
         public DateTime? LastErrorAt { get; set; }
 
         /// <summary>Sanitised message only — credentials are scrubbed before anything is stored here.</summary>

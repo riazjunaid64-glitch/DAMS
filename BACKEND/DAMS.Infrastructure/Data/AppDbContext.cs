@@ -2484,6 +2484,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.DisplayName).IsRequired().HasMaxLength(200);
                 entity.Property(c => c.GrantedScopesJson).HasMaxLength(1000);
                 entity.Property(c => c.LastError).HasMaxLength(1000);
+                entity.Property(c => c.ReconciliationError).HasMaxLength(1000);
                 entity.Property(c => c.SyncLockedBy).HasMaxLength(100);
                 entity.Property(c => c.Status).HasConversion<int>();
                 entity.Property(c => c.RowVersion).IsRowVersion();

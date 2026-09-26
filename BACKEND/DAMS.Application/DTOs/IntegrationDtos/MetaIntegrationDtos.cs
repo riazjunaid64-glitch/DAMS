@@ -133,7 +133,16 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         /// <summary>Queued for the normal processor — including ones the webhook recorded while the Page was off.</summary>
         public int New { get; set; }
 
+        /// <summary>
+        /// Of <see cref="New"/>, those Meta says were submitted before MetaIntegration:BackfillAlertCutoffHours:
+        /// added without a "new lead" alert, so they need assigning by hand.
+        /// </summary>
+        public int AddedWithoutAlert { get; set; }
+
         public int AlreadyInDams { get; set; }
+
+        /// <summary>Delivered before, but their event failed: not in DAMS. Retried from the event list, not here.</summary>
+        public int PreviouslyFailed { get; set; }
 
         /// <summary>Leads that could not be queued, plus forms Meta would not let DAMS read.</summary>
         public int Failed { get; set; }

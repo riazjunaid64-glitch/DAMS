@@ -125,6 +125,15 @@ namespace DAMS.Application.Common
         /// </summary>
         public int ReconciliationLookbackHours { get; set; } = 48;
 
+        /// <summary>
+        /// A recovered lead Meta says was submitted more than this many hours ago is added quietly:
+        /// no "new lead" or repeat-enquiry notification, and its timeline says it was imported. A
+        /// 90-day import would otherwise flood supervisors about people who may have been called
+        /// long ago. Younger recovered leads still need a call now, so they alert like any other.
+        /// Zero adds every recovered lead quietly.
+        /// </summary>
+        public int BackfillAlertCutoffHours { get; set; } = 48;
+
         /// <summary>Meta keeps a lead readable through its form for 90 days; an import cannot reach further.</summary>
         public const int MaxImportDays = 90;
 

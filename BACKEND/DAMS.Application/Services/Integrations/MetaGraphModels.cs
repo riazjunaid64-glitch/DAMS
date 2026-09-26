@@ -32,7 +32,7 @@ namespace DAMS.Application.Services.Integrations
 
     /// <summary>
     /// The leads a form's own edge returned. <see cref="Truncated"/> is true when the walk stopped
-    /// at <c>MaxGraphPages</c>, so older leads in the window were not read.
+    /// at <c>MaxGraphPages</c>, so some leads in the window were not read.
     /// </summary>
     public sealed class MetaFormLeadPage
     {
