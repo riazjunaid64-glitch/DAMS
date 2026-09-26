@@ -138,10 +138,13 @@ public class MetaResourceSyncTests
     }
 
     [Fact]
-    public async Task ARejectedTokenDuringSync_FlagsTheConnectionForReconnection()
+    public async Task ARejectedTokenDuringSync_WithNoPageTokenToFallBackOn_FlagsTheConnectionForReconnection()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
-        var (connection, _) = await h.ConnectPageAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        // Without a Page token the account's own token is the lead credential as well.
+        page.ResourceTokenProtected = null;
+        await h.Db.SaveChangesAsync();
 
         h.Graph.DiscoveryFailure = new MetaAuthorizationException("Session has expired.");
 

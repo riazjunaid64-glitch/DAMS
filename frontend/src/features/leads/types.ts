@@ -100,6 +100,10 @@ export interface MetaConnection {
   lastErrorAt?: string | null;
   lastError?: string | null;
   tokenExpiresAt?: string | null;
+  /** Set while Meta refuses the account's sign-in during sync but leads still arrive through the Page tokens. */
+  syncRejectedAt?: string | null;
+  /** When Meta last delivered a lead webhook for this connection. */
+  lastLeadReceivedAt?: string | null;
   grantedScopes: string[];
   pageCount: number;
   instagramCount: number;

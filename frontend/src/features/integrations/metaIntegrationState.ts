@@ -151,6 +151,49 @@ export function deliverySummary(connection: MetaConnection): string {
   return `Receiving leads from ${plural(connection.enabledResourceCount, "Page", "Pages")}.`;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Days before expiry the sign-in is called out; the server alerts Admins on the same default. */
+export const SIGN_IN_WARNING_DAYS = 7;
+
+export type SignInExpiry = { text: string; tone: "normal" | "warning" | "expired" };
+
+/**
+ * When the account's own Meta sign-in runs out. Leads are fetched with Page tokens that outlive
+ * it, but discovery stops, so it is worth reconnecting before the date.
+ */
+export function signInExpiry(connection: MetaConnection, now: Date = new Date()): SignInExpiry | null {
+  if (connection.status === "Disconnected" || !connection.tokenExpiresAt) return null;
+  const expiresAt = new Date(connection.tokenExpiresAt);
+  if (Number.isNaN(expiresAt.getTime())) return null;
+
+  const date = expiresAt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const left = expiresAt.getTime() - now.getTime();
+  if (left <= 0) return { text: `Meta sign-in expired ${date}`, tone: "expired" };
+  if (left <= SIGN_IN_WARNING_DAYS * DAY_MS) {
+    const days = Math.ceil(left / DAY_MS);
+    return { text: `Meta sign-in expires ${date} (${days} day${days === 1 ? "" : "s"} left)`, tone: "warning" };
+  }
+  return { text: `Meta sign-in expires ${date}`, tone: "normal" };
+}
+
+/** Whether Meta is still delivering anything at all — the first thing to check when leads stop. */
+export function lastLeadSummary(connection: MetaConnection, format: (value: string) => string): string {
+  return connection.lastLeadReceivedAt
+    ? `Last lead received ${format(connection.lastLeadReceivedAt)}`
+    : "No leads received yet";
+}
+
+/**
+ * A refused sign-in on a connection that still delivers leads: a reason to reconnect, not an
+ * outage. A connection already waiting to be reconnected says so on its own.
+ */
+export function syncRejectionWarning(connection: MetaConnection): string | null {
+  if (!connection.syncRejectedAt || connection.status !== "Connected") return null;
+  return "Meta refused this account's sign-in, so its Pages and lead forms are no longer refreshed. " +
+    "Leads still arrive through the Page tokens. Reconnect the account with Connect Meta to restore syncing.";
+}
+
 /** The event list shows the latest events, or every event in one status. */
 export type MetaEventFilter = MetaEventStatus | "All";
 

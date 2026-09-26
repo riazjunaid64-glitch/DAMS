@@ -6,7 +6,8 @@ namespace DAMS.Api
 {
     /// <summary>
     /// Drives everything the Meta integration does outside a request: draining the webhook
-    /// inbox, refreshing discovered resources, and clearing expired OAuth states.
+    /// inbox, refreshing discovered resources, alerting Admins when lead capture needs them,
+    /// and clearing expired OAuth states.
     ///
     /// One service rather than three, because the notification worker already established
     /// cadence gating for exactly this, and because resource sync and event processing must
@@ -102,6 +103,19 @@ namespace DAMS.Api
                     if (synced > 0)
                         _logger.LogInformation("Synced resources for {Count} Meta connection(s).", synced);
                 }, stoppingToken);
+
+                // After sync, so a connection this tick's sync just flagged is reported in the same
+                // pass. Once a minute is plenty for an outage that was otherwise silent for days.
+                if (ShouldRun(tick, 60, interval))
+                {
+                    await SafelyAsync("alerts", async scope =>
+                    {
+                        var alerts = scope.GetRequiredService<IMetaIntegrationAlertService>();
+                        var raised = await alerts.RaiseAlertsAsync(stoppingToken);
+                        if (raised > 0)
+                            _logger.LogWarning("Raised {Count} Meta integration alert(s) for Admins.", raised);
+                    }, stoppingToken);
+                }
 
                 if (ShouldRun(tick, 3600, interval))
                 {

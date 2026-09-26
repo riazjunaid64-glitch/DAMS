@@ -87,3 +87,31 @@ Facebook Login → Settings.
    shows **Needs reconnection**, its message lists the permissions that are missing. Add
    them to the login configuration.
 3. Send a lead with Meta's Lead Ads Testing Tool and check that it appears in the CRM.
+
+## 4. Token expiry and alerts
+
+Connect stores a long-lived **user** token. Meta says it "generally lasts about 60 days". Leads
+are fetched with the **Page** tokens that `me/accounts` returns, and those do not expire with it.
+
+- When Meta refuses the user token during the 6-hourly sync, the connection stays
+  **Connected**. The panel shows a warning, Pages and lead forms stop being refreshed, and
+  leads keep arriving through the Page tokens. The sync tries again after the normal interval.
+- Only when a Page token itself is refused (or no Page token is stored) does the connection
+  go to **Needs reconnection**. Its leads are then parked, not lost.
+- Reconnecting releases the parked leads, so they are fetched on the worker's next tick.
+
+Every active Admin gets one notification (category **Integrations**, email and push if
+those are switched on) when:
+
+| Alert | When | Setting |
+| --- | --- | --- |
+| Needs reconnecting | A connection is in Needs reconnection. Once per connect. | — |
+| Sign-in expires soon | The user token expires within the warning window. Once per token. | `MetaIntegration:TokenExpiryWarningDays` (default 7; 0 = off) |
+| Lead events failed | Events on a connection reached Failed. Once per connection per day. | — |
+| Page gone quiet | An enabled Page that received leads before has had none for N days. | `MetaIntegration:QuietPageAlertDays` (default 0 = off) |
+
+The quiet-Page alert is off by default because a Page with no campaign running is quiet for
+good reason. Set it to the number of days the business considers too long.
+
+A system-user token (see section 2) would remove the 60-day expiry and is still the preferred
+long-term fix. It needs the live checks listed there before it can be supported.

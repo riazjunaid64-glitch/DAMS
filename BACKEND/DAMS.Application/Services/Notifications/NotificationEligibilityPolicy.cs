@@ -68,7 +68,8 @@ namespace DAMS.Application.Services.Notifications
         // are deliberately absent: an admin only sees those through delivery/audit history.
         private static readonly HashSet<NotificationType> AdminTypes = new(ManagerTypes)
         {
-            NotificationType.LeadHeldForReview
+            NotificationType.LeadHeldForReview,
+            NotificationType.IntegrationAttentionRequired
         };
 
         // Addressed to one person because of a relationship they hold with the record. Every
@@ -116,7 +117,8 @@ namespace DAMS.Application.Services.Notifications
             new(NotificationCategory.ProjectUpdates, "Project updates", "Progress and news on projects relevant to you."),
             new(NotificationCategory.Announcements, "Announcements", "Messages explicitly addressed to your audience."),
             new(NotificationCategory.AccountAndSecurity, "Account and security", "Important account and security messages."),
-            new(NotificationCategory.ManagerEscalations, "Escalations", "Managed-team issues that require supervisor attention.")
+            new(NotificationCategory.ManagerEscalations, "Escalations", "Managed-team issues that require supervisor attention."),
+            new(NotificationCategory.Integrations, "Integrations", "Problems that stop leads arriving from connected accounts such as Meta.")
         };
 
         public NotificationEligibilityPolicy(AppDbContext context)
@@ -153,7 +155,7 @@ namespace DAMS.Application.Services.Notifications
             "Client" => "Booking, payment, installment, project, announcement and account updates will appear here.",
             LeadRoles.Manager => "Your work, managed-team activity, escalations and account updates will appear here.",
             LeadRoles.Employee => "Assigned leads, follow-ups, visits, mentions, tasks and account updates will appear here.",
-            LeadRoles.Admin => "Administrative, staff, delivery and account updates will appear here.",
+            LeadRoles.Admin => "Administrative, staff, integration, delivery and account updates will appear here.",
             _ => "No notification categories are available for this account."
         };
 
@@ -287,6 +289,9 @@ namespace DAMS.Application.Services.Notifications
                 || (n.Type == NotificationType.LeadHeldForReview
                     && n.EntityType == NotificationEntityType.LeadIntakeHold && n.EntityId > 0
                     && isAdmin && _context.LeadIntakeHolds.Any(h => h.Id == n.EntityId))
+                || (n.Type == NotificationType.IntegrationAttentionRequired
+                    && n.EntityType == NotificationEntityType.IntegrationConnection && n.EntityId > 0
+                    && isAdmin && _context.ExternalIntegrationConnections.Any(c => c.Id == n.EntityId))
                 || (n.Type == NotificationType.AccountSecurity
                     && (n.EntityType == NotificationEntityType.None
                         || n.EntityType == NotificationEntityType.Announcement
@@ -474,6 +479,11 @@ namespace DAMS.Application.Services.Notifications
                 return string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
                        && entityType == NotificationEntityType.LeadIntakeHold && entityId is > 0
                        && await _context.LeadIntakeHolds.AnyAsync(h => h.Id == entityId.Value, cancellationToken);
+
+            if (type == NotificationType.IntegrationAttentionRequired)
+                return string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
+                       && entityType == NotificationEntityType.IntegrationConnection && entityId is > 0
+                       && await _context.ExternalIntegrationConnections.AnyAsync(c => c.Id == entityId.Value, cancellationToken);
 
             if (type == NotificationType.AccountSecurity)
                 return entityType is NotificationEntityType.None or NotificationEntityType.Announcement

@@ -18,8 +18,11 @@ import {
   formMappingSummary,
   isToggleable,
   isMappableForm,
+  lastLeadSummary,
   readCallbackResult,
+  signInExpiry,
   summarizeCounts,
+  syncRejectionWarning,
 } from "./metaIntegrationState.ts";
 import {
   disconnectMetaConnection,
@@ -137,7 +140,10 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const expiry = signInExpiry(connection);
+  const rejection = syncRejectionWarning(connection);
 
   const loadResources = useCallback(async () => {
     setError(null);
@@ -168,6 +174,7 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
   const run = async (label: string, action: () => Promise<unknown>) => {
     setBusy(label);
     setError(null);
+    setSyncWarning(null);
     try {
       await action();
       await loadResources();
@@ -196,6 +203,17 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           </p>
           <p className="mt-1 text-xs text-[var(--text-secondary)]">{summarizeCounts(connection)}</p>
           <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{deliverySummary(connection)}</p>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+            {lastLeadSummary(connection, formatDateTime)}
+            {expiry ? (
+              <>
+                {" · "}
+                <span className={expiry.tone === "expired" ? "text-red-300" : expiry.tone === "warning" ? "text-amber-200" : undefined}>
+                  {expiry.text}
+                </span>
+              </>
+            ) : null}
+          </p>
           {(connection.failedEventCount || connection.pendingEventCount) ? (
             <div className="mt-2 flex flex-wrap gap-2 text-xs">
               {connection.failedEventCount ? <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-red-300">{connection.failedEventCount} failed event{connection.failedEventCount === 1 ? "" : "s"}</span> : null}
@@ -212,7 +230,11 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
             size="sm"
             variant="outline"
             disabled={busy !== null || !canSync(connection)}
-            onClick={() => void run("Sync", () => syncMetaConnection(connection.id))}
+            onClick={() => void run("Sync", async () => {
+              // A sync can finish yet skip part of the account; say so rather than look complete.
+              const result = await syncMetaConnection(connection.id);
+              setSyncWarning(result.warning ?? null);
+            })}
           >
             {busy === "Sync" ? "Syncing…" : "Sync now"}
           </Button>
@@ -232,7 +254,22 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
         </p>
       )}
 
-      {connection.status !== "NeedsReauthorization" && connection.lastError && (
+      {rejection && (
+        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-200">
+          {rejection}
+          <span className="mt-1 block text-xs opacity-80">
+            Since {formatDateTime(connection.syncRejectedAt)}{connection.lastError ? `: ${connection.lastError}` : ""}
+          </span>
+        </p>
+      )}
+
+      {syncWarning && (
+        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-xs text-amber-200">
+          {syncWarning}
+        </p>
+      )}
+
+      {connection.status !== "NeedsReauthorization" && !rejection && connection.lastError && (
         <p className="mt-3 text-xs text-[var(--text-muted)]">
           Last error {formatDateTime(connection.lastErrorAt)}: {connection.lastError}
         </p>
