@@ -106,12 +106,20 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
         string adAccountExternalId, string userAccessToken, CancellationToken cancellationToken = default) =>
         Task.FromResult(new MetaDiscoveryPage { Items = AdAccountChildren.ToList(), Truncated = AdAccountChildrenTruncated });
 
+    /// <summary>Thrown by every lead-form read while set.</summary>
+    public Exception? LeadFormsFailure { get; set; }
+
     public Task<MetaDiscoveryPage> GetLeadFormsAsync(
-        string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new MetaDiscoveryPage
+        string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
+    {
+        if (LeadFormsFailure is not null)
+            throw LeadFormsFailure;
+
+        return Task.FromResult(new MetaDiscoveryPage
         {
             Items = LeadForms.Where(f => f.ParentExternalId == pageExternalId).ToList()
         });
+    }
 
     public Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default)
     {
@@ -123,6 +131,32 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
         return Leads.TryGetValue(leadgenId, out var lead)
             ? Task.FromResult(lead)
             : throw new MetaPermanentException($"Lead {leadgenId} does not exist.");
+    }
+
+    /// <summary>Leads each form holds, keyed by form id; returned when created after the requested instant.</summary>
+    public Dictionary<string, List<MetaLead>> FormLeads { get; } = [];
+
+    /// <summary>Thrown by every form-leads read while set.</summary>
+    public Exception? FormLeadsFailure { get; set; }
+
+    public bool FormLeadsTruncated { get; set; }
+
+    public List<(string FormId, DateTime Since, string Token)> FormLeadRequests { get; } = [];
+
+    public Task<MetaFormLeadPage> GetFormLeadsAsync(
+        string formExternalId, DateTime since, string accessToken, CancellationToken cancellationToken = default)
+    {
+        FormLeadRequests.Add((formExternalId, since, accessToken));
+        if (FormLeadsFailure is not null)
+            throw FormLeadsFailure;
+
+        return Task.FromResult(new MetaFormLeadPage
+        {
+            Leads = FormLeads.GetValueOrDefault(formExternalId, [])
+                .Where(l => l.CreatedTime is null || l.CreatedTime > since)
+                .ToList(),
+            Truncated = FormLeadsTruncated
+        });
     }
 
     /// <summary>Ad names Meta would share for a lead, keyed by leadgen id. Absent means none.</summary>
@@ -231,4 +265,19 @@ internal sealed class UnreadableSecretProtector : IIntegrationSecretProtector
     public string Protect(string plaintext) => "unreadable";
 
     public string? TryUnprotect(string? protectedValue) => null;
+}
+
+/// <summary>For tests about the sync itself, where the reconciliation it ends with is beside the point.</summary>
+internal sealed class NoBackfill : IMetaLeadBackfillService
+{
+    public static readonly NoBackfill Instance = new();
+
+    public Task<DAMS.Application.DTOs.IntegrationDtos.MetaLeadImportResultDto> ImportAsync(
+        int connectionId, DAMS.Application.DTOs.IntegrationDtos.ImportMetaLeadsDto dto,
+        DAMS.Application.Common.LeadUserContext actor, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new DAMS.Application.DTOs.IntegrationDtos.MetaLeadImportResultDto());
+
+    public Task<DAMS.Application.DTOs.IntegrationDtos.MetaLeadImportResultDto> ReconcileAsync(
+        int connectionId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new DAMS.Application.DTOs.IntegrationDtos.MetaLeadImportResultDto());
 }

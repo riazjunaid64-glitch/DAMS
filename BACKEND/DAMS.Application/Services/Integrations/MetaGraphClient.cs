@@ -389,6 +389,43 @@ namespace DAMS.Application.Services.Integrations
                 return ReadLead(document.RootElement, leadgenId);
         }
 
+        /// <summary>
+        /// The same fields and the same fallback as <see cref="GetLeadAsync"/>: if Meta refuses the
+        /// ad ids, the leads are read again without them rather than not at all. Meta's filter is
+        /// strictly after <paramref name="since"/>, to the second.
+        /// </summary>
+        public async Task<MetaFormLeadPage> GetFormLeadsAsync(
+            string formExternalId, DateTime since, string accessToken, CancellationToken cancellationToken = default)
+        {
+            var sinceUnix = new DateTimeOffset(DateTime.SpecifyKind(since, DateTimeKind.Utc)).ToUnixTimeSeconds();
+            var filtering = Uri.EscapeDataString(
+                $$"""[{"field":"time_created","operator":"GREATER_THAN","value":{{sinceUnix}}}]""");
+            string Path(string fields) =>
+                $"{Uri.EscapeDataString(formExternalId)}/leads?fields={fields}&filtering={filtering}&limit=100";
+
+            (List<JsonElement> Items, bool Truncated) result;
+            try
+            {
+                result = await CollectAsync(Path($"{LeadFields},{LeadAdIdFields}"), accessToken, cancellationToken);
+            }
+            catch (MetaGraphException ex) when (IsFieldRefusal(ex))
+            {
+                _logger.LogWarning(
+                    "Meta refused the ad ids of the leads on form {FormId} ({Reason}). Retrying without them.",
+                    formExternalId, ex.Message);
+                result = await CollectAsync(Path(LeadFields), accessToken, cancellationToken);
+            }
+
+            return new MetaFormLeadPage
+            {
+                Leads = result.Items
+                    .Where(item => ReadString(item, "id") is { Length: > 0 })
+                    .Select(item => ReadLead(item, string.Empty))
+                    .ToList(),
+                Truncated = result.Truncated
+            };
+        }
+
         public async Task<MetaLeadAdNames> GetLeadAdNamesAsync(
             string leadgenId, string accessToken, CancellationToken cancellationToken = default)
         {

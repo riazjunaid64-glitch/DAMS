@@ -9,10 +9,16 @@ import {
   eventListLimitNote,
   deliverySummary,
   isAwaitingFirstSync,
+  earliestImportDate,
+  importDate,
+  importSummary,
   isToggleable,
+  lastLeadSummary,
   readCallbackResult,
   resourceTypeLabel,
+  signInExpiry,
   summarizeCounts,
+  syncRejectionWarning,
 } from "./metaIntegrationState.ts";
 
 const connection = (overrides: Partial<MetaConnection> = {}): MetaConnection => ({
@@ -154,5 +160,50 @@ describe("event list", () => {
     // The first request answering last must be ignored.
     expect(second()).toBe(true);
     expect(first()).toBe(false);
+  });
+});
+
+describe("sign-in health", () => {
+  const now = new Date("2026-09-26T12:00:00Z");
+
+  it("shows when the Meta sign-in expires and warns in its last week", () => {
+    expect(signInExpiry(connection({ tokenExpiresAt: "2026-11-20T12:00:00Z" }), now)?.tone).toBe("normal");
+    const soon = signInExpiry(connection({ tokenExpiresAt: "2026-09-29T12:00:00Z" }), now);
+    expect(soon?.tone).toBe("warning");
+    expect(soon?.text).toContain("3 days left");
+    expect(signInExpiry(connection({ tokenExpiresAt: "2026-09-20T12:00:00Z" }), now)?.tone).toBe("expired");
+  });
+
+  it("says nothing about expiry when Meta gave none or the account is disconnected", () => {
+    expect(signInExpiry(connection({ tokenExpiresAt: null }), now)).toBeNull();
+    expect(signInExpiry(connection({ status: "Disconnected", tokenExpiresAt: "2026-09-29T12:00:00Z" }), now)).toBeNull();
+  });
+
+  it("reports when the last lead arrived, or that none has", () => {
+    expect(lastLeadSummary(connection(), (v) => v)).toBe("No leads received yet");
+    expect(lastLeadSummary(connection({ lastLeadReceivedAt: "x" }), (v) => `at ${v}`)).toBe("Last lead received at x");
+  });
+
+  it("warns about a refused sync only while the connection still delivers leads", () => {
+    expect(syncRejectionWarning(connection())).toBeNull();
+    expect(syncRejectionWarning(connection({ syncRejectedAt: "2026-09-26T10:00:00Z" }))).toContain("Leads still arrive");
+    expect(syncRejectionWarning(connection({ status: "NeedsReauthorization", syncRejectedAt: "2026-09-26T10:00:00Z" }))).toBeNull();
+  });
+});
+
+describe("lead import", () => {
+  const now = new Date(2026, 8, 26, 15, 0, 0);
+
+  it("offers dates back to the 90-day line Meta keeps leads for, and no further", () => {
+    expect(importDate(0, now)).toBe("2026-09-26");
+    expect(importDate(7, now)).toBe("2026-09-19");
+    expect(earliestImportDate(now)).toBe("2026-06-29");
+  });
+
+  it("reports every outcome, and failures only when there are some", () => {
+    expect(importSummary({ found: 3, new: 1, alreadyInDams: 2, failed: 0 }))
+      .toBe("3 found · 1 new · 2 already in DAMS. New leads appear within a minute.");
+    expect(importSummary({ found: 0, new: 0, alreadyInDams: 0, failed: 1 }))
+      .toBe("0 found · 0 new · 0 already in DAMS · 1 failed");
   });
 });

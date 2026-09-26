@@ -87,3 +87,60 @@ Facebook Login → Settings.
    shows **Needs reconnection**, its message lists the permissions that are missing. Add
    them to the login configuration.
 3. Send a lead with Meta's Lead Ads Testing Tool and check that it appears in the CRM.
+
+## 4. Token expiry and alerts
+
+Connect stores a long-lived **user** token. Meta says it "generally lasts about 60 days". Leads
+are fetched with the **Page** tokens that `me/accounts` returns, and those do not expire with it.
+
+- When Meta refuses the user token during the 6-hourly sync, the connection stays
+  **Connected**. The panel shows a warning, Pages and lead forms stop being refreshed, and
+  leads keep arriving through the Page tokens. The sync tries again after the normal interval.
+- Only when a Page token itself is refused (or no Page token is stored) does the connection
+  go to **Needs reconnection**. Its leads are then parked, not lost.
+- Reconnecting releases the parked leads, so they are fetched on the worker's next tick.
+
+Every active Admin gets one notification (category **Integrations**, email and push if
+those are switched on) when:
+
+| Alert | When | Setting |
+| --- | --- | --- |
+| Needs reconnecting | A connection is in Needs reconnection. Once per connect. | — |
+| Sign-in expires soon | The user token expires within the warning window. Once per token. | `MetaIntegration:TokenExpiryWarningDays` (default 7; 0 = off) |
+| Lead events failed | Events on a connection reached Failed. Once per connection per day. | — |
+| Page gone quiet | An enabled Page that received leads before has had none for N days. | `MetaIntegration:QuietPageAlertDays` (default 0 = off) |
+
+The quiet-Page alert is off by default because a Page with no campaign running is quiet for
+good reason. Set it to the number of days the business considers too long.
+
+A system-user token (see section 2) would remove the 60-day expiry and is still the preferred
+long-term fix. It needs the live checks listed there before it can be supported.
+
+## 5. Recovering leads the webhook missed
+
+Meta retries a failed webhook for about 36 hours and then gives up. It keeps every lead
+readable through its form (`GET /{form-id}/leads`) for 90 days, and DAMS uses that to recover
+leads that never arrived:
+
+- **Reconciliation.** Every resource sync (every 6 hours) reads the last
+  `MetaIntegration:ReconciliationLookbackHours` (default 48; 0 = off) of every lead form on
+  every enabled Page, with the Page's own token.
+- **Import.** CRM settings → Integrations → Manage resources → **Import leads** on an enabled
+  Page reads its synced forms back to a chosen date, at most 90 days ago, and reports how many
+  leads were found, new, already in DAMS, and failed. Run **Sync now** first if the Page's forms
+  are not listed yet.
+
+Each recovered lead is queued as a `leadgen_backfill` event under the same key the webhook
+would have used, so a lead the webhook already delivered is counted, never added twice. A lead
+the webhook recorded while its Page was off is picked up again once the Page is enabled.
+After that, the normal processor handles it exactly like a webhook lead: duplicates, held
+enquiries, attribution and the "new lead" notification. The lead keeps Meta's `created_time`
+as its submission time. First-response alerts are timed from when DAMS assigns the lead, so a
+recovered lead is not reported overdue on arrival.
+
+Not built yet:
+
+- Importing Meta's CSV exports for leads older than 90 days (needs a product decision).
+- Meta's docs list `pages_manage_ads` for bulk lead reads. DAMS does not ask for it. If the
+  staging test shows it is needed, the import and reconciliation report Meta's permission
+  error; add the scope only with that evidence (see `MetaScopes`).

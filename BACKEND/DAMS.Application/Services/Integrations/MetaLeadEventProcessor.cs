@@ -404,11 +404,7 @@ namespace DAMS.Application.Services.Integrations
             LeadIntakeHold hold, LeadIntakeDto enquiry, ExternalIntegrationResource resource,
             CancellationToken cancellationToken)
         {
-            var adminIds = await _context.Users.AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin
-                            && u.AccountStatus == UserAccountStatus.Active)
-                .Select(u => u.UserId)
-                .ToListAsync(cancellationToken);
+            var adminIds = await MetaIntegrationAlertService.ActiveAdminIdsAsync(_context, cancellationToken);
 
             var name = LeadContactNormalizer.Clean($"{enquiry.FirstName} {enquiry.LastName}") ?? "Unnamed enquiry";
             var sourceName = LeadContactNormalizer.Clean(resource.Name) ?? "Meta";

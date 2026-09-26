@@ -103,6 +103,31 @@ namespace DAMS.Application.Common
         /// </summary>
         public int EventRetentionDays { get; set; } = 0;
 
+        /// <summary>
+        /// How many days before a connection's own access token expires every Admin is told to
+        /// reconnect it. Meta's long-lived user token lasts about 60 days. Zero switches the
+        /// warning off.
+        /// </summary>
+        public int TokenExpiryWarningDays { get; set; } = 7;
+
+        /// <summary>
+        /// Tell every Admin when an enabled Page that has delivered leads before has sent none for
+        /// this many days — the sign of a webhook subscription Meta dropped. Zero (the default)
+        /// switches it off: a Page with no campaign running is quiet for good reason, so how long
+        /// is too long is the business's call.
+        /// </summary>
+        public int QuietPageAlertDays { get; set; } = 0;
+
+        /// <summary>
+        /// How far back each resource sync asks every enabled Page's lead forms for leads, to
+        /// recover any the webhook missed. Meta retries a webhook for about 36 hours, so the
+        /// default 48 covers a delivery it gave up on. Zero switches reconciliation off.
+        /// </summary>
+        public int ReconciliationLookbackHours { get; set; } = 48;
+
+        /// <summary>Meta keeps a lead readable through its form for 90 days; an import cannot reach further.</summary>
+        public const int MaxImportDays = 90;
+
         /// <summary>True only when every credential needed to talk to Meta is present.</summary>
         public bool IsConfigured =>
             !string.IsNullOrWhiteSpace(AppId)

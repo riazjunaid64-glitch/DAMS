@@ -291,6 +291,12 @@ namespace DAMS.Application.Common
                 "{{title}}",
                 "{{message}}",
                 "Open lead", new[] { "title", "message", "leadName", "leadReference", "employeeName" });
+
+            yield return new(NotificationType.IntegrationAttentionRequired, NotificationCategory.Integrations, NotificationModule.Integrations,
+                NotificationPriority.High, all, false, "Integration Needs Attention",
+                "{{title}}",
+                "{{message}}",
+                "Open integrations", new[] { "title", "message", "connectionName" });
         }
     }
 }

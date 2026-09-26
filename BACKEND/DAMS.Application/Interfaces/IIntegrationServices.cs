@@ -64,6 +64,34 @@ namespace DAMS.Application.Interfaces
         Task<int> SyncDueConnectionsAsync(CancellationToken cancellationToken = default);
     }
 
+    /// <summary>
+    /// Recovers leads the webhook never delivered by reading each lead form's own edge, and hands
+    /// every one to the normal event processor as a <c>leadgen_backfill</c> event.
+    /// </summary>
+    public interface IMetaLeadBackfillService
+    {
+        /// <summary>An Admin's "import leads since…" for one Page or one form, at most 90 days back.</summary>
+        Task<MetaLeadImportResultDto> ImportAsync(
+            int connectionId, ImportMetaLeadsDto dto, LeadUserContext actor, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Looks back MetaIntegration:ReconciliationLookbackHours on every enabled Page's forms.
+        /// Never throws for a Meta failure: what went wrong comes back as the result's warning.
+        /// </summary>
+        Task<MetaLeadImportResultDto> ReconcileAsync(int connectionId, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>Tells every Admin, through the notification platform, when Meta lead capture needs a person.</summary>
+    public interface IMetaIntegrationAlertService
+    {
+        /// <summary>
+        /// Raises the alert each connection's current state calls for — needs reconnecting, sign-in
+        /// about to expire, lead events failed, and (when configured) a Page gone quiet. Safe to run
+        /// as often as wanted: each alert is raised once per Admin. Returns how many were created.
+        /// </summary>
+        Task<int> RaiseAlertsAsync(CancellationToken cancellationToken = default);
+    }
+
     /// <summary>Accepts a verified webhook payload and records it for later processing.</summary>
     public interface IMetaWebhookIntakeService
     {

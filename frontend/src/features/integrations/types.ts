@@ -75,3 +75,19 @@ export interface SaveLeadFormMapping {
   answers: LeadFormAnswerMapping[];
   version: string | null;
 }
+
+/** An admin's "import leads since…": one Page (every synced form) or one form. */
+export interface ImportMetaLeadsRequest {
+  resourceId?: number | null;
+  formExternalId?: string | null;
+  /** A date (YYYY-MM-DD), at most 90 days back. */
+  since: string;
+}
+
+export interface MetaLeadImportResult {
+  found: number;
+  new: number;
+  alreadyInDams: number;
+  failed: number;
+  warning?: string | null;
+}

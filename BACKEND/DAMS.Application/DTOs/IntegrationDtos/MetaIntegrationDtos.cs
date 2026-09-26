@@ -35,6 +35,16 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public DateTime? LastErrorAt { get; set; }
         public string? LastError { get; set; }
         public DateTime? TokenExpiresAt { get; set; }
+
+        /// <summary>
+        /// Set while Meta refuses the account's own sign-in during sync but lead delivery carries
+        /// on with the Page tokens: a warning to reconnect, not an outage.
+        /// </summary>
+        public DateTime? SyncRejectedAt { get; set; }
+
+        /// <summary>When Meta last delivered a lead webhook for this connection, whatever became of it.</summary>
+        public DateTime? LastLeadReceivedAt { get; set; }
+
         public List<string> GrantedScopes { get; set; } = [];
         public int PageCount { get; set; }
         public int InstagramCount { get; set; }
@@ -84,6 +94,40 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public int Deactivated { get; set; }
         public DateTime SyncedAt { get; set; }
         /// <summary>Set when part of the sync was skipped — for example one ad account refused access.</summary>
+        public string? Warning { get; set; }
+    }
+
+    /// <summary>
+    /// An admin's request to recover a Page's or one form's leads from Meta. Exactly one of the
+    /// two is named; a Page means every lead form synced for it.
+    /// </summary>
+    public class ImportMetaLeadsDto
+    {
+        /// <summary>The Facebook Page resource, when importing every form it has.</summary>
+        public int? ResourceId { get; set; }
+
+        /// <summary>One lead form's Meta id, when importing just that form.</summary>
+        [StringLength(200)]
+        public string? FormExternalId { get; set; }
+
+        /// <summary>A Pakistan business date; leads submitted from its start onwards. At most 90 days back.</summary>
+        public DateOnly Since { get; set; }
+    }
+
+    /// <summary>What an import or a reconciliation found, by what became of each lead.</summary>
+    public class MetaLeadImportResultDto
+    {
+        /// <summary>Leads Meta returned for the window.</summary>
+        public int Found { get; set; }
+
+        /// <summary>Queued for the normal processor — including ones the webhook recorded while the Page was off.</summary>
+        public int New { get; set; }
+
+        public int AlreadyInDams { get; set; }
+
+        /// <summary>Leads that could not be queued, plus forms Meta would not let DAMS read.</summary>
+        public int Failed { get; set; }
+
         public string? Warning { get; set; }
     }
 

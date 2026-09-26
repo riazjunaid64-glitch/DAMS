@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "../../lib/Button.tsx";
-import { CrmModal, ErrorBanner } from "../leads/CrmUi.tsx";
+import { CrmModal, ErrorBanner, inputClass, Label } from "../leads/CrmUi.tsx";
 import { formatDateTime } from "../leads/types.ts";
 import LeadFormMappingDialog from "./LeadFormMappingDialog.tsx";
-import type { MetaConnection, MetaEvent, MetaResource, MetaResourceGroup } from "./types.ts";
+import type { MetaConnection, MetaEvent, MetaLeadImportResult, MetaResource, MetaResourceGroup } from "./types.ts";
 import {
   canSync,
   connectionStatusLabel,
@@ -14,15 +14,23 @@ import {
   eventListLimitNote,
   type MetaEventFilter,
   deliverySummary,
+  earliestImportDate,
+  importDate,
+  importSummary,
   isAwaitingFirstSync,
+  MAX_IMPORT_DAYS,
   formMappingSummary,
   isToggleable,
   isMappableForm,
+  lastLeadSummary,
   readCallbackResult,
+  signInExpiry,
   summarizeCounts,
+  syncRejectionWarning,
 } from "./metaIntegrationState.ts";
 import {
   disconnectMetaConnection,
+  importMetaLeads,
   listMetaEvents,
   listMetaConnections,
   listMetaResources,
@@ -137,7 +145,10 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const expiry = signInExpiry(connection);
+  const rejection = syncRejectionWarning(connection);
 
   const loadResources = useCallback(async () => {
     setError(null);
@@ -168,6 +179,7 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
   const run = async (label: string, action: () => Promise<unknown>) => {
     setBusy(label);
     setError(null);
+    setSyncWarning(null);
     try {
       await action();
       await loadResources();
@@ -196,6 +208,17 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           </p>
           <p className="mt-1 text-xs text-[var(--text-secondary)]">{summarizeCounts(connection)}</p>
           <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{deliverySummary(connection)}</p>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+            {lastLeadSummary(connection, formatDateTime)}
+            {expiry ? (
+              <>
+                {" · "}
+                <span className={expiry.tone === "expired" ? "text-red-300" : expiry.tone === "warning" ? "text-amber-200" : undefined}>
+                  {expiry.text}
+                </span>
+              </>
+            ) : null}
+          </p>
           {(connection.failedEventCount || connection.pendingEventCount) ? (
             <div className="mt-2 flex flex-wrap gap-2 text-xs">
               {connection.failedEventCount ? <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-red-300">{connection.failedEventCount} failed event{connection.failedEventCount === 1 ? "" : "s"}</span> : null}
@@ -212,7 +235,11 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
             size="sm"
             variant="outline"
             disabled={busy !== null || !canSync(connection)}
-            onClick={() => void run("Sync", () => syncMetaConnection(connection.id))}
+            onClick={() => void run("Sync", async () => {
+              // A sync can finish yet skip part of the account; say so rather than look complete.
+              const result = await syncMetaConnection(connection.id);
+              setSyncWarning(result.warning ?? null);
+            })}
           >
             {busy === "Sync" ? "Syncing…" : "Sync now"}
           </Button>
@@ -232,7 +259,22 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
         </p>
       )}
 
-      {connection.status !== "NeedsReauthorization" && connection.lastError && (
+      {rejection && (
+        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-200">
+          {rejection}
+          <span className="mt-1 block text-xs opacity-80">
+            Since {formatDateTime(connection.syncRejectedAt)}{connection.lastError ? `: ${connection.lastError}` : ""}
+          </span>
+        </p>
+      )}
+
+      {syncWarning && (
+        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-xs text-amber-200">
+          {syncWarning}
+        </p>
+      )}
+
+      {connection.status !== "NeedsReauthorization" && !rejection && connection.lastError && (
         <p className="mt-3 text-xs text-[var(--text-muted)]">
           Last error {formatDateTime(connection.lastErrorAt)}: {connection.lastError}
         </p>
@@ -255,6 +297,7 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
           ) : groups.map((group) => (
             <ResourceGroup
               key={group.resourceType}
+              connectionId={connection.id}
               group={group}
               busy={busy}
               onToggle={(resource, isEnabled) =>
@@ -309,17 +352,20 @@ function ConnectionCard({ connection, onChanged }: { connection: MetaConnection;
 }
 
 function ResourceGroup({
+  connectionId,
   group,
   busy,
   onToggle,
   onMapped,
 }: {
+  connectionId: number;
   group: MetaResourceGroup;
   busy: string | null;
   onToggle: (resource: MetaResource, isEnabled: boolean) => void;
   onMapped: () => void;
 }) {
   const [mappingForm, setMappingForm] = useState<MetaResource | null>(null);
+  const [importPage, setImportPage] = useState<MetaResource | null>(null);
 
   return (
     <div>
@@ -340,15 +386,22 @@ function ResourceGroup({
             </div>
 
             {isToggleable(resource) ? (
-              <label className="flex shrink-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={resource.isEnabled}
-                  disabled={busy !== null || (!resource.isActive && !resource.isEnabled)}
-                  onChange={(e) => onToggle(resource, e.target.checked)}
-                />
-                {resource.isEnabled ? "Receiving leads" : "Enable"}
-              </label>
+              <div className="flex shrink-0 items-center gap-3">
+                {resource.isEnabled && resource.isActive && (
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setImportPage(resource)}>
+                    Import leads
+                  </Button>
+                )}
+                <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                  <input
+                    type="checkbox"
+                    checked={resource.isEnabled}
+                    disabled={busy !== null || (!resource.isActive && !resource.isEnabled)}
+                    onChange={(e) => onToggle(resource, e.target.checked)}
+                  />
+                  {resource.isEnabled ? "Receiving leads" : "Enable"}
+                </label>
+              </div>
             ) : isMappableForm(resource) ? (
               <div className="flex shrink-0 items-center gap-3">
                 <span className="text-xs text-[var(--text-muted)]">{formMappingSummary(resource)}</span>
@@ -362,6 +415,9 @@ function ResourceGroup({
           </div>
         ))}
       </div>
+      {importPage && (
+        <ImportLeadsDialog connectionId={connectionId} page={importPage} onClose={() => setImportPage(null)} />
+      )}
       {mappingForm && (
         <LeadFormMappingDialog
           form={mappingForm}
@@ -439,5 +495,69 @@ function EventList({ events, busy, filter, onFilterChange, onRetry }: {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Recovers a Page's leads the webhook never delivered — for example those sent before the Page
+ * was enabled here. Every lead form synced for the Page is read back to the chosen date.
+ */
+function ImportLeadsDialog({ connectionId, page, onClose }: {
+  connectionId: number;
+  page: MetaResource;
+  onClose: () => void;
+}) {
+  const [since, setSince] = useState(() => importDate(7));
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<MetaLeadImportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const start = async () => {
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    try {
+      setResult(await importMetaLeads(connectionId, { resourceId: page.id, since }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The import could not be run.");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <CrmModal
+      open
+      title={`Import leads from ${page.name ?? page.externalId}`}
+      subtitle={`Meta keeps leads for ${MAX_IMPORT_DAYS} days. Leads already in DAMS are counted, never added twice.`}
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+          <Button disabled={running || !since} onClick={() => void start()}>
+            {running ? "Importing…" : "Import"}
+          </Button>
+        </div>
+      }
+    >
+      <Label>Leads submitted since</Label>
+      <input
+        type="date"
+        className={inputClass}
+        value={since}
+        min={earliestImportDate()}
+        max={importDate(0)}
+        onChange={(e) => setSince(e.target.value)}
+      />
+      {error && <div className="mt-3"><ErrorBanner message={error} /></div>}
+      {result && (
+        <div className="mt-3 space-y-2 text-sm">
+          <p className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-4 py-3 text-emerald-200">
+            {importSummary(result)}
+          </p>
+          {result.warning && <p className="text-xs text-amber-200">{result.warning}</p>}
+        </div>
+      )}
+    </CrmModal>
   );
 }

@@ -18,8 +18,10 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
     public MetaIntegrationOptions Options { get; }
     public MetaWebhookIntakeService Intake { get; }
     public MetaLeadEventProcessor Processor { get; }
+    public MetaLeadBackfillService Backfill { get; }
     public MetaResourceSyncService Sync { get; }
     public MetaIntegrationService Integration { get; }
+    public MetaIntegrationAlertService Alerts { get; }
 
     public Infrastructure.Data.AppDbContext Db => Leads.Db;
 
@@ -42,11 +44,13 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
         };
 
         Intake = new MetaWebhookIntakeService(leads.Db, NullLogger<MetaWebhookIntakeService>.Instance);
-        Sync = new MetaResourceSyncService(leads.Db, Graph, protector, Options, NullLogger<MetaResourceSyncService>.Instance);
+        Backfill = new MetaLeadBackfillService(leads.Db, Graph, protector, Options, NullLogger<MetaLeadBackfillService>.Instance);
+        Sync = new MetaResourceSyncService(leads.Db, Graph, protector, Options, Backfill, NullLogger<MetaResourceSyncService>.Instance);
         Processor = new MetaLeadEventProcessor(
             leads.Db, Graph, protector, leads.Leads, leads.Dispatcher, Options, NullLogger<MetaLeadEventProcessor>.Instance);
         Integration = new MetaIntegrationService(
             leads.Db, Graph, protector, Sync, Options, NullLogger<MetaIntegrationService>.Instance);
+        Alerts = new MetaIntegrationAlertService(leads.Db, leads.Dispatcher, Options);
     }
 
     public static async Task<MetaIntegrationHarness> CreateAsync(IIntegrationSecretProtector? protector = null) =>

@@ -31,6 +31,16 @@ namespace DAMS.Application.Services.Integrations
     }
 
     /// <summary>
+    /// The leads a form's own edge returned. <see cref="Truncated"/> is true when the walk stopped
+    /// at <c>MaxGraphPages</c>, so older leads in the window were not read.
+    /// </summary>
+    public sealed class MetaFormLeadPage
+    {
+        public List<MetaLead> Leads { get; init; } = [];
+        public bool Truncated { get; init; }
+    }
+
+    /// <summary>
     /// The result of walking one paginated Graph edge. <see cref="Truncated"/> is true when the
     /// walk was stopped by <c>MaxGraphPages</c> rather than running out of pages naturally — in
     /// that case <see cref="Items"/> is known to be incomplete, and a caller that treats

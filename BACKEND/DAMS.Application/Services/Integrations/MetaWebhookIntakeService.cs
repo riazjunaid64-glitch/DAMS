@@ -31,6 +31,13 @@ namespace DAMS.Application.Services.Integrations
         /// </summary>
         public static string EventKeySuffix(string leadgenId) => $":{leadgenId}";
 
+        /// <summary>
+        /// The deduplication key of the event for one lead delivered through one Page. The backfill
+        /// builds the same key, so a lead the webhook already recorded is recognised, not repeated.
+        /// </summary>
+        public static string EventKey(int? connectionId, string? pageId, string leadgenId) =>
+            $"{connectionId ?? 0}:{pageId ?? "unknown"}{EventKeySuffix(leadgenId)}";
+
         private readonly AppDbContext _context;
         private readonly ILogger<MetaWebhookIntakeService> _logger;
 
@@ -124,7 +131,7 @@ namespace DAMS.Application.Services.Integrations
                     .ThenByDescending(r => r.ExternalIntegrationConnectionId)
                     .FirstOrDefaultAsync(cancellationToken);
 
-            var eventKey = $"{resource?.ExternalIntegrationConnectionId ?? 0}:{pageId ?? "unknown"}{EventKeySuffix(leadgenId)}";
+            var eventKey = EventKey(resource?.ExternalIntegrationConnectionId, pageId, leadgenId);
 
             // Both ids are provider-controlled. One longer than DAMS stores would fail this
             // save, and with it the whole delivery: Meta would redeliver it forever and the
@@ -200,7 +207,7 @@ namespace DAMS.Application.Services.Integrations
             }
         }
 
-        private static bool IsDuplicateEventKey(DbUpdateException ex) =>
+        internal static bool IsDuplicateEventKey(DbUpdateException ex) =>
             ex.InnerException is SqlException { Number: 2601 or 2627 } sql
             && sql.Message.Contains("IX_ExternalIntegrationEvents_Provider_EventKey", StringComparison.OrdinalIgnoreCase);
 
