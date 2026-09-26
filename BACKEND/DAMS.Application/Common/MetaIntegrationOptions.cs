@@ -56,7 +56,13 @@ namespace DAMS.Application.Common
         /// <summary>Six hours: often enough that a new form appears the same day, rare enough to be invisible in rate limits.</summary>
         public int ResourceSyncIntervalSeconds { get; set; } = 21600;
 
-        public int LeaseMinutes { get; set; } = 5;
+        /// <summary>
+        /// How long a worker holds the events it claims. It also caps the batch: every event
+        /// claimed must be able to spend two Graph calls at RequestTimeoutSeconds each, twice
+        /// over, inside it (see MetaLeadEventProcessor.ClaimEventsAsync). Ten minutes keeps five
+        /// events per sweep at the default 30-second timeout.
+        /// </summary>
+        public int LeaseMinutes { get; set; } = 10;
 
         public int MaxAttempts { get; set; } = 6;
 

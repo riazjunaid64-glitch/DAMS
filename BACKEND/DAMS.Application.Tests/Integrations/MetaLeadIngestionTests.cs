@@ -4,6 +4,7 @@ using DAMS.Application.Services.Integrations;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace DAMS.Application.Tests.Integrations;
@@ -708,6 +709,375 @@ public class MetaLeadIngestionTests
         Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
         Assert.Equal(1, await h.Db.Leads.CountAsync());
     }
+
+    // ── Ad attribution Meta withholds (KAN-33) ──────────────────────────────────
+
+    private const string FloriaAdId = "120212345678900001";
+    private const string FloriaAdSetId = "120212345678900002";
+    private const string FloriaCampaignId = "120212345678900003";
+
+    /// <summary>
+    /// The event processor on the real Graph client, so what is proven is how DAMS handles
+    /// Meta's actual refusal — not a fake that was simply told to succeed.
+    /// </summary>
+    private static MetaLeadEventProcessor RealClientProcessor(
+        MetaIntegrationHarness h, MetaGraphClientHttpTests.FakeHandler handler,
+        MetaGraphClientHttpTests.CapturingLoggerProvider? logs = null) => new(
+        h.Db, MetaGraphClientHttpTests.DirectClient(handler), new PlaintextSecretProtector(),
+        h.Leads.Leads, h.Leads.Dispatcher, h.Options,
+        logs is null
+            ? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetaLeadEventProcessor>.Instance
+            : LoggerFactory.Create(b => b.AddProvider(logs))
+                .CreateLogger<MetaLeadEventProcessor>());
+
+    /// <summary>What resource sync stores through ads_read: each ad under its ad set, each ad set under its campaign.</summary>
+    private static async Task SyncAdHierarchyAsync(
+        MetaIntegrationHarness h, int connectionId,
+        string adId, string adSetId, string campaignId, bool withAd = true, bool withAdSet = true)
+    {
+        var synced = new List<(string Type, string Id, string Parent, string Name)>
+        {
+            (ExternalResourceTypes.Campaign, campaignId, "act_1", "Floria Heights Launch")
+        };
+        if (withAdSet)
+            synced.Add((ExternalResourceTypes.AdSet, adSetId, campaignId, "Lahore 25-45"));
+        if (withAd)
+            synced.Add((ExternalResourceTypes.Ad, adId, adSetId, "Floria 2BR Reel"));
+
+        foreach (var (type, id, parent, name) in synced)
+        {
+            h.Db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = IntegrationProviders.Meta,
+                ResourceType = type,
+                ExternalId = id,
+                ParentExternalId = parent,
+                Name = name,
+                IsActive = true
+            });
+        }
+        await h.Db.SaveChangesAsync();
+    }
+
+    private static async Task AssertStillConnectedAsync(MetaIntegrationHarness h, int connectionId)
+    {
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, (await h.Db.ExternalIntegrationEvents.SingleAsync()).Status);
+        var stored = await h.Db.ExternalIntegrationConnections.AsNoTracking().SingleAsync(c => c.Id == connectionId);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected, stored.Status);
+        Assert.Null(stored.LastError);
+    }
+
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.Forbidden, 200, MetaGraphClientHttpTests.AdsManagementRefusal)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, 100, "(#100) Tried accessing nonexisting field (campaign_name) on node type (LeadgenQualifier)")]
+    [InlineData(System.Net.HttpStatusCode.ServiceUnavailable, 2, "An unexpected error has occurred. Please retry your request later.")]
+    public async Task ALeadWhoseAdNamesMetaRefuses_StillBecomesALead_AndLeavesTheConnectionConnected(
+        System.Net.HttpStatusCode status, int code, string message)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+
+        // Like Meta, it refuses any request that asks for an ad name, whatever else it asks for.
+        var handler = new MetaGraphClientHttpTests.FakeHandler(request =>
+            MetaGraphClientHttpTests.AsksForAdNames(request)
+                ? MetaGraphClientHttpTests.GraphError(status, code, message)
+                : MetaGraphClientHttpTests.GraphJson(MetaGraphClientHttpTests.FloriaLeadJson()));
+        var logs = new MetaGraphClientHttpTests.CapturingLoggerProvider();
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, MetaGraphClientHttpTests.FloriaLeadgenId));
+        Assert.Equal(1, await RealClientProcessor(h, handler, logs).ProcessPendingEventsAsync(10));
+
+        var lead = await h.Db.Leads.SingleAsync();
+        Assert.Equal("Ayesha", lead.FirstName);
+        Assert.Null(lead.CampaignName);
+        Assert.Equal(FloriaCampaignId, lead.CampaignReference);
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Null(submission.CampaignName);
+        Assert.Null(submission.AdSetName);
+        Assert.Null(submission.AdName);
+        Assert.Equal(FloriaAdId, submission.AdExternalId);
+
+        await AssertStillConnectedAsync(h, connection.Id);
+        Assert.Equal(2, handler.Requests.Count);
+        var warning = Assert.Single(logs.Messages, m => m.StartsWith("[Warning]", StringComparison.Ordinal));
+        Assert.Contains("did not share the ad names", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("[exception:", warning, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.Forbidden, 200, MetaGraphClientHttpTests.AdsManagementRefusal)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, 100, "(#100) Tried accessing nonexisting field (adset_id) on node type (LeadgenQualifier)")]
+    public async Task ALeadWhoseAdIdsMetaRefuses_KeepsItsFullAttribution_FromItsWebhookAndSyncedResources(
+        System.Net.HttpStatusCode status, int code, string message)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        await SyncAdHierarchyAsync(h, connection.Id, FloriaAdId, FloriaAdSetId, FloriaCampaignId);
+
+        // Meta without ads_management: every ad field is refused, ids included.
+        var handler = new MetaGraphClientHttpTests.FakeHandler(request =>
+            MetaGraphClientHttpTests.AsksForAdFields(request)
+                ? MetaGraphClientHttpTests.GraphError(status, code, message)
+                : MetaGraphClientHttpTests.GraphJson(MetaGraphClientHttpTests.FloriaLeadJson(withAdIds: false)));
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(
+            page.ExternalId, MetaGraphClientHttpTests.FloriaLeadgenId, adId: FloriaAdId));
+        Assert.Equal(1, await RealClientProcessor(h, handler).ProcessPendingEventsAsync(10));
+
+        var lead = await h.Db.Leads.SingleAsync();
+        Assert.Equal("Floria Heights Launch", lead.CampaignName);
+        Assert.Equal(FloriaCampaignId, lead.CampaignReference);
+        Assert.Equal(FloriaAdId, lead.AdReference);
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Equal(FloriaAdId, submission.AdExternalId);
+        Assert.Equal("Floria 2BR Reel", submission.AdName);
+        Assert.Equal(FloriaAdSetId, submission.AdSetExternalId);
+        Assert.Equal("Lahore 25-45", submission.AdSetName);
+        Assert.Equal(FloriaCampaignId, submission.CampaignExternalId);
+        Assert.Equal("Floria Heights Launch", submission.CampaignName);
+        Assert.Equal("act_1", submission.AdAccountExternalId);
+
+        await AssertStillConnectedAsync(h, connection.Id);
+        // The lead with its ids, then without: no names call, since Meta has just said no.
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData(FloriaAdId, FloriaAdId)]
+    // Meta's sample payloads and its testing tool send "0" for a lead that came from no ad.
+    [InlineData("0", null)]
+    public async Task ALeadWhoseAdIdsMetaRefuses_WithNothingSynced_StillBecomesALead(string webhookAdId, string? expectedAdId)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+
+        var handler = new MetaGraphClientHttpTests.FakeHandler(request =>
+            MetaGraphClientHttpTests.AsksForAdFields(request)
+                ? MetaGraphClientHttpTests.GraphError(
+                    System.Net.HttpStatusCode.Forbidden, 200, MetaGraphClientHttpTests.AdsManagementRefusal)
+                : MetaGraphClientHttpTests.GraphJson(MetaGraphClientHttpTests.FloriaLeadJson(withAdIds: false)));
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(
+            page.ExternalId, MetaGraphClientHttpTests.FloriaLeadgenId, adId: webhookAdId));
+        Assert.Equal(1, await RealClientProcessor(h, handler).ProcessPendingEventsAsync(10));
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Equal(expectedAdId, submission.AdExternalId);
+        Assert.Null(submission.AdSetExternalId);
+        Assert.Null(submission.CampaignExternalId);
+        Assert.Null(submission.AdName);
+        await AssertStillConnectedAsync(h, connection.Id);
+        // Names are missing, but Meta has just refused the ids, so asking it for names is pointless.
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task AdNamesSyncAlreadyKnows_AreTakenFromIt_WithoutAskingMeta()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        await SyncAdHierarchyAsync(h, connection.Id, "ad-1", "adset-1", "camp-1");
+
+        // Meta gave the ids but not the names, as it does without ads_management.
+        var metaLead = FakeMetaGraphClient.Lead(
+            "lead-1", StandardFields, pageId: page.ExternalId, campaignName: "withheld", adName: "withheld");
+        metaLead.CampaignName = null;
+        metaLead.AdSetName = null;
+        metaLead.AdName = null;
+        h.Graph.Leads["lead-1"] = metaLead;
+
+        // An id Graph gave always wins over the webhook's.
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1", adId: "ad-from-webhook"));
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var lead = await h.Db.Leads.SingleAsync();
+        Assert.Equal("Floria Heights Launch", lead.CampaignName);
+        Assert.Contains("ad: Floria 2BR Reel", lead.SourceDetails);
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Equal("ad-1", submission.AdExternalId);
+        Assert.Equal("Floria Heights Launch", submission.CampaignName);
+        Assert.Equal("Lahore 25-45", submission.AdSetName);
+        Assert.Equal("Floria 2BR Reel", submission.AdName);
+        Assert.Empty(h.Graph.AdNameRequests);
+    }
+
+    [Fact]
+    public async Task AdNamesSyncDoesNotKnow_AreAskedOfMeta_ForWhatIsStillMissing()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        await SyncAdHierarchyAsync(h, connection.Id, "ad-1", "adset-1", "camp-1", withAd: false, withAdSet: false);
+
+        var metaLead = FakeMetaGraphClient.Lead(
+            "lead-1", StandardFields, pageId: page.ExternalId, campaignName: "withheld", adName: "withheld");
+        metaLead.CampaignName = null;
+        metaLead.AdSetName = null;
+        metaLead.AdName = null;
+        h.Graph.Leads["lead-1"] = metaLead;
+        h.Graph.AdNames["lead-1"] = new MetaLeadAdNames("Carousel A", "Set A", "Renamed Launch");
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Equal("Carousel A", submission.AdName);
+        Assert.Equal("Set A", submission.AdSetName);
+        // Only what sync could not say is taken from Meta.
+        Assert.Equal("Floria Heights Launch", submission.CampaignName);
+        Assert.Equal(["lead-1"], h.Graph.AdNameRequests);
+    }
+
+    [Theory]
+    // The shipped defaults keep the five events per sweep the worker claimed before a lead
+    // could cost a second Graph call.
+    [InlineData(null, null, 5)]
+    [InlineData(5, 30, 2)]
+    [InlineData(1, 300, 1)]
+    public async Task TheWorker_ClaimsOnlyAsManyEventsAsItsLeaseCanCover(int? leaseMinutes, int? timeoutSeconds, int expected)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (_, page) = await h.ConnectPageAsync();
+        h.Options.LeaseMinutes = leaseMinutes ?? h.Options.LeaseMinutes;
+        h.Options.RequestTimeoutSeconds = timeoutSeconds ?? h.Options.RequestTimeoutSeconds;
+
+        // Each event may cost two Graph calls at the full timeout, and the lease must hold twice
+        // that for every event claimed.
+        for (var i = 0; i < 7; i++)
+        {
+            var leadgenId = $"lead-{i}";
+            h.Graph.Leads[leadgenId] = FakeMetaGraphClient.Lead(
+                leadgenId, [("full_name", $"Buyer {i}"), ("phone_number", $"+92 300 555000{i}")], pageId: page.ExternalId);
+            await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, leadgenId));
+        }
+
+        Assert.Equal(expected, await h.Processor.ProcessPendingEventsAsync(25));
+        Assert.Equal(expected, h.Graph.LeadRequests.Count);
+    }
+
+    // ── Integration lead sources ────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("facebook", ExternalIntegrationConnectionStatus.Connected)]
+    [InlineData("instagram", ExternalIntegrationConnectionStatus.Connected)]
+    [InlineData("meta", ExternalIntegrationConnectionStatus.Connected)]
+    [InlineData("facebook", ExternalIntegrationConnectionStatus.NeedsReauthorization)]
+    [InlineData("facebook", ExternalIntegrationConnectionStatus.Error)]
+    public async Task AMetaLeadSource_CannotBeDeactivatedWhileMetaIsConnected(
+        string code, ExternalIntegrationConnectionStatus status)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync();
+        // Parked or erroring, a connection still has events waiting to become leads.
+        connection.Status = status;
+        await h.Db.SaveChangesAsync();
+        var source = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == code);
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Configuration.UpdateSourceAsync(source.Id, SourceUpdate(source, isActive: false), h.Leads.Admin));
+
+        Assert.Contains("while Meta is connected", refused.Message);
+        Assert.True((await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Id == source.Id)).IsActive);
+
+        // Anything short of switching it off is still the admin's to change.
+        var renamed = await h.Leads.Configuration.UpdateSourceAsync(
+            source.Id, SourceUpdate(source, isActive: true, name: "Meta Ads"), h.Leads.Admin);
+        Assert.Equal("Meta Ads", renamed.Name);
+    }
+
+    [Fact]
+    public async Task AMetaLeadSourceAlreadyOff_CanBeReactivatedWhileMetaIsConnected()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        await h.ConnectPageAsync();
+        var facebook = await h.Db.LeadSources.SingleAsync(s => s.Code == "facebook");
+        facebook.IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        var reactivated = await h.Leads.Configuration.UpdateSourceAsync(
+            facebook.Id, SourceUpdate(facebook, isActive: true), h.Leads.Admin);
+
+        Assert.True(reactivated.IsActive);
+    }
+
+    [Fact]
+    public async Task AMetaLeadResolvedToAnInactiveSource_IsStillIngested()
+    {
+        // The two ways the deactivation guard cannot reach: a source switched off before this
+        // guard existed, or while Meta was disconnected and then reconnected.
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        var facebook = await h.Db.LeadSources.SingleAsync(s => s.Code == "facebook");
+        facebook.IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        h.Graph.Leads["lead-1"] = FakeMetaGraphClient.Lead("lead-1", StandardFields, platform: "fb", pageId: page.ExternalId);
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+        Assert.Equal(facebook.Id, (await h.Db.Leads.SingleAsync()).LeadSourceId);
+        await AssertStillConnectedAsync(h, connection.Id);
+    }
+
+    [Fact]
+    public async Task AnInactiveSource_IsStillRefused_OutsideMetaIntake()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        foreach (var code in new[] { "facebook", "website" })
+            (await h.Db.LeadSources.SingleAsync(s => s.Code == code)).IsActive = false;
+        await h.Db.SaveChangesAsync();
+
+        static DAMS.Application.DTOs.LeadDtos.LeadIntakeDto FromPartner(string provider, string sourceCode)
+        {
+            var intake = LeadTestHarness.Intake(sourceCode: sourceCode);
+            intake.ExternalProvider = provider;
+            intake.ExternalLeadId = $"{provider}-42";
+            return intake;
+        }
+
+        // A person choosing a switched-off source, even one of Meta's.
+        var manual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(LeadTestHarness.Intake(sourceCode: "facebook"), h.Leads.Admin));
+        // A partner on the API-key intake (/api/lead-intake/{provider}) names its source itself,
+        // so a switched-off one still means "not this source" — even when it is one of Meta's.
+        var partnerOnMetaSource = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(FromPartner("zapier", "facebook"), actor: null, trustedExternal: true));
+        var partnerOnOwnSource = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(FromPartner("website", "website"), actor: null, trustedExternal: true));
+
+        Assert.All([manual, partnerOnMetaSource, partnerOnOwnSource],
+            refused => Assert.Contains("is no longer active", refused.Message));
+        Assert.Equal(0, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
+    public async Task AMetaLeadSource_CanBeDeactivatedOnceMetaIsDisconnected_AndOtherSourcesAlways()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync();
+
+        var website = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == "website");
+        Assert.False((await h.Leads.Configuration.UpdateSourceAsync(
+            website.Id, SourceUpdate(website, isActive: false), h.Leads.Admin)).IsActive);
+
+        await h.Integration.DisconnectAsync(connection.Id, h.Leads.Admin);
+
+        var facebook = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == "facebook");
+        Assert.False((await h.Leads.Configuration.UpdateSourceAsync(
+            facebook.Id, SourceUpdate(facebook, isActive: false), h.Leads.Admin)).IsActive);
+    }
+
+    private static DAMS.Application.DTOs.LeadDtos.UpdateLeadSourceDto SourceUpdate(
+        LeadSource source, bool isActive, string? name = null) => new()
+    {
+        Name = name ?? source.Name,
+        IsActive = isActive,
+        DisplayOrder = source.DisplayOrder,
+        CustomerSource = source.CustomerSource
+    };
 
     [Fact]
     public async Task ADisconnectedConnection_StopsProducingLeads()

@@ -7,13 +7,24 @@ namespace DAMS.Application.Services.Integrations
     /// </summary>
     public abstract class MetaGraphException : Exception
     {
-        protected MetaGraphException(string message, Exception? inner = null) : base(message, inner) { }
+        protected MetaGraphException(string message, Exception? inner = null, int? code = null, int? subCode = null)
+            : base(message, inner)
+        {
+            Code = code;
+            SubCode = subCode;
+        }
+
+        /// <summary>Meta's own error code, when the response carried one.</summary>
+        public int? Code { get; }
+
+        public int? SubCode { get; }
     }
 
     /// <summary>Worth trying again later: a timeout, a rate limit, or a Meta-side outage.</summary>
     public sealed class MetaTransientException : MetaGraphException
     {
-        public MetaTransientException(string message, Exception? inner = null) : base(message, inner) { }
+        public MetaTransientException(string message, Exception? inner = null, int? code = null, int? subCode = null)
+            : base(message, inner, code, subCode) { }
     }
 
     /// <summary>
@@ -22,12 +33,14 @@ namespace DAMS.Application.Services.Integrations
     /// </summary>
     public sealed class MetaAuthorizationException : MetaGraphException
     {
-        public MetaAuthorizationException(string message, Exception? inner = null) : base(message, inner) { }
+        public MetaAuthorizationException(string message, Exception? inner = null, int? code = null, int? subCode = null)
+            : base(message, inner, code, subCode) { }
     }
 
     /// <summary>The request will never succeed as asked: a deleted lead, a malformed id.</summary>
     public sealed class MetaPermanentException : MetaGraphException
     {
-        public MetaPermanentException(string message, Exception? inner = null) : base(message, inner) { }
+        public MetaPermanentException(string message, Exception? inner = null, int? code = null, int? subCode = null)
+            : base(message, inner, code, subCode) { }
     }
 }

@@ -3,6 +3,9 @@ namespace DAMS.Application.Services.Integrations
     /// <summary>One answer a person gave on a lead form, exactly as Meta returned it.</summary>
     public sealed record MetaFieldAnswer(string Name, string? Value);
 
+    /// <summary>The labels of the ad a lead came from. Meta shares them only with ads_management.</summary>
+    public sealed record MetaLeadAdNames(string? AdName, string? AdSetName, string? CampaignName);
+
     /// <summary>
     /// A retrieved lead. <see cref="RawJson"/> is the provider's complete response and is what
     /// gets stored, so a question DAMS does not understand today is still recoverable later.

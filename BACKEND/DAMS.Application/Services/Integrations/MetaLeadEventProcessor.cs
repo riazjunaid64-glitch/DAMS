@@ -36,6 +36,13 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>The length of every provider-id column a lead, submission or event stores.</summary>
         internal const int MaxExternalIdLength = 200;
 
+        /// <summary>
+        /// The most Graph calls one lead costs: the lead, then either a retry without its ad ids
+        /// (MetaGraphClient.GetLeadAsync) or its ad names (CompleteAttributionAsync) — never both,
+        /// since names are only asked for when the ids were shared.
+        /// </summary>
+        private const int GraphCallsPerLead = 2;
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -97,13 +104,13 @@ namespace DAMS.Application.Services.Integrations
         private async Task<List<int>> ClaimEventsAsync(int batchSize, CancellationToken cancellationToken)
         {
             // A batch is processed serially under one lease taken at claim time. Worst case is
-            // every item timing out: batchSize * RequestTimeoutSeconds must comfortably fit
-            // inside the lease, or a still-in-progress item's lease can look expired and a
-            // second worker reclaims — and starts double-fetching — a row nobody actually
-            // abandoned. Halving the arithmetic ceiling leaves headroom for everything that
-            // is not the Graph call itself (DB round trips, GC, scheduling).
+            // every item timing out: batchSize * GraphCallsPerLead * RequestTimeoutSeconds must
+            // comfortably fit inside the lease, or a still-in-progress item's lease can look
+            // expired and a second worker reclaims — and starts double-fetching — a row nobody
+            // actually abandoned. Halving the arithmetic ceiling leaves headroom for everything
+            // that is not a Graph call (DB round trips, GC, scheduling).
             var leaseSeconds = Math.Max(1, _options.LeaseMinutes * 60);
-            var worstCasePerItemSeconds = Math.Max(1, _options.RequestTimeoutSeconds * 2);
+            var worstCasePerItemSeconds = Math.Max(1, _options.RequestTimeoutSeconds * GraphCallsPerLead * 2);
             var safeForLease = Math.Max(1, leaseSeconds / worstCasePerItemSeconds);
 
             var take = Math.Clamp(batchSize, 1, Math.Min(200, safeForLease));
@@ -183,7 +190,7 @@ namespace DAMS.Application.Services.Integrations
                 return false;
             }
 
-            var leadgenId = ReadLeadgenId(integrationEvent.RawPayloadJson);
+            var leadgenId = ReadPayloadId(integrationEvent.RawPayloadJson, "leadgen_id");
             if (leadgenId is null)
                 return await FailAsync(integrationEvent, "The webhook payload contained no leadgen id.", cancellationToken);
 
@@ -217,6 +224,7 @@ namespace DAMS.Application.Services.Integrations
             try
             {
                 var lead = await _graph.GetLeadAsync(leadgenId, token, cancellationToken);
+                await CompleteAttributionAsync(lead, integrationEvent.RawPayloadJson, token, cancellationToken);
                 return await IngestAtomicallyAsync(eventId, lead, cancellationToken);
             }
             catch (MetaAuthorizationException ex)
@@ -473,10 +481,10 @@ namespace DAMS.Application.Services.Integrations
             // filled in, best-effort, from whatever resource sync has already discovered.
             // Absent here just means "not yet synced", never something that should block
             // ingestion, which is why this is a lookup and not a required field.
-            ExternalFormName = await LookUpResourceNameAsync(
-                ExternalResourceTypes.LeadForm, lead.FormId, cancellationToken),
-            AdAccountExternalId = await LookUpParentExternalIdAsync(
-                ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken),
+            ExternalFormName = (await LookUpResourceAsync(
+                ExternalResourceTypes.LeadForm, lead.FormId, cancellationToken))?.Name,
+            AdAccountExternalId = (await LookUpResourceAsync(
+                ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken))?.ParentExternalId,
             RawPayloadJson = lead.RawJson,
             FieldDataJson = mapped.ToFieldDataJson()
         };
@@ -504,21 +512,60 @@ namespace DAMS.Application.Services.Integrations
             LeadFormAnswerMapper.Apply(mapped, mapping, questions.GetValueOrDefault(formId) ?? []);
         }
 
-        private async Task<string?> LookUpResourceNameAsync(
-            string resourceType, string? externalId, CancellationToken cancellationToken)
+        /// <summary>
+        /// Fills in whatever ad attribution Graph withheld (see MetaGraphClient.GetLeadAsync),
+        /// cheapest source first, and never overwrites anything Graph did give:
+        /// <list type="number">
+        /// <item>The ad id from the webhook itself, which Meta sends without any ads permission.</item>
+        /// <item>The ad set, campaign and every name from resource sync, walked up from the ad
+        /// (ads_read, not ads_management) — no call to Meta at all.</item>
+        /// <item>Only then Meta, for names still missing — and only when Graph shared the ids,
+        /// since a lead whose ids were refused will have its names refused too.</item>
+        /// </list>
+        /// None of it can fail the lead. Runs before the ingestion transaction, so no Graph call
+        /// is ever made while one is open.
+        /// </summary>
+        private async Task CompleteAttributionAsync(
+            MetaLead lead, string payloadJson, string token, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(externalId))
-                return null;
+            var graphSharedIds = lead.AdId is not null || lead.AdSetId is not null || lead.CampaignId is not null;
 
-            return await _context.ExternalIntegrationResources
-                .Where(r => r.Provider == IntegrationProviders.Meta
-                            && r.ResourceType == resourceType
-                            && r.ExternalId == externalId)
-                .Select(r => r.Name)
-                .FirstOrDefaultAsync(cancellationToken);
+            lead.AdId ??= ReadPayloadId(payloadJson, "ad_id") is { Length: > 0 } webhookAdId and not "0" ? webhookAdId : null;
+
+            var ad = await LookUpResourceAsync(ExternalResourceTypes.Ad, lead.AdId, cancellationToken);
+            lead.AdName ??= ad?.Name;
+            lead.AdSetId ??= ad?.ParentExternalId;
+
+            var adSet = await LookUpResourceAsync(ExternalResourceTypes.AdSet, lead.AdSetId, cancellationToken);
+            lead.AdSetName ??= adSet?.Name;
+            lead.CampaignId ??= adSet?.ParentExternalId;
+
+            lead.CampaignName ??= (await LookUpResourceAsync(ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken))?.Name;
+
+            if (!graphSharedIds || lead is { AdName: not null, AdSetName: not null, CampaignName: not null })
+                return;
+
+            try
+            {
+                var names = await _graph.GetLeadAdNamesAsync(lead.LeadgenId, token, cancellationToken);
+                lead.AdName ??= names.AdName;
+                lead.AdSetName ??= names.AdSetName;
+                lead.CampaignName ??= names.CampaignName;
+            }
+            catch (MetaGraphException ex)
+            {
+                // Whatever the reason — a permission, a renamed field, Meta being busy — names are
+                // only labels. The connection is left alone: nothing about it is wrong. Once per
+                // lead, so the message alone: a stack trace would say nothing new.
+                _logger.LogWarning(
+                    "Meta did not share the ad names of lead {LeadgenId} ({Reason}). Continuing without them.",
+                    lead.LeadgenId, ex.Message);
+            }
         }
 
-        private async Task<string?> LookUpParentExternalIdAsync(
+        private sealed record SyncedResource(string? Name, string? ParentExternalId);
+
+        private async Task<SyncedResource?> LookUpResourceAsync(
             string resourceType, string? externalId, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(externalId))
@@ -528,7 +575,7 @@ namespace DAMS.Application.Services.Integrations
                 .Where(r => r.Provider == IntegrationProviders.Meta
                             && r.ResourceType == resourceType
                             && r.ExternalId == externalId)
-                .Select(r => r.ParentExternalId)
+                .Select(r => new SyncedResource(r.Name, r.ParentExternalId))
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
@@ -702,12 +749,12 @@ namespace DAMS.Application.Services.Integrations
                 .ExecuteDeleteAsync(cancellationToken);
         }
 
-        private static string? ReadLeadgenId(string payloadJson)
+        private static string? ReadPayloadId(string payloadJson, string property)
         {
             try
             {
                 using var document = System.Text.Json.JsonDocument.Parse(payloadJson);
-                return document.RootElement.TryGetProperty("leadgen_id", out var value)
+                return document.RootElement.TryGetProperty(property, out var value)
                     ? value.ValueKind switch
                     {
                         System.Text.Json.JsonValueKind.String => value.GetString(),

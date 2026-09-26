@@ -23,6 +23,13 @@ namespace DAMS.Application.Common
         /// lead-ad webhook is always delivered through a Page whether or not the ad ran there.
         /// </summary>
         public const string Meta = "meta";
+
+        /// <summary>
+        /// Every source a Meta lead can resolve to. They stay usable by integration intake even
+        /// when inactive (LeadService.ResolveSourceAsync), and cannot be switched off while Meta
+        /// is connected (LeadConfigurationService.UpdateSourceAsync).
+        /// </summary>
+        public static readonly string[] All = [Facebook, Instagram, Meta];
     }
 
     /// <summary>Asset kinds discovered inside a connection.</summary>
