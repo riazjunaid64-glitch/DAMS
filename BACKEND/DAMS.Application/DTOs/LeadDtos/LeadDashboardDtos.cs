@@ -18,7 +18,16 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? EmployeeName { get; set; }
 
+        /// <summary>Every lead assigned to the salesperson, open or closed.</summary>
+        public int TotalAssigned { get; set; }
+
         public int NewLeads { get; set; }
+
+        /// <summary>Contacted and still open: the In Progress step of the simplified pipeline.</summary>
+        public int InProgressLeads { get; set; }
+
+        /// <summary>Closed without converting, Dormant included.</summary>
+        public int LostLeads { get; set; }
 
         public int ActiveLeads { get; set; }
 

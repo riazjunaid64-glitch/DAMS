@@ -15,8 +15,8 @@ namespace DAMS.Application.Services
     /// rather than a query each, which is both fewer round trips and free of any
     /// provider-specific date functions.
     ///
-    /// Every figure is computed over the caller's own scope, so a manager's numbers cover
-    /// their team and nobody else's.
+    /// The salesperson dashboard counts only that salesperson's own leads; the organisation
+    /// dashboard, shared by admins and managers, counts every lead.
     /// </summary>
     public class LeadReportingService : ILeadReportingService
     {
@@ -106,8 +106,10 @@ namespace DAMS.Application.Services
             {
                 EmployeeId = ctx.EmployeeId,
                 EmployeeName = ctx.DisplayName,
-                NewLeads = await open.CountAsync(
-                    l => l.Stage == LeadStage.New || l.Stage == LeadStage.FirstContactPending, cancellationToken),
+                TotalAssigned = await mine.CountAsync(cancellationToken),
+                NewLeads = await mine.CountAsync(l => LeadStageRules.NewStages.Contains(l.Stage), cancellationToken),
+                InProgressLeads = await mine.CountAsync(l => LeadStageRules.InProgressStages.Contains(l.Stage), cancellationToken),
+                LostLeads = await mine.CountAsync(l => LeadStageRules.LostStages.Contains(l.Stage), cancellationToken),
                 ActiveLeads = await open.CountAsync(cancellationToken),
                 LeadsWithoutRecentActivity = await open.CountAsync(
                     l => (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < inactiveCutoff, cancellationToken),

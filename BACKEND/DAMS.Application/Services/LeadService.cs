@@ -1264,6 +1264,12 @@ namespace DAMS.Application.Services
             if (filter.Stage.HasValue)
                 query = query.Where(l => l.Stage == filter.Stage.Value);
 
+            if (filter.StageGroup.HasValue)
+            {
+                var groupStages = LeadStageRules.StagesIn(filter.StageGroup.Value);
+                query = query.Where(l => groupStages.Contains(l.Stage));
+            }
+
             if (filter.AssignmentState.HasValue)
                 query = query.Where(l => l.AssignmentState == filter.AssignmentState.Value);
 

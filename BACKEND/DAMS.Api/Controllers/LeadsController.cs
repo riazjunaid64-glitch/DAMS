@@ -32,6 +32,7 @@ namespace DAMS.Api.Controllers
         [HttpGet]
         public Task<IActionResult> GetAll(
             [FromQuery] LeadStage? stage,
+            [FromQuery] LeadStageGroup? stageGroup,
             [FromQuery] LeadAssignmentState? assignmentState,
             [FromQuery] LeadQualification? qualification,
             [FromQuery] int? sourceId,
@@ -55,6 +56,7 @@ namespace DAMS.Api.Controllers
             RunAsync(ctx => _leads.GetLeadsAsync(new LeadFilterDto
             {
                 Stage = stage,
+                StageGroup = stageGroup,
                 AssignmentState = assignmentState,
                 Qualification = qualification,
                 LeadSourceId = sourceId,
