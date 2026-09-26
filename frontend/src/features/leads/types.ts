@@ -406,6 +406,16 @@ export const paymentPreferences = ["Unknown", "Installments", "NeedsDetails", "C
 export const isClosedStage = (stage: string) =>
   stage === "Won" || stage === "Lost" || stage === "Dormant";
 
+/** The salesperson's four-step pipeline; mirrors LeadStageGroup and LeadStageRules.StagesIn on the server. */
+export const leadStageGroups = ["New", "InProgress", "Won", "Lost"] as const;
+export type LeadStageGroup = (typeof leadStageGroups)[number];
+
+export const stageGroupOf = (stage: LeadStage): LeadStageGroup =>
+  stage === "New" || stage === "FirstContactPending" ? "New" :
+  stage === "Won" ? "Won" :
+  stage === "Lost" || stage === "Dormant" ? "Lost" :
+  "InProgress";
+
 /** Minute precision: a CRM timeline is read at a glance, and seconds are noise in every column
  *  that shows one. Locale order and 12/24-hour clock still follow the reader's own settings. */
 export const formatDateTime = (value?: string | null) =>

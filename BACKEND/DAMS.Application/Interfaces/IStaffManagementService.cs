@@ -11,7 +11,7 @@ namespace DAMS.Application.Interfaces
 
         Task<List<StaffAccountDto>> GetAccountsAsync(CancellationToken cancellationToken = default);
 
-        Task<List<LinkableUserDto>> GetLinkableUsersAsync(CancellationToken cancellationToken = default);
+        Task<List<LinkableUserDto>> GetLinkableUsersAsync(LeadUserContext actor, CancellationToken cancellationToken = default);
 
         Task<List<CustomerLookupDto>> SearchCustomersAsync(
             LeadUserContext actor,
@@ -22,7 +22,7 @@ namespace DAMS.Application.Interfaces
         /// Provisions DAMS access for a staff member. A new login is created with no password
         /// and invited to choose one; the account is kept even if the invitation email fails.
         /// </summary>
-        /// <param name="actor">The authenticated Admin. Recorded as the inviter, so it is
+        /// <param name="actor">The authenticated Admin or Sales Manager. Recorded as the inviter, so it is
         /// never taken from the request body.</param>
         Task<StaffAccountProvisionResult> CreateAsync(
             LeadUserContext actor,
@@ -30,6 +30,7 @@ namespace DAMS.Application.Interfaces
             CancellationToken cancellationToken = default);
 
         Task<StaffAccountDto> UpdateAsync(
+            LeadUserContext actor,
             int employeeId,
             UpdateStaffAccountDto dto,
             CancellationToken cancellationToken = default);

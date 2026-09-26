@@ -21,15 +21,9 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> GetMine(CancellationToken cancellationToken) =>
             RunAsync(ctx => _reporting.GetEmployeeDashboardAsync(ctx, cancellationToken), cancellationToken);
 
-        /// <summary>Team view: unassigned queue, overdue work, per-employee performance.</summary>
-        [HttpGet("team")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public Task<IActionResult> GetTeam(CancellationToken cancellationToken) =>
-            RunAsync(ctx => _reporting.GetManagerDashboardAsync(ctx, cancellationToken), cancellationToken);
-
         /// <summary>Organisation view: source and campaign attribution, cycle times, outcomes.</summary>
         [HttpGet("organisation")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public Task<IActionResult> GetOrganisation(
             [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken cancellationToken) =>
             RunAsync(ctx => _reporting.GetAdminDashboardAsync(ctx, from, to, cancellationToken), cancellationToken);

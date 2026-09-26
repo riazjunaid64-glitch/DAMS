@@ -16,6 +16,34 @@ namespace DAMS.Application.Common
         public static readonly LeadStage[] ClosedStages =
             { LeadStage.Won, LeadStage.Lost, LeadStage.Dormant };
 
+        /// <summary>Not yet worked: nobody has reached the customer. Grouped as New.</summary>
+        public static readonly LeadStage[] NewStages =
+            { LeadStage.New, LeadStage.FirstContactPending };
+
+        /// <summary>Being worked: contacted and not yet closed. Grouped as In Progress.</summary>
+        public static readonly LeadStage[] InProgressStages =
+        {
+            LeadStage.Contacted, LeadStage.Qualified, LeadStage.SiteVisitScheduled,
+            LeadStage.SiteVisitCompleted, LeadStage.Negotiation, LeadStage.DocumentsInProgress,
+            LeadStage.BookingPending
+        };
+
+        /// <summary>Closed without converting. Dormant is a lost lead parked for a later revisit.</summary>
+        public static readonly LeadStage[] LostStages =
+            { LeadStage.Lost, LeadStage.Dormant };
+
+        private static readonly LeadStage[] WonStages = { LeadStage.Won };
+
+        /// <summary>The stages behind one step of the simplified pipeline, for EF filters.</summary>
+        public static LeadStage[] StagesIn(LeadStageGroup group) => group switch
+        {
+            LeadStageGroup.New => NewStages,
+            LeadStageGroup.InProgress => InProgressStages,
+            LeadStageGroup.Won => WonStages,
+            LeadStageGroup.Lost => LostStages,
+            _ => throw new ArgumentOutOfRangeException(nameof(group), group, "Unknown lead stage group.")
+        };
+
         public static readonly IReadOnlySet<LeadStage> ReopenableStages =
             new HashSet<LeadStage> { LeadStage.Lost, LeadStage.Dormant };
 

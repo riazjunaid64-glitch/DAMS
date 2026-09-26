@@ -57,8 +57,8 @@ namespace DAMS.Application.Services.Integrations
         public async Task<MetaLeadImportResultDto> ImportAsync(
             int connectionId, ImportMetaLeadsDto dto, LeadUserContext actor, CancellationToken cancellationToken = default)
         {
-            if (!actor.IsAdmin)
-                throw new LeadAuthorizationException("Only an Admin can import Meta leads.");
+            if (!actor.IsAdmin && !actor.IsManager)
+                throw new LeadAuthorizationException("Only an Admin or Sales Manager can import Meta leads.");
 
             var hasPage = dto.ResourceId.HasValue;
             var hasForm = !string.IsNullOrWhiteSpace(dto.FormExternalId);

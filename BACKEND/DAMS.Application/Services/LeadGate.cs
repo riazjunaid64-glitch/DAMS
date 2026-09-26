@@ -93,10 +93,6 @@ namespace DAMS.Application.Services
             if (employee.Status != EmployeeStatus.Active)
                 throw new InvalidOperationException("That employee is not active.");
 
-            if (user.IsManager && employee.Id != user.EmployeeId
-                && (employee.TeamId == null || !user.ManagedTeamIds.Contains(employee.TeamId.Value)))
-                throw new LeadAuthorizationException("You can only assign work within your managed team.");
-
             return employee.Id;
         }
 
@@ -113,17 +109,8 @@ namespace DAMS.Application.Services
             if (mentioned.Status != EmployeeStatus.Active)
                 throw new InvalidOperationException("You can only mention active colleagues who work on leads.");
 
-            if (actor.IsAdmin)
+            if (actor.IsAdmin || actor.IsManager)
                 return;
-
-            if (actor.IsManager)
-            {
-                if (mentioned.Id == actor.EmployeeId ||
-                    (mentioned.TeamId.HasValue && actor.ManagedTeamIds.Contains(mentioned.TeamId.Value)))
-                    return;
-
-                throw new LeadAuthorizationException("You can only mention people in your managed team.");
-            }
 
             if (actor.IsEmployee)
             {
@@ -143,7 +130,7 @@ namespace DAMS.Application.Services
         {
             LeadAccess.EnsureStaff(actor);
 
-            if (actor.IsAdmin)
+            if (actor.IsAdmin || actor.IsManager)
                 return;
 
             if (actor.IsEmployee)
@@ -158,22 +145,6 @@ namespace DAMS.Application.Services
                     return;
 
                 throw new LeadAuthorizationException("You can only update work assigned to you or to a lead you own.");
-            }
-
-            if (actor.IsManager)
-            {
-                var employee = await context.Employees
-                    .AsNoTracking()
-                    .Where(e => e.Id == assignedEmployeeId)
-                    .Select(e => new { e.Id, e.TeamId })
-                    .FirstOrDefaultAsync(cancellationToken);
-
-                if (employee != null &&
-                    (employee.Id == actor.EmployeeId ||
-                     (employee.TeamId.HasValue && actor.ManagedTeamIds.Contains(employee.TeamId.Value))))
-                    return;
-
-                throw new LeadAuthorizationException("You can only update work assigned inside your managed team.");
             }
         }
 

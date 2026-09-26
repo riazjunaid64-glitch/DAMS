@@ -158,7 +158,9 @@ public class MetaLeadBackfillTests
         h.Options.QuietPageAlertDays = 3;
 
         await h.Alerts.RaiseAlertsAsync();
-        Assert.Single(await h.Db.Notifications.Where(n => n.Title.StartsWith("No Meta leads for 3 days")).ToListAsync());
+        // One alert per CRM supervisor (Admin and Sales Manager); the admin gets exactly one.
+        Assert.Single(await h.Db.Notifications.Where(n => n.Title.StartsWith("No Meta leads for 3 days")
+                                                          && n.RecipientUserId == h.Leads.AdminUserId).ToListAsync());
         var shown = Assert.Single(await h.Integration.GetConnectionsAsync());
         Assert.True(shown.LastLeadReceivedAt < DateTime.UtcNow.AddDays(-4));
     }
@@ -220,12 +222,14 @@ public class MetaLeadBackfillTests
     }
 
     [Fact]
-    public async Task AnImport_IsForAdminsAndForEnabledPagesOnly()
+    public async Task AnImport_IsForAdminsAndManagersAndForEnabledPagesOnly()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (connection, page) = await SetUpAsync(h, enabled: false);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Sales));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Manager));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Admin));
@@ -439,7 +443,8 @@ public class MetaLeadBackfillTests
 
     private static Task<List<Notification>> IntegrationAlertsAsync(MetaIntegrationHarness h, string titlePrefix) =>
         h.Db.Notifications.AsNoTracking()
-            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired && n.Title.StartsWith(titlePrefix))
+            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired && n.Title.StartsWith(titlePrefix)
+                        && n.RecipientUserId == h.Leads.AdminUserId)
             .ToListAsync();
 
     [Fact]

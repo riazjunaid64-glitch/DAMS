@@ -154,6 +154,9 @@ namespace DAMS.Application.DTOs.LeadDtos
     {
         public LeadStage? Stage { get; set; }
 
+        /// <summary>One step of the simplified New / In Progress / Won / Lost pipeline.</summary>
+        public LeadStageGroup? StageGroup { get; set; }
+
         public LeadAssignmentState? AssignmentState { get; set; }
 
         public LeadQualification? Qualification { get; set; }

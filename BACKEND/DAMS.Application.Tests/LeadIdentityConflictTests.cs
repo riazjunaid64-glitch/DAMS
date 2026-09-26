@@ -202,15 +202,20 @@ public sealed class LeadIdentityConflictTests
     }
 
     [Fact]
-    public async Task OnlyAnAdministrator_CanReviewOrResolve()
+    public async Task OnlyAnAdministratorOrManager_CanReviewOrResolve()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var (a, _) = await TwoPeopleAsync(h);
         var held = await h.Leads.IngestAsync(Conflicting("meta-conflict-1"), actor: null, trustedExternal: true);
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Leads.GetIntakeHoldsAsync(h.Manager));
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Leads.GetIntakeHoldsAsync(h.Sales));
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.ResolveIntakeHoldAsync(held.HoldId!.Value, new ResolveLeadIntakeHoldDto { LeadId = a }, h.Manager));
+            h.Leads.ResolveIntakeHoldAsync(held.HoldId!.Value, new ResolveLeadIntakeHoldDto { LeadId = a }, h.Sales));
+
+        Assert.Equal(1, (await h.Leads.GetIntakeHoldsAsync(h.Manager)).TotalWaiting);
+        var lead = await h.Leads.ResolveIntakeHoldAsync(
+            held.HoldId!.Value, new ResolveLeadIntakeHoldDto { LeadId = a }, h.Manager);
+        Assert.Equal(a, lead!.Id);
     }
 
     [Fact]

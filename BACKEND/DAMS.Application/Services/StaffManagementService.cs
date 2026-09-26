@@ -37,13 +37,8 @@ namespace DAMS.Application.Services
                 .Include(e => e.Team)
                 .Where(e => e.Status == EmployeeStatus.Active);
 
-            if (actor.IsManager)
-            {
-                var teamIds = actor.ManagedTeamIds.ToArray();
-                query = query.Where(e => e.Id == actor.EmployeeId ||
-                    (e.TeamId.HasValue && teamIds.Contains(e.TeamId.Value)));
-            }
-            else if (actor.IsEmployee)
+            // Admins and managers assign across every team, so they see the whole directory.
+            if (actor.IsEmployee)
             {
                 var teamId = actor.TeamId;
                 query = query.Where(e => e.Id == actor.EmployeeId ||
@@ -105,10 +100,21 @@ namespace DAMS.Application.Services
                 })
                 .ToListAsync(cancellationToken);
 
-        public Task<List<LinkableUserDto>> GetLinkableUsersAsync(CancellationToken cancellationToken = default) =>
-            _context.Users
+        public Task<List<LinkableUserDto>> GetLinkableUsersAsync(
+            LeadUserContext actor, CancellationToken cancellationToken = default)
+        {
+            EnsureCanManageStaff(actor);
+
+            // A manager may only link logins that are already staff (Sales Manager or
+            // Salesperson). Admin logins, and customer portal logins with their names and emails,
+            // are neither shown to them nor theirs to convert.
+            var isAdmin = actor.IsAdmin;
+            return _context.Users
                 .AsNoTracking()
-                .Where(u => !_context.Employees.Any(e => e.UserId == u.UserId))
+                .Where(u => !_context.Employees.Any(e => e.UserId == u.UserId)
+                            && (isAdmin
+                                || u.Role.Role_name == LeadRoles.Manager
+                                || u.Role.Role_name == LeadRoles.Employee))
                 .OrderBy(u => u.FullName)
                 .Select(u => new LinkableUserDto
                 {
@@ -118,6 +124,7 @@ namespace DAMS.Application.Services
                     Role = u.Role.Role_name
                 })
                 .ToListAsync(cancellationToken);
+        }
 
         public async Task<List<CustomerLookupDto>> SearchCustomersAsync(
             LeadUserContext actor,
@@ -137,7 +144,7 @@ namespace DAMS.Application.Services
                     || (c.Email != null && c.Email.ToLower().Contains(term))
                     || (c.CNIC != null && c.CNIC.Contains(term)));
 
-            if (!actor.IsAdmin)
+            if (!actor.IsAdmin && !actor.IsManager)
             {
                 var visibleLeadCustomerIds = LeadAccess.Scope(_context.Leads.AsNoTracking(), actor)
                     .Where(l => l.ConvertedCustomerId != null)
@@ -182,6 +189,7 @@ namespace DAMS.Application.Services
             EnsureCanManageStaff(actor);
 
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
+            EnsureCanGrantRole(actor, role.Role_name);
             await ValidateTeamAsync(dto.TeamId, cancellationToken);
 
             // Assigned inside the transaction below and read after it commits. Initialised here
@@ -207,8 +215,11 @@ namespace DAMS.Application.Services
                 if (dto.ExistingUserId.HasValue)
                 {
                     user = await _context.Users
+                        .Include(u => u.Role)
                         .FirstOrDefaultAsync(u => u.UserId == dto.ExistingUserId.Value, cancellationToken)
                         ?? throw new InvalidOperationException("The selected login account does not exist.");
+
+                    EnsureCanManageAccountOf(actor, user.Role?.Role_name);
 
                     if (await _context.Employees.AnyAsync(e => e.UserId == user.UserId, cancellationToken))
                         throw new InvalidOperationException("That login account is already linked to an employee.");
@@ -323,12 +334,14 @@ namespace DAMS.Application.Services
             // about the employee or their account.
             var employee = await _context.Employees
                 .AsNoTracking()
-                .Include(e => e.User)
+                .Include(e => e.User).ThenInclude(u => u!.Role)
                 .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
                 ?? throw new InvalidOperationException("Employee not found.");
 
             if (employee.User == null)
                 throw new InvalidOperationException("This employee has no login account. Connect an account first.");
+
+            EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
 
             if (employee.User.AccountStatus != UserAccountStatus.Invited)
                 throw new InvalidOperationException(
@@ -344,19 +357,30 @@ namespace DAMS.Application.Services
         }
 
         public async Task<StaffAccountDto> UpdateAsync(
+            LeadUserContext actor,
             int employeeId,
             UpdateStaffAccountDto dto,
             CancellationToken cancellationToken = default)
         {
+            EnsureCanManageStaff(actor);
+
             var employee = await _context.Employees
-                .Include(e => e.User)
+                .Include(e => e.User).ThenInclude(u => u!.Role)
                 .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
                 ?? throw new InvalidOperationException("Employee not found.");
 
             if (employee.User == null)
                 throw new InvalidOperationException("This employee has no login account. Connect an account first.");
 
+            EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
+
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
+            EnsureCanGrantRole(actor, role.Role_name);
+
+            // Employment status (including Terminated) is HR data owned by the Admin-only
+            // Employees area. A manager's save may carry it unchanged but never change it.
+            if (!actor.IsAdmin && dto.Status.HasValue && dto.Status.Value != employee.Status)
+                throw new LeadAuthorizationException("Only an admin can change an employee's employment status.");
 
             var managesActiveTeam = await _context.Teams
                 .AnyAsync(t => t.ManagerEmployeeId == employeeId && t.IsActive, cancellationToken);
@@ -452,13 +476,42 @@ namespace DAMS.Application.Services
                 .FirstAsync(cancellationToken);
 
         /// <summary>
-        /// The controller already gates these routes on the Admin role; this repeats the check
-        /// at the service boundary because the same context now supplies the recorded inviter.
+        /// The controller already gates these routes on the Admin and Sales Manager roles; this
+        /// repeats the check at the service boundary because the same context now supplies the
+        /// recorded inviter.
         /// </summary>
         private static void EnsureCanManageStaff(LeadUserContext actor)
         {
-            if (!actor.IsAdmin)
-                throw new LeadAuthorizationException("Only an admin can manage staff accounts.");
+            if (!actor.IsAdmin && !actor.IsManager)
+                throw new LeadAuthorizationException("Only an admin or manager can manage staff accounts.");
+        }
+
+        /// <summary>
+        /// The Admin role reaches Finance and every other admin-only area, so only an Admin may
+        /// hand it out. Otherwise a manager could make anyone — themselves included — an Admin.
+        /// </summary>
+        private static void EnsureCanGrantRole(LeadUserContext actor, string roleName)
+        {
+            if (!actor.IsAdmin && string.Equals(roleName, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+                throw new LeadAuthorizationException("Only an admin can give someone the Admin role.");
+        }
+
+        /// <summary>
+        /// A manager may act only on logins that are already staff below Admin. An allow-list,
+        /// not a deny-list: an Admin login, a customer's portal login, or any role added later
+        /// is refused, so a manager can neither demote an Admin nor turn a customer into staff.
+        /// </summary>
+        private static void EnsureCanManageAccountOf(LeadUserContext actor, string? currentRole)
+        {
+            if (actor.IsAdmin)
+                return;
+
+            if (string.Equals(currentRole, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+                throw new LeadAuthorizationException("Only an admin can change an Admin's account.");
+
+            if (!string.Equals(currentRole, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(currentRole, LeadRoles.Employee, StringComparison.OrdinalIgnoreCase))
+                throw new LeadAuthorizationException("Only an admin can give staff access to a login that is not already a staff account.");
         }
 
         private async Task<Role> ResolveRoleAsync(string requested, CancellationToken cancellationToken)

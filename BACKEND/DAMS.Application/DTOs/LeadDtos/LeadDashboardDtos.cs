@@ -18,7 +18,16 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? EmployeeName { get; set; }
 
+        /// <summary>Every lead assigned to the salesperson, open or closed.</summary>
+        public int TotalAssigned { get; set; }
+
         public int NewLeads { get; set; }
+
+        /// <summary>Contacted and still open: the In Progress step of the simplified pipeline.</summary>
+        public int InProgressLeads { get; set; }
+
+        /// <summary>Closed without converting, Dormant included.</summary>
+        public int LostLeads { get; set; }
 
         public int ActiveLeads { get; set; }
 
@@ -41,35 +50,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public List<LeadFollowUpDto> Overdue { get; set; } = new();
 
         public List<LeadSiteVisitDto> NextSiteVisits { get; set; } = new();
-    }
-
-    public class ManagerLeadDashboardDto
-    {
-        public int TeamLeads { get; set; }
-
-        public int UnassignedLeads { get; set; }
-
-        public int OverdueFirstContacts { get; set; }
-
-        public int OverdueFollowUps { get; set; }
-
-        public int InactiveLeads { get; set; }
-
-        public int UpcomingSiteVisits { get; set; }
-
-        public int MissedSiteVisits { get; set; }
-
-        public int ManagerReviewRequests { get; set; }
-
-        public int WonLeads { get; set; }
-
-        public int ClosedLeads { get; set; }
-
-        public double ConversionRatePercent { get; set; }
-
-        public List<LeadStageCountDto> ByStage { get; set; } = new();
-
-        public List<EmployeePerformanceDto> ByEmployee { get; set; } = new();
     }
 
     public class EmployeePerformanceDto

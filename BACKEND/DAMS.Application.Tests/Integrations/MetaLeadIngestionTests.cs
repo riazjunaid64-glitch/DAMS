@@ -169,8 +169,8 @@ public class MetaLeadIngestionTests
         var hold = await h.Db.LeadIntakeHolds.AsNoTracking().SingleAsync();
         var alerts = await h.Db.Notifications.AsNoTracking()
             .Where(n => n.Type == NotificationType.LeadHeldForReview).ToListAsync();
-        Assert.Equal(2, alerts.Count);
-        Assert.Equal(new[] { h.Leads.AdminUserId, secondAdmin.UserId }.OrderBy(id => id),
+        Assert.Equal(3, alerts.Count);
+        Assert.Equal(new[] { h.Leads.AdminUserId, secondAdmin.UserId, h.Leads.ManagerUserId }.OrderBy(id => id),
             alerts.Select(n => n.RecipientUserId!.Value).OrderBy(id => id));
         foreach (var alert in alerts)
         {
@@ -187,14 +187,14 @@ public class MetaLeadIngestionTests
         var adminInbox = await h.Leads.Inbox.GetAsync(adminContext, new NotificationFilterDto());
         Assert.Contains(adminInbox.Items, item => item.Id == alerts.Single(a => a.RecipientUserId == h.Leads.AdminUserId).Id);
         var managerInbox = await h.Leads.Inbox.GetAsync(managerContext, new NotificationFilterDto());
-        Assert.DoesNotContain(managerInbox.Items, item => item.Type == NotificationType.LeadHeldForReview);
+        Assert.Contains(managerInbox.Items, item => item.Id == alerts.Single(a => a.RecipientUserId == h.Leads.ManagerUserId).Id);
         var opened = await h.Leads.Inbox.OpenAsync(alerts.Single(a => a.RecipientUserId == h.Leads.AdminUserId).Id, adminContext);
         Assert.True(opened.Allowed);
         Assert.Equal("/crm", opened.DeepLink);
     }
 
     [Fact]
-    public async Task ReprocessingAHeldMetaEnquiry_DoesNotNotifyAnAdminTwice()
+    public async Task ReprocessingAHeldMetaEnquiry_DoesNotNotifyASupervisorTwice()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (_, page) = await h.ConnectPageAsync();
@@ -215,8 +215,8 @@ public class MetaLeadIngestionTests
 
         var alerts = await h.Db.Notifications.AsNoTracking()
             .Where(n => n.Type == NotificationType.LeadHeldForReview).ToListAsync();
-        Assert.Single(alerts);
-        Assert.Equal(h.Leads.AdminUserId, alerts[0].RecipientUserId);
+        Assert.Equal(new[] { h.Leads.AdminUserId, h.Leads.ManagerUserId }.OrderBy(id => id),
+            alerts.Select(n => n.RecipientUserId!.Value).OrderBy(id => id));
     }
 
     [Fact]

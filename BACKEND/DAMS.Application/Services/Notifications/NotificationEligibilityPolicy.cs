@@ -57,17 +57,14 @@ namespace DAMS.Application.Services.Notifications
             NotificationType.AccountSecurity
         };
 
-        private static readonly HashSet<NotificationType> ManagerTypes = new(EmployeeTypes)
+        // Admins and Sales Managers run the same CRM, so they receive exactly the same lead,
+        // intake and integration notifications. Customer contractual messages are deliberately
+        // absent: an admin only sees those through delivery/audit history.
+        private static readonly HashSet<NotificationType> CrmSupervisorTypes = new(EmployeeTypes)
         {
             NotificationType.FollowUpMissed,
             NotificationType.SiteVisitMissed,
-            NotificationType.ManagerAttentionRequired
-        };
-
-        // Admins supervise internal work and system delivery. Customer contractual messages
-        // are deliberately absent: an admin only sees those through delivery/audit history.
-        private static readonly HashSet<NotificationType> AdminTypes = new(ManagerTypes)
-        {
+            NotificationType.ManagerAttentionRequired,
             NotificationType.LeadHeldForReview,
             NotificationType.IntegrationAttentionRequired
         };
@@ -91,7 +88,7 @@ namespace DAMS.Application.Services.Notifications
         };
 
         // Raised about a lead's progress rather than to its owner, so supervisors hear about
-        // leads they do not personally work: every admin, and a manager's own teams.
+        // leads they do not personally work: every admin and every sales manager.
         private static readonly NotificationType[] SupervisoryLeadTypes =
         {
             NotificationType.LeadCreated,
@@ -110,14 +107,14 @@ namespace DAMS.Application.Services.Notifications
             new(NotificationCategory.BookingUpdates, "Booking updates", "Approvals, rejections, cancellations and possession updates."),
             new(NotificationCategory.InstallmentReminders, "Installment reminders", "Reminders before and after an installment falls due."),
             new(NotificationCategory.LeadAssignments, "Lead assignments", "Lead ownership and pipeline updates relevant to your work."),
-            new(NotificationCategory.FollowUps, "Follow-ups", "Follow-up work assigned to you or your managed team."),
-            new(NotificationCategory.SiteVisits, "Site visits", "Visits assigned to you or your managed team."),
+            new(NotificationCategory.FollowUps, "Follow-ups", "Follow-up work assigned to you, and missed follow-ups on any lead."),
+            new(NotificationCategory.SiteVisits, "Site visits", "Visits assigned to you, and missed visits on any lead."),
             new(NotificationCategory.Mentions, "Mentions", "A permitted colleague mentions you in an internal comment."),
             new(NotificationCategory.EmployeeTasks, "Employee tasks", "Tasks assigned directly to you."),
             new(NotificationCategory.ProjectUpdates, "Project updates", "Progress and news on projects relevant to you."),
             new(NotificationCategory.Announcements, "Announcements", "Messages explicitly addressed to your audience."),
             new(NotificationCategory.AccountAndSecurity, "Account and security", "Important account and security messages."),
-            new(NotificationCategory.ManagerEscalations, "Escalations", "Managed-team issues that require supervisor attention."),
+            new(NotificationCategory.ManagerEscalations, "Escalations", "Lead issues that require supervisor attention."),
             new(NotificationCategory.Integrations, "Integrations", "Problems that stop leads arriving from connected accounts such as Meta.")
         };
 
@@ -133,8 +130,7 @@ namespace DAMS.Application.Services.Notifications
 
             return NormalizeRole(role) switch
             {
-                LeadRoles.Admin => AdminTypes.Contains(type),
-                LeadRoles.Manager => ManagerTypes.Contains(type),
+                LeadRoles.Admin or LeadRoles.Manager => CrmSupervisorTypes.Contains(type),
                 LeadRoles.Employee => EmployeeTypes.Contains(type),
                 "Client" => CustomerTypes.Contains(type),
                 _ => false
@@ -153,7 +149,7 @@ namespace DAMS.Application.Services.Notifications
         public string EmptyStateForRole(string? role) => NormalizeRole(role) switch
         {
             "Client" => "Booking, payment, installment, project, announcement and account updates will appear here.",
-            LeadRoles.Manager => "Your work, managed-team activity, escalations and account updates will appear here.",
+            LeadRoles.Manager => "Lead, escalation, integration and account updates will appear here.",
             LeadRoles.Employee => "Assigned leads, follow-ups, visits, mentions, tasks and account updates will appear here.",
             LeadRoles.Admin => "Administrative, staff, integration, delivery and account updates will appear here.",
             _ => "No notification categories are available for this account."
@@ -198,24 +194,14 @@ namespace DAMS.Application.Services.Notifications
         {
             var normalized = NormalizeRole(role);
             if (normalized is null or "Client")
-                return new ResourceScope(userId, normalized, 0, Array.Empty<int>());
+                return new ResourceScope(userId, normalized, 0);
 
             var employee = await _context.Employees.AsNoTracking()
                 .Where(e => e.UserId == userId && e.Status == EmployeeStatus.Active)
-                .Select(e => new { e.Id, e.TeamId })
+                .Select(e => (int?)e.Id)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (employee == null)
-                return new ResourceScope(userId, normalized, 0, Array.Empty<int>());
-
-            var teamIds = await _context.Teams.AsNoTracking()
-                .Where(t => t.IsActive && t.ManagerEmployeeId == employee.Id)
-                .Select(t => t.Id)
-                .ToListAsync(cancellationToken);
-            if (employee.TeamId.HasValue)
-                teamIds.Add(employee.TeamId.Value);
-
-            return new ResourceScope(userId, normalized, employee.Id, teamIds.Distinct().ToArray());
+            return new ResourceScope(userId, normalized, employee ?? 0);
         }
 
         /// <summary>
@@ -278,9 +264,9 @@ namespace DAMS.Application.Services.Notifications
         {
             var userId = scope.UserId;
             var employeeId = scope.EmployeeId;
-            var teamIds = scope.ManagedTeamIds;
             var isAdmin = scope.Role == LeadRoles.Admin;
             var isManager = scope.Role == LeadRoles.Manager;
+            var isCrmSupervisor = isAdmin || isManager;
             var supervisory = SupervisoryLeadTypes;
 
             return n =>
@@ -288,10 +274,10 @@ namespace DAMS.Application.Services.Notifications
                  && (n.EntityType == NotificationEntityType.None || n.EntityType == NotificationEntityType.Announcement))
                 || (n.Type == NotificationType.LeadHeldForReview
                     && n.EntityType == NotificationEntityType.LeadIntakeHold && n.EntityId > 0
-                    && isAdmin && _context.LeadIntakeHolds.Any(h => h.Id == n.EntityId))
+                    && isCrmSupervisor && _context.LeadIntakeHolds.Any(h => h.Id == n.EntityId))
                 || (n.Type == NotificationType.IntegrationAttentionRequired
                     && n.EntityType == NotificationEntityType.IntegrationConnection && n.EntityId > 0
-                    && isAdmin && _context.ExternalIntegrationConnections.Any(c => c.Id == n.EntityId))
+                    && isCrmSupervisor && _context.ExternalIntegrationConnections.Any(c => c.Id == n.EntityId))
                 || (n.Type == NotificationType.AccountSecurity
                     && (n.EntityType == NotificationEntityType.None
                         || n.EntityType == NotificationEntityType.Announcement
@@ -335,15 +321,9 @@ namespace DAMS.Application.Services.Notifications
                              || n.Type == NotificationType.FirstContactOverdue)
                             && _context.Leads.Any(l => l.Id == n.EntityId && l.AssignedEmployeeId == employeeId))
                         || (supervisory.Contains(n.Type)
-                            && (isAdmin
-                                || (isManager && _context.Leads.Any(l => l.Id == n.EntityId
-                                    && (l.AssignedEmployeeId == employeeId
-                                        || (l.AssignedTeamId != null && teamIds.Contains(l.AssignedTeamId.Value))
-                                        || (l.AssignedEmployee != null && l.AssignedEmployee.TeamId != null
-                                            && teamIds.Contains(l.AssignedEmployee.TeamId.Value))
-                                        || l.AssignmentState == LeadAssignmentState.Unassigned)))
-                                || (!isAdmin && !isManager && _context.Leads.Any(l => l.Id == n.EntityId
-                                    && l.AssignedEmployeeId == employeeId))))));
+                            && (isCrmSupervisor
+                                || _context.Leads.Any(l => l.Id == n.EntityId
+                                    && l.AssignedEmployeeId == employeeId)))));
         }
 
         public async Task<bool> CanReceiveAsync(
@@ -476,12 +456,12 @@ namespace DAMS.Application.Services.Notifications
                 return entityType is NotificationEntityType.None or NotificationEntityType.Announcement;
 
             if (type == NotificationType.LeadHeldForReview)
-                return string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
+                return IsCrmSupervisor(recipient.Role)
                        && entityType == NotificationEntityType.LeadIntakeHold && entityId is > 0
                        && await _context.LeadIntakeHolds.AnyAsync(h => h.Id == entityId.Value, cancellationToken);
 
             if (type == NotificationType.IntegrationAttentionRequired)
-                return string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
+                return IsCrmSupervisor(recipient.Role)
                        && entityType == NotificationEntityType.IntegrationConnection && entityId is > 0
                        && await _context.ExternalIntegrationConnections.AnyAsync(c => c.Id == entityId.Value, cancellationToken);
 
@@ -590,8 +570,7 @@ namespace DAMS.Application.Services.Notifications
                 .Select(entry => entry.Entity)
                 .FirstOrDefault();
 
-            var isAdmin = string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase);
-            if (isAdmin && !OwnerAddressedLeadTypes.Contains(type))
+            if (IsCrmSupervisor(recipient.Role) && !OwnerAddressedLeadTypes.Contains(type))
                 return trackedLead != null
                        || await _context.Leads.AnyAsync(l => l.Id == entityId.Value, cancellationToken);
 
@@ -624,30 +603,6 @@ namespace DAMS.Application.Services.Notifications
 
                 return await _context.LeadSiteVisits.AnyAsync(v =>
                     v.LeadId == entityId.Value && v.AssignedEmployeeId == employee.Id, cancellationToken);
-            }
-
-            if (!OwnerAddressedLeadTypes.Contains(type)
-                && string.Equals(recipient.Role, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase))
-            {
-                var managedTeams = await _context.Teams.AsNoTracking()
-                    .Where(t => t.IsActive && t.ManagerEmployeeId == employee.Id)
-                    .Select(t => t.Id)
-                    .ToListAsync(cancellationToken);
-                if (employee.TeamId.HasValue)
-                    managedTeams.Add(employee.TeamId.Value);
-                var teamIds = managedTeams.Distinct().ToArray();
-
-                if (trackedLead != null && (trackedLead.AssignedEmployeeId == employee.Id
-                    || (trackedLead.AssignedTeamId.HasValue && teamIds.Contains(trackedLead.AssignedTeamId.Value))
-                    || trackedLead.AssignmentState == LeadAssignmentState.Unassigned))
-                    return true;
-
-                return await _context.Leads.AnyAsync(l => l.Id == entityId.Value
-                    && (l.AssignedEmployeeId == employee.Id
-                        || (l.AssignedTeamId != null && teamIds.Contains(l.AssignedTeamId.Value))
-                        || (l.AssignedEmployee != null && l.AssignedEmployee.TeamId != null
-                            && teamIds.Contains(l.AssignedEmployee.TeamId.Value))
-                        || l.AssignmentState == LeadAssignmentState.Unassigned), cancellationToken);
             }
 
             if (trackedLead?.AssignedEmployeeId == employee.Id)
@@ -745,14 +700,16 @@ namespace DAMS.Application.Services.Notifications
 
         private static HashSet<NotificationType> AllowedSet(string? role) => NormalizeRole(role) switch
         {
-            LeadRoles.Admin => AdminTypes,
-            LeadRoles.Manager => ManagerTypes,
+            LeadRoles.Admin or LeadRoles.Manager => CrmSupervisorTypes,
             LeadRoles.Employee => EmployeeTypes,
             "Client" => CustomerTypes,
             _ => EmptyTypes
         };
 
         private static readonly HashSet<NotificationType> EmptyTypes = new();
+
+        private static bool IsCrmSupervisor(string? role) =>
+            NormalizeRole(role) is LeadRoles.Admin or LeadRoles.Manager;
 
         private static string? NormalizeRole(string? role)
         {
@@ -770,8 +727,7 @@ namespace DAMS.Application.Services.Notifications
         public sealed record ResourceScope(
             int UserId,
             string? Role,
-            int EmployeeId,
-            IReadOnlyList<int> ManagedTeamIds);
+            int EmployeeId);
 
         public sealed record CategoryDescriptor(
             NotificationCategory Category,

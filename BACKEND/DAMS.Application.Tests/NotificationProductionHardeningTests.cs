@@ -29,7 +29,7 @@ public sealed class NotificationProductionHardeningTests
                 .Options);
 
         var policy = new NotificationEligibilityPolicy(db);
-        var scope = new NotificationEligibilityPolicy.ResourceScope(7, role, 3, new[] { 11, 12 });
+        var scope = new NotificationEligibilityPolicy.ResourceScope(7, role, 3);
 
         var sql = policy
             .ApplyResourceScope(policy.ApplyRoleScope(db.Notifications.AsNoTracking(), role), scope)

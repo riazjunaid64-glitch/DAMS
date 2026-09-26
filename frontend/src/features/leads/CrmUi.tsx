@@ -93,7 +93,7 @@ export function StageBadge({ stage }: { stage: string }) {
     stage === "Lost" ? "border-rose-500/25 bg-rose-500/10 text-rose-400" :
     stage === "Dormant" ? "border-slate-500/25 bg-slate-500/10 text-slate-400" :
     stage.includes("SiteVisit") ? "border-violet-500/25 bg-violet-500/10 text-violet-400" :
-    stage === "Negotiation" || stage === "BookingPending" ? "border-amber-500/25 bg-amber-500/10 text-amber-400" :
+    stage === "Negotiation" || stage === "BookingPending" || stage === "InProgress" ? "border-amber-500/25 bg-amber-500/10 text-amber-400" :
     "border-indigo-500/25 bg-indigo-500/10 text-indigo-400";
   return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{stageLabel(stage)}</span>;
 }

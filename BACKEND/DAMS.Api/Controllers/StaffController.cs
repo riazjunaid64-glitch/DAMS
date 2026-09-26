@@ -35,14 +35,17 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpGet("accounts")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public Task<List<StaffAccountDto>> GetAccounts(CancellationToken cancellationToken) =>
             _staff.GetAccountsAsync(cancellationToken);
 
         [HttpGet("linkable-users")]
-        [Authorize(Roles = LeadRoles.Admin)]
-        public Task<List<LinkableUserDto>> GetLinkableUsers(CancellationToken cancellationToken) =>
-            _staff.GetLinkableUsersAsync(cancellationToken);
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        public async Task<List<LinkableUserDto>> GetLinkableUsers(CancellationToken cancellationToken)
+        {
+            var actor = await _resolver.ResolveAsync(User, cancellationToken);
+            return await _staff.GetLinkableUsersAsync(actor, cancellationToken);
+        }
 
         [HttpGet("customer-lookup")]
         [Authorize(Roles = LeadRoles.AdminOrManager)]
@@ -55,14 +58,14 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("accounts")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public async Task<IActionResult> Create(
             [FromBody] CreateStaffAccountDto dto,
             CancellationToken cancellationToken)
         {
             try
             {
-                // The inviter is the authenticated Admin, resolved from the token — never a
+                // The inviter is the authenticated Admin or Sales Manager, resolved from the token — never a
                 // user id the request body could have chosen.
                 var actor = await _resolver.ResolveAsync(User, cancellationToken);
                 return Ok(await _staff.CreateAsync(actor, dto, cancellationToken));
@@ -82,7 +85,7 @@ namespace DAMS.Api.Controllers
         /// one. Never activates the account and never produces a password.
         /// </summary>
         [HttpPost("accounts/{employeeId:int}/resend-invitation")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public async Task<IActionResult> ResendInvitation(
             int employeeId,
             CancellationToken cancellationToken)
@@ -103,7 +106,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPut("accounts/{employeeId:int}")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public async Task<IActionResult> Update(
             int employeeId,
             [FromBody] UpdateStaffAccountDto dto,
@@ -111,7 +114,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                return Ok(await _staff.UpdateAsync(employeeId, dto, cancellationToken));
+                var actor = await _resolver.ResolveAsync(User, cancellationToken);
+                return Ok(await _staff.UpdateAsync(actor, employeeId, dto, cancellationToken));
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {

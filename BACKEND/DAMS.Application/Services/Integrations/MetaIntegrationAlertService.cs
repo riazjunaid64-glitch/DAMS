@@ -8,14 +8,14 @@ using Microsoft.EntityFrameworkCore;
 namespace DAMS.Application.Services.Integrations
 {
     /// <summary>
-    /// Tells every Admin when Meta lead capture needs a person, before anyone happens to open the
+    /// Tells every Admin and Sales Manager when Meta lead capture needs a person, before anyone happens to open the
     /// Integrations panel.
     ///
     /// A sweep over current state rather than a hook at each transition: a connection reaches
     /// NeedsReauthorization from several places, an expiring sign-in and a quiet Page have no
     /// transition at all, and a sweep also recovers an alert lost between a state change and its
     /// notification. Every alert's dedup key names the connection, the condition and the episode
-    /// it belongs to, so however often this runs each Admin hears about an episode once, and a new
+    /// it belongs to, so however often this runs each supervisor hears about an episode once, and a new
     /// one — a later reconnect, a new token, another day's failures — is told about again.
     /// </summary>
     public sealed class MetaIntegrationAlertService : IMetaIntegrationAlertService
@@ -87,12 +87,12 @@ namespace DAMS.Application.Services.Integrations
             if (alerts.Count == 0)
                 return 0;
 
-            var adminIds = await ActiveAdminIdsAsync(_context, cancellationToken);
+            var supervisorIds = await LeadNotificationService.CrmSupervisorUserIdsAsync(_context, cancellationToken);
             var requests = alerts
-                .SelectMany(alert => adminIds.Select(userId => Request(alert, userId)))
+                .SelectMany(alert => supervisorIds.Select(userId => Request(alert, userId)))
                 .ToList();
 
-            // One read instead of one per alert per Admin on every sweep while a problem stays open.
+            // One read instead of one per alert per supervisor on every sweep while a problem stays open.
             var keys = requests.Select(r => r.DedupKey).ToList();
             var raised = (await _context.Notifications
                     .AsNoTracking()
@@ -112,15 +112,6 @@ namespace DAMS.Application.Services.Integrations
 
             return created;
         }
-
-        /// <summary>Every Admin who can still sign in — the people who can reconnect an account.</summary>
-        internal static Task<List<int>> ActiveAdminIdsAsync(AppDbContext context, CancellationToken cancellationToken) =>
-            context.Users
-                .AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin
-                            && u.AccountStatus == UserAccountStatus.Active)
-                .Select(u => u.UserId)
-                .ToListAsync(cancellationToken);
 
         // ── Conditions ──────────────────────────────────────────────────────────────
 

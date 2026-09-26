@@ -71,13 +71,14 @@ namespace DAMS.Application.Services
             string? body,
             string dedupKeySuffix,
             bool isEscalation = false,
-            bool includeQueueManagers = false,
             CancellationToken cancellationToken = default)
         {
-            var recipients = await GetSupervisorUserIdsAsync(lead, includeQueueManagers, cancellationToken);
+            // A single scan raises alerts on hundreds of leads that share the same supervisors;
+            // resolve them once per request rather than per lead.
+            _supervisorUserIds ??= await CrmSupervisorUserIdsAsync(_context, cancellationToken);
             var created = 0;
 
-            foreach (var userId in recipients)
+            foreach (var userId in _supervisorUserIds)
             {
                 var dedupKey = LeadService.BuildDedupKey(type, lead.Id, userId, dedupKeySuffix);
                 if (await QueueAsync(lead.Id, userId, type, title, body, dedupKey, isEscalation, cancellationToken))
@@ -87,93 +88,26 @@ namespace DAMS.Application.Services
             return created;
         }
 
-        // A single scan raises alerts on hundreds of leads that share the same handful of
-        // supervisors; resolve each set once per request rather than per lead.
-        private List<int>? _adminUserIds;
-        private List<int>? _queueManagerUserIds;
-        private readonly Dictionary<int, List<int>> _teamSupervisors = new();
-        private readonly Dictionary<int, int?> _employeeTeams = new();
-        private readonly Dictionary<int, (string Name, string Reference)> _leads = new();
-        private readonly Dictionary<int, string?> _employeeNames = new();
-
         /// <summary>
-        /// Everyone who should be told about a lead's problems: every admin, plus the
-        /// manager of the owning team when there is one. An unassigned lead has no team, and
-        /// the unassigned queue belongs to every manager (see <see cref="LeadAccess.Scope"/>),
-        /// so every active manager is told — they are the ones who have to hand it out.
-        /// Only used for new-lead and repeat-enquiry alerts when includeQueueManagers is true.
+        /// Everyone who runs the CRM: every Admin and every Sales Manager who can still sign in.
+        /// Both see every lead (see <see cref="LeadAccess.Scope"/>), so both hear about every
+        /// lead's progress and problems. Managers need an active employee record — the
+        /// notification policy refuses them otherwise, and each refusal would be logged as a
+        /// producer mistake.
         /// </summary>
-        private async Task<List<int>> GetSupervisorUserIdsAsync(Lead lead, bool includeQueueManagers = false, CancellationToken cancellationToken = default)
-        {
-            _adminUserIds ??= await _context.Users
+        internal static Task<List<int>> CrmSupervisorUserIdsAsync(AppDbContext context, CancellationToken cancellationToken) =>
+            context.Users
                 .AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin)
+                .Where(u => u.AccountStatus == UserAccountStatus.Active
+                            && (u.Role.Role_name == LeadRoles.Admin
+                                || (u.Role.Role_name == LeadRoles.Manager
+                                    && context.Employees.Any(e => e.UserId == u.UserId && e.Status == EmployeeStatus.Active))))
                 .Select(u => u.UserId)
                 .ToListAsync(cancellationToken);
 
-            var recipients = new List<int>(_adminUserIds);
-
-            var teamId = lead.AssignedTeamId;
-            if (teamId == null && lead.AssignedEmployeeId != null)
-                teamId = await GetEmployeeTeamAsync(lead.AssignedEmployeeId.Value, cancellationToken);
-
-            if (teamId != null)
-                recipients.AddRange(await GetTeamSupervisorsAsync(teamId.Value, cancellationToken));
-
-            if (includeQueueManagers && lead.AssignmentState == LeadAssignmentState.Unassigned)
-                recipients.AddRange(await GetQueueManagersAsync(cancellationToken));
-
-            return recipients.Distinct().ToList();
-        }
-
-        // Only managers with an active employee record: the notification policy refuses
-        // anyone else, and each refusal would be logged as a producer mistake.
-        private async Task<List<int>> GetQueueManagersAsync(CancellationToken cancellationToken) =>
-            _queueManagerUserIds ??= await _context.Employees
-                .AsNoTracking()
-                .Where(e => e.Status == EmployeeStatus.Active && e.UserId != null
-                            && e.User!.Role.Role_name == LeadRoles.Manager)
-                .Select(e => e.UserId!.Value)
-                .Distinct()
-                .ToListAsync(cancellationToken);
-
-        private async Task<int?> GetEmployeeTeamAsync(int employeeId, CancellationToken cancellationToken)
-        {
-            if (_employeeTeams.TryGetValue(employeeId, out var cached))
-                return cached;
-
-            var teamId = await _context.Employees
-                .AsNoTracking()
-                .Where(e => e.Id == employeeId)
-                .Select(e => e.TeamId)
-                .FirstOrDefaultAsync(cancellationToken);
-
-            _employeeTeams[employeeId] = teamId;
-            return teamId;
-        }
-
-        private async Task<List<int>> GetTeamSupervisorsAsync(int teamId, CancellationToken cancellationToken)
-        {
-            if (_teamSupervisors.TryGetValue(teamId, out var cached))
-                return cached;
-
-            var supervisors = await _context.Teams
-                .AsNoTracking()
-                .Where(t => t.Id == teamId && t.ManagerEmployee != null && t.ManagerEmployee.UserId != null)
-                .Select(t => t.ManagerEmployee!.UserId!.Value)
-                .ToListAsync(cancellationToken);
-
-            // Managers who simply belong to the team also need visibility.
-            supervisors.AddRange(await _context.Employees
-                .AsNoTracking()
-                .Where(e => e.TeamId == teamId && e.UserId != null && e.User!.Role.Role_name == LeadRoles.Manager)
-                .Select(e => e.UserId!.Value)
-                .ToListAsync(cancellationToken));
-
-            var distinct = supervisors.Distinct().ToList();
-            _teamSupervisors[teamId] = distinct;
-            return distinct;
-        }
+        private List<int>? _supervisorUserIds;
+        private readonly Dictionary<int, (string Name, string Reference)> _leads = new();
+        private readonly Dictionary<int, string?> _employeeNames = new();
 
         /// <summary>Lead name and reference, so an email or push template can name the record
         /// without the lead services having to know what a template variable is.</summary>
