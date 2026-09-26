@@ -123,9 +123,37 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public DateTime ReceivedAt { get; set; }
 
         /// <summary>
-        /// Every answer the person gave, mapped or not. The raw provider payload is
-        /// deliberately not exposed — it is for troubleshooting in the database, not for the UI.
+        /// Every answer the person gave, mapped or not. The raw provider payload is deliberately
+        /// not part of this list: it is served on its own, to fewer roles, by
+        /// <see cref="LeadExternalSubmissionRawDto"/>.
         /// </summary>
         public List<ExternalFieldAnswerDto> FieldData { get; set; } = [];
+    }
+
+    /// <summary>
+    /// What the provider actually sent for one submission, for when the business-friendly fields
+    /// on the lead are not enough. Read-only: nothing here is ever written back.
+    /// </summary>
+    public class LeadExternalSubmissionRawDto
+    {
+        public int SubmissionId { get; set; }
+        public string Provider { get; set; } = string.Empty;
+        public string ExternalLeadId { get; set; } = string.Empty;
+
+        /// <summary>The provider's complete response for the lead. Null on receipts that never stored one.</summary>
+        public string? RawPayloadJson { get; set; }
+
+        /// <summary>The webhook event that delivered it, when one exists and belongs to this lead.</summary>
+        public LeadIntegrationEventRawDto? Event { get; set; }
+    }
+
+    public class LeadIntegrationEventRawDto
+    {
+        public int Id { get; set; }
+        public string EventType { get; set; } = string.Empty;
+        public ExternalIntegrationEventStatus Status { get; set; }
+        public DateTime ReceivedAt { get; set; }
+        public DateTime? ProcessedAt { get; set; }
+        public string RawPayloadJson { get; set; } = string.Empty;
     }
 }

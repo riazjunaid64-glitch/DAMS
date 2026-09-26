@@ -2057,6 +2057,87 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal(leadA, (await verify.LeadExternalSubmissions.SingleAsync(s => s.ExternalLeadId == "sql-conflict")).LeadId);
     }
 
+    // The migration immediately before resolved holds' webhook events were linked to their leads.
+    private const string BeforeHoldEventLinks = "20260925165441_AddLeadCommunicationConnected";
+
+    /// <summary>
+    /// A held Meta enquiry's webhook event reaches the lead it was resolved into: the migration
+    /// backfills enquiries resolved before, resolving now links as it goes, and the lead reads the
+    /// event back — the key's suffix match translated by SQL Server, not evaluated in memory, and
+    /// never confusing one Meta lead id with a longer one ending in it.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ResolvedHeldEnquiries_ReachTheirWebhookEvents_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+        int leadA, leadB;
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.GetService<IMigrator>().MigrateAsync(BeforeHoldEventLinks);
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            leadA = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person A", Phone = "0300-1234567", Email = "a@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+            leadB = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = "Person B", Phone = "0321-7654321", Email = "b@example.com", SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+
+            foreach (var leadgenId in new[] { "sql-held-1", "sql-held-11" })
+            {
+                Assert.True((await leads.IngestAsync(new LeadIntakeDto
+                {
+                    FirstName = "Who Is This", Phone = "0300-1234567", Email = "b@example.com", SourceCode = "facebook",
+                    ExternalProvider = "meta", ExternalLeadId = leadgenId, AllowDuplicate = true
+                }, actor: null, trustedExternal: true)).HeldForReview);
+                // Held, as the processor leaves it: done, with no lead.
+                db.ExternalIntegrationEvents.Add(new ExternalIntegrationEvent
+                {
+                    Provider = "meta", EventType = "leadgen", EventKey = $"0:page-1:{leadgenId}",
+                    RawPayloadJson = $"{{\"leadgen_id\":\"{leadgenId}\"}}",
+                    Status = ExternalIntegrationEventStatus.Processed, ProcessedAt = DateTime.UtcNow
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        // Resolved before this change: the hold records its lead, the event does not.
+        await using (var db = new AppDbContext(options))
+            await db.Database.ExecuteSqlRawAsync(
+                "UPDATE [LeadIntakeHolds] SET [Status] = 1, [ResolvedLeadId] = {0}, [ResolvedAt] = SYSUTCDATETIME() WHERE [ExternalLeadId] = 'sql-held-1'",
+                leadA);
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.MigrateAsync();
+            var events = await db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+            Assert.Equal(leadA, events.Single(e => e.EventKey.EndsWith(":sql-held-1")).LeadId);
+            Assert.Null(events.Single(e => e.EventKey.EndsWith(":sql-held-11")).LeadId);
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            using var dispatcher = SqlLeadDispatcher(db);
+            var leads = SqlLeadService(db, dispatcher);
+            var holdId = (await db.LeadIntakeHolds.SingleAsync(h => h.ExternalLeadId == "sql-held-11")).Id;
+            await leads.ResolveIntakeHoldAsync(holdId, new ResolveLeadIntakeHoldDto { LeadId = leadB }, admin);
+
+            var submission = await db.LeadExternalSubmissions.AsNoTracking().SingleAsync(s => s.ExternalLeadId == "sql-held-11");
+            var raw = await leads.GetExternalSubmissionRawAsync(leadB, submission.Id, admin);
+            Assert.Equal("{\"leadgen_id\":\"sql-held-11\"}", raw.Event!.RawPayloadJson);
+        }
+
+        await using var verify = new AppDbContext(options);
+        var linked = await verify.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+        Assert.Equal(leadA, linked.Single(e => e.EventKey.EndsWith(":sql-held-1")).LeadId);
+        Assert.Equal(leadB, linked.Single(e => e.EventKey.EndsWith(":sql-held-11")).LeadId);
+    }
+
     /// <summary>
     /// An administrator rejects a website request at the very moment another resolves its held
     /// enquiry. The resolution wins; the rejection must be refused with a clear message, not a 500.

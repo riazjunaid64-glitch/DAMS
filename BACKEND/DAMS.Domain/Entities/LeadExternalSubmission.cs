@@ -52,7 +52,11 @@ namespace DAMS.Domain.Entities
 
         public string? ExternalFormName { get; set; }
 
-        /// <summary>The provider's complete response, kept for troubleshooting. Never returned over the API.</summary>
+        /// <summary>
+        /// The provider's complete response, kept for troubleshooting. Never part of the lead's
+        /// ordinary data; served on its own, to admins and managers only, by
+        /// ILeadService.GetExternalSubmissionRawAsync.
+        /// </summary>
         public string? RawPayloadJson { get; set; }
 
         /// <summary>

@@ -123,6 +123,17 @@ namespace DAMS.Application.Common
             if (!ctx.IsAdmin)
                 throw new LeadAuthorizationException("Only an admin can review held enquiries.");
         }
+
+        /// <summary>
+        /// The original provider payload carries the enquirer's personal details and every answer
+        /// verbatim, so it goes no further than the roles that already manage leads. Which leads
+        /// is still decided by <see cref="Scope"/>.
+        /// </summary>
+        public static void EnsureCanViewRawIntegrationData(LeadUserContext ctx)
+        {
+            if (!ctx.IsAdmin && !ctx.IsManager)
+                throw new LeadAuthorizationException("Only an admin or manager can view the original provider data.");
+        }
     }
 
     /// <summary>

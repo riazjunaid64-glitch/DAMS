@@ -13,6 +13,7 @@ import {
 } from "../features/leads/CrmUi.tsx";
 import { apiJson, downloadLeadDocument, loadCrmLookups } from "../features/leads/leadApi.ts";
 import LeadActionDialog, { type LeadAction } from "../features/leads/LeadActionDialog.tsx";
+import { canViewOriginalProviderData, formatProviderPayload } from "../features/leads/originalProviderData.ts";
 import {
   enumLabel,
   formatDateTime,
@@ -22,6 +23,7 @@ import {
   type ClosureReason,
   type Communication,
   type ExternalSubmission,
+  type ExternalSubmissionRaw,
   type FollowUp,
   type Lead,
   type LeadComment,
@@ -184,7 +186,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
           {activeTab === "documents" && <Documents items={data.documents} closed={closed} onAdd={() => setAction({ type: "document" })} onDownload={(document) => void downloadLeadDocument(document.id, document.fileName).catch((e) => setError(e.message))} />}
           {activeTab === "collaboration" && <Comments items={data.comments} closed={closed} onAdd={() => setAction({ type: "comment" })} />}
           {activeTab === "assignments" && <Assignments items={data.assignments} />}
-          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} />}
+          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} leadId={leadId} role={user.role} />}
           {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={user.role === "Admin"} onConvert={() => setAction({ type: "convert" })} />}
         </section>
       </div>
@@ -301,7 +303,7 @@ function Assignments({ items }: { items: AssignmentHistory[] }) {
  * Every answer is shown, including ones DAMS has no field for — those are the reason the
  * raw answers are kept at all, and hiding them would defeat the point.
  */
-function ExternalSubmissions({ items }: { items: ExternalSubmission[] }) {
+function ExternalSubmissions({ items, leadId, role }: { items: ExternalSubmission[]; leadId: number; role: string }) {
   if (items.length === 0)
     return <SectionList title="Source & integration"><Empty text="This lead did not arrive through a connected integration." /></SectionList>;
 
@@ -343,9 +345,65 @@ function ExternalSubmissions({ items }: { items: ExternalSubmission[] }) {
               </dl>
             </div>
           )}
+
+          {canViewOriginalProviderData(role, item.provider) && <OriginalProviderData leadId={leadId} submissionId={item.id} />}
         </article>
       ))}
     </SectionList>
+  );
+}
+
+/**
+ * What the provider actually sent — its complete response and the webhook event that delivered
+ * it — fetched only when asked for, since it is kept apart from the lead's own fields on purpose.
+ */
+function OriginalProviderData({ leadId, submissionId }: { leadId: number; submissionId: number }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{ raw: ExternalSubmissionRaw } | { error: string } | null>(null);
+
+  const toggle = async () => {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (state && "raw" in state) return;
+    setState(null);
+    try {
+      setState({ raw: await apiJson<ExternalSubmissionRaw>(`/api/leads/${leadId}/external-submissions/${submissionId}/raw`) });
+    } catch (e) {
+      setState({ error: e instanceof Error ? e.message : "The original data could not be loaded." });
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-[var(--border)] pt-3">
+      <Button size="sm" variant="outline" onClick={() => void toggle()}>{open ? "Hide original data" : "View original data"}</Button>
+      {open && (
+        state === null ? <p className="mt-3 text-sm text-[var(--text-muted)]">Loading…</p>
+        : "error" in state ? <div className="mt-3"><ErrorBanner message={state.error} /></div>
+        : (
+          <div className="mt-3 space-y-4">
+            <RawPayload title="Provider response" json={state.raw.rawPayloadJson} emptyText="No provider response was stored for this submission." />
+            {state.raw.event
+              ? <RawPayload
+                  title={`Webhook event #${state.raw.event.id} · ${state.raw.event.status} · received ${formatDateTime(state.raw.event.receivedAt)}`}
+                  json={state.raw.event.rawPayloadJson}
+                  emptyText="The webhook event carried no payload." />
+              : <p className="text-sm text-[var(--text-muted)]">No webhook event is linked to this submission.</p>}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+function RawPayload({ title, json, emptyText }: { title: string; json?: string | null; emptyText: string }) {
+  const formatted = formatProviderPayload(json);
+  return (
+    <div>
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{title}</p>
+      {formatted
+        ? <pre className="max-h-96 overflow-auto rounded-lg bg-[var(--surface-glass)] p-3 text-xs text-[var(--text-secondary)]">{formatted}</pre>
+        : <p className="text-sm text-[var(--text-muted)]">{emptyText}</p>}
+    </div>
   );
 }
 

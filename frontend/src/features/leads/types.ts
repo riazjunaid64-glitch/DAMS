@@ -1,3 +1,4 @@
+import type { MetaEventStatus } from "../integrations/types.ts";
 import { parseServerDateTime } from "../staff/staffAccessState.ts";
 
 export const leadStages = [
@@ -158,6 +159,24 @@ export interface ExternalSubmission {
   externalSubmittedAt?: string | null;
   receivedAt: string;
   fieldData: ExternalFieldAnswer[];
+}
+
+/** What the provider actually sent for one submission. Admins and managers only. */
+export interface ExternalSubmissionRaw {
+  submissionId: number;
+  provider: string;
+  externalLeadId: string;
+  rawPayloadJson?: string | null;
+  event?: IntegrationEventRaw | null;
+}
+
+export interface IntegrationEventRaw {
+  id: number;
+  eventType: string;
+  status: MetaEventStatus;
+  receivedAt: string;
+  processedAt?: string | null;
+  rawPayloadJson: string;
 }
 
 export interface LeadList {

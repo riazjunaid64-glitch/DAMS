@@ -25,6 +25,12 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>ExternalIntegrationEvents.EventKey's column length.</summary>
         private const int MaxEventKeyLength = 300;
 
+        /// <summary>
+        /// How every storable event's key ends, whichever connection and page it arrived through,
+        /// so the event behind a Meta lead id can be found again without guessing either.
+        /// </summary>
+        public static string EventKeySuffix(string leadgenId) => $":{leadgenId}";
+
         private readonly AppDbContext _context;
         private readonly ILogger<MetaWebhookIntakeService> _logger;
 
@@ -118,7 +124,7 @@ namespace DAMS.Application.Services.Integrations
                     .ThenByDescending(r => r.ExternalIntegrationConnectionId)
                     .FirstOrDefaultAsync(cancellationToken);
 
-            var eventKey = $"{resource?.ExternalIntegrationConnectionId ?? 0}:{pageId ?? "unknown"}:{leadgenId}";
+            var eventKey = $"{resource?.ExternalIntegrationConnectionId ?? 0}:{pageId ?? "unknown"}{EventKeySuffix(leadgenId)}";
 
             // Both ids are provider-controlled. One longer than DAMS stores would fail this
             // save, and with it the whole delivery: Meta would redeliver it forever and the
