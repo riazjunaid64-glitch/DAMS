@@ -186,6 +186,10 @@ namespace DAMS.Application.Services.Integrations
             if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
                 throw new InvalidOperationException("Reconnect this Meta account before syncing it.");
 
+            // Connecting clears LastSyncedAt, so this is the first sync of the current sign-in:
+            // the one that replaces the Page tokens leads are fetched with.
+            var firstSyncOfSignIn = connection.LastSyncedAt is null;
+
             var userToken = _protector.TryUnprotect(connection.AccessTokenProtected);
             if (userToken is null)
             {
@@ -382,6 +386,13 @@ namespace DAMS.Application.Services.Integrations
             connection.UpdatedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
 
+            if (firstSyncOfSignIn
+                && tokenRejection is null
+                && connection.Status == ExternalIntegrationConnectionStatus.Connected)
+            {
+                await ReleaseWaitingEventsAsync(connection.Id, cancellationToken);
+            }
+
             result.SyncedAt = now;
 
             // Only once the sync's own changes are saved, since each recovered lead is saved as it
@@ -404,6 +415,66 @@ namespace DAMS.Application.Services.Integrations
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Once the first sync after a (re)connect has stored fresh Page tokens, brings every
+        /// event this connection is holding back forward to now, so the backlog is fetched on the
+        /// worker's next tick rather than whenever each wait runs out — up to AuthRetryDelayHours
+        /// for one parked while the account needed reconnecting. Not earlier: until this sync, the
+        /// only Page tokens on file are the ones the old sign-in handed out.
+        ///
+        /// Every waiting Retry event is included, so one merely between two ordinary retries is
+        /// brought forward too. That is harmless: it costs one attempt sooner, never an extra one,
+        /// and telling the kinds apart would mean parsing each event's last error. Attempts are
+        /// left alone: parking for authorization never counted one.
+        ///
+        /// Best effort, in its own save once the sync has committed: the events would still drain
+        /// by themselves, so this must never fail the sync. An event the worker claims between
+        /// the read and the save (its wait ran out just then) fails the row-version check; the
+        /// others are then read again and saved.
+        /// </summary>
+        private async Task ReleaseWaitingEventsAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    var now = DateTime.UtcNow;
+                    var waiting = await _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                                    && e.Status == ExternalIntegrationEventStatus.Retry
+                                    && e.AvailableAt > now)
+                        .ToListAsync(cancellationToken);
+
+                    if (waiting.Count == 0)
+                        return;
+
+                    foreach (var integrationEvent in waiting)
+                        integrationEvent.AvailableAt = now;
+
+                    try
+                    {
+                        await _context.SaveChangesAsync(cancellationToken);
+                        return;
+                    }
+                    catch (DbUpdateConcurrencyException)
+                    {
+                        foreach (var integrationEvent in waiting)
+                            _context.Entry(integrationEvent).State = EntityState.Detached;
+                    }
+                }
+
+                _logger.LogWarning(
+                    "Waiting events of Meta connection {ConnectionId} could not be released after three attempts; they will run when their wait ends.",
+                    connectionId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex,
+                    "Releasing the waiting events of Meta connection {ConnectionId} failed; they will run when their wait ends.",
+                    connectionId);
+            }
         }
 
         private MetaSyncResultDto ApplyDiscovered(

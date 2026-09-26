@@ -4376,9 +4376,25 @@ public sealed class SqlServerProductionInvariantTests
 
         await using (var db = new AppDbContext(options))
         {
+            // The reconnect alone replaces no Page token, so it releases nothing.
             var parked = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Status == ExternalIntegrationEventStatus.Retry);
-            Assert.True(parked.AvailableAt <= DateTime.UtcNow);
+            Assert.True(parked.AvailableAt > DateTime.UtcNow.AddHours(5));
             Assert.Null((await db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).SyncRejectedAt);
+        }
+
+        // The first sync after it does.
+        graph.DiscoveryFailure = null;
+        graph.Pages = [new() { ResourceType = ExternalResourceTypes.FacebookPage, ExternalId = "page-health", Name = "Health", ResourceToken = "page-token-fresh" }];
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance);
+            Assert.Equal(1, await sync.SyncDueConnectionsAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var released = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Status == ExternalIntegrationEventStatus.Retry);
+            Assert.True(released.AvailableAt <= DateTime.UtcNow);
         }
     }
 
