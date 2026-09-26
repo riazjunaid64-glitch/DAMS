@@ -755,36 +755,30 @@ public sealed class LeadAlertAndReportingTests
     }
 
     [Fact]
-    public async Task ManagerDashboardCoversTheTeamAndTheUnassignedQueue()
+    public async Task EmployeesCannotOpenTheOrganisationDashboard()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var teamLead = await h.CreateWorkedLeadAsync();
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Sales, null, null));
+    }
+
+    [Fact]
+    public async Task ManagerSeesTheSameOrganisationDashboardAsAdmin()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await h.CreateWorkedLeadAsync();
         await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Nadia", phone: "03337776666", email: "n@x.com"));
         var outside = await h.CreateWorkedLeadAsync("03219998888");
         await h.Leads.AssignAsync(outside,
             new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "handover" }, h.Admin);
 
-        await h.Leads.ConvertAsync(teamLead, new ConvertLeadDto { UnitId = h.UnitId }, h.Manager);
+        var admin = await h.Reporting.GetAdminDashboardAsync(h.Admin, null, null);
+        var manager = await h.Reporting.GetAdminDashboardAsync(h.Manager, null, null);
 
-        var dashboard = await h.Reporting.GetManagerDashboardAsync(h.Manager);
-
-        // The team's own lead plus the unassigned one; the other team's lead is excluded.
-        Assert.Equal(2, dashboard.TeamLeads);
-        Assert.Equal(1, dashboard.UnassignedLeads);
-        Assert.Equal(1, dashboard.WonLeads);
-        Assert.Equal(50d, dashboard.ConversionRatePercent);
-        Assert.Contains(dashboard.ByEmployee, e => e.EmployeeId == h.SalesEmployeeId && e.WonLeads == 1);
-        Assert.DoesNotContain(dashboard.ByEmployee, e => e.EmployeeId == h.OtherSalesEmployeeId);
-    }
-
-    [Fact]
-    public async Task EmployeesCannotOpenTheTeamOrOrganisationDashboards()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetManagerDashboardAsync(h.Sales));
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Sales, null, null));
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Manager, null, null));
+        Assert.Equal(3, manager.TotalLeads);
+        Assert.Equal(admin.TotalLeads, manager.TotalLeads);
+        Assert.Equal(admin.UnassignedLeads, manager.UnassignedLeads);
+        Assert.Contains(manager.ByEmployee, e => e.EmployeeId == h.OtherSalesEmployeeId);
     }
 
     [Fact]

@@ -150,13 +150,13 @@ namespace DAMS.Api.Controllers
 
         /// <summary>External enquiries whose details match more than one open lead, waiting for a decision.</summary>
         [HttpGet("held-enquiries")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public Task<IActionResult> GetHeldEnquiries(CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.GetIntakeHoldsAsync(ctx, cancellationToken), cancellationToken);
 
         /// <summary>Adds a held enquiry to the chosen lead, or dismisses it.</summary>
         [HttpPost("held-enquiries/{id:int}/resolve")]
-        [Authorize(Roles = LeadRoles.Admin)]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
         public Task<IActionResult> ResolveHeldEnquiry(int id, [FromBody] ResolveLeadIntakeHoldDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.ResolveIntakeHoldAsync(id, dto, ctx, cancellationToken), cancellationToken);
 

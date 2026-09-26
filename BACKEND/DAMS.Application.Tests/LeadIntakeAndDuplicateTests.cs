@@ -590,7 +590,7 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Fact]
-    public async Task KAN18_Manager_UnauthorizedTeam_ThrowsAuthorizationException()
+    public async Task KAN38_Manager_AnyTeam_Succeeds()
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
@@ -601,9 +601,9 @@ public sealed class LeadIntakeAndDuplicateTests
         var dto = LeadTestHarness.Intake();
         dto.AssignedTeamId = otherTeam.Id;
 
-        // Manager only manages North Sales, not South Sales.
-        await Assert.ThrowsAsync<LeadAuthorizationException>(
-            () => h.Leads.IngestAsync(dto, h.Manager));
+        // Managers assign across every team, exactly like an admin.
+        var result = await h.Leads.IngestAsync(dto, h.Manager);
+        Assert.Equal(otherTeam.Id, result.Lead!.AssignedTeamId);
     }
 
     [Fact]

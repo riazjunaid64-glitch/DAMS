@@ -441,7 +441,7 @@ public sealed class StaffManagementTests
 
         var managerRows = await service.GetDirectoryAsync(h.Manager);
         Assert.Contains(managerRows, e => e.EmployeeId == h.SalesEmployeeId);
-        Assert.DoesNotContain(managerRows, e => e.EmployeeId == h.OtherSalesEmployeeId);
+        Assert.Contains(managerRows, e => e.EmployeeId == h.OtherSalesEmployeeId);
 
         var employeeRows = await service.GetDirectoryAsync(h.Sales);
         Assert.Contains(employeeRows, e => e.EmployeeId == h.ManagerEmployeeId);

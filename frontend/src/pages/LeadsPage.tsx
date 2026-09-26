@@ -87,10 +87,7 @@ function LeadsWorkspace({ user }: { user: User }) {
     setLoading(true);
     setError(null);
     try {
-      const dashboardEndpoint =
-        user.role === "Admin" ? "/api/lead-dashboard/organisation" :
-        user.role === "Manager" ? "/api/lead-dashboard/team" :
-        "/api/lead-dashboard/me";
+      const dashboardEndpoint = user.role === "Employee" ? "/api/lead-dashboard/me" : "/api/lead-dashboard/organisation";
       const [rows, metrics, refs] = await Promise.all([
         apiJson<LeadList>(`/api/leads?${query}`),
         apiJson<Record<string, unknown>>(dashboardEndpoint),
@@ -113,7 +110,7 @@ function LeadsWorkspace({ user }: { user: User }) {
   return (
     <>
       <CrmHeader
-        title={user.role === "Employee" ? "My lead workspace" : user.role === "Manager" ? "Team lead workspace" : "Lead management"}
+        title={user.role === "Employee" ? "My lead workspace" : "Lead management"}
         subtitle="Capture, assign, work, and convert property enquiries while preserving every customer interaction."
         role={user.role}
         actions={
@@ -126,7 +123,7 @@ function LeadsWorkspace({ user }: { user: User }) {
 
       <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-        {user.role === "Admin" && <HeldEnquiriesPanel onResolved={() => void load()} />}
+        {user.role !== "Employee" && <HeldEnquiriesPanel onResolved={() => void load()} />}
 
         <section aria-label="Lead summary" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {metrics.map((metric) => {
@@ -405,17 +402,11 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
 function dashboardMetrics(role: string, dashboard: Record<string, unknown> | null) {
   const d = dashboard ?? {};
   const n = (key: string) => Number(d[key] ?? 0);
-  if (role === "Admin") return [
+  if (role === "Admin" || role === "Manager") return [
     { id: "total", label: "All leads", value: n("totalLeads") },
     { id: "won", label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
     { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
     { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
-  ];
-  if (role === "Manager") return [
-    { id: "total", label: "Team leads", value: n("teamLeads") },
-    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
-    { id: "overdue", label: "Follow-ups overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
-    { id: "visits", label: "Site visits", value: n("upcomingSiteVisits") },
   ];
   return [
     { id: "total", label: "Active leads", value: n("activeLeads") },

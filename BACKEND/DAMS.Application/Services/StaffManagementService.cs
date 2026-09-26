@@ -37,13 +37,8 @@ namespace DAMS.Application.Services
                 .Include(e => e.Team)
                 .Where(e => e.Status == EmployeeStatus.Active);
 
-            if (actor.IsManager)
-            {
-                var teamIds = actor.ManagedTeamIds.ToArray();
-                query = query.Where(e => e.Id == actor.EmployeeId ||
-                    (e.TeamId.HasValue && teamIds.Contains(e.TeamId.Value)));
-            }
-            else if (actor.IsEmployee)
+            // Admins and managers assign across every team, so they see the whole directory.
+            if (actor.IsEmployee)
             {
                 var teamId = actor.TeamId;
                 query = query.Where(e => e.Id == actor.EmployeeId ||
@@ -137,7 +132,7 @@ namespace DAMS.Application.Services
                     || (c.Email != null && c.Email.ToLower().Contains(term))
                     || (c.CNIC != null && c.CNIC.Contains(term)));
 
-            if (!actor.IsAdmin)
+            if (!actor.IsAdmin && !actor.IsManager)
             {
                 var visibleLeadCustomerIds = LeadAccess.Scope(_context.Leads.AsNoTracking(), actor)
                     .Where(l => l.ConvertedCustomerId != null)

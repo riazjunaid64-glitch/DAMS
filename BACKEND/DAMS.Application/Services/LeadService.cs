@@ -2654,11 +2654,6 @@ namespace DAMS.Application.Services
                         $"{employee.FullName} has not activated their DAMS login yet, so they cannot be given leads.");
             }
 
-            // A manager may only hand work to their own people.
-            if (ctx.IsManager && employee.Id != ctx.EmployeeId
-                && (employee.TeamId == null || !ctx.ManagedTeamIds.Contains(employee.TeamId.Value)))
-                throw new LeadAuthorizationException("You can only assign leads within your own team.");
-
             return employee;
         }
 
@@ -2670,9 +2665,6 @@ namespace DAMS.Application.Services
 
             if (!team.IsActive)
                 throw new InvalidOperationException(inactiveMessage ?? $"Team '{team.Name}' is not active.");
-
-            if (ctx.IsManager && !ctx.ManagedTeamIds.Contains(teamId))
-                throw new LeadAuthorizationException("You can only assign leads to a team you manage.");
         }
 
         /// <summary>Loads a tracked lead the caller is allowed to act on, or throws.</summary>

@@ -108,8 +108,6 @@ namespace DAMS.Application.Interfaces
     {
         Task<EmployeeLeadDashboardDto> GetEmployeeDashboardAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
 
-        Task<ManagerLeadDashboardDto> GetManagerDashboardAsync(LeadUserContext ctx, CancellationToken cancellationToken = default);
-
         Task<AdminLeadDashboardDto> GetAdminDashboardAsync(LeadUserContext ctx, DateTime? from, DateTime? to, CancellationToken cancellationToken = default);
     }
 

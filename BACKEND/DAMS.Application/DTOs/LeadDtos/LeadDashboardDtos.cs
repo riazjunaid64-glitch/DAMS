@@ -43,35 +43,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public List<LeadSiteVisitDto> NextSiteVisits { get; set; } = new();
     }
 
-    public class ManagerLeadDashboardDto
-    {
-        public int TeamLeads { get; set; }
-
-        public int UnassignedLeads { get; set; }
-
-        public int OverdueFirstContacts { get; set; }
-
-        public int OverdueFollowUps { get; set; }
-
-        public int InactiveLeads { get; set; }
-
-        public int UpcomingSiteVisits { get; set; }
-
-        public int MissedSiteVisits { get; set; }
-
-        public int ManagerReviewRequests { get; set; }
-
-        public int WonLeads { get; set; }
-
-        public int ClosedLeads { get; set; }
-
-        public double ConversionRatePercent { get; set; }
-
-        public List<LeadStageCountDto> ByStage { get; set; } = new();
-
-        public List<EmployeePerformanceDto> ByEmployee { get; set; } = new();
-    }
-
     public class EmployeePerformanceDto
     {
         public int EmployeeId { get; set; }
