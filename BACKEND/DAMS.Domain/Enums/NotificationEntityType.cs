@@ -21,6 +21,7 @@ namespace DAMS.Domain.Enums
         Unit = 11,
         EmployeeTask = 12,
         Announcement = 13,
-        Account = 14
+        Account = 14,
+        LeadIntakeHold = 15
     }
 }

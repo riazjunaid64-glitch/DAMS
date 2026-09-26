@@ -44,7 +44,7 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
         Intake = new MetaWebhookIntakeService(leads.Db, NullLogger<MetaWebhookIntakeService>.Instance);
         Sync = new MetaResourceSyncService(leads.Db, Graph, protector, Options, NullLogger<MetaResourceSyncService>.Instance);
         Processor = new MetaLeadEventProcessor(
-            leads.Db, Graph, protector, leads.Leads, Options, NullLogger<MetaLeadEventProcessor>.Instance);
+            leads.Db, Graph, protector, leads.Leads, leads.Dispatcher, Options, NullLogger<MetaLeadEventProcessor>.Instance);
         Integration = new MetaIntegrationService(
             leads.Db, Graph, protector, Sync, Options, NullLogger<MetaIntegrationService>.Instance);
     }

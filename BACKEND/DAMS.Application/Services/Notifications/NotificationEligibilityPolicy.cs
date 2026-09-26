@@ -66,7 +66,10 @@ namespace DAMS.Application.Services.Notifications
 
         // Admins supervise internal work and system delivery. Customer contractual messages
         // are deliberately absent: an admin only sees those through delivery/audit history.
-        private static readonly HashSet<NotificationType> AdminTypes = new(ManagerTypes);
+        private static readonly HashSet<NotificationType> AdminTypes = new(ManagerTypes)
+        {
+            NotificationType.LeadHeldForReview
+        };
 
         // Addressed to one person because of a relationship they hold with the record. Every
         // role — admins included — must still hold that relationship, so a producer that picks
@@ -281,6 +284,9 @@ namespace DAMS.Application.Services.Notifications
             return n =>
                 (n.Type == NotificationType.AdminAnnouncement
                  && (n.EntityType == NotificationEntityType.None || n.EntityType == NotificationEntityType.Announcement))
+                || (n.Type == NotificationType.LeadHeldForReview
+                    && n.EntityType == NotificationEntityType.LeadIntakeHold && n.EntityId > 0
+                    && isAdmin && _context.LeadIntakeHolds.Any(h => h.Id == n.EntityId))
                 || (n.Type == NotificationType.AccountSecurity
                     && (n.EntityType == NotificationEntityType.None
                         || n.EntityType == NotificationEntityType.Announcement
@@ -463,6 +469,11 @@ namespace DAMS.Application.Services.Notifications
         {
             if (type == NotificationType.AdminAnnouncement)
                 return entityType is NotificationEntityType.None or NotificationEntityType.Announcement;
+
+            if (type == NotificationType.LeadHeldForReview)
+                return string.Equals(recipient.Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
+                       && entityType == NotificationEntityType.LeadIntakeHold && entityId is > 0
+                       && await _context.LeadIntakeHolds.AnyAsync(h => h.Id == entityId.Value, cancellationToken);
 
             if (type == NotificationType.AccountSecurity)
                 return entityType is NotificationEntityType.None or NotificationEntityType.Announcement
