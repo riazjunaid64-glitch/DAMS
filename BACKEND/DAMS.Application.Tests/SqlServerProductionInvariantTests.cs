@@ -2077,6 +2077,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             await db.GetService<IMigrator>().MigrateAsync(BeforeHoldEventLinks);
+            await AddLaterLeadColumnsAsync(database.ConnectionString);
             using var dispatcher = SqlLeadDispatcher(db);
             var leads = SqlLeadService(db, dispatcher);
             leadA = (await leads.IngestAsync(new LeadIntakeDto
@@ -2112,6 +2113,7 @@ public sealed class SqlServerProductionInvariantTests
                 "UPDATE [LeadIntakeHolds] SET [Status] = 1, [ResolvedLeadId] = {0}, [ResolvedAt] = SYSUTCDATETIME() WHERE [ExternalLeadId] = 'sql-held-1'",
                 leadA);
 
+        await DropLaterLeadColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
         {
             await db.Database.MigrateAsync();
@@ -3312,6 +3314,7 @@ public sealed class SqlServerProductionInvariantTests
         var options = Options(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.GetService<IMigrator>().MigrateAsync("20260925141153_AddLeadAlertChecks");
+        await AddLaterLeadColumnsAsync(database.ConnectionString);
 
         var now = DateTime.UtcNow;
         int userId, employeeId, leadId, visitId;
@@ -3388,6 +3391,7 @@ public sealed class SqlServerProductionInvariantTests
             await db.SaveChangesAsync();
         }
 
+        await DropLaterLeadColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.Database.MigrateAsync();
 
@@ -6063,6 +6067,18 @@ public sealed class SqlServerProductionInvariantTests
         public Task<EmailSendResult> SendAsync(EmailMessage message, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Activation must not send email.");
     }
+
+    /// <summary>
+    /// Lead columns added by migrations after the point a data-migration test starts from. Those
+    /// tests seed leads through today's model, which writes every mapped column, so the columns must
+    /// exist while seeding; they are dropped again before migrating forward, which then adds them
+    /// for real. A Lead column added by a later migration belongs here too.
+    /// </summary>
+    private static Task AddLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString,
+        "ALTER TABLE [Leads] ADD [PaymentPreference] int NOT NULL CONSTRAINT [DF_Test_Leads_PaymentPreference] DEFAULT 0;");
+
+    private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString,
+        "ALTER TABLE [Leads] DROP CONSTRAINT [DF_Test_Leads_PaymentPreference]; ALTER TABLE [Leads] DROP COLUMN [PaymentPreference];");
 
     private static async Task ExecuteAsync(string connectionString, string sql)
     {

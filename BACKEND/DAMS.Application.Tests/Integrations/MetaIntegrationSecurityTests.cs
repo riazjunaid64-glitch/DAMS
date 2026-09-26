@@ -4,7 +4,9 @@ using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.Services.Integrations;
 using DAMS.Domain.Enums;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace DAMS.Application.Tests.Integrations;
@@ -60,6 +62,97 @@ public class MetaIntegrationSecurityTests
         // permission the person declined once, so a missing lead-critical scope could not be
         // recovered and the connection would stay in NeedsReauthorization.
         Assert.Equal("rerequest", ExtractQueryValue(start.AuthorizationUrl, "auth_type"));
+    }
+
+    [Fact]
+    public async Task WithoutALoginConfiguration_TheAuthorizationUrlIsTheClassicScopeDialog()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, null);
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+
+        // Pinned exactly, so adding Facebook Login for Business support cannot drift the URL
+        // every existing connection has been made through.
+        Assert.Equal(
+            "https://www.facebook.com/v21.0/dialog/oauth" +
+            "?client_id=test-app-id" +
+            $"&redirect_uri={Uri.EscapeDataString("https://dams.test/api/integrations/meta/callback")}" +
+            $"&state={Uri.EscapeDataString(state)}" +
+            "&response_type=code" +
+            "&auth_type=rerequest" +
+            $"&scope={Uri.EscapeDataString(MetaScopes.Joined)}",
+            start.AuthorizationUrl);
+        Assert.Null(ExtractQueryValue(start.AuthorizationUrl, "config_id"));
+    }
+
+    [Fact]
+    public async Task WithALoginConfiguration_TheAuthorizationUrlSendsConfigIdInsteadOfScope()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.LoginConfigId = " 1234567890123456 ";
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, "/crm/settings");
+        var url = start.AuthorizationUrl;
+
+        Assert.Equal("1234567890123456", ExtractQueryValue(url, "config_id"));
+        Assert.Equal("test-app-id", ExtractQueryValue(url, "client_id"));
+        Assert.Equal("https://dams.test/api/integrations/meta/callback", ExtractQueryValue(url, "redirect_uri"));
+        Assert.Equal("code", ExtractQueryValue(url, "response_type"));
+        Assert.False(string.IsNullOrWhiteSpace(ExtractQueryValue(url, "state")));
+        // The login configuration owns the permission list; Meta recommends not sending scope
+        // with it, and rerequest is a parameter of the scope-driven dialog only.
+        Assert.Null(ExtractQueryValue(url, "scope"));
+        Assert.Null(ExtractQueryValue(url, "auth_type"));
+        // Only a User access token configuration is supported: the callback still exchanges
+        // for a long-lived user token, which a system-user response type would bypass.
+        Assert.Null(ExtractQueryValue(url, "override_default_response_type"));
+    }
+
+    [Theory]
+    [InlineData(true, ExternalIntegrationConnectionStatus.Connected)]
+    [InlineData(false, ExternalIntegrationConnectionStatus.NeedsReauthorization)]
+    public async Task WithALoginConfiguration_TheCallbackStillChecksEveryLeadCriticalPermission(
+        bool configurationGrantsEverything, ExternalIntegrationConnectionStatus expected)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.LoginConfigId = "1234567890123456";
+        if (!configurationGrantsEverything)
+            h.Graph.Authorization.GrantedScopes = [MetaScopes.PagesShowList];
+
+        var start = await h.Integration.StartConnectAsync(h.Leads.Admin, null);
+        var state = ExtractQueryValue(start.AuthorizationUrl, "state")!;
+        var redirect = await h.Integration.CompleteCallbackAsync("code-1", state, null);
+
+        // A login configuration missing a lead-critical permission is caught exactly as a
+        // declined scope is, rather than trusted because it came from the dashboard.
+        Assert.Contains("meta=connected", redirect);
+        var connection = await h.Db.ExternalIntegrationConnections.SingleAsync();
+        Assert.Equal(expected, connection.Status);
+    }
+
+    [Theory]
+    [InlineData("1234567890123456", true)]
+    [InlineData("", true)]
+    [InlineData("not-a-config-id", false)]
+    [InlineData("123&scope=ads_management", false)]
+    // \d would accept these Arabic-Indic digits; a configuration ID is ASCII only.
+    [InlineData("١٢٣", false)]
+    public void TheLoginConfigId_IsValidatedAtStartup(string loginConfigId, bool starts)
+    {
+        using var factory = new MetaWebhookEndpointTests.MetaApiFactory()
+            .WithWebHostBuilder(b => b.UseSetting("MetaIntegration:LoginConfigId", loginConfigId));
+
+        var boot = Record.Exception(() => factory.Services);
+
+        if (starts)
+        {
+            Assert.Null(boot);
+            return;
+        }
+
+        var failure = Assert.IsType<OptionsValidationException>(boot);
+        Assert.Contains(failure.Failures, f => f.Contains("MetaIntegration:LoginConfigId"));
     }
 
     [Fact]

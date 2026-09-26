@@ -27,6 +27,14 @@ namespace DAMS.Application.Common
         /// <summary>CRM screen the admin is returned to once the callback completes.</summary>
         public string? FrontendReturnUrl { get; set; }
 
+        /// <summary>
+        /// Optional Facebook Login for Business configuration ID from the App Dashboard. Set it
+        /// when the Meta app is a Business app: the connect dialog then sends config_id instead
+        /// of scope. Unset, the classic scope-based dialog is used unchanged. The configuration
+        /// must grant every MetaScopes.LeadCritical permission and issue a User access token.
+        /// </summary>
+        public string? LoginConfigId { get; set; }
+
         public string GraphApiVersion { get; set; } = "v21.0";
 
         public int OAuthStateLifetimeMinutes { get; set; } = 10;

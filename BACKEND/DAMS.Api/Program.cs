@@ -186,6 +186,9 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
         "Meta integration request limits are outside the supported range.")
     .Validate(o => System.Text.RegularExpressions.Regex.IsMatch(o.GraphApiVersion ?? "", @"^v\d+\.\d+$"),
         "MetaIntegration:GraphApiVersion must look like \"v21.0\".")
+    .Validate(o => string.IsNullOrWhiteSpace(o.LoginConfigId)
+                   || System.Text.RegularExpressions.Regex.IsMatch(o.LoginConfigId.Trim(), @"^[0-9]+$"),
+        "MetaIntegration:LoginConfigId must be the numeric configuration ID from Facebook Login for Business.")
     .Validate(o => string.IsNullOrWhiteSpace(o.OAuthCallbackUrl)
                    || (Uri.TryCreate(o.OAuthCallbackUrl, UriKind.Absolute, out var callback)
                        && callback.Scheme == Uri.UriSchemeHttps),
