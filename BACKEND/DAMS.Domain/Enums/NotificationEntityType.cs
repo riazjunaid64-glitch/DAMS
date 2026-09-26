@@ -22,6 +22,7 @@ namespace DAMS.Domain.Enums
         EmployeeTask = 12,
         Announcement = 13,
         Account = 14,
-        LeadIntakeHold = 15
+        LeadIntakeHold = 15,
+        IntegrationConnection = 16
     }
 }

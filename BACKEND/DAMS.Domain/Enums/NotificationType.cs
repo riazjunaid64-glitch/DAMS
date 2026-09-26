@@ -59,6 +59,9 @@ namespace DAMS.Domain.Enums
         AccountSecurity = 100,
 
         // Supervision
-        ManagerAttentionRequired = 110
+        ManagerAttentionRequired = 110,
+
+        // Integrations
+        IntegrationAttentionRequired = 120
     }
 }

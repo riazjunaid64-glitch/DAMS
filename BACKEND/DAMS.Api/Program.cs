@@ -184,6 +184,9 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
                    && o.MaxWebhookBodyBytes is >= 1024 and <= 5242880
                    && o.MaxGraphPages is >= 1 and <= 200,
         "Meta integration request limits are outside the supported range.")
+    .Validate(o => o.TokenExpiryWarningDays is >= 0 and <= 60
+                   && o.QuietPageAlertDays is >= 0 and <= 365,
+        "Meta integration alert settings are outside the supported range.")
     .Validate(o => System.Text.RegularExpressions.Regex.IsMatch(o.GraphApiVersion ?? "", @"^v\d+\.\d+$"),
         "MetaIntegration:GraphApiVersion must look like \"v21.0\".")
     .Validate(o => string.IsNullOrWhiteSpace(o.LoginConfigId)
@@ -298,6 +301,7 @@ builder.Services.AddScoped<IMetaResourceSyncService, MetaResourceSyncService>();
 builder.Services.AddScoped<IMetaIntegrationService, MetaIntegrationService>();
 builder.Services.AddScoped<IMetaWebhookIntakeService, MetaWebhookIntakeService>();
 builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
+builder.Services.AddScoped<IMetaIntegrationAlertService, MetaIntegrationAlertService>();
 builder.Services.AddHostedService<IntegrationBackgroundService>();
 
 // ── Notification platform ────────────────────────────────────────────────────────

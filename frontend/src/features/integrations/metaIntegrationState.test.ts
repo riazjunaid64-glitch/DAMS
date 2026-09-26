@@ -10,9 +10,12 @@ import {
   deliverySummary,
   isAwaitingFirstSync,
   isToggleable,
+  lastLeadSummary,
   readCallbackResult,
   resourceTypeLabel,
+  signInExpiry,
   summarizeCounts,
+  syncRejectionWarning,
 } from "./metaIntegrationState.ts";
 
 const connection = (overrides: Partial<MetaConnection> = {}): MetaConnection => ({
@@ -154,5 +157,48 @@ describe("event list", () => {
     // The first request answering last must be ignored.
     expect(second()).toBe(true);
     expect(first()).toBe(false);
+  });
+});
+
+describe("sign-in health", () => {
+  const now = new Date("2026-09-26T12:00:00Z");
+
+  it("shows when the Meta sign-in expires and warns in its last week", () => {
+    expect(signInExpiry(connection({ tokenExpiresAt: "2026-11-20T12:00:00Z" }), now)?.tone).toBe("normal");
+    const soon = signInExpiry(connection({ tokenExpiresAt: "2026-09-29T12:00:00Z" }), now);
+    expect(soon?.tone).toBe("warning");
+    expect(soon?.text).toContain("3 days left");
+    expect(signInExpiry(connection({ tokenExpiresAt: "2026-09-20T12:00:00Z" }), now)?.tone).toBe("expired");
+  });
+
+  it("reads the server's zone-less UTC time as UTC, not as the browser's local time", () => {
+    // 3.5 hours left. Read as local time in any zone ahead of UTC — Pakistan's UTC+5 among them —
+    // this was already "expired".
+    const expiry = signInExpiry(connection({ tokenExpiresAt: "2026-09-26T15:30:00" }), now);
+    expect(expiry?.tone).toBe("warning");
+    expect(expiry?.text).toContain("1 day left");
+  });
+
+  it("warns on the server's window, not a fixed one", () => {
+    const tenDaysOut = { tokenExpiresAt: "2026-10-06T12:00:00" };
+    expect(signInExpiry(connection(tenDaysOut), now)?.tone).toBe("normal");
+    expect(signInExpiry(connection({ ...tenDaysOut, signInWarningDays: 14 }), now)?.tone).toBe("warning");
+    expect(signInExpiry(connection({ tokenExpiresAt: "2026-09-27T12:00:00", signInWarningDays: 0 }), now)?.tone).toBe("normal");
+  });
+
+  it("says nothing about expiry when Meta gave none or the account is disconnected", () => {
+    expect(signInExpiry(connection({ tokenExpiresAt: null }), now)).toBeNull();
+    expect(signInExpiry(connection({ status: "Disconnected", tokenExpiresAt: "2026-09-29T12:00:00Z" }), now)).toBeNull();
+  });
+
+  it("reports when the last lead arrived, or that none has", () => {
+    expect(lastLeadSummary(connection(), (v) => v)).toBe("No leads received yet");
+    expect(lastLeadSummary(connection({ lastLeadReceivedAt: "x" }), (v) => `at ${v}`)).toBe("Last lead received at x");
+  });
+
+  it("warns about a refused sync only while the connection still delivers leads", () => {
+    expect(syncRejectionWarning(connection())).toBeNull();
+    expect(syncRejectionWarning(connection({ syncRejectedAt: "2026-09-26T10:00:00Z" }))).toContain("Leads still arrive");
+    expect(syncRejectionWarning(connection({ status: "NeedsReauthorization", syncRejectedAt: "2026-09-26T10:00:00Z" }))).toBeNull();
   });
 });

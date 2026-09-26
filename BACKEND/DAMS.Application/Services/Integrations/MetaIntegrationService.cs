@@ -226,6 +226,10 @@ namespace DAMS.Application.Services.Integrations
                 ApplyAuthorization(connection, authorization, actingUserId);
                 await _context.SaveChangesAsync(cancellationToken);
             }
+
+            // The events parked while this account waited are not released here: they are
+            // fetched with Page tokens, which only the first sync after this reconnect replaces
+            // (MetaResourceSyncService.ReleaseWaitingEventsAsync).
         }
 
         private void ApplyAuthorization(
@@ -251,6 +255,8 @@ namespace DAMS.Application.Services.Integrations
             // Left null on purpose: the worker treats "never synced" as "sync me now", so the
             // first discovery happens in the background rather than inside a browser redirect.
             connection.LastSyncedAt = null;
+            // A fresh token has not been refused by anything yet.
+            connection.SyncRejectedAt = null;
 
             if (missingCriticalScopes.Count > 0)
             {
@@ -308,7 +314,11 @@ namespace DAMS.Application.Services.Integrations
                             || e.Status == ExternalIntegrationEventStatus.Processing)),
                     FailedEventCount = _context.ExternalIntegrationEvents.Count(e =>
                         e.ExternalIntegrationConnectionId == c.Id
-                        && e.Status == ExternalIntegrationEventStatus.Failed)
+                        && e.Status == ExternalIntegrationEventStatus.Failed),
+                    LastLeadReceivedAt = _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == c.Id
+                                    && e.Status != ExternalIntegrationEventStatus.Ignored)
+                        .Max(e => (DateTime?)e.ReceivedAt)
                 })
                 .ToListAsync(cancellationToken);
 
@@ -324,6 +334,9 @@ namespace DAMS.Application.Services.Integrations
                 LastErrorAt = row.Connection.LastErrorAt,
                 LastError = row.Connection.LastError,
                 TokenExpiresAt = row.Connection.TokenExpiresAt,
+                SignInWarningDays = _options.TokenExpiryWarningDays,
+                SyncRejectedAt = row.Connection.SyncRejectedAt,
+                LastLeadReceivedAt = row.LastLeadReceivedAt,
                 GrantedScopes = ReadScopes(row.Connection.GrantedScopesJson),
                 PageCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.FacebookPage),
                 InstagramCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.InstagramAccount),
@@ -859,6 +872,7 @@ namespace DAMS.Application.Services.Integrations
             connection.Status = ExternalIntegrationConnectionStatus.Disconnected;
             connection.AccessTokenProtected = null;
             connection.TokenExpiresAt = null;
+            connection.SyncRejectedAt = null;
             connection.DisconnectedAt = DateTime.UtcNow;
             connection.DisconnectedByUserId = actor.UserId;
             connection.UpdatedAt = DateTime.UtcNow;

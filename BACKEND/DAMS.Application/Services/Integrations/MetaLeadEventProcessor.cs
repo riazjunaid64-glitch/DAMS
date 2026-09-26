@@ -43,6 +43,16 @@ namespace DAMS.Application.Services.Integrations
         /// </summary>
         private const int GraphCallsPerLead = 2;
 
+        /// <summary>
+        /// How long after a reconnect a lead waits for the first sync to replace its Page's token
+        /// (see AwaitsFreshPageToken). Long enough for a sync that fails a few ticks in a row, short
+        /// enough that a sync which never succeeds cannot hold leads back unnoticed.
+        /// </summary>
+        internal static readonly TimeSpan FirstSyncGrace = TimeSpan.FromMinutes(30);
+
+        /// <summary>How often a lead waiting on that first sync looks again.</summary>
+        private static readonly TimeSpan FirstSyncRecheck = TimeSpan.FromMinutes(1);
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -187,6 +197,15 @@ namespace DAMS.Application.Services.Integrations
                 // otherwise a long reauthorization window would silently exhaust the retries.
                 await DeferAsync(integrationEvent, TimeSpan.FromHours(_options.AuthRetryDelayHours),
                     "Waiting for this Meta connection to be reauthorized.", cancellationToken);
+                return false;
+            }
+
+            if (AwaitsFreshPageToken(connection, resource, DateTime.UtcNow))
+            {
+                // Not an attempt: nothing was asked of Meta. The sync that replaces the token
+                // brings every waiting event forward when it finishes.
+                await DeferAsync(integrationEvent, FirstSyncRecheck,
+                    "Waiting for the first sync after this Meta account was reconnected.", cancellationToken);
                 return false;
             }
 
@@ -404,11 +423,7 @@ namespace DAMS.Application.Services.Integrations
             LeadIntakeHold hold, LeadIntakeDto enquiry, ExternalIntegrationResource resource,
             CancellationToken cancellationToken)
         {
-            var adminIds = await _context.Users.AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin
-                            && u.AccountStatus == UserAccountStatus.Active)
-                .Select(u => u.UserId)
-                .ToListAsync(cancellationToken);
+            var adminIds = await MetaIntegrationAlertService.ActiveAdminIdsAsync(_context, cancellationToken);
 
             var name = LeadContactNormalizer.Clean($"{enquiry.FirstName} {enquiry.LastName}") ?? "Unnamed enquiry";
             var sourceName = LeadContactNormalizer.Clean(resource.Name) ?? "Meta";
@@ -666,6 +681,27 @@ namespace DAMS.Application.Services.Integrations
             await _context.SaveChangesAsync(cancellationToken);
             return false;
         }
+
+        /// <summary>
+        /// Whether this Page's token was handed out under the sign-in a reconnect just replaced,
+        /// while the sync that fetches its new one has not yet finished.
+        ///
+        /// Reconnecting stores only the account's token; Page tokens are refreshed by the next
+        /// sync. A sign-in Meta revoked usually takes its Page tokens with it, so fetching with
+        /// the old one in between would be refused and put the connection straight back into
+        /// NeedsReauthorization — where the sync, which only runs for connected accounts, could
+        /// never repair it. A token of unknown age (never synced) is not held back, and neither
+        /// is one a finished sync left alone: that Page was not returned, so no newer token is
+        /// coming. Nor is anything held past FirstSyncGrace, so a sync that keeps failing ends
+        /// in the old token being tried rather than leads waiting unseen.
+        /// </summary>
+        internal static bool AwaitsFreshPageToken(
+            ExternalIntegrationConnection connection, ExternalIntegrationResource resource, DateTime now) =>
+            connection.LastSyncedAt is null
+            && connection.SyncRejectedAt is null
+            && resource.LastSyncedAt is { } tokenIssuedBy
+            && tokenIssuedBy < connection.ConnectedAt
+            && connection.ConnectedAt > now - FirstSyncGrace;
 
         private async Task DeferAsync(
             ExternalIntegrationEvent integrationEvent, TimeSpan delay, string reason, CancellationToken cancellationToken)

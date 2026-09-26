@@ -52,6 +52,15 @@ namespace DAMS.Domain.Entities
 
         public string? SyncLockedBy { get; set; }
 
+        /// <summary>
+        /// When Meta last refused this connection's own access token during a resource sync while
+        /// the Page tokens it handed out were still on hand. Only discovery needs that token —
+        /// leads are fetched with the Page tokens, which do not expire with it — so the connection
+        /// stays Connected and this records the warning instead. Null while sync gets through;
+        /// cleared by the next sync that does, or by reconnecting.
+        /// </summary>
+        public DateTime? SyncRejectedAt { get; set; }
+
         public DateTime? LastErrorAt { get; set; }
 
         /// <summary>Sanitised message only — credentials are scrubbed before anything is stored here.</summary>

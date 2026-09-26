@@ -45,6 +45,7 @@ namespace DAMS.Application.Common
         {
             NotificationEntityType.Lead when id > 0 => $"/crm/leads/{id}",
             NotificationEntityType.LeadIntakeHold when id > 0 => "/crm",
+            NotificationEntityType.IntegrationConnection when id > 0 => "/crm/settings?tab=integrations",
             NotificationEntityType.LeadFollowUp when secondaryId > 0 => $"/crm/leads/{secondaryId}?followUp={id}",
             NotificationEntityType.LeadSiteVisit when secondaryId > 0 => $"/crm/leads/{secondaryId}?visit={id}",
             NotificationEntityType.LeadComment when secondaryId > 0 => $"/crm/leads/{secondaryId}?comment={id}",

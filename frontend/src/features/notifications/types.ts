@@ -10,7 +10,8 @@ export type NotificationCategory =
   | "ProjectUpdates"
   | "Announcements"
   | "AccountAndSecurity"
-  | "ManagerEscalations";
+  | "ManagerEscalations"
+  | "Integrations";
 
 export type NotificationPriority = "Low" | "Normal" | "High" | "Critical";
 
@@ -324,6 +325,7 @@ export const CATEGORY_LABELS: Record<NotificationCategory, string> = {
   Announcements: "Announcements",
   AccountAndSecurity: "Account",
   ManagerEscalations: "Escalations",
+  Integrations: "Integrations",
 };
 
 export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {

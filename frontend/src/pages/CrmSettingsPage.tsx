@@ -1,5 +1,6 @@
 import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import {
@@ -66,6 +67,16 @@ function SettingsWorkspace({ user }: { user: User }) {
     const params = new URLSearchParams(window.location.search);
     return params.get("tab") === "integrations" || params.has("meta") ? "integrations" : "staff";
   });
+  // An integration alert links here while the page may already be open; that navigation keeps
+  // it mounted, so the initial tab alone would never see the link's tab. Keyed on the navigation,
+  // not the URL: a second alert to the same ?tab=integrations, after the Admin moved to another
+  // tab, changes no URL but is still a new navigation.
+  const route = useLocation();
+  const [linkedNavigation, setLinkedNavigation] = useState(route.key);
+  if (route.key !== linkedNavigation) {
+    setLinkedNavigation(route.key);
+    if (new URLSearchParams(route.search).get("tab") === "integrations") setTab("integrations");
+  }
   const [staff, setStaff] = useState<StaffAccount[]>([]);
   const [linkable, setLinkable] = useState<LinkableUser[]>([]);
   const [sources, setSources] = useState<LeadSource[]>([]);

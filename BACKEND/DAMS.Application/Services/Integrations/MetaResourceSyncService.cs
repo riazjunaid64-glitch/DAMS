@@ -50,10 +50,14 @@ namespace DAMS.Application.Services.Integrations
 
             // A connection that has never synced is always due, which is how a freshly
             // authorised account gets discovered without doing slow work inside the callback.
+            // One whose token Meta refused waits the same interval before asking again: the
+            // refusal will not lift by itself, and retrying it every tick would only spend the
+            // app's rate limit on a known answer.
             var connectionIds = await _context.ExternalIntegrationConnections
                 .Where(c => c.Provider == IntegrationProviders.Meta
                             && c.Status == ExternalIntegrationConnectionStatus.Connected
-                            && (c.LastSyncedAt == null || c.LastSyncedAt < due))
+                            && (c.LastSyncedAt == null || c.LastSyncedAt < due)
+                            && (c.SyncRejectedAt == null || c.SyncRejectedAt < due))
                 .OrderBy(c => c.LastSyncedAt)
                 .Select(c => c.Id)
                 .ToListAsync(cancellationToken);
@@ -179,6 +183,10 @@ namespace DAMS.Application.Services.Integrations
             if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
                 throw new InvalidOperationException("Reconnect this Meta account before syncing it.");
 
+            // Connecting clears LastSyncedAt, so this is the first sync of the current sign-in:
+            // the one that replaces the Page tokens leads are fetched with.
+            var firstSyncOfSignIn = connection.LastSyncedAt is null;
+
             var userToken = _protector.TryUnprotect(connection.AccessTokenProtected);
             if (userToken is null)
             {
@@ -197,6 +205,10 @@ namespace DAMS.Application.Services.Integrations
             // deactivated when absent — derived from the calls made, never from what came
             // back, because "Meta returned no pages at all" is itself meaningful.
             var fullyEnumerated = new HashSet<string>();
+
+            // Set when Meta refuses the connection's own token but its Page tokens can still
+            // carry lead delivery; the reason is kept for the connection's LastError.
+            string? tokenRejection = null;
 
             try
             {
@@ -244,7 +256,10 @@ namespace DAMS.Application.Services.Integrations
                         if (formPage.Truncated)
                             warning = Combine(warning, $"Not every lead form for \"{page.Name ?? page.ExternalId}\" could be read.");
                     }
-                    catch (MetaPermanentException ex)
+                    // A Page token refused here must not read as the account's own sign-in being
+                    // refused (the catch below); the event worker is what decides about the Page
+                    // token, on the next lead it fetches with it.
+                    catch (MetaGraphException ex) when (ex is MetaPermanentException or MetaAuthorizationException)
                     {
                         warning = Combine(warning, $"Lead forms for \"{page.Name ?? page.ExternalId}\" could not be read.");
                         _logger.LogWarning(ex, "Reading lead forms for page {PageId} failed.", page.ExternalId);
@@ -253,65 +268,85 @@ namespace DAMS.Application.Services.Integrations
             }
             catch (MetaAuthorizationException ex)
             {
-                // Page discovery needs only lead-critical scopes, so a rejection here means the
-                // connection genuinely cannot work until someone reconnects.
-                await MarkNeedsReauthorizationAsync(connection, ex.Message, cancellationToken);
-                throw new InvalidOperationException(
-                    "Meta rejected this connection. Reconnect the account and approve all requested permissions.");
+                // me/accounts is the one call that needs the connection's own token, which Meta
+                // lets lapse after about 60 days. Leads are fetched with the Page tokens it
+                // handed out, and those do not expire with it — so while DAMS holds one, this
+                // refusal costs discovery, not lead capture, and must not park every waiting
+                // lead behind NeedsReauthorization. Without one, the connection's own token is
+                // the lead credential too, and nothing works until someone reconnects.
+                if (!HoldsPageToken(existing))
+                {
+                    await MarkNeedsReauthorizationAsync(connection, ex.Message, cancellationToken);
+                    throw new InvalidOperationException(
+                        "Meta rejected this connection. Reconnect the account and approve all requested permissions.");
+                }
+
+                tokenRejection = ex.Message;
+                warning = Combine(warning,
+                    "Meta refused this account's sign-in, so its Pages and lead forms could not be refreshed. " +
+                    "Leads are still fetched with the Page tokens; reconnect the account to restore syncing.");
+                _logger.LogWarning(ex,
+                    "Meta refused the access token of connection {ConnectionId} during sync; lead delivery continues on its Page tokens.",
+                    connection.Id);
             }
 
             // Ad account / campaign discovery needs ads_read, which commonly waits on Meta's
             // own App Review and is not required for a single lead to be captured. Its failure
             // must never discard the pages already found above or send the connection into
             // NeedsReauthorization — that would park real, working lead delivery over a
-            // permission this integration does not need to function.
-            try
+            // permission this integration does not need to function. It runs on the same token
+            // as page discovery, so after a refusal above it is not asked for at all: it could
+            // only be refused again, and would blame ads_read for it.
+            if (tokenRejection is null)
             {
-                var adAccountPage = await _graph.GetAdAccountsAsync(userToken, cancellationToken);
-                discovered.AddRange(adAccountPage.Items);
-                if (!adAccountPage.Truncated)
+                try
                 {
-                    fullyEnumerated.Add(ExternalResourceTypes.AdAccount);
+                    var adAccountPage = await _graph.GetAdAccountsAsync(userToken, cancellationToken);
+                    discovered.AddRange(adAccountPage.Items);
+                    if (!adAccountPage.Truncated)
+                    {
+                        fullyEnumerated.Add(ExternalResourceTypes.AdAccount);
+                    }
+                    else
+                    {
+                        warning = Combine(warning,
+                            "This account has more ad accounts than could be read in one sync; some may not yet be listed.");
+                    }
+
+                    var everyAdAccountRead = !adAccountPage.Truncated;
+                    foreach (var adAccount in adAccountPage.Items)
+                    {
+                        try
+                        {
+                            var children = await _graph.GetAdAccountChildrenAsync(adAccount.ExternalId, userToken, cancellationToken);
+                            discovered.AddRange(children.Items);
+                            if (children.Truncated)
+                                everyAdAccountRead = false;
+                        }
+                        catch (MetaPermanentException ex)
+                        {
+                            everyAdAccountRead = false;
+                            warning = Combine(warning, $"Campaigns for \"{adAccount.Name ?? adAccount.ExternalId}\" could not be read.");
+                            _logger.LogWarning(ex, "Reading children of ad account {AdAccountId} failed.", adAccount.ExternalId);
+                        }
+                    }
+
+                    // Partial data must not deactivate anything: one ad account refusing access, or
+                    // any page of campaigns/ad sets/ads being truncated, would otherwise wipe out
+                    // resources that are still there and simply were not fully read this time.
+                    if (everyAdAccountRead)
+                    {
+                        fullyEnumerated.Add(ExternalResourceTypes.Campaign);
+                        fullyEnumerated.Add(ExternalResourceTypes.AdSet);
+                        fullyEnumerated.Add(ExternalResourceTypes.Ad);
+                    }
                 }
-                else
+                catch (MetaAuthorizationException ex)
                 {
                     warning = Combine(warning,
-                        "This account has more ad accounts than could be read in one sync; some may not yet be listed.");
+                        "Ad account and campaign discovery is unavailable until Meta grants ads_read. Lead delivery is not affected.");
+                    _logger.LogWarning(ex, "Ad account discovery failed for Meta connection {ConnectionId}.", connection.Id);
                 }
-
-                var everyAdAccountRead = !adAccountPage.Truncated;
-                foreach (var adAccount in adAccountPage.Items)
-                {
-                    try
-                    {
-                        var children = await _graph.GetAdAccountChildrenAsync(adAccount.ExternalId, userToken, cancellationToken);
-                        discovered.AddRange(children.Items);
-                        if (children.Truncated)
-                            everyAdAccountRead = false;
-                    }
-                    catch (MetaPermanentException ex)
-                    {
-                        everyAdAccountRead = false;
-                        warning = Combine(warning, $"Campaigns for \"{adAccount.Name ?? adAccount.ExternalId}\" could not be read.");
-                        _logger.LogWarning(ex, "Reading children of ad account {AdAccountId} failed.", adAccount.ExternalId);
-                    }
-                }
-
-                // Partial data must not deactivate anything: one ad account refusing access, or
-                // any page of campaigns/ad sets/ads being truncated, would otherwise wipe out
-                // resources that are still there and simply were not fully read this time.
-                if (everyAdAccountRead)
-                {
-                    fullyEnumerated.Add(ExternalResourceTypes.Campaign);
-                    fullyEnumerated.Add(ExternalResourceTypes.AdSet);
-                    fullyEnumerated.Add(ExternalResourceTypes.Ad);
-                }
-            }
-            catch (MetaAuthorizationException ex)
-            {
-                warning = Combine(warning,
-                    "Ad account and campaign discovery is unavailable until Meta grants ads_read. Lead delivery is not affected.");
-                _logger.LogWarning(ex, "Ad account discovery failed for Meta connection {ConnectionId}.", connection.Id);
             }
 
             var result = ApplyDiscovered(connection, existing, discovered, fullyEnumerated);
@@ -327,16 +362,96 @@ namespace DAMS.Application.Services.Integrations
 
             result.Warning = warning;
 
-            connection.LastSyncedAt = DateTime.UtcNow;
-            connection.LastValidatedAt = DateTime.UtcNow;
-            connection.UpdatedAt = DateTime.UtcNow;
-            if (connection.Status == ExternalIntegrationConnectionStatus.Error)
-                connection.Status = ExternalIntegrationConnectionStatus.Connected;
+            var now = DateTime.UtcNow;
+            if (tokenRejection is null)
+            {
+                connection.LastSyncedAt = now;
+                connection.LastValidatedAt = now;
+                connection.SyncRejectedAt = null;
+                if (connection.Status == ExternalIntegrationConnectionStatus.Error)
+                    connection.Status = ExternalIntegrationConnectionStatus.Connected;
+            }
+            else
+            {
+                // Nothing was refreshed, so LastSyncedAt keeps saying when something last was;
+                // SyncRejectedAt is what the panel warns from and what spaces out the retries.
+                connection.SyncRejectedAt = now;
+                connection.LastErrorAt = now;
+                connection.LastError = MetaCredentialScrubber.ScrubAndLimit(tokenRejection, 1000);
+            }
 
+            connection.UpdatedAt = now;
             await _context.SaveChangesAsync(cancellationToken);
 
-            result.SyncedAt = connection.LastSyncedAt.Value;
+            if (firstSyncOfSignIn
+                && tokenRejection is null
+                && connection.Status == ExternalIntegrationConnectionStatus.Connected)
+            {
+                await ReleaseWaitingEventsAsync(connection.Id, cancellationToken);
+            }
+
+            result.SyncedAt = now;
             return result;
+        }
+
+        /// <summary>
+        /// Once the first sync after a (re)connect has stored fresh Page tokens, brings every
+        /// event this connection is holding back forward to now, so the backlog is fetched on the
+        /// worker's next tick rather than whenever each wait runs out — up to AuthRetryDelayHours
+        /// for one parked while the account needed reconnecting. Not earlier: until this sync, the
+        /// only Page tokens on file are the ones the old sign-in handed out.
+        ///
+        /// Every waiting Retry event is included, so one merely between two ordinary retries is
+        /// brought forward too. That is harmless: it costs one attempt sooner, never an extra one,
+        /// and telling the kinds apart would mean parsing each event's last error. Attempts are
+        /// left alone: parking for authorization never counted one.
+        ///
+        /// Best effort, in its own save once the sync has committed: the events would still drain
+        /// by themselves, so this must never fail the sync. An event the worker claims between
+        /// the read and the save (its wait ran out just then) fails the row-version check; the
+        /// others are then read again and saved.
+        /// </summary>
+        private async Task ReleaseWaitingEventsAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    var now = DateTime.UtcNow;
+                    var waiting = await _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                                    && e.Status == ExternalIntegrationEventStatus.Retry
+                                    && e.AvailableAt > now)
+                        .ToListAsync(cancellationToken);
+
+                    if (waiting.Count == 0)
+                        return;
+
+                    foreach (var integrationEvent in waiting)
+                        integrationEvent.AvailableAt = now;
+
+                    try
+                    {
+                        await _context.SaveChangesAsync(cancellationToken);
+                        return;
+                    }
+                    catch (DbUpdateConcurrencyException)
+                    {
+                        foreach (var integrationEvent in waiting)
+                            _context.Entry(integrationEvent).State = EntityState.Detached;
+                    }
+                }
+
+                _logger.LogWarning(
+                    "Waiting events of Meta connection {ConnectionId} could not be released after three attempts; they will run when their wait ends.",
+                    connectionId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex,
+                    "Releasing the waiting events of Meta connection {ConnectionId} failed; they will run when their wait ends.",
+                    connectionId);
+            }
         }
 
         private MetaSyncResultDto ApplyDiscovered(
@@ -562,6 +677,15 @@ namespace DAMS.Application.Services.Integrations
                 await ReleaseSyncLeaseAsync(connectionId, CancellationToken.None);
             }
         }
+
+        /// <summary>
+        /// Whether any Page on file still has its own token — the credential the event worker
+        /// fetches leads with. Enabled or not: turning a Page on subscribes it with that token too.
+        /// </summary>
+        private bool HoldsPageToken(List<ExternalIntegrationResource> existing) =>
+            existing.Any(r => r.ResourceType == ExternalResourceTypes.FacebookPage
+                              && r.IsActive
+                              && _protector.TryUnprotect(r.ResourceTokenProtected) is { Length: > 0 });
 
         private static bool IsEnabledLocally(
             List<ExternalIntegrationResource> existing, string resourceType, string externalId) =>

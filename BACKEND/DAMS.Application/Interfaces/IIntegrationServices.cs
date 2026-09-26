@@ -64,6 +64,17 @@ namespace DAMS.Application.Interfaces
         Task<int> SyncDueConnectionsAsync(CancellationToken cancellationToken = default);
     }
 
+    /// <summary>Tells every Admin, through the notification platform, when Meta lead capture needs a person.</summary>
+    public interface IMetaIntegrationAlertService
+    {
+        /// <summary>
+        /// Raises the alert each connection's current state calls for — needs reconnecting, sign-in
+        /// about to expire, lead events failed, and (when configured) a Page gone quiet. Safe to run
+        /// as often as wanted: each alert is raised once per Admin. Returns how many were created.
+        /// </summary>
+        Task<int> RaiseAlertsAsync(CancellationToken cancellationToken = default);
+    }
+
     /// <summary>Accepts a verified webhook payload and records it for later processing.</summary>
     public interface IMetaWebhookIntakeService
     {
