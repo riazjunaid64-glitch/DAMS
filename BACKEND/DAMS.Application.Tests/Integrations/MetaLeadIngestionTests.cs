@@ -1023,23 +1023,34 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
-    public async Task AnInactiveSource_IsStillRefused_OutsideIntegrationIntake()
+    public async Task AnInactiveSource_IsStillRefused_OutsideMetaIntake()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         foreach (var code in new[] { "facebook", "website" })
             (await h.Db.LeadSources.SingleAsync(s => s.Code == code)).IsActive = false;
         await h.Db.SaveChangesAsync();
 
-        // A person choosing a switched-off source, even an integration one.
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.Leads.IngestAsync(LeadTestHarness.Intake(sourceCode: "facebook"), h.Leads.Admin));
+        static DAMS.Application.DTOs.LeadDtos.LeadIntakeDto FromPartner(string provider, string sourceCode)
+        {
+            var intake = LeadTestHarness.Intake(sourceCode: sourceCode);
+            intake.ExternalProvider = provider;
+            intake.ExternalLeadId = $"{provider}-42";
+            return intake;
+        }
 
-        // An external provider on a source that is not an integration's own.
-        var external = LeadTestHarness.Intake(sourceCode: "website");
-        external.ExternalProvider = "website";
-        external.ExternalLeadId = "form-42";
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.Leads.IngestAsync(external, actor: null, trustedExternal: true));
+        // A person choosing a switched-off source, even one of Meta's.
+        var manual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(LeadTestHarness.Intake(sourceCode: "facebook"), h.Leads.Admin));
+        // A partner on the API-key intake (/api/lead-intake/{provider}) names its source itself,
+        // so a switched-off one still means "not this source" — even when it is one of Meta's.
+        var partnerOnMetaSource = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(FromPartner("zapier", "facebook"), actor: null, trustedExternal: true));
+        var partnerOnOwnSource = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Leads.IngestAsync(FromPartner("website", "website"), actor: null, trustedExternal: true));
+
+        Assert.All([manual, partnerOnMetaSource, partnerOnOwnSource],
+            refused => Assert.Contains("is no longer active", refused.Message));
+        Assert.Equal(0, await h.Db.Leads.CountAsync());
     }
 
     [Fact]

@@ -87,7 +87,7 @@ namespace DAMS.Application.Services
 
             EnsureContactable(isExternal, normalizedPhone, normalizedWhatsapp, normalizedEmail, dto.Phone);
 
-            var source = await ResolveSourceAsync(dto.SourceCode, isExternal, cancellationToken);
+            var source = await ResolveSourceAsync(dto.SourceCode, isExternal ? provider : null, cancellationToken);
 
             // Assignment writes into the dto, so a retried attempt must start from what was asked.
             var requestedEmployeeId = dto.AssignedEmployeeId;
@@ -1068,21 +1068,25 @@ namespace DAMS.Application.Services
             ex.InnerException is SqlException { Number: 2601 or 2627 } sql
             && sql.Message.Contains("LeadIntakeHolds", StringComparison.OrdinalIgnoreCase);
 
-        private async Task<LeadSource> ResolveSourceAsync(string? code, bool isExternal, CancellationToken cancellationToken)
+        /// <param name="externalProvider">The trusted external provider, or null for anything a person entered.</param>
+        private async Task<LeadSource> ResolveSourceAsync(string? code, string? externalProvider, CancellationToken cancellationToken)
         {
             var wanted = string.IsNullOrWhiteSpace(code) ? DefaultSourceCode : code.Trim().ToLowerInvariant();
 
             var source = await _context.LeadSources.FirstOrDefaultAsync(s => s.Code == wanted, cancellationToken)
                 ?? throw new InvalidOperationException($"Unknown lead source '{wanted}'.");
 
-            // A provider's enquiry is resolved to its integration source by code, not chosen by a
-            // person, so switching that source off cannot mean "stop taking these leads" — only
-            // disconnecting can. LeadConfigurationService refuses the switch while Meta is
-            // connected; this covers a source already off, or turned off while disconnected.
-            if (!source.IsActive && isExternal && IntegrationSourceCodes.All.Contains(source.Code))
+            // The Meta integration resolves its source by code rather than anyone choosing it, so
+            // switching that source off cannot mean "stop taking these leads" — only disconnecting
+            // can. LeadConfigurationService refuses the switch while Meta is connected; this covers
+            // a source already off, or turned off while disconnected. Only Meta: a partner on the
+            // API-key intake names its source itself, and an inactive one is still refused.
+            if (!source.IsActive
+                && externalProvider == IntegrationProviders.Meta
+                && IntegrationSourceCodes.All.Contains(source.Code))
             {
                 _logger.LogWarning(
-                    "Lead source '{SourceCode}' is inactive, but an integration lead resolved to it is kept. " +
+                    "Lead source '{SourceCode}' is inactive, but a Meta lead resolved to it is kept. " +
                     "Reactivate it in CRM settings.", source.Code);
                 return source;
             }
