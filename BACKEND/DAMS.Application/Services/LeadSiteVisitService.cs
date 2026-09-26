@@ -100,6 +100,9 @@ namespace DAMS.Application.Services
             if (dto.ScheduledAt <= DateTime.UtcNow)
                 throw new InvalidOperationException("A site visit must be scheduled for a future time.");
 
+            if (dto.RemindAt.HasValue && dto.RemindAt > dto.ScheduledAt)
+                throw new InvalidOperationException("The reminder must come before the visit.");
+
             var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, visit.LeadId, cancellationToken);
 
             var previous = visit.ScheduledAt;

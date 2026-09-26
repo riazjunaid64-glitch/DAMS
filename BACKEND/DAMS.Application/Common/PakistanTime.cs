@@ -20,5 +20,8 @@ namespace DAMS.Application.Common
         /// come through here rather than taking <c>.Date</c> off the raw UTC value.
         /// </summary>
         public static DateTime ToBusinessDate(DateTime utc) => (utc + Offset).Date;
+
+        public static DateTime StartOfBusinessDateUtc(DateTime businessDate) =>
+            DateTime.SpecifyKind(businessDate.Date - Offset, DateTimeKind.Utc);
     }
 }

@@ -47,6 +47,7 @@ describe("lead action form defaults", () => {
 
     expect(initialForm({ type: "followUp" }, lead).dueAt).toBe("2026-09-25T16:15");
     expect(initialForm({ type: "siteVisit" }, lead).scheduledAt).toBe("2026-09-25T16:15");
+    expect(initialForm({ type: "siteVisit" }, lead).remindAt).toBe("");
   });
 
   it("prefills a follow-up reschedule with the stored UTC time, unchanged on save", () => {
@@ -61,11 +62,13 @@ describe("lead action form defaults", () => {
 
   it("prefills a site visit reschedule with the stored UTC time, unchanged on save", () => {
     vi.stubEnv("TZ", "Asia/Karachi");
-    const item = { scheduledAt: "2026-09-26T07:30:00", meetingLocation: "Site office" } as SiteVisit;
+    const item = { scheduledAt: "2026-09-26T07:30:00", remindAt: "2026-09-26T06:30:00", meetingLocation: "Site office" } as SiteVisit;
 
     const form = initialForm({ type: "rescheduleVisit", item }, lead);
 
     expect(form.scheduledAt).toBe("2026-09-26T12:30");
     expect(posted(form.scheduledAt)).toBe("2026-09-26T07:30:00.000Z");
+    expect(form.remindAt).toBe("2026-09-26T11:30");
+    expect(posted(form.remindAt)).toBe("2026-09-26T06:30:00.000Z");
   });
 });

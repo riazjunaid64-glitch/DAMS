@@ -265,7 +265,9 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
               <Select label="Unit" value={value("unitId")} onChange={(v) => set("unitId", v)} allowEmpty options={units.map((u) => ({ value: String(u.id), label: u.number }))} />
               <Select label="Assigned employee" required value={value("assignedEmployeeId")} onChange={(v) => set("assignedEmployeeId", v)} options={eligibleWorkers.map((s) => ({ value: String(s.employeeId), label: s.fullName }))} />
               <Field label="Scheduled at" type="datetime-local" required value={value("scheduledAt")} onChange={(v) => set("scheduledAt", v)} />
+              <Field label="Remind at (optional)" type="datetime-local" value={value("remindAt")} onChange={(v) => set("remindAt", v)} />
             </div>
+            <Hint>A specific reminder time replaces the default advance reminder. The visit-day reminder follows the admin setting.</Hint>
             <Field label="Meeting location" required value={value("meetingLocation")} onChange={(v) => set("meetingLocation", v)} />
             <div className="grid gap-4 sm:grid-cols-2"><Field label="Customer attendees" value={value("customerAttendees")} onChange={(v) => set("customerAttendees", v)} /><Field label="Internal attendees" value={value("internalAttendees")} onChange={(v) => set("internalAttendees", v)} /></div>
             <TextArea label="Notes" value={value("notes")} onChange={(v) => set("notes", v)} />
@@ -284,6 +286,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
         {action.type === "rescheduleVisit" && (
           <>
             <Field label="New date and time" type="datetime-local" required value={value("scheduledAt")} onChange={(v) => set("scheduledAt", v)} />
+            <Field label="Remind at (optional)" type="datetime-local" value={value("remindAt")} onChange={(v) => set("remindAt", v)} />
             <Field label="Meeting location" value={value("meetingLocation")} onChange={(v) => set("meetingLocation", v)} />
             <TextArea label="Reason" required value={value("reason")} onChange={(v) => set("reason", v)} />
           </>
@@ -389,11 +392,11 @@ async function performAction(action: Exclude<LeadAction, { type: "edit" }>, lead
     case "cancelFollowUp":
       await apiJson(`/api/leads/follow-ups/${action.item.id}/cancel`, jsonRequest("POST", { reason: s("reason") })); break;
     case "siteVisit":
-      await apiJson(`/api/leads/${lead.id}/site-visits`, jsonRequest("POST", { projectId: numberOrNull("projectId"), unitId: numberOrNull("unitId"), assignedEmployeeId: numberOrNull("assignedEmployeeId"), scheduledAt: dateOrNull("scheduledAt"), meetingLocation: s("meetingLocation"), customerAttendees: s("customerAttendees") || null, internalAttendees: s("internalAttendees") || null, notes: s("notes") || null })); break;
+      await apiJson(`/api/leads/${lead.id}/site-visits`, jsonRequest("POST", { projectId: numberOrNull("projectId"), unitId: numberOrNull("unitId"), assignedEmployeeId: numberOrNull("assignedEmployeeId"), scheduledAt: dateOrNull("scheduledAt"), remindAt: dateOrNull("remindAt"), meetingLocation: s("meetingLocation"), customerAttendees: s("customerAttendees") || null, internalAttendees: s("internalAttendees") || null, notes: s("notes") || null })); break;
     case "completeVisit":
       await apiJson(`/api/leads/site-visits/${action.item.id}/complete`, jsonRequest("POST", { outcome: s("outcome"), outcomeNotes: s("outcomeNotes") || null, customerFeedback: s("customerFeedback") || null, nextAction: s("nextAction") })); break;
     case "rescheduleVisit":
-      await apiJson(`/api/leads/site-visits/${action.item.id}/reschedule`, jsonRequest("POST", { scheduledAt: dateOrNull("scheduledAt"), meetingLocation: s("meetingLocation") || null, reason: s("reason") })); break;
+      await apiJson(`/api/leads/site-visits/${action.item.id}/reschedule`, jsonRequest("POST", { scheduledAt: dateOrNull("scheduledAt"), remindAt: dateOrNull("remindAt"), meetingLocation: s("meetingLocation") || null, reason: s("reason") })); break;
     case "closeVisit":
       await apiJson(`/api/leads/site-visits/${action.item.id}/${action.visitDisposition === "missed" ? "missed" : "cancel"}`, jsonRequest("POST", { reason: s("reason") })); break;
     case "comment":
