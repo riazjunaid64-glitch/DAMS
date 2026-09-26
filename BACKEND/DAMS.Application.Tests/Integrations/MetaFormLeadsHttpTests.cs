@@ -25,7 +25,7 @@ public class MetaFormLeadsHttpTests
             ? GraphJson($$"""{ "data": [ {{LeadJson("l-3")}} ] }""")
             : GraphJson($$"""
                 { "data": [ {{LeadJson("l-1")}}, {{LeadJson("l-2")}} ],
-                  "paging": { "next": "https://graph.facebook.com/v21.0/form-1/leads?after=cursor-2&access_token=leaked" } }
+                  "paging": { "next": "https://graph.facebook.com/v25.0/form-1/leads?after=cursor-2&access_token=leaked" } }
                 """));
 
         var page = await DirectClient(handler).GetFormLeadsAsync("form-1", since, until, Token, CancellationToken.None);
@@ -36,7 +36,7 @@ public class MetaFormLeadsHttpTests
         Assert.Equal(new DateTime(2026, 9, 20, 10, 0, 0, DateTimeKind.Utc), page.Leads[0].CreatedTime);
 
         var first = handler.Requests[0];
-        Assert.StartsWith("/v21.0/form-1/leads", first.RequestUri!.AbsolutePath);
+        Assert.StartsWith("/v25.0/form-1/leads", first.RequestUri!.AbsolutePath);
         var query = HttpUtility.ParseQueryString(first.RequestUri.Query);
         Assert.Equal("id,created_time,field_data,form_id,platform,is_organic,ad_id,adset_id,campaign_id", query["fields"]);
         Assert.Equal(

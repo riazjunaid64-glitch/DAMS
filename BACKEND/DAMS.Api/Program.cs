@@ -190,7 +190,7 @@ builder.Services.AddOptions<MetaIntegrationOptions>()
                    && o.BackfillAlertCutoffHours is >= 0 and <= MetaIntegrationOptions.MaxImportDays * 24,
         "Meta integration alert and reconciliation settings are outside the supported range.")
     .Validate(o => System.Text.RegularExpressions.Regex.IsMatch(o.GraphApiVersion ?? "", @"^v\d+\.\d+$"),
-        "MetaIntegration:GraphApiVersion must look like \"v21.0\".")
+        "MetaIntegration:GraphApiVersion must look like \"v25.0\".")
     .Validate(o => string.IsNullOrWhiteSpace(o.LoginConfigId)
                    || System.Text.RegularExpressions.Regex.IsMatch(o.LoginConfigId.Trim(), @"^[0-9]+$"),
         "MetaIntegration:LoginConfigId must be the numeric configuration ID from Facebook Login for Business.")

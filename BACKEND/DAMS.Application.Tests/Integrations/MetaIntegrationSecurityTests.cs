@@ -75,7 +75,7 @@ public class MetaIntegrationSecurityTests
         // Pinned exactly, so adding Facebook Login for Business support cannot drift the URL
         // every existing connection has been made through.
         Assert.Equal(
-            "https://www.facebook.com/v21.0/dialog/oauth" +
+            "https://www.facebook.com/v25.0/dialog/oauth" +
             "?client_id=test-app-id" +
             $"&redirect_uri={Uri.EscapeDataString("https://dams.test/api/integrations/meta/callback")}" +
             $"&state={Uri.EscapeDataString(state)}" +

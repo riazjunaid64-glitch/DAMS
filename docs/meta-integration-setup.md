@@ -21,6 +21,21 @@ Set the first four together, or leave all four unset. With only some of them set
 refuses to start. It also refuses to start if `LoginConfigId` is set to anything other
 than digits.
 
+### Graph API version
+
+DAMS uses Graph API **v25.0**. Meta supports it until **29 July 2028**. The version is set in
+`MetaIntegration:GraphApiVersion` (`appsettings.json`, default in `MetaIntegrationOptions`),
+and it is used both for Graph calls and for the login dialog URL.
+
+In the App Dashboard, under **Webhooks → Page**, set the webhook version to the same
+**v25.0**. The webhook version is set separately from the calls DAMS makes.
+
+Upgrade well before the expiry date. After it, Meta does not reject calls to the old
+version. It runs them on the oldest version still available, so behaviour can change without
+any error. To upgrade, read the Graph and Marketing API changelogs for changes to Lead,
+LeadgenForm, Page `subscribed_apps`, `me/accounts` and webhooks. Then change the setting,
+the default, the tests and the webhook version together, and update the version and date here.
+
 ## 2. Which login product to use
 
 Look at the app type in the App Dashboard.
@@ -87,6 +102,8 @@ Facebook Login → Settings.
    shows **Needs reconnection**, its message lists the permissions that are missing. Add
    them to the login configuration.
 3. Send a lead with Meta's Lead Ads Testing Tool and check that it appears in the CRM.
+4. Check that the webhook version in the App Dashboard matches `GraphApiVersion`, so this
+   test runs on the same version that production will use.
 
 ## 4. Token expiry and alerts
 
