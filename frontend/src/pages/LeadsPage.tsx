@@ -164,10 +164,6 @@ function LeadsWorkspace({ user }: { user: User }) {
               <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />
               <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
               <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
-              <div className="inline-flex shrink-0 rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-1" role="group" aria-label="Lead view">
-                <ViewButton active={view === "list"} onClick={() => updateParam("view", "list")}>List</ViewButton>
-                <ViewButton active={view === "pipeline"} onClick={() => updateParam("view", "pipeline")}>Pipeline</ViewButton>
-              </div>
             </div>
           </div>
         </section>
@@ -176,8 +172,6 @@ function LeadsWorkspace({ user }: { user: User }) {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-32 animate-pulse rounded-2xl bg-[var(--surface-glass)]" />)}</div>
         ) : !data || data.items.length === 0 ? (
           <StatePanel title="No leads found" message="No accessible leads match these filters. Clear the filters or capture a new enquiry." action={<Button onClick={() => setCreateOpen(true)}>Create lead</Button>} />
-        ) : view === "pipeline" ? (
-          <Pipeline leads={data.items} />
         ) : (
           <LeadTable leads={data.items} />
         )}
