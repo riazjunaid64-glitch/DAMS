@@ -3,11 +3,15 @@ import { canViewOriginalProviderData, formatProviderPayload } from "./originalPr
 
 describe("canViewOriginalProviderData", () => {
   it("offers the original data to admins and managers only", () => {
-    expect(canViewOriginalProviderData("Admin")).toBe(true);
-    expect(canViewOriginalProviderData("Manager")).toBe(true);
-    expect(canViewOriginalProviderData("Employee")).toBe(false);
-    expect(canViewOriginalProviderData("Client")).toBe(false);
-    expect(canViewOriginalProviderData(undefined)).toBe(false);
+    expect(canViewOriginalProviderData("Admin", "meta")).toBe(true);
+    expect(canViewOriginalProviderData("Manager", "meta")).toBe(true);
+    expect(canViewOriginalProviderData("Employee", "meta")).toBe(false);
+    expect(canViewOriginalProviderData("Client", "meta")).toBe(false);
+    expect(canViewOriginalProviderData(undefined, "meta")).toBe(false);
+  });
+
+  it("offers it only for Meta, the one channel that stores any", () => {
+    expect(canViewOriginalProviderData("Admin", "website")).toBe(false);
   });
 });
 

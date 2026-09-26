@@ -186,7 +186,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
           {activeTab === "documents" && <Documents items={data.documents} closed={closed} onAdd={() => setAction({ type: "document" })} onDownload={(document) => void downloadLeadDocument(document.id, document.fileName).catch((e) => setError(e.message))} />}
           {activeTab === "collaboration" && <Comments items={data.comments} closed={closed} onAdd={() => setAction({ type: "comment" })} />}
           {activeTab === "assignments" && <Assignments items={data.assignments} />}
-          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} leadId={leadId} canViewOriginal={canViewOriginalProviderData(user.role)} />}
+          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} leadId={leadId} role={user.role} />}
           {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={user.role === "Admin"} onConvert={() => setAction({ type: "convert" })} />}
         </section>
       </div>
@@ -303,7 +303,7 @@ function Assignments({ items }: { items: AssignmentHistory[] }) {
  * Every answer is shown, including ones DAMS has no field for — those are the reason the
  * raw answers are kept at all, and hiding them would defeat the point.
  */
-function ExternalSubmissions({ items, leadId, canViewOriginal }: { items: ExternalSubmission[]; leadId: number; canViewOriginal: boolean }) {
+function ExternalSubmissions({ items, leadId, role }: { items: ExternalSubmission[]; leadId: number; role: string }) {
   if (items.length === 0)
     return <SectionList title="Source & integration"><Empty text="This lead did not arrive through a connected integration." /></SectionList>;
 
@@ -346,7 +346,7 @@ function ExternalSubmissions({ items, leadId, canViewOriginal }: { items: Extern
             </div>
           )}
 
-          {canViewOriginal && <OriginalProviderData leadId={leadId} submissionId={item.id} />}
+          {canViewOriginalProviderData(role, item.provider) && <OriginalProviderData leadId={leadId} submissionId={item.id} />}
         </article>
       ))}
     </SectionList>
