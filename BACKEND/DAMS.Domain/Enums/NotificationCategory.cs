@@ -18,6 +18,7 @@ namespace DAMS.Domain.Enums
         ProjectUpdates = 8,
         Announcements = 9,
         AccountAndSecurity = 10,
-        ManagerEscalations = 11
+        ManagerEscalations = 11,
+        Integrations = 12
     }
 }

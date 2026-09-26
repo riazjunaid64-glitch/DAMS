@@ -11,6 +11,7 @@ namespace DAMS.Domain.Enums
         Customers = 4,
         Projects = 5,
         Employees = 6,
-        Finance = 7
+        Finance = 7,
+        Integrations = 8
     }
 }

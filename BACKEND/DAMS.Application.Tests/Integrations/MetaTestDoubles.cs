@@ -106,12 +106,20 @@ internal sealed class FakeMetaGraphClient : IMetaGraphClient
         string adAccountExternalId, string userAccessToken, CancellationToken cancellationToken = default) =>
         Task.FromResult(new MetaDiscoveryPage { Items = AdAccountChildren.ToList(), Truncated = AdAccountChildrenTruncated });
 
+    /// <summary>Thrown by every lead-form read while set.</summary>
+    public Exception? LeadFormsFailure { get; set; }
+
     public Task<MetaDiscoveryPage> GetLeadFormsAsync(
-        string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new MetaDiscoveryPage
+        string pageExternalId, string pageAccessToken, CancellationToken cancellationToken = default)
+    {
+        if (LeadFormsFailure is not null)
+            throw LeadFormsFailure;
+
+        return Task.FromResult(new MetaDiscoveryPage
         {
             Items = LeadForms.Where(f => f.ParentExternalId == pageExternalId).ToList()
         });
+    }
 
     public Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default)
     {

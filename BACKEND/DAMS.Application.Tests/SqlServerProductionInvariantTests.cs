@@ -4276,6 +4276,106 @@ public sealed class SqlServerProductionInvariantTests
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// KAN-34's queries on SQL Server rather than the in-memory provider: the alert sweep's key
+    /// lookup, failed-event and newest-webhook-per-Page aggregates, the panel's last-lead
+    /// projection, the sync due query with SyncRejectedAt, and releasing parked events.
+    /// </summary>
+    [SqlServerFact]
+    public async Task MetaIntegrationHealth_TranslatesAndHoldsOnSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback", QuietPageAlertDays = 3
+        };
+        var graph = new DAMS.Application.Tests.Integrations.FakeMetaGraphClient();
+        var protector = new DAMS.Application.Tests.Integrations.PlaintextSecretProtector();
+
+        int connectionId;
+        await using (var db = new AppDbContext(options))
+        {
+            db.Users.Add(new User { RoleId = 1, FullName = "SQL Admin", Email = "sql-admin@dams.test" });
+            await db.SaveChangesAsync();
+            await SeedMetaPageAsync(db, "page-health");
+            var connection = await db.ExternalIntegrationConnections.SingleAsync();
+            connectionId = connection.Id;
+            connection.ExternalAccountId = "meta-user-1";
+            connection.TokenExpiresAt = DateTime.UtcNow.AddDays(2);
+            var page = await db.ExternalIntegrationResources.SingleAsync();
+
+            ExternalIntegrationEvent Event(string id, ExternalIntegrationEventStatus status, DateTime at) => new()
+            {
+                Provider = "meta", ExternalIntegrationConnectionId = connectionId, ExternalIntegrationResourceId = page.Id,
+                EventType = "leadgen", EventKey = $"{connectionId}:page-health:{id}", RawPayloadJson = "{\"leadgen_id\":\"" + id + "\"}",
+                ReceivedAt = at, ProcessedAt = status == ExternalIntegrationEventStatus.Retry ? null : at,
+                AvailableAt = status == ExternalIntegrationEventStatus.Retry ? DateTime.UtcNow.AddHours(6) : at,
+                Status = status
+            };
+            db.ExternalIntegrationEvents.AddRange(
+                Event("old", ExternalIntegrationEventStatus.Processed, DateTime.UtcNow.AddDays(-6)),
+                Event("failed", ExternalIntegrationEventStatus.Failed, DateTime.UtcNow.AddDays(-5)),
+                Event("parked", ExternalIntegrationEventStatus.Retry, DateTime.UtcNow.AddDays(-5)));
+            await db.SaveChangesAsync();
+        }
+
+        MetaIntegrationAlertService Alerts(AppDbContext db) => new(db,
+            new NotificationDispatcher(db, new NotificationSettingsStore(db), new NotificationRealtimeBroker(),
+                TimeProvider.System, new NotificationEligibilityPolicy(db), NullLogger<NotificationDispatcher>.Instance),
+            metaOptions);
+
+        // Sign-in expiring and a Page quiet for five days; the five-day-old failure is out of window.
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(2, await Alerts(db).RaiseAlertsAsync());
+        await using (var db = new AppDbContext(options))
+            Assert.Equal(0, await Alerts(db).RaiseAlertsAsync());
+
+        await using (var db = new AppDbContext(options))
+        {
+            var failed = await db.ExternalIntegrationEvents.SingleAsync(e => e.Status == ExternalIntegrationEventStatus.Failed);
+            failed.ProcessedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+            Assert.Equal(1, await Alerts(db).RaiseAlertsAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var sync = new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance);
+            graph.DiscoveryFailure = new MetaAuthorizationException("Session has expired.", code: 190);
+            await sync.SyncConnectionAsync(connectionId);
+            Assert.Equal(0, await sync.SyncDueConnectionsAsync());
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var integration = new MetaIntegrationService(db, graph, protector,
+                new MetaResourceSyncService(db, graph, protector, metaOptions, NullLogger<MetaResourceSyncService>.Instance),
+                metaOptions, NullLogger<MetaIntegrationService>.Instance);
+            var shown = Assert.Single(await integration.GetConnectionsAsync());
+            Assert.Equal(ExternalIntegrationConnectionStatus.Connected, shown.Status);
+            Assert.NotNull(shown.SyncRejectedAt);
+            Assert.NotNull(shown.LastLeadReceivedAt);
+
+            var admin = await db.Users.SingleAsync(u => u.Email == "sql-admin@dams.test");
+            var start = await integration.StartConnectAsync(new LeadUserContext { UserId = admin.UserId, Role = LeadRoles.Admin }, null);
+            var state = Uri.UnescapeDataString(new Uri(start.AuthorizationUrl).Query.TrimStart('?').Split('&')
+                .Select(p => p.Split('=', 2)).Single(p => p[0] == "state")[1]);
+            Assert.Contains("meta=connected", await integration.CompleteCallbackAsync("code", state, null));
+        }
+
+        await using (var db = new AppDbContext(options))
+        {
+            var parked = await db.ExternalIntegrationEvents.AsNoTracking().SingleAsync(e => e.Status == ExternalIntegrationEventStatus.Retry);
+            Assert.True(parked.AvailableAt <= DateTime.UtcNow);
+            Assert.Null((await db.ExternalIntegrationConnections.AsNoTracking().SingleAsync()).SyncRejectedAt);
+        }
+    }
+
     private static DAMS.Application.Services.Integrations.MetaWebhookIntakeService MetaIntake(AppDbContext db) =>
         new(db, NullLogger<DAMS.Application.Services.Integrations.MetaWebhookIntakeService>.Instance);
 

@@ -226,6 +226,63 @@ namespace DAMS.Application.Services.Integrations
                 ApplyAuthorization(connection, authorization, actingUserId);
                 await _context.SaveChangesAsync(cancellationToken);
             }
+
+            // A reconnect that is still missing a permission fixes nothing for the events.
+            if (connection.Status == ExternalIntegrationConnectionStatus.Connected)
+                await ReleaseParkedEventsAsync(connection.Id, cancellationToken);
+        }
+
+        /// <summary>
+        /// Brings every event this connection parked forward to now, so the backlog is fetched on
+        /// the worker's next tick rather than whenever each wait runs out — up to
+        /// AuthRetryDelayHours after the reconnect that fixed it. Attempts are left alone: parking
+        /// for authorization never counted one.
+        ///
+        /// Best effort, in its own save once the reconnect has committed: the events would still
+        /// drain by themselves, so this must never fail the reconnect. An event the worker claims
+        /// between the read and the save (its wait ran out just then) fails the row-version check;
+        /// the others are then read again and saved.
+        /// </summary>
+        private async Task ReleaseParkedEventsAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    var now = DateTime.UtcNow;
+                    var parked = await _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                                    && e.Status == ExternalIntegrationEventStatus.Retry
+                                    && e.AvailableAt > now)
+                        .ToListAsync(cancellationToken);
+
+                    if (parked.Count == 0)
+                        return;
+
+                    foreach (var integrationEvent in parked)
+                        integrationEvent.AvailableAt = now;
+
+                    try
+                    {
+                        await _context.SaveChangesAsync(cancellationToken);
+                        return;
+                    }
+                    catch (DbUpdateConcurrencyException)
+                    {
+                        _context.ChangeTracker.Clear();
+                    }
+                }
+
+                _logger.LogWarning(
+                    "Parked events of Meta connection {ConnectionId} could not be released after three attempts; they will run when their wait ends.",
+                    connectionId);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex,
+                    "Releasing the parked events of Meta connection {ConnectionId} failed; they will run when their wait ends.",
+                    connectionId);
+            }
         }
 
         private void ApplyAuthorization(
@@ -251,6 +308,8 @@ namespace DAMS.Application.Services.Integrations
             // Left null on purpose: the worker treats "never synced" as "sync me now", so the
             // first discovery happens in the background rather than inside a browser redirect.
             connection.LastSyncedAt = null;
+            // A fresh token has not been refused by anything yet.
+            connection.SyncRejectedAt = null;
 
             if (missingCriticalScopes.Count > 0)
             {
@@ -308,7 +367,10 @@ namespace DAMS.Application.Services.Integrations
                             || e.Status == ExternalIntegrationEventStatus.Processing)),
                     FailedEventCount = _context.ExternalIntegrationEvents.Count(e =>
                         e.ExternalIntegrationConnectionId == c.Id
-                        && e.Status == ExternalIntegrationEventStatus.Failed)
+                        && e.Status == ExternalIntegrationEventStatus.Failed),
+                    LastLeadReceivedAt = _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == c.Id)
+                        .Max(e => (DateTime?)e.ReceivedAt)
                 })
                 .ToListAsync(cancellationToken);
 
@@ -324,6 +386,8 @@ namespace DAMS.Application.Services.Integrations
                 LastErrorAt = row.Connection.LastErrorAt,
                 LastError = row.Connection.LastError,
                 TokenExpiresAt = row.Connection.TokenExpiresAt,
+                SyncRejectedAt = row.Connection.SyncRejectedAt,
+                LastLeadReceivedAt = row.LastLeadReceivedAt,
                 GrantedScopes = ReadScopes(row.Connection.GrantedScopesJson),
                 PageCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.FacebookPage),
                 InstagramCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.InstagramAccount),
@@ -859,6 +923,7 @@ namespace DAMS.Application.Services.Integrations
             connection.Status = ExternalIntegrationConnectionStatus.Disconnected;
             connection.AccessTokenProtected = null;
             connection.TokenExpiresAt = null;
+            connection.SyncRejectedAt = null;
             connection.DisconnectedAt = DateTime.UtcNow;
             connection.DisconnectedByUserId = actor.UserId;
             connection.UpdatedAt = DateTime.UtcNow;

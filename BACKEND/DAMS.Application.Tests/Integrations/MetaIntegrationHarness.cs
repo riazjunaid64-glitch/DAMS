@@ -20,6 +20,7 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
     public MetaLeadEventProcessor Processor { get; }
     public MetaResourceSyncService Sync { get; }
     public MetaIntegrationService Integration { get; }
+    public MetaIntegrationAlertService Alerts { get; }
 
     public Infrastructure.Data.AppDbContext Db => Leads.Db;
 
@@ -47,6 +48,7 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
             leads.Db, Graph, protector, leads.Leads, leads.Dispatcher, Options, NullLogger<MetaLeadEventProcessor>.Instance);
         Integration = new MetaIntegrationService(
             leads.Db, Graph, protector, Sync, Options, NullLogger<MetaIntegrationService>.Instance);
+        Alerts = new MetaIntegrationAlertService(leads.Db, leads.Dispatcher, Options);
     }
 
     public static async Task<MetaIntegrationHarness> CreateAsync(IIntegrationSecretProtector? protector = null) =>

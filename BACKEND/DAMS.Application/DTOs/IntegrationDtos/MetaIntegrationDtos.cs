@@ -35,6 +35,16 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public DateTime? LastErrorAt { get; set; }
         public string? LastError { get; set; }
         public DateTime? TokenExpiresAt { get; set; }
+
+        /// <summary>
+        /// Set while Meta refuses the account's own sign-in during sync but lead delivery carries
+        /// on with the Page tokens: a warning to reconnect, not an outage.
+        /// </summary>
+        public DateTime? SyncRejectedAt { get; set; }
+
+        /// <summary>When Meta last delivered a lead webhook for this connection, whatever became of it.</summary>
+        public DateTime? LastLeadReceivedAt { get; set; }
+
         public List<string> GrantedScopes { get; set; } = [];
         public int PageCount { get; set; }
         public int InstagramCount { get; set; }

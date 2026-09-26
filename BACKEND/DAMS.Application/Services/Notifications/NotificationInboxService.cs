@@ -292,6 +292,13 @@ namespace DAMS.Application.Services.Notifications
                         .AnyAsync(h => h.Id == id, cancellationToken)
                         ? (true, "Opened.") : (false, gone);
 
+                case NotificationEntityType.IntegrationConnection:
+                    if (!ctx.IsAdmin)
+                        return (false, denied);
+                    return await _context.ExternalIntegrationConnections.AsNoTracking()
+                        .AnyAsync(c => c.Id == id, cancellationToken)
+                        ? (true, "Opened.") : (false, gone);
+
                 case NotificationEntityType.Lead:
                 case NotificationEntityType.LeadFollowUp:
                 case NotificationEntityType.LeadSiteVisit:
