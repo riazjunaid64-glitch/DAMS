@@ -87,7 +87,11 @@ export interface ImportMetaLeadsRequest {
 export interface MetaLeadImportResult {
   found: number;
   new: number;
+  /** Of `new`, older leads added without a new-lead alert; they need assigning by hand. */
+  addedWithoutAlert: number;
   alreadyInDams: number;
+  /** Delivered before but their event failed, so not in DAMS; retried from the event list. */
+  previouslyFailed: number;
   failed: number;
   warning?: string | null;
 }

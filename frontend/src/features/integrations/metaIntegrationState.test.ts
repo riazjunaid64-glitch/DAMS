@@ -215,10 +215,23 @@ describe("lead import", () => {
     expect(earliestImportDate(now)).toBe("2026-06-29");
   });
 
+  const empty = { found: 0, new: 0, addedWithoutAlert: 0, alreadyInDams: 0, previouslyFailed: 0, failed: 0 };
+
   it("reports every outcome, and failures only when there are some", () => {
-    expect(importSummary({ found: 3, new: 1, alreadyInDams: 2, failed: 0 }))
+    expect(importSummary({ ...empty, found: 3, new: 1, alreadyInDams: 2 }))
       .toBe("3 found · 1 new · 2 already in DAMS. New leads appear within a minute.");
-    expect(importSummary({ found: 0, new: 0, alreadyInDams: 0, failed: 1 }))
+    expect(importSummary({ ...empty, failed: 1 }))
       .toBe("0 found · 0 new · 0 already in DAMS · 1 failed");
+  });
+
+  it("keeps leads whose event failed apart from those already in DAMS", () => {
+    expect(importSummary({ ...empty, found: 2, alreadyInDams: 1, previouslyFailed: 1 }))
+      .toBe("2 found · 0 new · 1 already in DAMS · 1 previously failed – retry from the event list");
+  });
+
+  it("says which new leads arrive without an alert, so they get assigned", () => {
+    expect(importSummary({ ...empty, found: 3, new: 3, addedWithoutAlert: 2 }))
+      .toBe("3 found · 3 new · 0 already in DAMS. New leads appear within a minute. " +
+        "2 older leads are added without a new-lead alert; assign them from the Leads queue.");
   });
 });

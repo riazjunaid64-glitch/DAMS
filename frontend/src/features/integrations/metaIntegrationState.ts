@@ -221,9 +221,18 @@ export function importSummary(result: MetaLeadImportResult): string {
     `${result.new} new`,
     `${result.alreadyInDams} already in DAMS`,
   ];
+  if (result.previouslyFailed > 0) {
+    parts.push(`${result.previouslyFailed} previously failed – retry from the event list`);
+  }
   if (result.failed > 0) parts.push(`${result.failed} failed`);
   const summary = parts.join(" · ");
-  return result.new > 0 ? `${summary}. New leads appear within a minute.` : summary;
+  if (result.new === 0) return summary;
+
+  const quiet = result.addedWithoutAlert;
+  const quietNote = quiet > 0
+    ? ` ${quiet} older ${quiet === 1 ? "lead is" : "leads are"} added without a new-lead alert; assign ${quiet === 1 ? "it" : "them"} from the Leads queue.`
+    : "";
+  return `${summary}. New leads appear within a minute.${quietNote}`;
 }
 
 /** The event list shows the latest events, or every event in one status. */

@@ -70,6 +70,7 @@ namespace DAMS.Application.Services
             LeadIntakeDto dto,
             LeadUserContext? actor,
             bool trustedExternal = false,
+            bool announce = true,
             CancellationToken cancellationToken = default)
         {
             var provider = LeadContactNormalizer.Clean(dto.ExternalProvider);
@@ -110,7 +111,7 @@ namespace DAMS.Application.Services
                         normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
 
                     return await DecideAndWriteAsync(dto, actor, source, isExternal, provider, externalId,
-                        normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
+                        normalizedPhone, normalizedWhatsapp, normalizedEmail, announce, ct);
                 }, cancellationToken);
             }
             catch (DbUpdateException ex) when (isExternal && IsExternalDuplicate(ex))
@@ -154,6 +155,7 @@ namespace DAMS.Application.Services
             string? normalizedPhone,
             string? normalizedWhatsapp,
             string? normalizedEmail,
+            bool announce,
             CancellationToken cancellationToken)
         {
             // 1. Same external submission replayed — return what we already stored.
@@ -228,7 +230,7 @@ namespace DAMS.Application.Services
                     {
                         await LockLeadAsync(chosen.LeadId!.Value, cancellationToken);
                         var enrichedChoice = await EnrichExistingLeadAsync(
-                            chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken);
+                            chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken, announce: announce);
                         return new LeadIntakeResultDto
                         {
                             IsDuplicate = true,
@@ -293,7 +295,7 @@ namespace DAMS.Application.Services
 
                 await LockLeadAsync(match.LeadId.Value, cancellationToken);
                 var enriched = await EnrichExistingLeadAsync(
-                    match.LeadId.Value, dto, source, actor, isExternal, cancellationToken);
+                    match.LeadId.Value, dto, source, actor, isExternal, cancellationToken, announce: announce);
                 return new LeadIntakeResultDto
                 {
                     IsDuplicate = true,
@@ -327,12 +329,15 @@ namespace DAMS.Application.Services
                 AddExternalReceipt(lead, dto);
 
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadCreated,
-                $"Lead created from {source.Name}.", actor, a => a.Notes = dto.Notes);
+                announce
+                    ? $"Lead created from {source.Name}."
+                    : $"Lead imported from {source.Name} as an older enquiry; no new-lead alert was sent.",
+                actor, a => a.Notes = dto.Notes);
             LeadTimeline.Record(_context, lead, LeadActivityType.SourceRecorded,
                 $"Source recorded: {source.Name}.", actor,
                 a => a.NewValue = BuildSourceTrail(dto, source));
 
-            await SaveNewLeadAsync(lead, cancellationToken, c => NotifyNewLeadAsync(lead, c));
+            await SaveNewLeadAsync(lead, cancellationToken, announce ? c => NotifyNewLeadAsync(lead, c) : null);
 
             return new LeadIntakeResultDto
             {
@@ -548,7 +553,8 @@ namespace DAMS.Application.Services
             LeadUserContext? actor,
             bool isExternal,
             CancellationToken cancellationToken,
-            SubmissionAttribution? attribution = null)
+            SubmissionAttribution? attribution = null,
+            bool announce = true)
         {
             // Repeat enrichment is a write. Recheck scope here rather than trusting the
             // duplicate lookup above: ownership can change between that lookup and this load.
@@ -630,13 +636,29 @@ namespace DAMS.Application.Services
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadEnriched,
-                $"New enquiry received through {source.Name} for an existing lead.", actor,
+                announce
+                    ? $"New enquiry received through {source.Name} for an existing lead."
+                    : $"Older enquiry imported through {source.Name} for an existing lead; no alert was sent.",
+                actor,
                 a =>
                 {
                     a.Notes = dto.Notes;
                     a.NewValue = trail;
                 });
 
+            // An old enquiry recovered after the fact is on the timeline above and alerts nobody.
+            if (announce)
+                await NotifyRepeatEnquiryAsync(lead, source, isExternal, provider, externalId, cancellationToken);
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
+        }
+
+        private async Task NotifyRepeatEnquiryAsync(
+            Lead lead, LeadSource source, bool isExternal, string? provider, string? externalId,
+            CancellationToken cancellationToken)
+        {
             // One alert per enquiry. A provider submission is its own identity; anything else
             // falls back to the minute it arrived, so a double-submitted form alerts once.
             var repeatSuffix = isExternal && provider != null && externalId != null
@@ -659,10 +681,6 @@ namespace DAMS.Application.Services
                     $"A new enquiry arrived through {source.Name} for a lead you own.",
                     repeatSuffix, cancellationToken);
             }
-
-            await _context.SaveChangesAsync(cancellationToken);
-
-            return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
         }
 
         private void AddExternalReceipt(Lead lead, LeadIntakeDto dto, SubmissionAttribution? attribution = null)

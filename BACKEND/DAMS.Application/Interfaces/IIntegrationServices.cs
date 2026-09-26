@@ -75,8 +75,10 @@ namespace DAMS.Application.Interfaces
             int connectionId, ImportMetaLeadsDto dto, LeadUserContext actor, CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Looks back MetaIntegration:ReconciliationLookbackHours on every enabled Page's forms.
-        /// Never throws for a Meta failure: what went wrong comes back as the result's warning.
+        /// Looks back MetaIntegration:ReconciliationLookbackHours on every enabled Page's forms,
+        /// stopping short of the last few minutes, which are the webhook's. Never throws for a Meta
+        /// failure: what went wrong comes back as the result's warning and is kept on the
+        /// connection, where the Admin alerts pick it up.
         /// </summary>
         Task<MetaLeadImportResultDto> ReconcileAsync(int connectionId, CancellationToken cancellationToken = default);
     }
@@ -86,7 +88,8 @@ namespace DAMS.Application.Interfaces
     {
         /// <summary>
         /// Raises the alert each connection's current state calls for — needs reconnecting, sign-in
-        /// about to expire, lead events failed, and (when configured) a Page gone quiet. Safe to run
+        /// about to expire, lead events failed, reconciliation failing or finding leads the webhook
+        /// missed, and (when configured) a Page gone quiet. Safe to run
         /// as often as wanted: each alert is raised once per Admin. Returns how many were created.
         /// </summary>
         Task<int> RaiseAlertsAsync(CancellationToken cancellationToken = default);

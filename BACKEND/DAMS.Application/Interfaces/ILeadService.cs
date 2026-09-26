@@ -22,10 +22,15 @@ namespace DAMS.Application.Interfaces
         /// Set only by a verified provider or internal system flow. Client-supplied provider
         /// fields never make a staff intake replay or enrich an external submission.
         /// </param>
+        /// <param name="announce">
+        /// False only for an old enquiry recovered from a provider after the fact: the lead or
+        /// enrichment is written and its timeline says so, but nobody is notified about it.
+        /// </param>
         Task<LeadIntakeResultDto> IngestAsync(
             LeadIntakeDto dto,
             LeadUserContext? actor,
             bool trustedExternal = false,
+            bool announce = true,
             CancellationToken cancellationToken = default);
 
         Task<LeadResponseDto?> GetByIdAsync(int id, LeadUserContext ctx, CancellationToken cancellationToken = default);

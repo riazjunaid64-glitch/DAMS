@@ -4461,7 +4461,13 @@ public sealed class SqlServerProductionInvariantTests
             var events = await db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
             Assert.Equal(2, events.Count);
             Assert.All(events, e => Assert.Equal(ExternalIntegrationEventStatus.Pending, e.Status));
-            Assert.Contains(events, e => e.EventType == MetaLeadBackfillService.BackfillEventType);
+            Assert.All(events, e => Assert.Equal(MetaLeadBackfillService.BackfillEventType, e.EventType));
+
+            // What the reconciliation found is kept on the connection for the Admin alerts.
+            var connection = await db.ExternalIntegrationConnections.AsNoTracking().SingleAsync(c => c.Id == connectionId);
+            Assert.NotNull(connection.ReconciledAt);
+            Assert.Null(connection.ReconciliationError);
+            Assert.Equal(0, connection.ReconciliationMissedLeads);
         }
     }
 

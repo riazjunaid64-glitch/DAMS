@@ -34,12 +34,13 @@ namespace DAMS.Application.Interfaces
         Task<MetaLead> GetLeadAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Every lead a form received after <paramref name="since"/>, read from the form's own edge —
-        /// how leads the webhook never delivered are recovered. Meta keeps them for 90 days. The
-        /// fields match <see cref="GetLeadAsync"/>, ad ids included only when Meta shares them.
+        /// Every lead a form received after <paramref name="since"/> and before <paramref name="until"/>,
+        /// both to the second, read from the form's own edge — how leads the webhook never delivered
+        /// are recovered. Meta keeps them for 90 days. The fields match <see cref="GetLeadAsync"/>,
+        /// ad ids included only when Meta shares them.
         /// </summary>
         Task<MetaFormLeadPage> GetFormLeadsAsync(
-            string formExternalId, DateTime since, string accessToken, CancellationToken cancellationToken = default);
+            string formExternalId, DateTime since, DateTime until, string accessToken, CancellationToken cancellationToken = default);
 
         /// <summary>The names of the ad, ad set and campaign a lead came from. Needs ads_management on Meta's side.</summary>
         Task<MetaLeadAdNames> GetLeadAdNamesAsync(string leadgenId, string accessToken, CancellationToken cancellationToken = default);

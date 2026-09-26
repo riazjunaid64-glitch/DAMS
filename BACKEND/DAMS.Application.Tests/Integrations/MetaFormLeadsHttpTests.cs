@@ -20,6 +20,7 @@ public class MetaFormLeadsHttpTests
     public async Task FormLeads_AreFilteredByTimeAndFollowedAcrossPages()
     {
         var since = new DateTime(2026, 9, 14, 0, 0, 0, DateTimeKind.Utc);
+        var until = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
         var handler = new FakeHandler(request => request.RequestUri!.Query.Contains("after=cursor-2")
             ? GraphJson($$"""{ "data": [ {{LeadJson("l-3")}} ] }""")
             : GraphJson($$"""
@@ -27,7 +28,7 @@ public class MetaFormLeadsHttpTests
                   "paging": { "next": "https://graph.facebook.com/v21.0/form-1/leads?after=cursor-2&access_token=leaked" } }
                 """));
 
-        var page = await DirectClient(handler).GetFormLeadsAsync("form-1", since, Token, CancellationToken.None);
+        var page = await DirectClient(handler).GetFormLeadsAsync("form-1", since, until, Token, CancellationToken.None);
 
         Assert.Equal(["l-1", "l-2", "l-3"], page.Leads.Select(l => l.LeadgenId));
         Assert.False(page.Truncated);
@@ -39,7 +40,7 @@ public class MetaFormLeadsHttpTests
         var query = HttpUtility.ParseQueryString(first.RequestUri.Query);
         Assert.Equal("id,created_time,field_data,form_id,platform,is_organic,ad_id,adset_id,campaign_id", query["fields"]);
         Assert.Equal(
-            $$"""[{"field":"time_created","operator":"GREATER_THAN","value":{{new DateTimeOffset(since).ToUnixTimeSeconds()}}}]""",
+            $$"""[{"field":"time_created","operator":"GREATER_THAN","value":{{new DateTimeOffset(since).ToUnixTimeSeconds()}}},{"field":"time_created","operator":"LESS_THAN","value":{{new DateTimeOffset(until).ToUnixTimeSeconds()}}}]""",
             query["filtering"]);
         Assert.NotNull(query["appsecret_proof"]);
 
@@ -56,7 +57,7 @@ public class MetaFormLeadsHttpTests
             ? GraphError(HttpStatusCode.Forbidden, 200, AdsManagementRefusal)
             : GraphJson($$"""{ "data": [ {{LeadJson("l-1")}} ] }"""));
 
-        var page = await DirectClient(handler).GetFormLeadsAsync("form-1", DateTime.UtcNow.AddDays(-1), Token, CancellationToken.None);
+        var page = await DirectClient(handler).GetFormLeadsAsync("form-1", DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, Token, CancellationToken.None);
 
         Assert.Single(page.Leads);
         Assert.Equal(2, handler.Requests.Count);
@@ -68,7 +69,7 @@ public class MetaFormLeadsHttpTests
         var handler = new FakeHandler(_ => GraphError(HttpStatusCode.BadRequest, 190, "Error validating access token"));
 
         await Assert.ThrowsAsync<MetaAuthorizationException>(() =>
-            DirectClient(handler).GetFormLeadsAsync("form-1", DateTime.UtcNow.AddDays(-1), Token, CancellationToken.None));
+            DirectClient(handler).GetFormLeadsAsync("form-1", DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, Token, CancellationToken.None));
         Assert.Single(handler.Requests);
     }
 }
