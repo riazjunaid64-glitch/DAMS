@@ -15,8 +15,8 @@ namespace DAMS.Application.Services
     /// rather than a query each, which is both fewer round trips and free of any
     /// provider-specific date functions.
     ///
-    /// Every figure is computed over the caller's own scope, so a manager's numbers cover
-    /// their team and nobody else's.
+    /// The salesperson dashboard counts only that salesperson's own leads; the organisation
+    /// dashboard, shared by admins and managers, counts every lead.
     /// </summary>
     public class LeadReportingService : ILeadReportingService
     {
@@ -106,8 +106,10 @@ namespace DAMS.Application.Services
             {
                 EmployeeId = ctx.EmployeeId,
                 EmployeeName = ctx.DisplayName,
-                NewLeads = await open.CountAsync(
-                    l => l.Stage == LeadStage.New || l.Stage == LeadStage.FirstContactPending, cancellationToken),
+                TotalAssigned = await mine.CountAsync(cancellationToken),
+                NewLeads = await mine.CountAsync(l => LeadStageRules.NewStages.Contains(l.Stage), cancellationToken),
+                InProgressLeads = await mine.CountAsync(l => LeadStageRules.InProgressStages.Contains(l.Stage), cancellationToken),
+                LostLeads = await mine.CountAsync(l => LeadStageRules.LostStages.Contains(l.Stage), cancellationToken),
                 ActiveLeads = await open.CountAsync(cancellationToken),
                 LeadsWithoutRecentActivity = await open.CountAsync(
                     l => (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < inactiveCutoff, cancellationToken),
@@ -156,59 +158,11 @@ namespace DAMS.Application.Services
             return dashboard;
         }
 
-        public async Task<ManagerLeadDashboardDto> GetManagerDashboardAsync(
-            LeadUserContext ctx, CancellationToken cancellationToken = default)
-        {
-            LeadAccess.EnsureStaff(ctx);
-
-            if (ctx.IsEmployee)
-                throw new LeadAuthorizationException("The team dashboard is for managers and admins.");
-
-            var now = _clock.GetUtcNow().UtcDateTime;
-            var inactiveCutoff = now.AddDays(-_options.InactivityDays);
-            var firstContactCutoff = now.AddHours(-_options.FirstResponseHours);
-
-            var scoped = LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx);
-            var open = scoped.Where(l => !LeadStageRules.ClosedStages.Contains(l.Stage));
-            var scopedLeadIds = scoped.Select(l => l.Id);
-
-            var facts = await LoadFactsAsync(scoped, cancellationToken);
-            var won = facts.Count(f => f.Stage == LeadStage.Won);
-            var closed = facts.Count(f => LeadStageRules.IsClosed(f.Stage));
-
-            return new ManagerLeadDashboardDto
-            {
-                TeamLeads = facts.Count,
-                UnassignedLeads = await open.CountAsync(
-                    l => l.AssignedEmployeeId == null && l.AssignedTeamId == null, cancellationToken),
-                OverdueFirstContacts = await open.CountAsync(
-                    l => l.FirstContactAt == null && l.AssignedAt != null && l.AssignedAt < firstContactCutoff, cancellationToken),
-                OverdueFollowUps = await _context.LeadFollowUps
-                    .CountAsync(f => scopedLeadIds.Contains(f.LeadId)
-                                     && f.Status == LeadFollowUpStatus.Pending && f.DueAt < now, cancellationToken),
-                InactiveLeads = await open.CountAsync(
-                    l => (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < inactiveCutoff, cancellationToken),
-                UpcomingSiteVisits = await _context.LeadSiteVisits
-                    .CountAsync(v => scopedLeadIds.Contains(v.LeadId)
-                                     && (v.Status == LeadSiteVisitStatus.Scheduled || v.Status == LeadSiteVisitStatus.Rescheduled)
-                                     && v.ScheduledAt >= now, cancellationToken),
-                MissedSiteVisits = await _context.LeadSiteVisits
-                    .CountAsync(v => scopedLeadIds.Contains(v.LeadId) && v.Status == LeadSiteVisitStatus.Missed, cancellationToken),
-                ManagerReviewRequests = await _context.LeadComments
-                    .CountAsync(c => scopedLeadIds.Contains(c.LeadId) && c.IsManagerReviewRequest, cancellationToken),
-                WonLeads = won,
-                ClosedLeads = closed,
-                ConversionRatePercent = Percent(won, facts.Count),
-                ByStage = BuildStageCounts(facts.Where(f => !LeadStageRules.IsClosed(f.Stage)).ToList(), now),
-                ByEmployee = BuildEmployeePerformance(facts)
-            };
-        }
-
         public async Task<AdminLeadDashboardDto> GetAdminDashboardAsync(
             LeadUserContext ctx, DateTime? from, DateTime? to, CancellationToken cancellationToken = default)
         {
-            if (!ctx.IsAdmin)
-                throw new LeadAuthorizationException("The organisation dashboard is for admins.");
+            if (!ctx.IsAdmin && !ctx.IsManager)
+                throw new LeadAuthorizationException("The organisation dashboard is for admins and managers.");
 
             var now = _clock.GetUtcNow().UtcDateTime;
             var query = _context.Leads.AsNoTracking().AsQueryable();

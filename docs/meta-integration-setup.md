@@ -21,6 +21,21 @@ Set the first four together, or leave all four unset. With only some of them set
 refuses to start. It also refuses to start if `LoginConfigId` is set to anything other
 than digits.
 
+### Graph API version
+
+DAMS uses Graph API **v25.0**. Meta supports it until **29 July 2028**. The version is set in
+`MetaIntegration:GraphApiVersion` (`appsettings.json`, default in `MetaIntegrationOptions`),
+and it is used both for Graph calls and for the login dialog URL.
+
+In the App Dashboard, under **Webhooks → Page**, set the webhook version to the same
+**v25.0**. The webhook version is set separately from the calls DAMS makes.
+
+Upgrade well before the expiry date. After it, Meta does not reject calls to the old
+version. It runs them on the oldest version still available, so behaviour can change without
+any error. To upgrade, read the Graph and Marketing API changelogs for changes to Lead,
+LeadgenForm, Page `subscribed_apps`, `me/accounts` and webhooks. Then change the setting,
+the default, the tests and the webhook version together, and update the version and date here.
+
 ## 2. Which login product to use
 
 Look at the app type in the App Dashboard.
@@ -87,6 +102,8 @@ Facebook Login → Settings.
    shows **Needs reconnection**, its message lists the permissions that are missing. Add
    them to the login configuration.
 3. Send a lead with Meta's Lead Ads Testing Tool and check that it appears in the CRM.
+4. Check that the webhook version in the App Dashboard matches `GraphApiVersion`, so this
+   test runs on the same version that production will use.
 
 ## 4. Token expiry and alerts
 
@@ -105,7 +122,8 @@ are fetched with the **Page** tokens that `me/accounts` returns, and those do no
   has not got through within 30 minutes, leads are tried with the old token anyway.
 - The panel's sign-in warning uses the same `TokenExpiryWarningDays` window as the alert below.
 
-Every active Admin gets one notification (category **Integrations**, email and push if
+Every active Admin and every active Sales Manager gets one notification (category
+**Integrations**, email and push if
 those are switched on) when:
 
 | Alert | When | Setting |
@@ -156,8 +174,8 @@ This follows the recommendation on KAN-35, which is still waiting for the produc
 confirmation. First-response alerts are timed from when DAMS assigns the lead, so a recovered
 lead is not reported overdue on arrival.
 
-**Admin alerts.** Each reconciliation's outcome is kept on the connection, and every Admin is
-told through the notification system when:
+**Admin and Sales Manager alerts.** Each reconciliation's outcome is kept on the connection,
+and every Admin and Sales Manager is told through the notification system when:
 
 - reconciliation fails on two runs in a row, for example a Page credential that can no longer be
   read, or Meta refusing the lead read (see `pages_manage_ads` below). The alert includes
@@ -170,5 +188,5 @@ Not built yet:
 - Importing Meta's CSV exports for leads older than 90 days (needs a product decision).
 - Meta's docs list `pages_manage_ads` for bulk lead reads. DAMS does not ask for it. If the
   staging test shows it is needed, a manual import shows Meta's permission error and scheduled
-  reconciliation raises the Admin alert above. Add the scope only with that evidence (see
+  reconciliation raises the alert above. Add the scope only with that evidence (see
   `MetaScopes`).

@@ -755,36 +755,91 @@ public sealed class LeadAlertAndReportingTests
     }
 
     [Fact]
-    public async Task ManagerDashboardCoversTheTeamAndTheUnassignedQueue()
+    public async Task KAN39_SalespersonDashboardCountsTheFourSimpleStages_AndTheListFiltersByThem()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var teamLead = await h.CreateWorkedLeadAsync();
+        var inProgress = await h.CreateWorkedLeadAsync("0300-1110001");
+
+        var fresh = await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Nadia", phone: "03337776666", email: "n@x.com"));
+        await h.Leads.AssignAsync(fresh, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+
+        var won = await h.CreateWorkedLeadAsync("0300-1110002");
+        await h.Leads.ConvertAsync(won, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
+
+        var lost = await h.CreateWorkedLeadAsync("0300-1110003");
+        await h.Leads.CloseAsync(lost, dormant: false, new CloseLeadDto
+        {
+            ClosureReasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested")
+        }, h.Sales);
+
+        var dormant = await h.CreateWorkedLeadAsync("0300-1110004");
+        await h.Leads.CloseAsync(dormant, dormant: true, new CloseLeadDto
+        {
+            ClosureReasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision")
+        }, h.Sales);
+
+        var theirs = await h.CreateWorkedLeadAsync("03219998888");
+        await h.Leads.AssignAsync(theirs,
+            new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "handover" }, h.Admin);
+
+        var dashboard = await h.Reporting.GetEmployeeDashboardAsync(h.Sales);
+
+        Assert.Equal(5, dashboard.TotalAssigned);
+        Assert.Equal(1, dashboard.NewLeads);
+        Assert.Equal(1, dashboard.InProgressLeads);
+        Assert.Equal(1, dashboard.Conversions);
+        // A dormant lead did not convert either, so it counts as lost in the simple view.
+        Assert.Equal(2, dashboard.LostLeads);
+        Assert.Equal(dashboard.TotalAssigned,
+            dashboard.NewLeads + dashboard.InProgressLeads + dashboard.Conversions + dashboard.LostLeads);
+
+        async Task<int[]> IdsIn(LeadStageGroup group) =>
+            (await h.Leads.GetLeadsAsync(new LeadFilterDto { StageGroup = group }, h.Sales))
+                .Items.Select(l => l.Id).OrderBy(id => id).ToArray();
+
+        Assert.Equal(new[] { fresh }, await IdsIn(LeadStageGroup.New));
+        Assert.Equal(new[] { inProgress }, await IdsIn(LeadStageGroup.InProgress));
+        Assert.Equal(new[] { won }, await IdsIn(LeadStageGroup.Won));
+        Assert.Equal(new[] { lost, dormant }.OrderBy(id => id).ToArray(), await IdsIn(LeadStageGroup.Lost));
+    }
+
+    [Fact]
+    public void KAN39_EveryPipelineStageBelongsToExactlyOneSimpleStage()
+    {
+        foreach (var stage in Enum.GetValues<LeadStage>())
+        {
+            var groups = Enum.GetValues<LeadStageGroup>()
+                .Where(g => LeadStageRules.StagesIn(g).Contains(stage))
+                .ToList();
+            Assert.True(groups.Count == 1, $"{stage} sits in {groups.Count} simple stages.");
+        }
+    }
+
+    [Fact]
+    public async Task EmployeesCannotOpenTheOrganisationDashboard()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Sales, null, null));
+    }
+
+    [Fact]
+    public async Task ManagerSeesTheSameOrganisationDashboardAsAdmin()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await h.CreateWorkedLeadAsync();
         await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Nadia", phone: "03337776666", email: "n@x.com"));
         var outside = await h.CreateWorkedLeadAsync("03219998888");
         await h.Leads.AssignAsync(outside,
             new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "handover" }, h.Admin);
 
-        await h.Leads.ConvertAsync(teamLead, new ConvertLeadDto { UnitId = h.UnitId }, h.Manager);
+        var admin = await h.Reporting.GetAdminDashboardAsync(h.Admin, null, null);
+        var manager = await h.Reporting.GetAdminDashboardAsync(h.Manager, null, null);
 
-        var dashboard = await h.Reporting.GetManagerDashboardAsync(h.Manager);
-
-        // The team's own lead plus the unassigned one; the other team's lead is excluded.
-        Assert.Equal(2, dashboard.TeamLeads);
-        Assert.Equal(1, dashboard.UnassignedLeads);
-        Assert.Equal(1, dashboard.WonLeads);
-        Assert.Equal(50d, dashboard.ConversionRatePercent);
-        Assert.Contains(dashboard.ByEmployee, e => e.EmployeeId == h.SalesEmployeeId && e.WonLeads == 1);
-        Assert.DoesNotContain(dashboard.ByEmployee, e => e.EmployeeId == h.OtherSalesEmployeeId);
-    }
-
-    [Fact]
-    public async Task EmployeesCannotOpenTheTeamOrOrganisationDashboards()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetManagerDashboardAsync(h.Sales));
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Sales, null, null));
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Reporting.GetAdminDashboardAsync(h.Manager, null, null));
+        Assert.Equal(3, manager.TotalLeads);
+        Assert.Equal(admin.TotalLeads, manager.TotalLeads);
+        Assert.Equal(admin.UnassignedLeads, manager.UnassignedLeads);
+        Assert.Contains(manager.ByEmployee, e => e.EmployeeId == h.OtherSalesEmployeeId);
     }
 
     [Fact]

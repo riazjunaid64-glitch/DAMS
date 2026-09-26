@@ -280,7 +280,7 @@ public class MetaIntegrationHealthTests
     // ── Admin alerts ───────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task AConnectionNeedingReconnection_AlertsEveryActiveAdminOnce()
+    public async Task AConnectionNeedingReconnection_AlertsEveryActiveAdminAndManagerOnce()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (connection, _) = await h.ConnectPageAsync();
@@ -293,11 +293,13 @@ public class MetaIntegrationHealthTests
         h.Db.Users.AddRange(secondAdmin, disabledAdmin);
         await MarkNeedsReauthorizationAsync(h, "Error validating access token.");
 
-        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(3, await h.Alerts.RaiseAlertsAsync());
         Assert.Equal(0, await h.Alerts.RaiseAlertsAsync());
 
-        var alerts = await IntegrationAlertsAsync(h);
-        Assert.Equal(new[] { h.Leads.AdminUserId, secondAdmin.UserId }.OrderBy(id => id),
+        var alerts = await h.Db.Notifications.AsNoTracking()
+            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired)
+            .ToListAsync();
+        Assert.Equal(new[] { h.Leads.AdminUserId, secondAdmin.UserId, h.Leads.ManagerUserId }.OrderBy(id => id),
             alerts.Select(n => n.RecipientUserId!.Value).OrderBy(id => id));
         foreach (var alert in alerts)
         {
@@ -318,22 +320,22 @@ public class MetaIntegrationHealthTests
     }
 
     [Fact]
-    public async Task AnIntegrationAlert_CannotBeAddressedToAManager()
+    public async Task AnIntegrationAlert_CanBeAddressedToAManager_ButNotAnEmployee()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (connection, _) = await h.ConnectPageAsync();
 
-        var queued = await h.Leads.Dispatcher.DispatchAsync(new NotificationRequest
+        Task<bool> SendTo(int userId) => h.Leads.Dispatcher.DispatchAsync(new NotificationRequest
         {
             Type = NotificationType.IntegrationAttentionRequired,
-            RecipientUserId = h.Leads.ManagerUserId,
-            DedupKey = "manager-integration-alert",
+            RecipientUserId = userId,
+            DedupKey = $"integration-alert-{userId}",
             EntityType = NotificationEntityType.IntegrationConnection,
             EntityId = connection.Id
         });
 
-        Assert.False(queued);
-        Assert.Empty(await IntegrationAlertsAsync(h));
+        Assert.True(await SendTo(h.Leads.ManagerUserId));
+        Assert.False(await SendTo(h.Leads.SalesUserId));
     }
 
     [Fact]
@@ -342,13 +344,13 @@ public class MetaIntegrationHealthTests
         await using var h = await MetaIntegrationHarness.CreateAsync();
         await h.ConnectPageAsync();
         await MarkNeedsReauthorizationAsync(h, "Session has expired.");
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
 
         await ReconnectAsync(h);
         Assert.Equal(0, await h.Alerts.RaiseAlertsAsync());
 
         await MarkNeedsReauthorizationAsync(h, "The user has not authorized application.");
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
         Assert.Equal(2, (await IntegrationAlertsAsync(h)).Count);
     }
 
@@ -363,7 +365,7 @@ public class MetaIntegrationHealthTests
         connection.TokenExpiresAt = DateTime.UtcNow.AddDays(daysLeft);
         await h.Db.SaveChangesAsync();
 
-        Assert.Equal(expected ? 1 : 0, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(expected ? 2 : 0, await h.Alerts.RaiseAlertsAsync());
         Assert.Equal(0, await h.Alerts.RaiseAlertsAsync());
 
         if (expected)
@@ -380,12 +382,12 @@ public class MetaIntegrationHealthTests
         var (connection, _) = await h.ConnectPageAsync();
         connection.TokenExpiresAt = DateTime.UtcNow.AddDays(2);
         await h.Db.SaveChangesAsync();
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
 
         connection.TokenExpiresAt = DateTime.UtcNow.AddDays(5);
         await h.Db.SaveChangesAsync();
 
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
     }
 
     [Fact]
@@ -401,7 +403,7 @@ public class MetaIntegrationHealthTests
 
         h.Options.TokenExpiryWarningDays = 7;
         await MarkNeedsReauthorizationAsync(h, "Session has expired.");
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
         Assert.Contains("needs reconnecting", Assert.Single(await IntegrationAlertsAsync(h)).Title);
     }
 
@@ -416,7 +418,7 @@ public class MetaIntegrationHealthTests
         await AddEventAsync(h, connection, page, "lead-1", ExternalIntegrationEventStatus.Failed, DateTime.UtcNow);
         await AddEventAsync(h, connection, page, "lead-2", ExternalIntegrationEventStatus.Failed, DateTime.UtcNow);
 
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
         var alert = Assert.Single(await IntegrationAlertsAsync(h));
         Assert.Contains("2 lead events", alert.Message);
 
@@ -434,7 +436,7 @@ public class MetaIntegrationHealthTests
         await h.Processor.ProcessPendingEventsAsync(10);
 
         Assert.Equal(ExternalIntegrationEventStatus.Failed, (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
         Assert.Contains("failed", Assert.Single(await IntegrationAlertsAsync(h)).Title);
     }
 
@@ -464,7 +466,7 @@ public class MetaIntegrationHealthTests
         Assert.Equal(0, await h.Alerts.RaiseAlertsAsync());
 
         h.Options.QuietPageAlertDays = 3;
-        Assert.Equal(1, await h.Alerts.RaiseAlertsAsync());
+        Assert.Equal(2, await h.Alerts.RaiseAlertsAsync());
         var alert = Assert.Single(await IntegrationAlertsAsync(h));
         Assert.Equal(quietConnection.Id, alert.EntityId);
         Assert.Contains("Page page-quiet", alert.Title);
@@ -472,13 +474,13 @@ public class MetaIntegrationHealthTests
     }
 
     [Fact]
-    public async Task OnlyAdminsAreOfferedTheIntegrationsCategory()
+    public async Task AdminsAndManagersAreOfferedTheIntegrationsCategory()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var policy = new Services.Notifications.NotificationEligibilityPolicy(h.Db);
 
         Assert.Contains(policy.CategoriesForRole(LeadRoles.Admin), c => c.Category == NotificationCategory.Integrations);
-        Assert.DoesNotContain(policy.CategoriesForRole(LeadRoles.Manager), c => c.Category == NotificationCategory.Integrations);
+        Assert.Contains(policy.CategoriesForRole(LeadRoles.Manager), c => c.Category == NotificationCategory.Integrations);
         Assert.DoesNotContain(policy.CategoriesForRole(LeadRoles.Employee), c => c.Category == NotificationCategory.Integrations);
     }
 
@@ -557,6 +559,6 @@ public class MetaIntegrationHealthTests
 
     private static Task<List<Notification>> IntegrationAlertsAsync(MetaIntegrationHarness h) =>
         h.Db.Notifications.AsNoTracking()
-            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired)
+            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired && n.RecipientUserId == h.Leads.AdminUserId)
             .ToListAsync();
 }

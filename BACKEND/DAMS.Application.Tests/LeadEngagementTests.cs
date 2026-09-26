@@ -219,15 +219,7 @@ public sealed class LeadEngagementTests
                 AssignedEmployeeId = h.OtherSalesEmployeeId
             }, h.Sales));
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.FollowUps.CreateAsync(leadId,
-            new CreateLeadFollowUpDto
-            {
-                Title = "Manager handoff",
-                DueAt = DateTime.UtcNow.AddDays(1),
-                AssignedEmployeeId = h.OtherSalesEmployeeId
-            }, h.Manager));
-
-        // Admin can make an explicit cross-team work assignment, and the assignee can act on
+        // Admins and managers can make an explicit cross-team work assignment, and the assignee can act on
         // that work item without receiving full lead access.
         var task = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
         {

@@ -89,14 +89,15 @@ public class LeadOriginalMetaDataTests
     }
 
     [Fact]
-    public async Task AManager_CannotReachItForALeadOutsideTheirTeams()
+    public async Task AManager_CanReachItForALeadOnAnyTeam_LikeAnAdmin()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (leadId, submissionId) = await IngestAsync(h, "lead-1");
         await h.Leads.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.Leads.OtherSalesEmployeeId }, h.Leads.Admin);
 
-        await Assert.ThrowsAsync<LeadNotFoundException>(() =>
-            h.Leads.Leads.GetExternalSubmissionRawAsync(leadId, submissionId, h.Leads.Manager));
+        var raw = await h.Leads.Leads.GetExternalSubmissionRawAsync(leadId, submissionId, h.Leads.Manager);
+
+        Assert.Contains("Ali Khan", raw.RawPayloadJson);
     }
 
     [Fact]

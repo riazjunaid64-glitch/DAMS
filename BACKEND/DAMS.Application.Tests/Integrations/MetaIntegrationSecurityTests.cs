@@ -75,7 +75,7 @@ public class MetaIntegrationSecurityTests
         // Pinned exactly, so adding Facebook Login for Business support cannot drift the URL
         // every existing connection has been made through.
         Assert.Equal(
-            "https://www.facebook.com/v21.0/dialog/oauth" +
+            "https://www.facebook.com/v25.0/dialog/oauth" +
             "?client_id=test-app-id" +
             $"&redirect_uri={Uri.EscapeDataString("https://dams.test/api/integrations/meta/callback")}" +
             $"&state={Uri.EscapeDataString(state)}" +
@@ -547,7 +547,7 @@ public class MetaIntegrationSecurityTests
         Assert.Contains(visible, e => e.Id == failed.Id && e.Status == ExternalIntegrationEventStatus.Failed);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Manager));
+            h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Sales));
 
         var queued = await h.Integration.RetryEventAsync(connection.Id, failed.Id, h.Leads.Admin);
         Assert.Equal(ExternalIntegrationEventStatus.Pending, queued.Status);

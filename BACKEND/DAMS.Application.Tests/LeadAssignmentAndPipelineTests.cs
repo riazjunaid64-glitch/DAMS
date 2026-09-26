@@ -62,33 +62,16 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task ManagerCannotAssignOutsideTheirTeam()
+    public async Task ManagerCanAssignAndReassignToAnySalesperson()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId }, h.Manager));
+        var lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId }, h.Manager);
+        Assert.Equal(h.OtherSalesEmployeeId, lead.AssignedEmployeeId);
 
-        var lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Manager);
+        lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId, Reason = "handover" }, h.Manager);
         Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
-    }
-
-    [Fact]
-    public async Task ManagerCannotPairOwnTeamEmployeeWithUnmanagedTeam()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-        var unmanagedTeam = new Team { Name = "South Sales", IsActive = true };
-        h.Db.Teams.Add(unmanagedTeam);
-        await h.Db.SaveChangesAsync();
-        var leadId = await h.CreateLeadAsync();
-
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.AssignAsync(leadId, new AssignLeadDto
-            {
-                EmployeeId = h.SalesEmployeeId,
-                TeamId = unmanagedTeam.Id
-            }, h.Manager));
     }
 
     [Fact]
@@ -465,7 +448,7 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task ManagerSeesTheirTeamAndTheUnassignedQueueButNotOtherTeams()
+    public async Task ManagerSeesEveryLeadLikeAnAdmin()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var teamLead = await h.CreateLeadAsync();
@@ -480,7 +463,7 @@ public sealed class LeadAssignmentAndPipelineTests
 
         Assert.Contains(teamLead, ids);
         Assert.Contains(unassigned, ids);
-        Assert.DoesNotContain(outsideLead, ids);
+        Assert.Contains(outsideLead, ids);
     }
 
     [Fact]

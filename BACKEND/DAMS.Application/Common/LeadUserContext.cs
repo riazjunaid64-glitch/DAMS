@@ -1,5 +1,4 @@
 using DAMS.Domain.Entities;
-using DAMS.Domain.Enums;
 
 namespace DAMS.Application.Common
 {
@@ -54,22 +53,10 @@ namespace DAMS.Application.Common
     {
         public static IQueryable<Lead> Scope(IQueryable<Lead> query, LeadUserContext ctx)
         {
-            if (ctx.IsAdmin)
+            // Admins and Sales Managers run the same CRM: every lead, including the unassigned
+            // queue, so either can pick up a new enquiry and hand it to any salesperson.
+            if (ctx.IsAdmin || ctx.IsManager)
                 return query;
-
-            if (ctx.IsManager)
-            {
-                // Materialised to an array so EF translates Contains to a SQL IN list.
-                var teamIds = ctx.ManagedTeamIds.ToArray();
-                var employeeId = ctx.EmployeeId;
-                return query.Where(l =>
-                    l.AssignedEmployeeId == employeeId
-                    || (l.AssignedTeamId != null && teamIds.Contains(l.AssignedTeamId.Value))
-                    || (l.AssignedEmployee != null && l.AssignedEmployee.TeamId != null
-                        && teamIds.Contains(l.AssignedEmployee.TeamId.Value))
-                    // Managers own the unassigned queue — they cannot assign what they cannot see.
-                    || l.AssignmentState == LeadAssignmentState.Unassigned);
-            }
 
             if (ctx.IsEmployee)
             {
@@ -110,18 +97,18 @@ namespace DAMS.Application.Common
 
         public static void EnsureCanConfigure(LeadUserContext ctx)
         {
-            if (!ctx.IsAdmin)
-                throw new LeadAuthorizationException("Only an admin can change lead configuration.");
+            if (!ctx.IsAdmin && !ctx.IsManager)
+                throw new LeadAuthorizationException("Only an admin or manager can change lead configuration.");
         }
 
         /// <summary>
-        /// A held enquiry names leads from any team, so deciding it needs the one role that can
+        /// A held enquiry names leads from any team, so deciding it needs a role that can
         /// see them all.
         /// </summary>
         public static void EnsureCanResolveIntakeHolds(LeadUserContext ctx)
         {
-            if (!ctx.IsAdmin)
-                throw new LeadAuthorizationException("Only an admin can review held enquiries.");
+            if (!ctx.IsAdmin && !ctx.IsManager)
+                throw new LeadAuthorizationException("Only an admin or manager can review held enquiries.");
         }
 
         /// <summary>

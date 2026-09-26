@@ -35,7 +35,7 @@ namespace DAMS.Application.Common
         /// </summary>
         public string? LoginConfigId { get; set; }
 
-        public string GraphApiVersion { get; set; } = "v21.0";
+        public string GraphApiVersion { get; set; } = "v25.0";
 
         public int OAuthStateLifetimeMinutes { get; set; } = 10;
 

@@ -46,7 +46,7 @@ public class MetaGraphClientHttpTests
             AppSecret = FakeAppSecret,
             WebhookVerifyToken = "verify",
             OAuthCallbackUrl = "https://dams.test/callback",
-            GraphApiVersion = "v21.0"
+            GraphApiVersion = "v25.0"
         });
         services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
             {
@@ -101,7 +101,7 @@ public class MetaGraphClientHttpTests
             AppSecret = FakeAppSecret,
             WebhookVerifyToken = "verify",
             OAuthCallbackUrl = "https://dams.test/callback",
-            GraphApiVersion = "v21.0"
+            GraphApiVersion = "v25.0"
         });
         services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
             {
@@ -147,7 +147,7 @@ public class MetaGraphClientHttpTests
             AppSecret = FakeAppSecret,
             WebhookVerifyToken = "verify",
             OAuthCallbackUrl = "https://dams.test/callback",
-            GraphApiVersion = "v21.0"
+            GraphApiVersion = "v25.0"
         });
         services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
             {
@@ -187,7 +187,7 @@ public class MetaGraphClientHttpTests
                         """
                         {
                           "data": [ { "id": "page-1", "name": "Acme Sales" } ],
-                          "paging": { "next": "https://graph.facebook.com/v21.0/me/accounts?access_token=leaked-token&appsecret_proof=stale-proof&after=cursor-1" }
+                          "paging": { "next": "https://graph.facebook.com/v25.0/me/accounts?access_token=leaked-token&appsecret_proof=stale-proof&after=cursor-1" }
                         }
                         """)
                 };
@@ -224,7 +224,7 @@ public class MetaGraphClientHttpTests
             AppSecret = FakeAppSecret,
             WebhookVerifyToken = "verify",
             OAuthCallbackUrl = "https://dams.test/callback",
-            GraphApiVersion = "v21.0"
+            GraphApiVersion = "v25.0"
         });
         services.AddHttpClient<IMetaGraphClient, MetaGraphClient>((sp, client) =>
             {
@@ -467,7 +467,7 @@ public class MetaGraphClientHttpTests
     }
 
     internal static MetaGraphClient DirectClient(FakeHandler handler, ILoggerProvider? logs = null) => new(
-        new HttpClient(handler) { BaseAddress = new Uri("https://graph.facebook.com/v21.0/") },
+        new HttpClient(handler) { BaseAddress = new Uri("https://graph.facebook.com/v25.0/") },
         new MetaIntegrationOptions
         {
             AppId = "app-id",

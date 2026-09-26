@@ -516,7 +516,6 @@ namespace DAMS.Application.Services
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
-                includeQueueManagers: true,
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
@@ -668,11 +667,11 @@ namespace DAMS.Application.Services
             if (lead.AssignedEmployeeId == null)
             {
                 // No salesperson owns it yet — unassigned, or parked on a team — so the people
-                // who hand it out hear instead: the queue's managers, or the team's.
+                // who hand it out hear instead: the admins and sales managers.
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
                     $"Repeat enquiry: {FullName(lead)}",
                     $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
-                    repeatSuffix, includeQueueManagers: true, cancellationToken: cancellationToken);
+                    repeatSuffix, cancellationToken: cancellationToken);
             }
             else
             {
@@ -1264,6 +1263,12 @@ namespace DAMS.Application.Services
 
             if (filter.Stage.HasValue)
                 query = query.Where(l => l.Stage == filter.Stage.Value);
+
+            if (filter.StageGroup.HasValue)
+            {
+                var groupStages = LeadStageRules.StagesIn(filter.StageGroup.Value);
+                query = query.Where(l => groupStages.Contains(l.Stage));
+            }
 
             if (filter.AssignmentState.HasValue)
                 query = query.Where(l => l.AssignmentState == filter.AssignmentState.Value);
@@ -2276,7 +2281,10 @@ namespace DAMS.Application.Services
         public async Task<LeadBackfillResultDto> BackfillFromBookingRequestsAsync(
             LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            LeadAccess.EnsureCanConfigure(ctx);
+            // A one-off data migration, not CRM configuration: it stays Admin-only even though
+            // managers may now change the CRM settings.
+            if (!ctx.IsAdmin)
+                throw new LeadAuthorizationException("Only an admin can run the booking-request backfill.");
 
             var websiteSource = await _context.LeadSources.FirstAsync(s => s.Code == WebsiteSourceCode, cancellationToken);
             var otherReasonId = await _context.LeadClosureReasons
@@ -2654,11 +2662,6 @@ namespace DAMS.Application.Services
                         $"{employee.FullName} has not activated their DAMS login yet, so they cannot be given leads.");
             }
 
-            // A manager may only hand work to their own people.
-            if (ctx.IsManager && employee.Id != ctx.EmployeeId
-                && (employee.TeamId == null || !ctx.ManagedTeamIds.Contains(employee.TeamId.Value)))
-                throw new LeadAuthorizationException("You can only assign leads within your own team.");
-
             return employee;
         }
 
@@ -2670,9 +2673,6 @@ namespace DAMS.Application.Services
 
             if (!team.IsActive)
                 throw new InvalidOperationException(inactiveMessage ?? $"Team '{team.Name}' is not active.");
-
-            if (ctx.IsManager && !ctx.ManagedTeamIds.Contains(teamId))
-                throw new LeadAuthorizationException("You can only assign leads to a team you manage.");
         }
 
         /// <summary>Loads a tracked lead the caller is allowed to act on, or throws.</summary>

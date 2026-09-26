@@ -19,6 +19,7 @@ import {
   formatDateTime,
   isClosedStage,
   isPastServerTime,
+  stageGroupOf,
   type AssignmentHistory,
   type ClosureReason,
   type Communication,
@@ -114,6 +115,9 @@ function LeadDetailWorkspace({ user }: { user: User }) {
 
   const { lead } = data;
   const canManage = user.role === "Admin" || user.role === "Manager";
+  // Salespeople work a lead by its simple stage (New, In Progress, Won, Lost), last activity and next
+  // action. The Hot/Warm/Cold qualification stays on the record but is not part of their workflow.
+  const isSalesperson = user.role === "Employee";
   const closed = isClosedStage(lead.stage);
   const tabs = TABS.map(([tabId, label]) => ({
     id: tabId,
@@ -155,9 +159,13 @@ function LeadDetailWorkspace({ user }: { user: User }) {
       <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <SummaryCard label="Pipeline"><StageBadge stage={lead.stage} /></SummaryCard>
-          <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>
+        <section className={`grid gap-3 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
+          <SummaryCard label="Pipeline">
+            {isSalesperson
+              ? <><StageBadge stage={stageGroupOf(lead.stage)} /><small className="mt-1 block text-xs font-normal text-[var(--text-muted)]">{enumLabel(lead.stage)}</small></>
+              : <StageBadge stage={lead.stage} />}
+          </SummaryCard>
+          {!isSalesperson && <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>}
           <SummaryCard label="Owner"><span>{lead.assignedEmployeeName ?? "Unassigned"}</span><small>{lead.assignedTeamName ?? "No team"}</small></SummaryCard>
           <SummaryCard label="Last activity"><span>{lead.lastActivitySummary ?? "No activity recorded"}</span><small>{formatDateTime(lead.lastActivityAt)}</small></SummaryCard>
           <SummaryCard label="Next action" danger={isPastServerTime(lead.nextActionAt) && !closed}><span>{lead.nextActionSummary ?? "Not scheduled"}</span><small>{formatDateTime(lead.nextActionAt)}</small></SummaryCard>
@@ -165,7 +173,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
 
         <div className="flex flex-wrap gap-2">
           {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "edit" })}>Edit details</Button>}
-          {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "qualification" })}>Qualification</Button>}
+          {!isSalesperson && !closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "qualification" })}>Qualification</Button>}
           {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "siteVisit" })}>Schedule site visit</Button>}
           {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "comment" })}>Internal note</Button>}
           {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "document" })}>Add document</Button>}

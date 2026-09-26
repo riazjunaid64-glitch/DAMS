@@ -22,8 +22,10 @@ import {
   formatDateTime,
   isClosedStage,
   isPastServerTime,
+  leadStageGroups,
   leadStages,
   paymentPreferences,
+  stageGroupOf,
   stageLabel,
   type ClosureReason,
   type Lead,
@@ -60,6 +62,9 @@ function LeadsWorkspace({ user }: { user: User }) {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const page = Number(params.get("page") ?? 1);
+  // A salesperson works a four-step pipeline (New, In Progress, Won, Lost) on their own leads;
+  // admins and managers keep the detailed stages, qualification and ownership they run the CRM by.
+  const isSalesperson = user.role === "Employee";
 
   const updateParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -68,11 +73,11 @@ function LeadsWorkspace({ user }: { user: User }) {
     setParams(next);
   };
 
-  // The bar exposes search, stage, source and project. The rest stay honoured because the URL is
+  // The bar exposes search, stage, source and project (and payment, for admins and managers). The rest stay honoured because the URL is
   // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
   // exactly as it did, and the server contract is unchanged.
   const query = useMemo(() => {
-    const allowed = ["search", "stage", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
+    const allowed = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo", "sortBy", "sortDesc"];
     const q = new URLSearchParams();
     for (const key of allowed) {
       const value = params.get(key);
@@ -87,10 +92,7 @@ function LeadsWorkspace({ user }: { user: User }) {
     setLoading(true);
     setError(null);
     try {
-      const dashboardEndpoint =
-        user.role === "Admin" ? "/api/lead-dashboard/organisation" :
-        user.role === "Manager" ? "/api/lead-dashboard/team" :
-        "/api/lead-dashboard/me";
+      const dashboardEndpoint = isSalesperson ? "/api/lead-dashboard/me" : "/api/lead-dashboard/organisation";
       const [rows, metrics, refs] = await Promise.all([
         apiJson<LeadList>(`/api/leads?${query}`),
         apiJson<Record<string, unknown>>(dashboardEndpoint),
@@ -104,21 +106,21 @@ function LeadsWorkspace({ user }: { user: User }) {
     } finally {
       setLoading(false);
     }
-  }, [query, user.role]);
+  }, [query, isSalesperson]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const metrics = dashboardMetrics(user.role, dashboard);
+  const metrics = dashboardMetrics(isSalesperson, dashboard);
 
   return (
     <>
       <CrmHeader
-        title={user.role === "Employee" ? "My lead workspace" : user.role === "Manager" ? "Team lead workspace" : "Lead management"}
+        title={isSalesperson ? "My lead workspace" : "Lead management"}
         subtitle="Capture, assign, work, and convert property enquiries while preserving every customer interaction."
         role={user.role}
         actions={
           <>
-            {user.role === "Admin" && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
+            {!isSalesperson && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
             <Button onClick={() => setCreateOpen(true)}><IconPlus className="h-4 w-4" />New lead</Button>
           </>
         }
@@ -126,9 +128,9 @@ function LeadsWorkspace({ user }: { user: User }) {
 
       <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-        {user.role === "Admin" && <HeldEnquiriesPanel onResolved={() => void load()} />}
+        {!isSalesperson && <HeldEnquiriesPanel onResolved={() => void load()} />}
 
-        <section aria-label="Lead summary" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section aria-label="Lead summary" className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
           {metrics.map((metric) => {
             // A card that switches a filter on has to switch it off again. Stage lands in a
             // dropdown the operator can see and reset, but "unassigned" and "overdue" have no
@@ -161,10 +163,12 @@ function LeadsWorkspace({ user }: { user: User }) {
               />
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />
+              {isSalesperson
+                ? <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stageGroup") ?? ""} onChange={(v) => updateParam("stageGroup", v)} options={leadStageGroups.map((v) => [v, stageLabel(v)])} />
+                : <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />}
               <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
               <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
-              <BarSelect label="Payment" icon={<IconWallet className="h-4 w-4" />} value={params.get("paymentPreference") ?? ""} onChange={(v) => updateParam("paymentPreference", v)} options={paymentPreferences.filter((v) => v !== "Unknown").map((v) => [v, stageLabel(v)])} />
+              {!isSalesperson && <BarSelect label="Payment" icon={<IconWallet className="h-4 w-4" />} value={params.get("paymentPreference") ?? ""} onChange={(v) => updateParam("paymentPreference", v)} options={paymentPreferences.filter((v) => v !== "Unknown").map((v) => [v, stageLabel(v)])} />}
             </div>
           </div>
         </section>
@@ -174,7 +178,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         ) : !data || data.items.length === 0 ? (
           <StatePanel title="No leads found" message="No accessible leads match these filters. Clear the filters or capture a new enquiry." action={<Button onClick={() => setCreateOpen(true)}>Create lead</Button>} />
         ) : (
-          <LeadTable leads={data.items} />
+          <LeadTable leads={data.items} simple={isSalesperson} />
         )}
 
         {data && data.totalPages > 1 && (
@@ -200,14 +204,23 @@ function LeadsWorkspace({ user }: { user: User }) {
   );
 }
 
-function LeadTable({ leads }: { leads: Lead[] }) {
+/**
+ * A salesperson's table (simple) carries only what decides their next move: who, from where, for
+ * what, how far along, and what happened last and comes next. Qualification, owner and team are the
+ * admin and manager's concern and stay on their table and on the lead itself.
+ */
+function LeadTable({ leads, simple }: { leads: Lead[]; simple: boolean }) {
+  const headers = simple
+    ? ["Lead", "Source", "Project / Interest", "Stage", "Last activity", "Next action"]
+    : ["Lead", "Interest", "Stage", "Qualification", "Owner / Team", "Last activity", "Next action", "Created"];
+  const contactOf = (lead: Lead) => lead.phone ?? lead.whatsappNumber ?? lead.email;
   return (
     <>
       <div className="hidden overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] md:block">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] text-left">
+          <table className={`w-full text-left ${simple ? "min-w-[860px]" : "min-w-[980px]"}`}>
             <thead className="border-b border-[var(--border)] bg-[var(--surface-glass)] text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]">
-              <tr>{["Lead", "Interest", "Stage", "Qualification", "Owner / Team", "Last activity", "Next action", "Created"].map((h) => <th className="px-4 py-4 align-bottom" key={h}>{h}</th>)}</tr>
+              <tr>{headers.map((h) => <th className="px-4 py-4 align-bottom" key={h}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {leads.map((lead) => {
@@ -217,18 +230,23 @@ function LeadTable({ leads }: { leads: Lead[] }) {
                   <tr key={lead.id} className="border-b border-[var(--border)] align-top transition last:border-0 hover:bg-[var(--surface-glass-hover)]">
                     <td className="px-4 py-4">
                       <Link className="font-semibold text-[var(--text-heading)] transition hover:text-[var(--accent)]" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
-                      <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference}{(lead.phone ?? lead.whatsappNumber ?? lead.email) && ` · ${lead.phone ?? lead.whatsappNumber ?? lead.email}`}</p>
-                      <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
+                      {simple
+                        ? <p className="mt-1 text-xs text-[var(--text-muted)]">{contactOf(lead) ?? "No contact details"}</p>
+                        : <>
+                            <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference}{contactOf(lead) && ` · ${contactOf(lead)}`}</p>
+                            <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
+                          </>}
                     </td>
+                    {simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.sourceName}</td>}
                     <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="mt-1 text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
-                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={lead.stage} /></td>
-                    <td className="whitespace-nowrap px-4 py-4"><QualificationBadge value={lead.qualification} /></td>
-                    <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="mt-1 text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>
+                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={simple ? stageGroupOf(lead.stage) : lead.stage} /></td>
+                    {!simple && <td className="whitespace-nowrap px-4 py-4"><QualificationBadge value={lead.qualification} /></td>}
+                    {!simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="mt-1 text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>}
                     <td className="max-w-[220px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}<p className="mt-1 text-xs text-[var(--text-muted)]">{formatDateTime(lead.lastActivityAt)}</p></td>
                     {/* A closed lead has nothing scheduled by design, so it says so rather than
                         reading as an omission next to leads that really are missing a next step. */}
                     <td className={`max-w-[190px] px-4 py-4 text-sm ${overdue ? "font-semibold text-rose-400" : "text-[var(--text-secondary)]"}`}>{lead.nextActionSummary ?? "—"}<p className={`mt-1 text-xs ${overdue ? "" : "text-[var(--text-muted)]"}`}>{closed ? "Completed" : lead.nextActionAt ? formatDateTime(lead.nextActionAt) : "Not scheduled"}</p></td>
-                    <td className="px-4 py-4 text-xs text-[var(--text-muted)]">{formatDateTime(lead.createdAt)}</td>
+                    {!simple && <td className="px-4 py-4 text-xs text-[var(--text-muted)]">{formatDateTime(lead.createdAt)}</td>}
                   </tr>
                 );
               })}
@@ -239,8 +257,13 @@ function LeadTable({ leads }: { leads: Lead[] }) {
       <div className="grid gap-3 md:hidden">
         {leads.map((lead) => (
           <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{lead.leadReference} · {lead.phone ?? lead.whatsappNumber ?? lead.email ?? "No contact details"}</p></div><StageBadge stage={lead.stage} /></div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]"><div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div><div><p className="uppercase">Next action</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{isClosedStage(lead.stage) ? "Completed" : formatDateTime(lead.nextActionAt)}</p></div></div>
+            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{simple ? `${lead.sourceName} · ${contactOf(lead) ?? "No contact details"}` : `${lead.leadReference} · ${contactOf(lead) ?? "No contact details"}`}</p></div><StageBadge stage={simple ? stageGroupOf(lead.stage) : lead.stage} /></div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]">
+              {simple
+                ? <div><p className="uppercase">Last activity</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}</p></div>
+                : <div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div>}
+              <div><p className="uppercase">Next action</p>{simple && <p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.nextActionSummary ?? "—"}</p>}<p className="mt-1 text-sm text-[var(--text-secondary)]">{isClosedStage(lead.stage) ? "Completed" : formatDateTime(lead.nextActionAt)}</p></div>
+            </div>
           </Link>
         ))}
       </div>
@@ -400,28 +423,24 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
 
 /**
  * Four figures, one per card, in the shape the design asks for: how many, how many closed each way,
- * and the rate that falls out of the two. Each role gets the four that decide what it does next.
+ * and the rate that falls out of the two; admins and managers also get the queue waiting for an owner. A salesperson gets their own leads by the four simple stages;
+ * what is due or overdue shows on each lead's Next action instead of as a card of its own.
  */
-function dashboardMetrics(role: string, dashboard: Record<string, unknown> | null) {
+function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unknown> | null) {
   const d = dashboard ?? {};
   const n = (key: string) => Number(d[key] ?? 0);
-  if (role === "Admin") return [
+  if (isSalesperson) return [
+    { id: "total", label: "Total assigned", value: n("totalAssigned") },
+    { id: "inProgress", label: "In progress", value: n("inProgressLeads"), filter: { key: "stageGroup", value: "InProgress" } },
+    { id: "won", label: "Won", value: n("conversions"), filter: { key: "stageGroup", value: "Won" } },
+    { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stageGroup", value: "Lost" } },
+  ];
+  return [
     { id: "total", label: "All leads", value: n("totalLeads") },
+    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
     { id: "won", label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
     { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
     { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
-  ];
-  if (role === "Manager") return [
-    { id: "total", label: "Team leads", value: n("teamLeads") },
-    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
-    { id: "overdue", label: "Follow-ups overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
-    { id: "visits", label: "Site visits", value: n("upcomingSiteVisits") },
-  ];
-  return [
-    { id: "total", label: "Active leads", value: n("activeLeads") },
-    { id: "due", label: "Due today", value: n("followUpsDueToday") },
-    { id: "overdue", label: "Overdue", value: n("overdueFollowUps"), filter: { key: "overdue", value: "true" } },
-    { id: "visits", label: "Upcoming visits", value: n("upcomingSiteVisits") },
   ];
 }
 
@@ -430,10 +449,8 @@ const METRIC_ICONS: Record<string, ReactNode> = {
   won: <IconTrophy className="h-5 w-5" />,
   lost: <IconCircleX className="h-5 w-5" />,
   rate: <IconTrendingUp className="h-5 w-5" />,
+  inProgress: <IconLayers className="h-5 w-5" />,
   unassigned: <IconUserQuestion className="h-5 w-5" />,
-  overdue: <IconClock className="h-5 w-5" />,
-  due: <IconClock className="h-5 w-5" />,
-  visits: <IconCalendar className="h-5 w-5" />,
 };
 
 /**
@@ -490,5 +507,3 @@ function IconTrophy({ className }: IconProps) { return <svg {...ico(className)}>
 function IconCircleX({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></svg>; }
 function IconTrendingUp({ className }: IconProps) { return <svg {...ico(className)}><path d="m3 17 6-6 4 4 8-8" /><path d="M15 7h6v6" /></svg>; }
 function IconUserQuestion({ className }: IconProps) { return <svg {...ico(className)}><circle cx="10" cy="8" r="3.2" /><path d="M4 20a6 6 0 0 1 12 0" /><path d="M18.5 8.5a1.6 1.6 0 1 1 2.2 1.5c-.5.3-.7.7-.7 1.2" /><path d="M20 14h.01" /></svg>; }
-function IconClock({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="M12 7v5.2l3.2 2" /></svg>; }
-function IconCalendar({ className }: IconProps) { return <svg {...ico(className)}><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18" /><path d="M8 3v4" /><path d="M16 3v4" /></svg>; }

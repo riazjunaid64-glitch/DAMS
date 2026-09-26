@@ -489,8 +489,8 @@ namespace DAMS.Application.Services.Integrations
         public async Task<MetaEventDto> RetryEventAsync(
             int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default)
         {
-            if (!actor.IsAdmin)
-                throw new LeadAuthorizationException("Only an Admin can retry Meta integration events.");
+            if (!actor.IsAdmin && !actor.IsManager)
+                throw new LeadAuthorizationException("Only an Admin or Sales Manager can retry Meta integration events.");
 
             await EnsureConnectionExistsAsync(connectionId, cancellationToken);
 
