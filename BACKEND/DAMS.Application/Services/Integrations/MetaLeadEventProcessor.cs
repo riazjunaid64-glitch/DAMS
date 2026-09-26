@@ -36,6 +36,12 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>The length of every provider-id column a lead, submission or event stores.</summary>
         internal const int MaxExternalIdLength = 200;
 
+        /// <summary>
+        /// The most Graph calls MetaGraphClient.GetLeadAsync makes for one lead: the lead, then
+        /// either its ad names or a retry without its ad ids.
+        /// </summary>
+        private const int GraphCallsPerLead = 2;
+
         private readonly AppDbContext _context;
         private readonly IMetaGraphClient _graph;
         private readonly IIntegrationSecretProtector _protector;
@@ -97,13 +103,13 @@ namespace DAMS.Application.Services.Integrations
         private async Task<List<int>> ClaimEventsAsync(int batchSize, CancellationToken cancellationToken)
         {
             // A batch is processed serially under one lease taken at claim time. Worst case is
-            // every item timing out: batchSize * RequestTimeoutSeconds must comfortably fit
-            // inside the lease, or a still-in-progress item's lease can look expired and a
-            // second worker reclaims — and starts double-fetching — a row nobody actually
-            // abandoned. Halving the arithmetic ceiling leaves headroom for everything that
-            // is not the Graph call itself (DB round trips, GC, scheduling).
+            // every item timing out: batchSize * GraphCallsPerLead * RequestTimeoutSeconds must
+            // comfortably fit inside the lease, or a still-in-progress item's lease can look
+            // expired and a second worker reclaims — and starts double-fetching — a row nobody
+            // actually abandoned. Halving the arithmetic ceiling leaves headroom for everything
+            // that is not a Graph call (DB round trips, GC, scheduling).
             var leaseSeconds = Math.Max(1, _options.LeaseMinutes * 60);
-            var worstCasePerItemSeconds = Math.Max(1, _options.RequestTimeoutSeconds * 2);
+            var worstCasePerItemSeconds = Math.Max(1, _options.RequestTimeoutSeconds * GraphCallsPerLead * 2);
             var safeForLease = Math.Max(1, leaseSeconds / worstCasePerItemSeconds);
 
             var take = Math.Clamp(batchSize, 1, Math.Min(200, safeForLease));
@@ -312,6 +318,7 @@ namespace DAMS.Application.Services.Integrations
 
             var mapped = MetaLeadFieldMapper.Map(lead.FieldData);
             await ApplyFormMappingAsync(mapped, lead.FormId, cancellationToken);
+            await FillMissingAdNamesAsync(lead, cancellationToken);
             var platform = ResolvePlatform(lead, resource);
 
             // Every value below is provider-controlled and bounded to the Lead column it lands
@@ -502,6 +509,18 @@ namespace DAMS.Application.Services.Integrations
                 _context, IntegrationProviders.Meta, [formId], cancellationToken);
 
             LeadFormAnswerMapper.Apply(mapped, mapping, questions.GetValueOrDefault(formId) ?? []);
+        }
+
+        /// <summary>
+        /// Meta withholds ad names from the lead without ads_management (see
+        /// MetaGraphClient.GetLeadAsync), but resource sync may already know them by id through
+        /// ads_read. Only a name Meta did not give is filled in; one it did give always wins.
+        /// </summary>
+        private async Task FillMissingAdNamesAsync(MetaLead lead, CancellationToken cancellationToken)
+        {
+            lead.CampaignName ??= await LookUpResourceNameAsync(ExternalResourceTypes.Campaign, lead.CampaignId, cancellationToken);
+            lead.AdSetName ??= await LookUpResourceNameAsync(ExternalResourceTypes.AdSet, lead.AdSetId, cancellationToken);
+            lead.AdName ??= await LookUpResourceNameAsync(ExternalResourceTypes.Ad, lead.AdId, cancellationToken);
         }
 
         private async Task<string?> LookUpResourceNameAsync(

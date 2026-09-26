@@ -75,6 +75,20 @@ namespace DAMS.Application.Services
             var source = await _context.LeadSources.FirstOrDefaultAsync(s => s.Id == id, cancellationToken)
                 ?? throw new InvalidOperationException("Lead source not found.");
 
+            // Integration intake resolves these sources by code and refuses an inactive one, so
+            // switching one off while Meta is connected would fail every lead from that platform.
+            if (source.IsActive && !dto.IsActive
+                && IntegrationSourceCodes.All.Contains(source.Code)
+                && await _context.ExternalIntegrationConnections.AnyAsync(
+                    c => c.Provider == IntegrationProviders.Meta
+                         && c.Status != ExternalIntegrationConnectionStatus.Disconnected,
+                    cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    $"Lead source '{source.Name}' receives Meta leads and cannot be deactivated while Meta is connected. " +
+                    "Disconnect Meta under CRM settings → Integrations first.");
+            }
+
             source.Name = dto.Name.Trim();
             source.IsActive = dto.IsActive;
             source.DisplayOrder = dto.DisplayOrder;

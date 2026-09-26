@@ -354,29 +354,87 @@ namespace DAMS.Application.Services.Integrations
 
         // ── Leads ───────────────────────────────────────────────────────────────────
 
+        private const string LeadFields = "id,created_time,field_data,form_id,platform,is_organic";
+        private const string LeadAdIdFields = "ad_id,adset_id,campaign_id";
+        private const string LeadAdNameFields = "ad_name,adset_name,campaign_name";
+
+        /// <summary>
+        /// Meta puts ad-specific lead fields behind ads_management, which DAMS does not request,
+        /// and refuses the whole call when it refuses one field. So the lead is read on its own
+        /// terms first and its ad attribution is only ever added on top: an attribution Meta will
+        /// not share must cost the names, never the lead, and never the connection's status.
+        /// </summary>
         public async Task<MetaLead> GetLeadAsync(
             string leadgenId, string accessToken, CancellationToken cancellationToken = default)
         {
-            using var document = await GetAsync(
-                WithProof(
-                    $"{Uri.EscapeDataString(leadgenId)}?fields=id,created_time,field_data,form_id,platform," +
-                    "is_organic,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name",
-                    accessToken),
-                accessToken,
-                cancellationToken);
+            var lead = await ReadLeadAsync(leadgenId, accessToken, cancellationToken);
 
-            var root = document.RootElement;
+            if (lead.AdId is not null || lead.AdSetId is not null || lead.CampaignId is not null)
+                await ReadAdNamesAsync(lead, accessToken, cancellationToken);
 
+            return lead;
+        }
+
+        private async Task<MetaLead> ReadLeadAsync(
+            string leadgenId, string accessToken, CancellationToken cancellationToken)
+        {
+            var path = $"{Uri.EscapeDataString(leadgenId)}?fields=";
+
+            JsonDocument document;
+            try
+            {
+                document = await GetAsync(
+                    WithProof($"{path}{LeadFields},{LeadAdIdFields}", accessToken), accessToken, cancellationToken);
+            }
+            catch (Exception ex) when (ex is MetaAuthorizationException or MetaPermanentException)
+            {
+                // The ids are what tie a lead to its campaign, but whether Meta shares even them
+                // without ads permissions is not something DAMS can count on. If this retry also
+                // fails, the lead itself is unreadable and that exception is the real one.
+                _logger.LogWarning(ex,
+                    "Reading lead {LeadgenId} with its ad, ad set and campaign ids failed. Retrying without them.",
+                    leadgenId);
+                document = await GetAsync(WithProof($"{path}{LeadFields}", accessToken), accessToken, cancellationToken);
+            }
+
+            using (document)
+                return ReadLead(document.RootElement, leadgenId);
+        }
+
+        private async Task ReadAdNamesAsync(MetaLead lead, string accessToken, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var document = await GetAsync(
+                    WithProof($"{Uri.EscapeDataString(lead.LeadgenId)}?fields={LeadAdNameFields}", accessToken),
+                    accessToken,
+                    cancellationToken);
+
+                var root = document.RootElement;
+                lead.AdName = ReadString(root, "ad_name");
+                lead.AdSetName = ReadString(root, "adset_name");
+                lead.CampaignName = ReadString(root, "campaign_name");
+            }
+            catch (MetaGraphException ex)
+            {
+                // Whatever the reason — a permission, a renamed field, Meta being busy — the names
+                // are only labels. The lead goes ahead without them, and the event processor falls
+                // back to whatever resource sync has discovered for these ids.
+                _logger.LogWarning(ex,
+                    "Reading the ad, ad set and campaign names of lead {LeadgenId} failed. Continuing without them.",
+                    lead.LeadgenId);
+            }
+        }
+
+        private static MetaLead ReadLead(JsonElement root, string leadgenId)
+        {
             var lead = new MetaLead
             {
                 LeadgenId = ReadString(root, "id") ?? leadgenId,
                 FormId = ReadString(root, "form_id"),
                 AdId = ReadString(root, "ad_id"),
-                AdName = ReadString(root, "ad_name"),
                 AdSetId = ReadString(root, "adset_id"),
-                AdSetName = ReadString(root, "adset_name"),
                 CampaignId = ReadString(root, "campaign_id"),
-                CampaignName = ReadString(root, "campaign_name"),
                 Platform = ReadString(root, "platform"),
                 // Preserved verbatim: a question DAMS does not recognise today must still be
                 // recoverable tomorrow without asking Meta again.

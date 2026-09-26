@@ -23,6 +23,9 @@ namespace DAMS.Application.Common
         /// lead-ad webhook is always delivered through a Page whether or not the ad ran there.
         /// </summary>
         public const string Meta = "meta";
+
+        /// <summary>Every source a Meta lead can resolve to; intake fails if any of them is inactive.</summary>
+        public static readonly string[] All = [Facebook, Instagram, Meta];
     }
 
     /// <summary>Asset kinds discovered inside a connection.</summary>

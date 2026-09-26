@@ -710,6 +710,140 @@ public class MetaLeadIngestionTests
     }
 
     [Fact]
+    public async Task ALeadWhoseAdNamesMetaRefuses_StillBecomesALead_AndLeavesTheConnectionConnected()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+
+        // The real Graph client, so what is proven is its handling of Meta's actual refusal —
+        // not a fake that was simply told to succeed. Like Meta, it refuses any request that
+        // asks for an ad name, whatever else that request asks for.
+        var handler = new MetaGraphClientHttpTests.FakeHandler(request =>
+            MetaGraphClientHttpTests.AsksForAdNames(request)
+                ? MetaGraphClientHttpTests.GraphError(
+                    System.Net.HttpStatusCode.Forbidden, 200, "(#200) Requires ads_management permission to manage the object")
+                : MetaGraphClientHttpTests.GraphJson(MetaGraphClientHttpTests.FloriaLeadJson()));
+        var processor = new MetaLeadEventProcessor(
+            h.Db, MetaGraphClientHttpTests.DirectClient(handler), new PlaintextSecretProtector(),
+            h.Leads.Leads, h.Leads.Dispatcher, h.Options,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MetaLeadEventProcessor>.Instance);
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, MetaGraphClientHttpTests.FloriaLeadgenId));
+
+        Assert.Equal(1, await processor.ProcessPendingEventsAsync(10));
+
+        var lead = await h.Db.Leads.SingleAsync();
+        Assert.Equal("Ayesha", lead.FirstName);
+        Assert.Null(lead.CampaignName);
+        Assert.Equal("120212345678900003", lead.CampaignReference);
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Null(submission.CampaignName);
+        Assert.Null(submission.AdSetName);
+        Assert.Null(submission.AdName);
+        Assert.Equal("120212345678900001", submission.AdExternalId);
+
+        Assert.Equal(ExternalIntegrationEventStatus.Processed, (await h.Db.ExternalIntegrationEvents.SingleAsync()).Status);
+        var stored = await h.Db.ExternalIntegrationConnections.AsNoTracking().SingleAsync(c => c.Id == connection.Id);
+        Assert.Equal(ExternalIntegrationConnectionStatus.Connected, stored.Status);
+        Assert.Null(stored.LastError);
+    }
+
+    [Fact]
+    public async Task AdNamesMetaWithheld_AreFilledInFromSyncedResources()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+
+        foreach (var (type, id, name) in new[]
+                 {
+                     (ExternalResourceTypes.Campaign, "camp-1", "Summer Launch"),
+                     (ExternalResourceTypes.AdSet, "adset-1", "Set A"),
+                     (ExternalResourceTypes.Ad, "ad-1", "Carousel A")
+                 })
+        {
+            h.Db.ExternalIntegrationResources.Add(new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connection.Id,
+                Provider = IntegrationProviders.Meta,
+                ResourceType = type,
+                ExternalId = id,
+                Name = name,
+                IsActive = true
+            });
+        }
+        await h.Db.SaveChangesAsync();
+
+        // Meta gave the ids but not the names, as it does without ads_management.
+        var metaLead = FakeMetaGraphClient.Lead(
+            "lead-1", StandardFields, pageId: page.ExternalId, campaignName: "withheld", adName: "withheld");
+        metaLead.CampaignName = null;
+        metaLead.AdSetName = null;
+        metaLead.AdName = null;
+        h.Graph.Leads["lead-1"] = metaLead;
+
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+
+        var lead = await h.Db.Leads.SingleAsync();
+        Assert.Equal("Summer Launch", lead.CampaignName);
+        Assert.Contains("ad: Carousel A", lead.SourceDetails);
+
+        var submission = await h.Db.LeadExternalSubmissions.SingleAsync();
+        Assert.Equal("Summer Launch", submission.CampaignName);
+        Assert.Equal("Set A", submission.AdSetName);
+        Assert.Equal("Carousel A", submission.AdName);
+    }
+
+    [Theory]
+    [InlineData("facebook")]
+    [InlineData("instagram")]
+    [InlineData("meta")]
+    public async Task AMetaLeadSource_CannotBeDeactivatedWhileMetaIsConnected(string code)
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        await h.ConnectPageAsync();
+        var source = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == code);
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.Configuration.UpdateSourceAsync(source.Id, SourceUpdate(source, isActive: false), h.Leads.Admin));
+
+        Assert.Contains("while Meta is connected", refused.Message);
+        Assert.True((await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Id == source.Id)).IsActive);
+
+        // Anything short of switching it off is still the admin's to change.
+        var renamed = await h.Leads.Configuration.UpdateSourceAsync(
+            source.Id, SourceUpdate(source, isActive: true, name: "Meta Ads"), h.Leads.Admin);
+        Assert.Equal("Meta Ads", renamed.Name);
+    }
+
+    [Fact]
+    public async Task AMetaLeadSource_CanBeDeactivatedOnceMetaIsDisconnected_AndOtherSourcesAlways()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, _) = await h.ConnectPageAsync();
+
+        var website = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == "website");
+        Assert.False((await h.Leads.Configuration.UpdateSourceAsync(
+            website.Id, SourceUpdate(website, isActive: false), h.Leads.Admin)).IsActive);
+
+        await h.Integration.DisconnectAsync(connection.Id, h.Leads.Admin);
+
+        var facebook = await h.Db.LeadSources.AsNoTracking().SingleAsync(s => s.Code == "facebook");
+        Assert.False((await h.Leads.Configuration.UpdateSourceAsync(
+            facebook.Id, SourceUpdate(facebook, isActive: false), h.Leads.Admin)).IsActive);
+    }
+
+    private static DAMS.Application.DTOs.LeadDtos.UpdateLeadSourceDto SourceUpdate(
+        LeadSource source, bool isActive, string? name = null) => new()
+    {
+        Name = name ?? source.Name,
+        IsActive = isActive,
+        DisplayOrder = source.DisplayOrder,
+        CustomerSource = source.CustomerSource
+    };
+
+    [Fact]
     public async Task ADisconnectedConnection_StopsProducingLeads()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
