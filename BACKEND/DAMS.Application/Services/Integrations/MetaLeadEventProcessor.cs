@@ -437,12 +437,12 @@ namespace DAMS.Application.Services.Integrations
             LeadIntakeHold hold, LeadIntakeDto enquiry, ExternalIntegrationResource resource,
             CancellationToken cancellationToken)
         {
-            var adminIds = await MetaIntegrationAlertService.ActiveAdminIdsAsync(_context, cancellationToken);
+            var supervisorIds = await LeadNotificationService.CrmSupervisorUserIdsAsync(_context, cancellationToken);
 
             var name = LeadContactNormalizer.Clean($"{enquiry.FirstName} {enquiry.LastName}") ?? "Unnamed enquiry";
             var sourceName = LeadContactNormalizer.Clean(resource.Name) ?? "Meta";
             var reference = $"#{hold.Id}";
-            await _notifications.QueueManyAsync(adminIds.Select(userId => new NotificationRequest
+            await _notifications.QueueManyAsync(supervisorIds.Select(userId => new NotificationRequest
             {
                 Type = NotificationType.LeadHeldForReview,
                 RecipientUserId = userId,

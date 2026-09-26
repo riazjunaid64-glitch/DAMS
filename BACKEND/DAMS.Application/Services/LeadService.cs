@@ -516,7 +516,6 @@ namespace DAMS.Application.Services
                 $"New lead: {name}",
                 $"{name} arrived through {lead.Source?.Name ?? "an enquiry channel"}.",
                 "created",
-                includeQueueManagers: true,
                 cancellationToken: cancellationToken);
 
             if (lead.AssignedEmployeeId.HasValue)
@@ -668,11 +667,11 @@ namespace DAMS.Application.Services
             if (lead.AssignedEmployeeId == null)
             {
                 // No salesperson owns it yet — unassigned, or parked on a team — so the people
-                // who hand it out hear instead: the queue's managers, or the team's.
+                // who hand it out hear instead: the admins and sales managers.
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
                     $"Repeat enquiry: {FullName(lead)}",
                     $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
-                    repeatSuffix, includeQueueManagers: true, cancellationToken: cancellationToken);
+                    repeatSuffix, cancellationToken: cancellationToken);
             }
             else
             {

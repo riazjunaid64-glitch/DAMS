@@ -439,7 +439,8 @@ public class MetaLeadBackfillTests
 
     private static Task<List<Notification>> IntegrationAlertsAsync(MetaIntegrationHarness h, string titlePrefix) =>
         h.Db.Notifications.AsNoTracking()
-            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired && n.Title.StartsWith(titlePrefix))
+            .Where(n => n.Type == NotificationType.IntegrationAttentionRequired && n.Title.StartsWith(titlePrefix)
+                        && n.RecipientUserId == h.Leads.AdminUserId)
             .ToListAsync();
 
     [Fact]
