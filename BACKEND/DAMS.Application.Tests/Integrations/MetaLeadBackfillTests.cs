@@ -158,7 +158,9 @@ public class MetaLeadBackfillTests
         h.Options.QuietPageAlertDays = 3;
 
         await h.Alerts.RaiseAlertsAsync();
-        Assert.Single(await h.Db.Notifications.Where(n => n.Title.StartsWith("No Meta leads for 3 days")).ToListAsync());
+        // One alert per CRM supervisor (Admin and Sales Manager); the admin gets exactly one.
+        Assert.Single(await h.Db.Notifications.Where(n => n.Title.StartsWith("No Meta leads for 3 days")
+                                                          && n.RecipientUserId == h.Leads.AdminUserId).ToListAsync());
         var shown = Assert.Single(await h.Integration.GetConnectionsAsync());
         Assert.True(shown.LastLeadReceivedAt < DateTime.UtcNow.AddDays(-4));
     }

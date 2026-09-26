@@ -105,12 +105,16 @@ namespace DAMS.Application.Services
         {
             EnsureCanManageStaff(actor);
 
-            // A manager cannot take over an Admin login, so those are not offered to them.
-            var includeAdmins = actor.IsAdmin;
+            // A manager may only link logins that are already staff (Sales Manager or
+            // Salesperson). Admin logins, and customer portal logins with their names and emails,
+            // are neither shown to them nor theirs to convert.
+            var isAdmin = actor.IsAdmin;
             return _context.Users
                 .AsNoTracking()
                 .Where(u => !_context.Employees.Any(e => e.UserId == u.UserId)
-                            && (includeAdmins || u.Role.Role_name != LeadRoles.Admin))
+                            && (isAdmin
+                                || u.Role.Role_name == LeadRoles.Manager
+                                || u.Role.Role_name == LeadRoles.Employee))
                 .OrderBy(u => u.FullName)
                 .Select(u => new LinkableUserDto
                 {
@@ -373,6 +377,11 @@ namespace DAMS.Application.Services
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
             EnsureCanGrantRole(actor, role.Role_name);
 
+            // Employment status (including Terminated) is HR data owned by the Admin-only
+            // Employees area. A manager's save may carry it unchanged but never change it.
+            if (!actor.IsAdmin && dto.Status.HasValue && dto.Status.Value != employee.Status)
+                throw new LeadAuthorizationException("Only an admin can change an employee's employment status.");
+
             var managesActiveTeam = await _context.Teams
                 .AnyAsync(t => t.ManagerEmployeeId == employeeId && t.IsActive, cancellationToken);
             if (managesActiveTeam &&
@@ -487,12 +496,22 @@ namespace DAMS.Application.Services
                 throw new LeadAuthorizationException("Only an admin can give someone the Admin role.");
         }
 
-        /// <summary>An Admin's login is changed only by an Admin, so a manager cannot demote,
-        /// disable or re-invite one.</summary>
+        /// <summary>
+        /// A manager may act only on logins that are already staff below Admin. An allow-list,
+        /// not a deny-list: an Admin login, a customer's portal login, or any role added later
+        /// is refused, so a manager can neither demote an Admin nor turn a customer into staff.
+        /// </summary>
         private static void EnsureCanManageAccountOf(LeadUserContext actor, string? currentRole)
         {
-            if (!actor.IsAdmin && string.Equals(currentRole, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+            if (actor.IsAdmin)
+                return;
+
+            if (string.Equals(currentRole, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
                 throw new LeadAuthorizationException("Only an admin can change an Admin's account.");
+
+            if (!string.Equals(currentRole, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(currentRole, LeadRoles.Employee, StringComparison.OrdinalIgnoreCase))
+                throw new LeadAuthorizationException("Only an admin can give staff access to a login that is not already a staff account.");
         }
 
         private async Task<Role> ResolveRoleAsync(string requested, CancellationToken cancellationToken)

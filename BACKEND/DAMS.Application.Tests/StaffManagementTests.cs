@@ -349,6 +349,50 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
+    public async Task A_manager_can_neither_see_nor_take_over_a_customer_login()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var service = new StaffManagementService(h.Db, new FakeInvitations());
+
+        // A customer portal login is not offered to a manager, and cannot be linked by id either.
+        Assert.DoesNotContain(await service.GetLinkableUsersAsync(h.Manager), u => u.UserId == h.ClientUserId);
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.CreateAsync(h.Manager, NewStaff(existingUserId: h.ClientUserId)));
+
+        h.Db.ChangeTracker.Clear();
+        var client = await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == h.ClientUserId);
+        Assert.NotEqual(LeadRoles.Employee, client.Role.Role_name);
+        Assert.NotEqual(LeadRoles.Manager, client.Role.Role_name);
+        Assert.False(await h.Db.Employees.AnyAsync(e => e.UserId == h.ClientUserId));
+
+        // An Admin still sees every unlinked login, customers included.
+        Assert.Contains(await service.GetLinkableUsersAsync(h.Admin), u => u.UserId == h.ClientUserId);
+    }
+
+    [Fact]
+    public async Task A_manager_cannot_change_employment_status_but_can_save_it_unchanged()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var service = new StaffManagementService(h.Db, new FakeInvitations());
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            service.UpdateAsync(h.Manager, h.SalesEmployeeId,
+                new UpdateStaffAccountDto { Role = LeadRoles.Employee, Status = EmployeeStatus.Terminated }));
+
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(EmployeeStatus.Active, (await h.Db.Employees.SingleAsync(e => e.Id == h.SalesEmployeeId)).Status);
+
+        var saved = await service.UpdateAsync(h.Manager, h.SalesEmployeeId,
+            new UpdateStaffAccountDto { Role = LeadRoles.Employee, Status = EmployeeStatus.Active });
+        Assert.Equal(EmployeeStatus.Active, saved.Status);
+
+        h.Db.ChangeTracker.Clear();
+        var terminated = await service.UpdateAsync(h.Admin, h.SalesEmployeeId,
+            new UpdateStaffAccountDto { Role = LeadRoles.Employee, Status = EmployeeStatus.OnLeave });
+        Assert.Equal(EmployeeStatus.OnLeave, terminated.Status);
+    }
+
+    [Fact]
     public async Task Admin_can_resend_only_to_a_linked_login_that_is_still_waiting()
     {
         await using var h = await LeadTestHarness.CreateAsync();

@@ -130,7 +130,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         {error && <ErrorBanner message={error} onRetry={() => void load()} />}
         {!isSalesperson && <HeldEnquiriesPanel onResolved={() => void load()} />}
 
-        <section aria-label="Lead summary" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section aria-label="Lead summary" className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
           {metrics.map((metric) => {
             // A card that switches a filter on has to switch it off again. Stage lands in a
             // dropdown the operator can see and reset, but "unassigned" and "overdue" have no
@@ -423,7 +423,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
 
 /**
  * Four figures, one per card, in the shape the design asks for: how many, how many closed each way,
- * and the rate that falls out of the two. A salesperson gets their own leads by the four simple stages;
+ * and the rate that falls out of the two; admins and managers also get the queue waiting for an owner. A salesperson gets their own leads by the four simple stages;
  * what is due or overdue shows on each lead's Next action instead of as a card of its own.
  */
 function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unknown> | null) {
@@ -437,6 +437,7 @@ function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unkn
   ];
   return [
     { id: "total", label: "All leads", value: n("totalLeads") },
+    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
     { id: "won", label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
     { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
     { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },

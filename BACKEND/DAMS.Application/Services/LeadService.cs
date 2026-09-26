@@ -2281,7 +2281,10 @@ namespace DAMS.Application.Services
         public async Task<LeadBackfillResultDto> BackfillFromBookingRequestsAsync(
             LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            LeadAccess.EnsureCanConfigure(ctx);
+            // A one-off data migration, not CRM configuration: it stays Admin-only even though
+            // managers may now change the CRM settings.
+            if (!ctx.IsAdmin)
+                throw new LeadAuthorizationException("Only an admin can run the booking-request backfill.");
 
             var websiteSource = await _context.LeadSources.FirstAsync(s => s.Code == WebsiteSourceCode, cancellationToken);
             var otherReasonId = await _context.LeadClosureReasons

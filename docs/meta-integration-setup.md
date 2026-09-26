@@ -122,7 +122,8 @@ are fetched with the **Page** tokens that `me/accounts` returns, and those do no
   has not got through within 30 minutes, leads are tried with the old token anyway.
 - The panel's sign-in warning uses the same `TokenExpiryWarningDays` window as the alert below.
 
-Every active Admin gets one notification (category **Integrations**, email and push if
+Every active Admin and every active Sales Manager gets one notification (category
+**Integrations**, email and push if
 those are switched on) when:
 
 | Alert | When | Setting |
@@ -173,8 +174,8 @@ This follows the recommendation on KAN-35, which is still waiting for the produc
 confirmation. First-response alerts are timed from when DAMS assigns the lead, so a recovered
 lead is not reported overdue on arrival.
 
-**Admin alerts.** Each reconciliation's outcome is kept on the connection, and every Admin is
-told through the notification system when:
+**Admin and Sales Manager alerts.** Each reconciliation's outcome is kept on the connection,
+and every Admin and Sales Manager is told through the notification system when:
 
 - reconciliation fails on two runs in a row, for example a Page credential that can no longer be
   read, or Meta refusing the lead read (see `pages_manage_ads` below). The alert includes
@@ -187,5 +188,5 @@ Not built yet:
 - Importing Meta's CSV exports for leads older than 90 days (needs a product decision).
 - Meta's docs list `pages_manage_ads` for bulk lead reads. DAMS does not ask for it. If the
   staging test shows it is needed, a manual import shows Meta's permission error and scheduled
-  reconciliation raises the Admin alert above. Add the scope only with that evidence (see
+  reconciliation raises the alert above. Add the scope only with that evidence (see
   `MetaScopes`).
