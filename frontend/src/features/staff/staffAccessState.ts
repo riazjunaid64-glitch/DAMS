@@ -4,6 +4,7 @@ import type {
   StaffAccountProvisionResult,
   StaffInvitationResult,
 } from "../leads/types.ts";
+import { parseServerDateTime } from "../../lib/dates.ts";
 
 /**
  * The presentation logic behind the Admin staff-accounts screen, kept as pure functions.
@@ -89,20 +90,6 @@ export type InvitationPresentation =
   | { kind: "unknown" }
   | { kind: "pending"; expiresAt: Date }
   | { kind: "expired"; expiresAt: Date };
-
-/**
- * SQL Server stores these without a timezone, so they reach the browser as
- * `2026-08-29T14:23:11` with no `Z`. Parsing that as local time would shift a UTC instant by
- * the browser's offset — five hours in Pakistan — which is enough to show a live invitation
- * as expired. A value that already carries an offset is left exactly as it is.
- */
-export function parseServerDateTime(value?: string | null): Date | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  const hasZone = /(z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
-  const parsed = new Date(hasZone ? trimmed : `${trimmed}Z`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
 
 /**
  * How the outstanding link should be described. Calling one "expired" here is a courtesy to

@@ -19,7 +19,6 @@ import {
   loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
-  parseServerDateTime,
   provisionableEmployees,
   usesExistingEmployee,
 } from "./staffAccessState.ts";
@@ -105,19 +104,6 @@ describe("row actions", () => {
 
 describe("invitation expiry", () => {
   const now = new Date("2026-08-22T12:00:00Z");
-
-  it("reads a timezone-less server value as UTC rather than local time", () => {
-    // SQL Server drops the offset, so this arrives without a Z. Parsed as local time in
-    // Pakistan it would land five hours early and a live link would read as expired.
-    expect(parseServerDateTime("2026-08-29T14:23:11")?.toISOString())
-      .toBe("2026-08-29T14:23:11.000Z");
-    expect(parseServerDateTime("2026-08-29T14:23:11Z")?.toISOString())
-      .toBe("2026-08-29T14:23:11.000Z");
-    expect(parseServerDateTime("2026-08-29T19:23:11+05:00")?.toISOString())
-      .toBe("2026-08-29T14:23:11.000Z");
-    expect(parseServerDateTime(null)).toBeNull();
-    expect(parseServerDateTime("not a date")).toBeNull();
-  });
 
   it("describes a link that is still good", () => {
     const state = invitationState(

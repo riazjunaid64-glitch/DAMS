@@ -52,8 +52,9 @@ export type { DialogAction } from "./DialogPanel.tsx";
 export { Overlay, type OverlayPlacement } from "./Overlay.tsx";
 export { Portal } from "./Portal.tsx";
 
-// 13 Empty state, toast, photos
+// 13 Empty state, notice, toast, photos
 export { EmptyState, type EmptyStateProps } from "./EmptyState.tsx";
+export { Notice, type NoticeProps, type NoticeTone } from "./Notice.tsx";
 export { ToastProvider } from "./Toast.tsx";
 export { useToast, type ToastApi, type ToastKind } from "./toastContext.ts";
 export { PhotoSlider, type Photo, type PhotoSliderProps } from "./PhotoSlider.tsx";

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { User } from "../App.tsx";
+import { useProjects } from "../contexts/projectsContextValue.ts";
 import { can } from "../features/access/permissions.ts";
 import Button from "../lib/Button.tsx";
 import {
@@ -12,16 +13,15 @@ import {
   StageBadge,
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
-import { apiJson, downloadLeadDocument, loadCrmLookups } from "../features/leads/leadApi.ts";
+import { apiJson, downloadLeadDocument, loadCrmLookups, type CrmLookups } from "../features/leads/leadApi.ts";
 import LeadActionDialog, { type LeadAction } from "../features/leads/LeadActionDialog.tsx";
 import { canViewOriginalProviderData, formatProviderPayload } from "../features/leads/originalProviderData.ts";
+import { isPastServerTime } from "../lib/dates.ts";
 import {
   enumLabel,
   formatDateTime,
   isClosedStage,
-  isPastServerTime,
   type AssignmentHistory,
-  type ClosureReason,
   type Communication,
   type ExternalSubmission,
   type ExternalSubmissionRaw,
@@ -29,10 +29,8 @@ import {
   type Lead,
   type LeadComment,
   type LeadDocument,
-  type LeadSource,
   type ProjectLookup,
   type SiteVisit,
-  type StaffMember,
   type TimelineItem,
 } from "../features/leads/types.ts";
 
@@ -48,12 +46,7 @@ type DetailData = {
   assignments: AssignmentHistory[];
   submissions: ExternalSubmission[];
 };
-export type LeadLookups = {
-  sources: LeadSource[];
-  reasons: ClosureReason[];
-  staff: StaffMember[];
-  projects: ProjectLookup[];
-};
+export type LeadLookups = CrmLookups & { projects: ProjectLookup[] };
 
 const TABS = [
   ["overview", "Overview"],
@@ -78,7 +71,13 @@ function LeadDetailWorkspace({ user }: { user: User }) {
   const leadId = Number(id);
   const [activeTab, setActiveTab] = useState("overview");
   const [data, setData] = useState<DetailData | null>(null);
-  const [lookups, setLookups] = useState<LeadLookups>({ sources: [], reasons: [], staff: [], projects: [] });
+  const [crmLookups, setCrmLookups] = useState<CrmLookups>({ sources: [], reasons: [], staff: [], apartmentTypes: [] });
+  const { projects } = useProjects();
+  const lookups = useMemo<LeadLookups>(
+    () => ({ ...crmLookups, projects: projects.map((project) => ({ id: project.id, name: project.projectName })) }),
+    [crmLookups, projects],
+  );
+  const account = `${user.userId}:${user.role}`;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<LeadAction | null>(null);
@@ -97,14 +96,14 @@ function LeadDetailWorkspace({ user }: { user: User }) {
         apiJson<LeadComment[]>(`/api/leads/${leadId}/comments`),
         apiJson<AssignmentHistory[]>(`/api/leads/${leadId}/assignment-history`),
         apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`),
-        loadCrmLookups(),
+        loadCrmLookups(account),
       ]);
       setData({ lead, timeline, communications, followUps, visits, documents, comments, assignments, submissions });
-      setLookups(refs);
+      setCrmLookups(refs);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The lead could not be loaded.");
     } finally { setLoading(false); }
-  }, [leadId]);
+  }, [leadId, account]);
 
   useEffect(() => { void load(); }, [load]);
 

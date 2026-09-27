@@ -14,7 +14,7 @@ import {
   StatePanel,
 } from "../features/leads/CrmUi.tsx";
 import MetaIntegrationsPanel from "../features/integrations/MetaIntegrationsPanel.tsx";
-import { apiJson, jsonRequest } from "../features/leads/leadApi.ts";
+import { apiJson, forgetCrmLookups, jsonRequest } from "../features/leads/leadApi.ts";
 import type {
   ClosureReason,
   LeadSource,
@@ -92,6 +92,8 @@ function SettingsWorkspace({ user }: { user: User }) {
   const [resending, setResending] = useState<number | null>(null);
 
   const load = useCallback(async () => {
+    // Every save here reloads through this, so other CRM screens pick up the change.
+    forgetCrmLookups();
     setLoading(true); setError(null);
     try {
       const [staffRows, users, sourceRows, reasonRows] = await Promise.all([

@@ -1,5 +1,5 @@
 import type { MetaEventStatus } from "../integrations/types.ts";
-import { parseServerDateTime } from "../staff/staffAccessState.ts";
+import { parseServerDateTime } from "../../lib/dates.ts";
 
 export const leadStages = [
   "New",
@@ -19,7 +19,8 @@ export const leadStages = [
 export type LeadStage = (typeof leadStages)[number];
 export type LeadQualification = "Unqualified" | "Cold" | "Warm" | "Hot";
 
-export interface Lead {
+/** One row of the leads list (`GET /api/leads`): only what the list shows. */
+export interface LeadListItem {
   id: number;
   leadReference: string;
   firstName: string;
@@ -27,15 +28,32 @@ export interface Lead {
   fullName: string;
   // Optional: an ad-platform lead may arrive with no phone number at all.
   phone?: string | null;
+  city?: string | null;
+  sourceName: string;
+  propertyType?: string | null;
+  purchaseIntent: string;
+  paymentPreference: string;
+  assignedEmployeeId?: number | null;
+  assignedEmployeeName?: string | null;
+  stage: LeadStage;
+  /** The stage on the salesperson's simple pipeline, as the server groups it. */
+  stageGroup: LeadStageGroup;
+  lastActivityAt?: string | null;
+  lastActivitySummary?: string | null;
+  nextActionAt?: string | null;
+  nextActionSummary?: string | null;
+  createdAt: string;
+}
+
+/** A whole lead, as the lead page and every write return it. */
+export interface Lead extends LeadListItem {
   whatsappNumber?: string | null;
   email?: string | null;
   address?: string | null;
-  city?: string | null;
   preferredContactMethod: string;
   preferredContactTime?: string | null;
   leadSourceId: number;
   sourceCode: string;
-  sourceName: string;
   sourceDetails?: string | null;
   campaignName?: string | null;
   campaignReference?: string | null;
@@ -44,25 +62,13 @@ export interface Lead {
   interestedProjectName?: string | null;
   interestedUnitId?: number | null;
   interestedUnitNumber?: string | null;
-  propertyType?: string | null;
   preferredLocation?: string | null;
   budgetMin?: number | null;
   budgetMax?: number | null;
-  purchaseIntent: string;
-  paymentPreference: string;
   notes?: string | null;
-  assignedEmployeeId?: number | null;
-  assignedEmployeeName?: string | null;
   assignmentState: string;
   assignedAt?: string | null;
-  stage: LeadStage;
-  /** The stage on the salesperson's simple pipeline, as the server groups it. */
-  stageGroup: LeadStageGroup;
   qualification: LeadQualification;
-  lastActivityAt?: string | null;
-  lastActivitySummary?: string | null;
-  nextActionAt?: string | null;
-  nextActionSummary?: string | null;
   firstContactAt?: string | null;
   lastContactAt?: string | null;
   convertedAt?: string | null;
@@ -75,7 +81,6 @@ export interface Lead {
   closedAt?: string | null;
   reactivateOn?: string | null;
   bookingRequestId?: number | null;
-  createdAt: string;
   updatedAt?: string | null;
   // The version this copy was read at; an edit sends it back so a stale form cannot overwrite newer changes.
   concurrencyToken: string;
@@ -199,11 +204,20 @@ export interface IntegrationEventRaw {
 }
 
 export interface LeadList {
-  items: Lead[];
+  items: LeadListItem[];
   totalCount: number;
   page: number;
   pageSize: number;
   totalPages: number;
+}
+
+/** `GET /api/leads/summary`: the list's cards, counted with the list's filters except status. */
+export interface LeadSummary {
+  total: number;
+  inProgress: number;
+  won: number;
+  lost: number;
+  dormant: number;
 }
 
 export interface LeadSource {
@@ -411,8 +425,3 @@ export const formatDateTime = (value?: string | null) =>
 
 export const formatShortDate = (value?: string | null) =>
   parseServerDateTime(value)?.toLocaleDateString() ?? "—";
-
-export const isPastServerTime = (value?: string | null, now: Date = new Date()) => {
-  const date = parseServerDateTime(value);
-  return date !== null && date < now;
-};

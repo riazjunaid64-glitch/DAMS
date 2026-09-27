@@ -1,9 +1,13 @@
+import { matchedOnLabel, statusOfGroup, type LeadStatus } from "./labels.ts";
+
 /** A lead a held enquiry matched, as `GET /api/leads/held-enquiries` returns it. */
 export type HeldEnquiryCandidate = {
   leadId: number;
   leadReference: string;
   leadName: string;
   leadStage: string;
+  /** The simple status group (New, InProgress, Won, Lost, Dormant). */
+  leadStageGroup: string;
   leadOwnerName?: string | null;
   matchedOn: string;
   isOpen: boolean;
@@ -29,65 +33,54 @@ export type HeldEnquiry = {
 /** `GET /api/leads/held-enquiries`: the oldest waiting enquiries, and how many are waiting in all. */
 export type HeldEnquiryList = { totalWaiting: number; items: HeldEnquiry[] };
 
-/** The panel heading, saying so when there are more waiting than it lists. */
-export function heldEnquiriesHeading(list: HeldEnquiryList): string {
-  return list.totalWaiting > list.items.length
-    ? `Held enquiries (${list.totalWaiting}, showing the oldest ${list.items.length})`
-    : `Held enquiries (${list.totalWaiting})`;
+/** The banner's title: how many enquiries are waiting for a person to choose their lead. */
+export function heldEnquiriesTitle(totalWaiting: number): string {
+  return totalWaiting === 1
+    ? "1 enquiry needs your decision"
+    : `${totalWaiting.toLocaleString("en-PK")} enquiries need your decision`;
 }
 
-export type HeldEnquiryChoice = {
+/** A lead the enquiry matched, as the review lists it. */
+export type HeldEnquiryMatch = {
   leadId: number;
-  title: string;
-  detail: string;
-  addLabel: string;
-  /** Why this lead cannot receive the enquiry right now, or null when it can. */
-  blockedReason: string | null;
+  leadName: string;
+  leadReference: string;
+  status: LeadStatus;
+  ownerName: string;
+  /** "Same phone", "Same email" or "Same WhatsApp". */
+  matched: string;
+  /** False once the lead has closed: it must be reopened before it can receive the enquiry. */
+  canAdd: boolean;
 };
 
 export type HeldEnquiryView = {
   title: string;
-  contact: string[];
+  /** Where it came from: the source's name, or the provider when the source is unknown. */
   origin: string;
-  /** Set when a website booking request cannot be approved until this is decided. */
-  waitingNote: string | null;
+  contact: string[];
+  /** False while a website booking request waits on this enquiry: dismissing would leave it without a lead. */
   canDismiss: boolean;
-  choices: HeldEnquiryChoice[];
+  matches: HeldEnquiryMatch[];
 };
 
-const MATCHED_ON: Record<string, string> = {
-  phone: "phone number",
-  whatsapp: "WhatsApp number",
-  email: "email address",
-};
-
-/**
- * How one held enquiry is presented for a decision. Adding goes only to the lead chosen, and a
- * closed lead cannot receive it until it is reopened. An enquiry a website booking request is
- * waiting on can never be dismissed: the request would be left with no lead at all.
- */
+/** How one held enquiry is presented for a decision. Adding goes only to the lead chosen. */
 export function describeHeldEnquiry(enquiry: HeldEnquiry): HeldEnquiryView {
   const name = [enquiry.firstName, enquiry.lastName].filter(Boolean).join(" ");
+  const whatsapp = enquiry.whatsappNumber && enquiry.whatsappNumber !== enquiry.phone ? enquiry.whatsappNumber : null;
 
   return {
     title: name || "Unnamed enquiry",
-    contact: [
-      enquiry.phone && `Phone ${enquiry.phone}`,
-      enquiry.whatsappNumber && `WhatsApp ${enquiry.whatsappNumber}`,
-      enquiry.email && `Email ${enquiry.email}`,
-    ].filter((line): line is string => !!line),
-    origin: [enquiry.sourceName || enquiry.provider || "External enquiry", enquiry.campaignName].filter(Boolean).join(" · "),
-    waitingNote: enquiry.bookingRequestId
-      ? `Website booking request #${enquiry.bookingRequestId} cannot be approved until you choose its lead.`
-      : null,
+    origin: enquiry.sourceName || enquiry.provider || "External enquiry",
+    contact: [enquiry.phone, whatsapp, enquiry.email].filter((line): line is string => !!line),
     canDismiss: !enquiry.bookingRequestId,
-    choices: enquiry.candidates.map((candidate) => ({
+    matches: enquiry.candidates.map((candidate) => ({
       leadId: candidate.leadId,
-      title: `${candidate.leadReference} · ${candidate.leadName}`,
-      detail: `Matches this enquiry's ${MATCHED_ON[candidate.matchedOn] ?? "contact details"}` +
-        (candidate.leadOwnerName ? ` · owned by ${candidate.leadOwnerName}` : " · unassigned"),
-      addLabel: `Add to ${candidate.leadReference}`,
-      blockedReason: candidate.isOpen ? null : "This lead is closed. Reopen it first to add the enquiry to it.",
+      leadName: candidate.leadName,
+      leadReference: candidate.leadReference,
+      status: statusOfGroup(candidate.leadStageGroup),
+      ownerName: candidate.leadOwnerName || "Unassigned",
+      matched: matchedOnLabel(candidate.matchedOn),
+      canAdd: candidate.isOpen,
     })),
   };
 }
