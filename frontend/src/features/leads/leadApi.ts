@@ -23,20 +23,38 @@ export async function apiJson<T>(endpoint: string, options?: RequestInit): Promi
   return response.json() as Promise<T>;
 }
 
-export async function loadCrmLookups() {
-  const [sources, reasons, staff, projects] = await Promise.all([
-    apiJson<LeadSource[]>("/api/lead-config/sources"),
-    apiJson<ClosureReason[]>("/api/lead-config/closure-reasons"),
-    apiJson<StaffMember[]>("/api/staff/directory"),
-    loadProjects(),
-  ]);
+/** What the CRM screens pick from. Projects are not here: they come from ProjectsContext. */
+export type CrmLookups = {
+  sources: LeadSource[];
+  reasons: ClosureReason[];
+  staff: StaffMember[];
+  apartmentTypes: string[];
+};
 
-  return {
-    sources,
-    reasons,
-    staff,
-    projects,
-  };
+let lookups: { account: string; promise: Promise<CrmLookups> } | null = null;
+
+/**
+ * Sources, closure reasons, the staff directory and apartment types, fetched once per signed-in
+ * account and shared by every CRM screen, so a filter or page change never fetches them again.
+ */
+export function loadCrmLookups(account: string): Promise<CrmLookups> {
+  if (lookups?.account !== account) {
+    const promise = Promise.all([
+      apiJson<LeadSource[]>("/api/lead-config/sources"),
+      apiJson<ClosureReason[]>("/api/lead-config/closure-reasons"),
+      apiJson<StaffMember[]>("/api/staff/directory"),
+      apiJson<string[]>("/api/lead-config/apartment-types"),
+    ]).then(([sources, reasons, staff, apartmentTypes]) => ({ sources, reasons, staff, apartmentTypes }));
+    // A failed load is not kept: the next screen that needs the lookups asks again.
+    promise.catch(() => { if (lookups?.promise === promise) lookups = null; });
+    lookups = { account, promise };
+  }
+  return lookups.promise;
+}
+
+/** Drops the shared lookups, so the next CRM screen reads what CRM settings just changed. */
+export function forgetCrmLookups() {
+  lookups = null;
 }
 
 export async function loadProjects(): Promise<ProjectLookup[]> {

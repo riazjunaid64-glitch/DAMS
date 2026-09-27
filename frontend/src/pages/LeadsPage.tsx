@@ -1,557 +1,411 @@
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { can } from "../features/access/permissions.ts";
 import {
+  Avatar,
   Button,
+  cx,
   DataTable,
   DEFAULT_PAGE_SIZE,
-  Dropdown,
   EmptyState,
   FilterBar,
   IconPlus,
+  IconSettings,
   IconUsers,
-  ListCard,
   LoadMore,
-  Modal,
-  NumberField,
   PageHeader,
   Pagination,
+  Spinner,
   StatSummary,
   StatusBadge,
-  TextArea,
-  TextField,
   useIsPhone,
+  useToast,
   type DataTableColumn,
   type FilterDef,
   type FilterValues,
   type StatCardProps,
-  type StatusTone,
 } from "../components/ui";
-import { CrmAccess, ErrorBanner } from "../features/leads/CrmUi.tsx";
-import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
-import { describeConflict, describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
-import HeldEnquiriesPanel from "../features/leads/HeldEnquiriesPanel.tsx";
-import {
-  formatDateTime,
-  isClosedStage,
-  isPastServerTime,
-  leadStageGroups,
-  leadStages,
-  paymentPreferences,
-  stageLabel,
-  type ClosureReason,
-  type Lead,
-  type LeadList,
-  type LeadSource,
-  type ProjectLookup,
-  type StaffMember,
-  type UnitLookup,
-} from "../features/leads/types.ts";
+import { formatMonthDay, formatTime, formatWhen } from "../lib/dates.ts";
+import { HeldEnquiries } from "../features/leads/HeldEnquiries.tsx";
+import { LeadCard } from "../features/leads/LeadCard.tsx";
+import { leadStatus, paymentPreferenceLabel, purchaseIntentLabel, statusText, type LeadStatus } from "../features/leads/labels.ts";
+import { apiJson, loadCrmLookups, type CrmLookups } from "../features/leads/leadApi.ts";
+import { nextFollowUp } from "../features/leads/leadRow.ts";
+import { NewLeadDialog } from "../features/leads/NewLeadDialog.tsx";
+import type { LeadList, LeadListItem, LeadSummary } from "../features/leads/types.ts";
 
 type Props = { user: User | null };
-type Lookups = {
-  sources: LeadSource[];
-  reasons: ClosureReason[];
-  staff: StaffMember[];
-  projects: ProjectLookup[];
-};
 
-const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], staff: [], projects: [] };
+/** Every URL filter the list and the cards honour; Reset clears all of them. */
+const FILTER_KEYS = ["search", "createdFrom", "createdTo", "stageGroup", "sourceId", "employeeId", "unassigned"];
+/** Only Admin and Sales manager filter by owner; a Sales employee's list is already only theirs. */
+const OWNER_KEYS = ["employeeId", "unassigned"];
+const STATUSES: LeadStatus[] = ["InProgress", "Won", "Lost", "Dormant"];
+const STATUS_TONES = { InProgress: "blue", Won: "green", Lost: "red", Dormant: "orange" } as const;
+/** The Assigned filter's value for "nobody"; any other value is an employee id. */
+const UNASSIGNED = "unassigned";
 
-/** Every URL filter the list honours; Reset clears all of them (sorting stays). */
-const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
+type Loaded<T> = { query: string; data: T };
+
+/**
+ * The last list and cards this account saw, so coming back from a lead shows them at once while
+ * they refresh quietly behind.
+ */
+let lastSeen: { account: string; list?: Loaded<LeadList>; summary?: Loaded<LeadSummary> } | null = null;
 
 export default function LeadsPage({ user }: Props) {
-  return <CrmAccess user={user}>{user && <LeadsWorkspace user={user} />}</CrmAccess>;
+  if (!user || !can(user.role, "crm")) {
+    return (
+      <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7">
+        <EmptyState
+          icon={<IconUsers size={26} />}
+          title={user ? "The Lead CRM is not part of your role" : "Sign in required"}
+          message={user ? undefined : "Sign in with a staff account to open the Lead CRM."}
+        />
+      </div>
+    );
+  }
+  return <LeadsWorkspace user={user} />;
 }
 
 function LeadsWorkspace({ user }: { user: User }) {
   const navigate = useNavigate();
+  const toast = useToast();
   const isPhone = useIsPhone();
   const [params, setParams] = useSearchParams();
-  const [data, setData] = useState<LeadList | null>(null);
-  const [dashboard, setDashboard] = useState<Record<string, unknown> | null>(null);
-  const [lookups, setLookups] = useState<Lookups>(EMPTY_LOOKUPS);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const account = `${user.userId}:${user.role}`;
+  const manage = can(user.role, "crm.manage");
+  const filterKeys = manage ? FILTER_KEYS : FILTER_KEYS.filter((key) => !OWNER_KEYS.includes(key));
+
+  const pageParam = Number(params.get("page") ?? 1);
+  const page = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
+  const filterQuery = new URLSearchParams();
+  for (const key of filterKeys) {
+    const value = params.get(key);
+    if (value && key !== "stageGroup") filterQuery.set(key, value);
+  }
+  // The cards count by status, so they take every filter except Status itself.
+  const summaryQuery = filterQuery.toString();
+  const listParams = new URLSearchParams(filterQuery);
+  if (params.get("stageGroup")) listParams.set("stageGroup", params.get("stageGroup")!);
+  listParams.set("page", String(page));
+  listParams.set("pageSize", String(DEFAULT_PAGE_SIZE));
+  const listQuery = listParams.toString();
+
+  const remembered = lastSeen?.account === account ? lastSeen : null;
+  const [list, setList] = useState<Loaded<LeadList> | null>(remembered?.list ?? null);
+  const [summary, setSummary] = useState<Loaded<LeadSummary> | null>(remembered?.summary ?? null);
+  const [listFailure, setListFailure] = useState<Loaded<string> | null>(null);
+  const [lookups, setLookups] = useState<CrmLookups | null>(null);
+  // Bumped to fetch the list and cards again for the same filters (Try again, a held enquiry decided).
+  const [refresh, setRefresh] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
-  const page = Number(params.get("page") ?? 1);
-  // A salesperson works a four-step pipeline (New, In Progress, Won, Lost) on their own leads;
-  // admins and managers keep the detailed stages, qualification and ownership they run the CRM by.
-  const isSalesperson = user.role === "Employee";
+
+  // A filter, search or page change fetches only the list and the cards, in parallel; the old rows
+  // stay on screen until the new ones arrive. A response for filters no longer shown is dropped.
+  useEffect(() => {
+    const controller = new AbortController();
+    apiJson<LeadList>(`/api/leads?${listQuery}`, { signal: controller.signal })
+      .then((data) => {
+        setList({ query: listQuery, data });
+        setListFailure(null);
+        lastSeen = { ...(lastSeen?.account === account ? lastSeen : {}), account, list: { query: listQuery, data } };
+      })
+      .catch((caught: unknown) => {
+        if (controller.signal.aborted) return;
+        setListFailure({ query: listQuery, data: caught instanceof Error ? caught.message : "The leads could not be loaded." });
+      });
+    return () => controller.abort();
+  }, [account, listQuery, refresh]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    apiJson<LeadSummary>(`/api/leads/summary?${summaryQuery}`, { signal: controller.signal })
+      .then((data) => {
+        setSummary({ query: summaryQuery, data });
+        lastSeen = { ...(lastSeen?.account === account ? lastSeen : {}), account, summary: { query: summaryQuery, data } };
+      })
+      .catch((caught: unknown) => {
+        if (!controller.signal.aborted) toast.error(caught instanceof Error ? caught.message : "The lead counts could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [account, summaryQuery, refresh, toast]);
+
+  useEffect(() => {
+    loadCrmLookups(account)
+      .then(setLookups)
+      .catch((caught: unknown) => toast.error(caught instanceof Error ? caught.message : "Sources and staff could not be loaded."));
+  }, [account, toast]);
+
+  // Phone lists grow with "Load more" instead of paging. The extra pages belong to the list they
+  // extend, so a filter change drops them in the same render and the list restarts from the top.
+  const [more, setMore] = useState<{ query: string; items: LeadListItem[]; page: number; loading: boolean } | null>(null);
+  const extra = more?.query === listQuery ? more : null;
+  const current = list?.query === listQuery ? list.data : null;
+  const loadMore = async () => {
+    if (!current) return;
+    const nextPage = (extra?.page ?? current.page) + 1;
+    const q = new URLSearchParams(listQuery);
+    q.set("page", String(nextPage));
+    setMore({ query: listQuery, items: extra?.items ?? [], page: extra?.page ?? current.page, loading: true });
+    try {
+      const next = await apiJson<LeadList>(`/api/leads?${q.toString()}`);
+      setMore((shown) => shown?.query === listQuery ? { query: listQuery, items: [...shown.items, ...next.items], page: nextPage, loading: false } : shown);
+    } catch (caught) {
+      setMore((shown) => shown && { ...shown, loading: false });
+      toast.error(caught instanceof Error ? caught.message : "More leads could not be loaded.");
+    }
+  };
 
   const updateParams = (changes: FilterValues) => {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(changes)) {
       if (value) next.set(key, value); else next.delete(key);
     }
-    if (!("page" in changes)) next.set("page", "1");
+    if (!("page" in changes)) next.delete("page");
     setParams(next);
   };
-  const updateParam = (key: string, value: string) => updateParams({ [key]: value });
-
-  // Clears every URL filter, including ones with no control on the bar (an old bookmark's
-  // "qualification" or "overdue"). Sorting is not a filter and stays.
-  const hasFilters = FILTER_KEYS.some((key) => params.get(key));
-  const clearFilters = () => updateParams(Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])));
-
-  // The bar exposes search, stage, source and project (and payment, for admins and managers). The rest stay honoured because the URL is
-  // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
-  // exactly as it did, and the server contract is unchanged.
-  const query = useMemo(() => {
-    const allowed = [...FILTER_KEYS, "sortBy", "sortDesc"];
-    const q = new URLSearchParams();
-    for (const key of allowed) {
-      const value = params.get(key);
-      if (value) q.set(key, value);
+  const hasFilters = filterKeys.some((key) => params.get(key));
+  const resetFilters = () => updateParams(Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])));
+  const applyFilters = ({ assigned, ...changes }: FilterValues) => {
+    if (assigned !== undefined) {
+      changes.unassigned = assigned === UNASSIGNED ? "true" : "";
+      changes.employeeId = assigned === UNASSIGNED ? "" : assigned;
     }
-    q.set("page", String(Number.isFinite(page) && page > 0 ? page : 1));
-    q.set("pageSize", String(DEFAULT_PAGE_SIZE));
-    return q.toString();
-  }, [page, params]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const dashboardEndpoint = isSalesperson ? "/api/lead-dashboard/me" : "/api/lead-dashboard/organisation";
-      const [rows, metrics, refs] = await Promise.all([
-        apiJson<LeadList>(`/api/leads?${query}`),
-        apiJson<Record<string, unknown>>(dashboardEndpoint),
-        loadCrmLookups(),
-      ]);
-      setData(rows);
-      setDashboard(metrics);
-      setLookups(refs);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The lead workspace could not be loaded.");
-    } finally {
-      setLoading(false);
-    }
-  }, [query, isSalesperson]);
-
-  useEffect(() => { void load(); }, [load]);
-
-  // Phone lists grow with "Load more" instead of paging. The extra pages belong to the query that
-  // fetched them, so a filter change drops them in the same render rather than in an effect.
-  const [more, setMore] = useState<{ query: string; items: Lead[]; page: number; loading: boolean }>({ query: "", items: [], page: 0, loading: false });
-  const extra = more.query === query ? more : null;
-  const loadMore = async () => {
-    if (!data) return;
-    const nextPage = (extra?.page ?? data.page) + 1;
-    const q = new URLSearchParams(query);
-    q.set("page", String(nextPage));
-    setMore({ query, items: extra?.items ?? [], page: extra?.page ?? data.page, loading: true });
-    try {
-      const next = await apiJson<LeadList>(`/api/leads?${q.toString()}`);
-      setMore((current) => current.query === query
-        ? { query, items: [...current.items, ...next.items], page: nextPage, loading: false }
-        : current);
-    } catch (caught) {
-      setMore((current) => ({ ...current, loading: false }));
-      setError(caught instanceof Error ? caught.message : "More leads could not be loaded.");
-    }
-  };
-  const leads = data ? (isPhone && extra ? [...data.items, ...extra.items] : data.items) : [];
-  // Everything before the first page on screen counts as shown, so "Showing 40 of 437" stays true
-  // for a phone that opened a link to page 3.
-  const shownOnPhone = data ? (data.page - 1) * data.pageSize + leads.length : 0;
-
-  const metrics = dashboardMetrics(isSalesperson, dashboard);
-  const [total, ...cards] = metrics;
-  const toStatCard = (metric: Metric): StatCardProps => {
-    // A card that switches a filter on has to switch it off again. Stage lands in a dropdown the
-    // operator can see and reset, but "unassigned" and "overdue" have no control of their own on
-    // this bar — so pressing the card again is the way back, and the card shows it is pressed
-    // rather than leaving the list quietly filtered.
-    const applied = !!metric.filter && params.get(metric.filter.key) === metric.filter.value;
-    return {
-      label: metric.label,
-      value: metric.value,
-      tone: metric.tone,
-      selected: applied,
-      onClick: metric.filter ? () => updateParam(metric.filter!.key, applied ? "" : metric.filter!.value) : undefined,
-    };
+    updateParams(changes);
   };
 
-  const filters: FilterDef[] = [
-    isSalesperson
-      ? { type: "select", key: "stageGroup", label: "Stage", options: leadStageGroups.map((v) => ({ value: v, label: stageLabel(v) })) }
-      : { type: "select", key: "stage", label: "Stage", options: leadStages.map((v) => ({ value: v, label: stageLabel(v) })) },
-    { type: "select", key: "sourceId", label: "Source", options: lookups.sources.map((v) => ({ value: String(v.id), label: v.name })) },
-    { type: "select", key: "projectId", label: "Project", options: lookups.projects.map((v) => ({ value: String(v.id), label: v.name })) },
-    ...(isSalesperson ? [] : [{
-      type: "select" as const,
-      key: "paymentPreference",
-      label: "Payment",
-      options: paymentPreferences.filter((v) => v !== "Unknown").map((v) => ({ value: v, label: stageLabel(v) })),
-    }]),
-  ];
+  const stageGroup = params.get("stageGroup") ?? "";
+  const counts = summary?.data;
+  const count = (value?: number) => value?.toLocaleString("en-PK") ?? "—";
+  const statusCards: StatCardProps[] = STATUSES.map((status) => ({
+    label: statusText(status),
+    value: count(counts?.[status === "InProgress" ? "inProgress" : (status.toLowerCase() as "won" | "lost" | "dormant")]),
+    tone: STATUS_TONES[status],
+    selected: stageGroup === status,
+    onClick: () => updateParams({ stageGroup: stageGroup === status ? "" : status }),
+  }));
+
+  const statusFilter: FilterDef = { type: "select", key: "stageGroup", label: "Status", options: STATUSES.map((status) => ({ value: status, label: statusText(status) })) };
+  const sourceFilter: FilterDef = { type: "select", key: "sourceId", label: "Source", options: (lookups?.sources ?? []).map((source) => ({ value: String(source.id), label: source.name })) };
+  const fromFilter: FilterDef = { type: "date", key: "createdFrom", label: isPhone ? "Created from" : "From" };
+  const toFilter: FilterDef = { type: "date", key: "createdTo", label: "To" };
+  // The phone sheet leads with Status and Source; the owner filter is desktop only.
+  const filters: FilterDef[] = isPhone
+    ? [statusFilter, sourceFilter, fromFilter, toFilter]
+    : [fromFilter, toFilter, statusFilter, sourceFilter, ...(manage ? [{
+        type: "select" as const,
+        key: "assigned",
+        label: "Assigned",
+        allLabel: "Anyone",
+        options: [
+          { value: UNASSIGNED, label: "Unassigned" },
+          ...(lookups?.staff ?? []).filter((member) => member.canOwnLeads).map((member) => ({ value: String(member.employeeId), label: member.fullName })),
+        ],
+      }] : [])];
+  const filterValues: FilterValues = {
+    ...Object.fromEntries(FILTER_KEYS.map((key) => [key, params.get(key) ?? ""])),
+    assigned: params.get("unassigned") === "true" ? UNASSIGNED : params.get("employeeId") ?? "",
+  };
+
+  const shown = current ? [...current.items, ...(isPhone && extra ? extra.items : [])] : [];
+  // Rows from the previous filters stay, dimmed, while the new ones load.
+  const rows = current ? shown : list?.data.items ?? [];
+  const failure = listFailure?.query === listQuery ? listFailure.data : null;
+  const loading = !current && !failure;
+  const openLead = (lead: LeadListItem) => navigate(`/crm/leads/${lead.id}`);
+  const retry = () => { setListFailure(null); setRefresh((n) => n + 1); };
 
   return (
     <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7">
       <PageHeader
-        title={isSalesperson ? "My leads" : "Lead CRM"}
-        subtitle={isSalesperson ? "Your assigned enquiries and what comes next." : "Capture, assign, work and convert property enquiries."}
+        title={manage ? "Leads" : "My leads"}
+        subtitle={manage ? "Capture, assign, work and convert property enquiries." : "Leads assigned to you."}
         actions={
           <>
-            {!isSalesperson && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
-            <Button icon={<IconPlus size={16} />} onClick={() => setCreateOpen(true)} className="max-md:hidden">New lead</Button>
+            {can(user.role, "crm.settings") && (isPhone
+              ? <Button variant="outline" iconOnly icon={<IconSettings size={18} />} aria-label="CRM settings" onClick={() => navigate("/crm/settings")} />
+              : <Button variant="outline" icon={<IconSettings size={16} />} onClick={() => navigate("/crm/settings")}>CRM settings</Button>)}
+            <Button icon={<IconPlus size={16} />} onClick={() => setCreateOpen(true)}>New lead</Button>
           </>
         }
       />
 
-      {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-      {!isSalesperson && <HeldEnquiriesPanel onResolved={() => void load()} />}
+      {manage && <HeldEnquiries onResolved={() => setRefresh((n) => n + 1)} />}
 
-      {total && (
-        <StatSummary
-          total={{ label: total.label, value: total.value }}
-          items={cards.map(toStatCard)}
-          phoneColumns={cards.length === 3 ? 3 : 2}
-        />
-      )}
+      <StatSummary total={{ label: manage ? "Total leads" : "My leads", value: count(counts?.total) }} items={statusCards} />
 
       <FilterBar
-        search={{ value: params.get("search") ?? "", onSearch: (value) => updateParam("search", value), placeholder: "Search name, phone, email, campaign…" }}
+        search={{ value: params.get("search") ?? "", onSearch: (value) => updateParams({ search: value }), placeholder: "Name, phone, city" }}
         filters={filters}
-        values={Object.fromEntries(filters.map((filter) => [filter.key, params.get(filter.key) ?? ""]))}
-        onChange={updateParams}
-        onReset={clearFilters}
-        onAdd={() => setCreateOpen(true)}
-        addLabel="New lead"
+        values={filterValues}
+        onChange={applyFilters}
+        onReset={resetFilters}
       />
 
-      {loading && !data ? (
-        <div className="flex flex-col gap-2.5">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-16 animate-pulse rounded-card bg-track" />)}</div>
-      ) : !data || data.items.length === 0 ? (
+      {failure && !rows.length ? (
         <EmptyState
           icon={<IconUsers size={26} />}
-          title="No leads found"
-          message={hasFilters ? "No leads match these filters. Clear the filters or capture a new enquiry." : "No leads yet. Capture a new enquiry to start."}
-          action={hasFilters
-            ? <Button variant="outline" onClick={clearFilters}>Clear filters</Button>
-            : <Button variant="outline" onClick={() => setCreateOpen(true)}>New lead</Button>}
+          title="The leads could not be loaded"
+          message={failure}
+          action={<Button variant="outline" onClick={retry}>Try again</Button>}
         />
+      ) : !list ? (
+        <div className="flex flex-col gap-2.5">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-16 animate-pulse rounded-card bg-track" />)}</div>
+      ) : current && current.totalCount === 0 ? (
+        hasFilters ? (
+          <EmptyState
+            icon={<IconUsers size={26} />}
+            title="No leads match these filters"
+            message="Try a different date range or status, or clear the filters."
+            action={<Button variant="outline" onClick={resetFilters}>Reset filters</Button>}
+          />
+        ) : (
+          <EmptyState
+            icon={<IconUsers size={26} />}
+            title="No leads yet"
+            message="New leads assigned to you will show up here."
+            action={<Button variant="outline" icon={<IconPlus size={16} />} onClick={() => setCreateOpen(true)}>New lead</Button>}
+          />
+        )
       ) : (
         <>
-          <DataTable
-            caption="Leads"
-            rows={leads}
-            rowKey={(lead) => lead.id}
-            columns={leadColumns(isSalesperson)}
-            onRowClick={(lead) => navigate(`/crm/leads/${lead.id}`)}
-            minWidth={isSalesperson ? 860 : 980}
-            phoneCard={(lead) => <LeadCard lead={lead} simple={isSalesperson} />}
-          />
-          <Pagination
-            className="max-md:hidden"
-            page={data.page}
-            pageSize={data.pageSize}
-            totalCount={data.totalCount}
-            totalPages={data.totalPages}
-            itemLabel="leads"
-            onPageChange={(next) => updateParams({ page: String(next) })}
-          />
-          <LoadMore
-            className="md:hidden"
-            shown={shownOnPhone}
-            total={data.totalCount}
-            loading={extra?.loading ?? false}
-            onLoadMore={() => void loadMore()}
-          />
+          <div aria-busy={loading || undefined} className={cx("relative transition-opacity", (loading || failure) && "opacity-60")}>
+            {loading && <Spinner className="absolute top-3 right-3 z-10 text-primary" />}
+            {failure && (
+              <div role="alert" className="mb-2.5 flex items-center justify-between gap-3 rounded-card border border-danger-line bg-danger-soft px-4 py-2.5 text-small font-bold text-danger">
+                {failure}
+                <Button variant="outline" size="sm" onClick={retry}>Try again</Button>
+              </div>
+            )}
+            <DataTable
+              caption={manage ? "Leads" : "My leads"}
+              rows={rows}
+              rowKey={(lead) => lead.id}
+              columns={leadColumns(manage, openLead)}
+              onRowClick={openLead}
+              rowLabel={(lead) => `Open ${lead.fullName}`}
+              minWidth={1100}
+              phoneCard={(lead) => <LeadCard lead={lead} showOwner={manage} />}
+            />
+          </div>
+          {current && (isPhone ? (
+            <LoadMore
+              shown={(current.page - 1) * current.pageSize + shown.length}
+              total={current.totalCount}
+              loading={extra?.loading ?? false}
+              onLoadMore={() => void loadMore()}
+            />
+          ) : (
+            <Pagination
+              page={current.page}
+              pageSize={current.pageSize}
+              totalCount={current.totalCount}
+              totalPages={current.totalPages}
+              itemLabel="leads"
+              onPageChange={(next) => updateParams({ page: String(next) })}
+            />
+          ))}
         </>
       )}
 
-      <LeadCreateModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        lookups={lookups}
-        canAssign={can(user.role, "crm.manage")}
-        onCreated={(leadId) => navigate(`/crm/leads/${leadId}`)}
-      />
+      {createOpen && (
+        <NewLeadDialog
+          onClose={() => setCreateOpen(false)}
+          lookups={lookups}
+          canAssign={manage}
+          onOpenLead={(leadId) => navigate(`/crm/leads/${leadId}`)}
+        />
+      )}
     </div>
   );
 }
 
-/** Badge colour: Dormant is orange; otherwise the stage group the server sent decides. */
-function stageTone(lead: Lead): StatusTone {
-  if (lead.stage === "Dormant") return "orange";
-  return lead.stageGroup === "Won" ? "green" : lead.stageGroup === "Lost" ? "red" : "blue";
-}
-
-/** A salesperson sees the simple stage the server grouped the lead into; others see the detailed stage. */
-function StageBadge({ lead, simple }: { lead: Lead; simple: boolean }) {
-  return <StatusBadge status={lead.stage} tone={stageTone(lead)}>{stageLabel(simple ? lead.stageGroup : lead.stage)}</StatusBadge>;
-}
-
-const QUALIFICATION_TONES: Record<string, StatusTone> = { Hot: "red", Warm: "orange", Cold: "blue" };
-
-const contactOf = (lead: Lead) => lead.phone ?? lead.whatsappNumber ?? lead.email;
-
-/** A closed lead has nothing scheduled by design, so it says so rather than reading as an omission. */
-function NextAction({ lead }: { lead: Lead }) {
-  const closed = isClosedStage(lead.stage);
-  const overdue = isPastServerTime(lead.nextActionAt) && !closed;
-  return (
-    <span className={overdue ? "font-bold text-danger" : undefined}>
-      {lead.nextActionSummary ?? "—"}
-      <span className={`block text-label ${overdue ? "" : "text-ink-muted"}`}>
-        {closed ? "Completed" : lead.nextActionAt ? formatDateTime(lead.nextActionAt) : "Not scheduled"}
-      </span>
-    </span>
-  );
-}
+const telHref = (phone: string) => `tel:${phone.replace(/[^\d+]/g, "")}`;
+const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
 
 /**
- * A salesperson's table (simple) carries only what decides their next move: who, from where, for
- * what, how far along, and what happened last and comes next. Qualification and owner are the
- * admin and manager's concern and stay on their table and on the lead itself.
+ * The table's columns. Admin and Sales manager see who owns each lead; a Sales employee, whose
+ * leads are all their own, sees when each one is next due instead.
  */
-function leadColumns(simple: boolean): DataTableColumn<Lead>[] {
-  const muted = "block text-label text-ink-muted";
-  const columns: (DataTableColumn<Lead> | false)[] = [
+function leadColumns(manage: boolean, openLead: (lead: LeadListItem) => void): DataTableColumn<LeadListItem>[] {
+  const muted = "block text-small text-ink-muted";
+  const columns: (DataTableColumn<LeadListItem> | false)[] = [
     {
       key: "lead",
       header: "Lead",
-      className: "min-w-[190px]",
       render: (lead) => (
         <>
-          <Link className="font-extrabold text-ink no-underline hover:underline" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
-          {simple
-            ? <span className={muted}>{contactOf(lead) ?? "No contact details"}</span>
-            : <>
-                <span className={muted}>{lead.leadReference}{contactOf(lead) && ` · ${contactOf(lead)}`}</span>
-                <span className={muted}>{lead.sourceName}</span>
-              </>}
+          <span className="block font-extrabold">{lead.fullName}</span>
+          {lead.phone && <a href={telHref(lead.phone)} onClick={stop} className="block whitespace-nowrap text-small text-ink no-underline hover:underline">{lead.phone}</a>}
+          <span className={cx(muted, "whitespace-nowrap")}>{lead.leadReference}</span>
         </>
       ),
     },
-    simple && { key: "source", header: "Source", render: (lead) => lead.sourceName },
+    { key: "city", header: "City", render: (lead) => lead.city || "—" },
     {
-      key: "interest",
-      header: simple ? "Project / Interest" : "Interest",
-      className: "max-w-[190px]",
-      render: (lead) => (
-        <>
-          {lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}
-          {lead.interestedUnitNumber && <span className={muted}>Unit {lead.interestedUnitNumber}</span>}
-        </>
-      ),
+      key: "requirement",
+      header: "Requirement",
+      render: (lead) => {
+        const payment = paymentPreferenceLabel(lead.paymentPreference);
+        const buyingFor = purchaseIntentLabel(lead.purchaseIntent);
+        if (!lead.propertyType && !payment && !buyingFor) return "—";
+        return (
+          <>
+            {lead.propertyType && <span className="block font-extrabold">{lead.propertyType}</span>}
+            <span className="mt-1 flex flex-wrap gap-1">
+              {payment && <StatusBadge status={lead.paymentPreference} tone={payment.tone}>{payment.label}</StatusBadge>}
+              {buyingFor && <StatusBadge status={lead.purchaseIntent} tone="grey">{buyingFor}</StatusBadge>}
+            </span>
+          </>
+        );
+      },
     },
-    { key: "stage", header: "Stage", className: "whitespace-nowrap", render: (lead) => <StageBadge lead={lead} simple={simple} /> },
-    !simple && {
-      key: "qualification",
-      header: "Qualification",
-      className: "whitespace-nowrap",
-      render: (lead) => <StatusBadge status={lead.qualification} tone={QUALIFICATION_TONES[lead.qualification] ?? "grey"} />,
+    { key: "source", header: "Source", render: (lead) => lead.sourceName },
+    { key: "status", header: "Status", render: (lead) => <StatusBadge status={leadStatus(lead)} /> },
+    manage && {
+      key: "assigned",
+      header: "Assigned",
+      render: (lead) => lead.assignedEmployeeName
+        ? <span className="flex items-center gap-2"><Avatar name={lead.assignedEmployeeName} size={28} />{lead.assignedEmployeeName}</span>
+        : <span className="font-bold text-danger">Unassigned</span>,
     },
-    !simple && {
-      key: "owner",
-      header: "Owner",
-      render: (lead) => lead.assignedEmployeeName ?? "Unassigned",
+    !manage && {
+      key: "next",
+      header: "Next follow-up",
+      className: "max-w-[180px]",
+      render: (lead) => {
+        const due = nextFollowUp(lead);
+        if (!due) return "—";
+        return (
+          <>
+            <span className={cx("block font-bold", due.overdue && "text-danger")}>{due.text}</span>
+            {lead.nextActionSummary && <span className={muted}>{lead.nextActionSummary}</span>}
+          </>
+        );
+      },
     },
     {
       key: "activity",
       header: "Last activity",
-      className: "max-w-[220px]",
-      render: (lead) => <>{lead.lastActivitySummary ?? "No activity"}<span className={muted}>{formatDateTime(lead.lastActivityAt)}</span></>,
+      className: "max-w-[210px]",
+      render: (lead) => lead.lastActivitySummary
+        ? <>{lead.lastActivitySummary}{lead.lastActivityAt && <span className={muted}>{formatWhen(lead.lastActivityAt)}</span>}</>
+        : "—",
     },
-    { key: "next", header: "Next action", className: "max-w-[190px]", render: (lead) => <NextAction lead={lead} /> },
-    !simple && { key: "created", header: "Created", className: "whitespace-nowrap text-label text-ink-muted", render: (lead) => formatDateTime(lead.createdAt) },
+    {
+      key: "created",
+      header: "Created",
+      className: "whitespace-nowrap",
+      render: (lead) => <><span className="block font-bold">{formatMonthDay(lead.createdAt)}</span><span className={muted}>{formatTime(lead.createdAt)}</span></>,
+    },
+    {
+      key: "details",
+      header: <span className="sr-only">Details</span>,
+      align: "right",
+      render: (lead) => <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); openLead(lead); }}>Details</Button>,
+    },
   ];
-  return columns.filter((column): column is DataTableColumn<Lead> => column !== false);
-}
-
-function LeadCard({ lead, simple }: { lead: Lead; simple: boolean }) {
-  return (
-    <ListCard
-      to={`/crm/leads/${lead.id}`}
-      reference={simple ? lead.sourceName : lead.leadReference}
-      badge={<StageBadge lead={lead} simple={simple} />}
-      title={lead.fullName}
-      detail={[lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry", contactOf(lead) ?? "No contact details"].join(" · ")}
-      value={<NextAction lead={lead} />}
-    />
-  );
-}
-
-function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { open: boolean; onClose: () => void; lookups: Lookups; canAssign: boolean; onCreated: (id: number) => void }) {
-  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "" };
-  const [form, setForm] = useState(initial);
-  const formId = useId();
-  const [units, setUnits] = useState<UnitLookup[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [duplicate, setDuplicate] = useState<DuplicateMatch | null>(null);
-  const duplicateResolution = duplicate ? describeDuplicate(duplicate) : null;
-  // Set when the details match several open leads at once, e.g. the phone one and the email another.
-  const [conflict, setConflict] = useState<DuplicateMatch[] | null>(null);
-  const conflictResolution = conflict ? describeConflict(conflict) : null;
-
-  const set = (key: keyof typeof form, value: string) => {
-    setForm((current) => ({ ...current, [key]: value }));
-    // The duplicate choices describe the lead these contact details matched. Once they change,
-    // resubmitting could match nothing and create a lead the "add to" button never promised.
-    if (key === "phone" || key === "whatsappNumber" || key === "email") { setDuplicate(null); setConflict(null); }
-  };
-
-  const assignableStaff = lookups.staff.filter((member) => member.canOwnLeads);
-  const setAssignmentEmployee = (employeeId: string) => set("assignedEmployeeId", employeeId);
-
-  useEffect(() => {
-    const id = Number(form.interestedProjectId);
-    if (!id) { setUnits([]); return; }
-    void loadUnits(id).then(setUnits).catch(() => setUnits([]));
-  }, [form.interestedProjectId]);
-
-  // With addToLeadId, the enquiry may only be added to that lead; the API writes nothing if it no
-  // longer matches, rather than enriching another lead or creating a new one.
-  const submit = async (addToLeadId?: number) => {
-    if (!form.firstName.trim()) { setError("A first name is required."); return; }
-    // Staff capturing a lead by hand have the person in front of them, so require a way to
-    // reach them — but any one channel will do, matching what the API enforces.
-    const hasPhone = form.phone.trim().length >= 7;
-    if (!hasPhone && !form.whatsappNumber.trim() && !form.email.trim()) {
-      setError("Record at least one way to reach this person: a phone number, a WhatsApp number, or an email address.");
-      return;
-    }
-    if (form.phone.trim() && !hasPhone) { setError("That phone number is too short to be usable."); return; }
-    setSaving(true); setError(null); setDuplicate(null); setConflict(null);
-    try {
-      const result = await apiJson<{ isDuplicate: boolean; identityConflict?: boolean; conflictingMatches?: DuplicateMatch[]; message?: string; match?: DuplicateMatch; lead?: Lead }>(
-        "/api/leads",
-        jsonRequest("POST", {
-          ...form,
-          interestedProjectId: form.interestedProjectId ? Number(form.interestedProjectId) : null,
-          interestedUnitId: form.interestedUnitId ? Number(form.interestedUnitId) : null,
-          budgetMin: form.budgetMin ? Number(form.budgetMin) : null,
-          budgetMax: form.budgetMax ? Number(form.budgetMax) : null,
-          assignedEmployeeId: canAssign && form.assignedEmployeeId ? Number(form.assignedEmployeeId) : null,
-          allowDuplicate: addToLeadId != null,
-          expectedExistingLeadId: addToLeadId ?? null,
-        }),
-      );
-      if (result.identityConflict && !result.lead) {
-        setConflict(result.conflictingMatches ?? []);
-        if (addToLeadId != null && result.message) setError(result.message);
-        return;
-      }
-      if (result.isDuplicate && !result.lead) {
-        setDuplicate(result.match ?? {});
-        // Only an add that was refused needs explaining; a first-time match speaks for itself.
-        if (addToLeadId != null && result.message) setError(result.message);
-        return;
-      }
-      if (result.lead) { onCreated(result.lead.id); return; }
-      setError(result.message || "Nothing was saved. Review the details and try again.");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The lead could not be created. Your form values have been preserved.");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="New lead"
-      size="lg"
-      phoneLayout="fullscreen"
-      busy={saving}
-      primaryAction={{ label: saving ? "Checking…" : "Create lead", form: formId, loading: saving }}
-    >
-      <form id={formId} onSubmit={(e) => { e.preventDefault(); void submit(); }} className="flex flex-col gap-6">
-        <p className="m-0 text-small text-ink-muted">Duplicate matching runs before a new prospect is created.</p>
-        {error && <ErrorBanner message={error} />}
-        {conflictResolution && (
-          <div className="rounded-card border border-gold-line bg-gold-soft p-4 text-sm text-warning">
-            <p className="font-semibold">{conflictResolution.heading}</p>
-            <p className="mt-1">{conflictResolution.explanation}</p>
-            <p className="mt-1">{conflictResolution.addOutcome}</p>
-            <ul className="mt-3 space-y-2">
-              {conflictResolution.choices.map((choice) => (
-                <li key={choice.leadId} className="flex flex-wrap items-center gap-2">
-                  <span className="mr-auto">{choice.detail}</span>
-                  <Button size="sm" onClick={() => onCreated(choice.leadId)}>{choice.openLabel}</Button>
-                  <Button size="sm" variant="outline" onClick={() => void submit(choice.leadId)} disabled={saving}>{choice.addLabel}</Button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {duplicateResolution && (
-          <div className="rounded-card border border-gold-line bg-gold-soft p-4 text-sm text-warning">
-            <p className="font-semibold">{duplicateResolution.heading}</p>
-            <p className="mt-1">{duplicateResolution.explanation}</p>
-            {duplicateResolution.addLabel && <p className="mt-1">{duplicateResolution.addOutcome}</p>}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {duplicate?.leadId && <Button size="sm" onClick={() => onCreated(duplicate.leadId!)}>{duplicateResolution.openLabel}</Button>}
-              {duplicateResolution.addLabel && <Button size="sm" variant="outline" onClick={() => void submit(duplicate!.leadId!)} disabled={saving}>{duplicateResolution.addLabel}</Button>}
-            </div>
-          </div>
-        )}
-        <FormSection title="Contact">
-          <TextField label="First name" required value={form.firstName} onChange={(e) => set("firstName", e.target.value)} />
-          <TextField label="Last name" value={form.lastName} onChange={(e) => set("lastName", e.target.value)} />
-          <TextField label="Phone" value={form.phone} onChange={(e) => set("phone", e.target.value)} type="tel" />
-          <TextField label="WhatsApp" value={form.whatsappNumber} onChange={(e) => set("whatsappNumber", e.target.value)} type="tel" />
-          <TextField label="Email" value={form.email} onChange={(e) => set("email", e.target.value)} type="email" />
-          <TextField label="City" value={form.city} onChange={(e) => set("city", e.target.value)} />
-          <TextField label="Address" value={form.address} onChange={(e) => set("address", e.target.value)} className="sm:col-span-2" />
-          <SelectField label="Preferred contact" value={form.preferredContactMethod} onChange={(v) => set("preferredContactMethod", v)} options={["Phone", "Whatsapp", "Email", "Sms", "InPerson"].map((v) => [v, stageLabel(v)])} />
-          <TextField label="Preferred time" value={form.preferredContactTime} onChange={(e) => set("preferredContactTime", e.target.value)} />
-        </FormSection>
-        <FormSection title="Source and attribution">
-          <SelectField label="Lead source" required value={form.sourceCode} onChange={(v) => set("sourceCode", v)} options={lookups.sources.map((v) => [v.code, v.name])} />
-          <TextField label="Source details" value={form.sourceDetails} onChange={(e) => set("sourceDetails", e.target.value)} />
-          <TextField label="Campaign" value={form.campaignName} onChange={(e) => set("campaignName", e.target.value)} />
-        </FormSection>
-        <FormSection title="Property interest">
-          <SelectField label="Project" value={form.interestedProjectId} onChange={(v) => { set("interestedProjectId", v); set("interestedUnitId", ""); }} options={lookups.projects.map((v) => [String(v.id), v.name])} />
-          <SelectField label="Unit" value={form.interestedUnitId} onChange={(v) => set("interestedUnitId", v)} options={units.map((v) => [String(v.id), v.number])} />
-          <TextField label="Property type" value={form.propertyType} onChange={(e) => set("propertyType", e.target.value)} />
-          <TextField label="Preferred location" value={form.preferredLocation} onChange={(e) => set("preferredLocation", e.target.value)} />
-          <NumberField label="Minimum budget" prefix="Rs" value={form.budgetMin} onChange={(v) => set("budgetMin", v)} />
-          <NumberField label="Maximum budget" prefix="Rs" value={form.budgetMax} onChange={(v) => set("budgetMax", v)} />
-          <SelectField label="Purchase intent" value={form.purchaseIntent} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"].map((v) => [v, stageLabel(v)])} />
-          <SelectField label="Payment preference" value={form.paymentPreference} onChange={(v) => set("paymentPreference", v)} options={paymentPreferences.map((v) => [v, stageLabel(v)])} />
-        </FormSection>
-        {canAssign && <FormSection title="Ownership"><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
-        <TextArea label="Initial notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
-      </form>
-    </Modal>
-  );
-}
-
-type Metric = { id: string; label: string; value: number | string; tone?: StatusTone; filter?: { key: string; value: string } };
-
-/**
- * Four figures, one per card, in the shape the design asks for: how many, how many closed each way,
- * and the rate that falls out of the two; admins and managers also get the queue waiting for an owner. A salesperson gets their own leads by the four simple stages;
- * what is due or overdue shows on each lead's Next action instead of as a card of its own.
- */
-function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unknown> | null): Metric[] {
-  const d = dashboard ?? {};
-  const n = (key: string) => Number(d[key] ?? 0);
-  if (isSalesperson) return [
-    { id: "total", label: "Total assigned", value: n("totalAssigned") },
-    { id: "inProgress", label: "In progress", value: n("inProgressLeads"), tone: "blue", filter: { key: "stageGroup", value: "InProgress" } },
-    { id: "won", label: "Won", value: n("conversions"), tone: "green", filter: { key: "stageGroup", value: "Won" } },
-    { id: "lost", label: "Lost", value: n("lostLeads"), tone: "red", filter: { key: "stageGroup", value: "Lost" } },
-  ];
-  return [
-    { id: "total", label: "All leads", value: n("totalLeads") },
-    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), tone: "orange", filter: { key: "unassigned", value: "true" } },
-    { id: "won", label: "Won", value: n("wonLeads"), tone: "green", filter: { key: "stage", value: "Won" } },
-    { id: "lost", label: "Lost", value: n("lostLeads"), tone: "red", filter: { key: "stage", value: "Lost" } },
-    { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
-  ];
-}
-
-function FormSection({ title, children }: { title: string; children: ReactNode }) {
-  return <fieldset className="m-0 border-0 p-0"><legend className="mb-3 p-0 text-body font-extrabold text-ink">{title}</legend><div className="grid gap-4 sm:grid-cols-2">{children}</div></fieldset>;
-}
-function SelectField({ label, value, onChange, options, required }: { label: string; value: string; onChange: (value: string) => void; options: string[][]; required?: boolean }) {
-  return <Dropdown label={label} required={required} value={value} onChange={onChange} placeholder="Select…" options={[{ value: "", label: "Select…" }, ...options.map(([v, l]) => ({ value: v, label: l }))]} />;
+  return columns.filter((column): column is DataTableColumn<LeadListItem> => column !== false);
 }

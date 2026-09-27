@@ -1,4 +1,4 @@
-import { parseServerDateTime } from "../staff/staffAccessState.ts";
+import { parseServerDateTime } from "../../lib/dates.ts";
 import type { LeadAction } from "./LeadActionDialog.tsx";
 import type { Lead } from "./types.ts";
 

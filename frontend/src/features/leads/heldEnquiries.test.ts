@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeHeldEnquiry, heldEnquiriesHeading, type HeldEnquiry } from "./heldEnquiries.ts";
+import { describeHeldEnquiry, heldEnquiriesTitle, type HeldEnquiry } from "./heldEnquiries.ts";
 
 const enquiry = (overrides: Partial<HeldEnquiry> = {}): HeldEnquiry => ({
   id: 7,
@@ -12,8 +12,8 @@ const enquiry = (overrides: Partial<HeldEnquiry> = {}): HeldEnquiry => ({
   email: "b@example.com",
   campaignName: "Summer Launch",
   candidates: [
-    { leadId: 1, leadReference: "LD-000001", leadName: "Person A", leadStage: "New", leadOwnerName: "Sana", matchedOn: "phone", isOpen: true },
-    { leadId: 2, leadReference: "LD-000002", leadName: "Person B", leadStage: "Lost", leadOwnerName: null, matchedOn: "email", isOpen: false },
+    { leadId: 1, leadReference: "LD-000001", leadName: "Person A", leadStage: "New", leadStageGroup: "New", leadOwnerName: "Sana", matchedOn: "phone", isOpen: true },
+    { leadId: 2, leadReference: "LD-000002", leadName: "Person B", leadStage: "Lost", leadStageGroup: "Lost", leadOwnerName: null, matchedOn: "email", isOpen: false },
   ],
   ...overrides,
 });
@@ -23,35 +23,37 @@ describe("describeHeldEnquiry", () => {
     const view = describeHeldEnquiry(enquiry());
 
     expect(view.title).toBe("Who Is This");
-    expect(view.contact).toEqual(["Phone 0300-1234567", "Email b@example.com"]);
-    expect(view.origin).toBe("Facebook · Summer Launch");
+    expect(view.contact).toEqual(["0300-1234567", "b@example.com"]);
+    expect(view.origin).toBe("Facebook");
   });
 
-  it("offers each matched lead with what it matched, adding only to that lead", () => {
-    const [a, b] = describeHeldEnquiry(enquiry()).choices;
+  it("lists a WhatsApp number only when it differs from the phone", () => {
+    expect(describeHeldEnquiry(enquiry({ whatsappNumber: "0300-1234567" })).contact).toEqual(["0300-1234567", "b@example.com"]);
+    expect(describeHeldEnquiry(enquiry({ whatsappNumber: "0311-7654321" })).contact).toEqual(["0300-1234567", "0311-7654321", "b@example.com"]);
+  });
+
+  it("offers each matched lead with its status, owner and what it matched; a closed lead cannot take it", () => {
+    const [a, b] = describeHeldEnquiry(enquiry()).matches;
 
     expect(a).toEqual({
       leadId: 1,
-      title: "LD-000001 · Person A",
-      detail: "Matches this enquiry's phone number · owned by Sana",
-      addLabel: "Add to LD-000001",
-      blockedReason: null,
+      leadName: "Person A",
+      leadReference: "LD-000001",
+      status: "InProgress",
+      ownerName: "Sana",
+      matched: "Same phone",
+      canAdd: true,
     });
-    expect(b.detail).toBe("Matches this enquiry's email address · unassigned");
-    expect(b.blockedReason).toMatch(/closed. Reopen it first/);
+    expect(b).toMatchObject({ status: "Lost", ownerName: "Unassigned", matched: "Same email", canAdd: false });
   });
 
   it("never offers to dismiss an enquiry a website booking request is waiting on", () => {
     expect(describeHeldEnquiry(enquiry()).canDismiss).toBe(true);
-    expect(describeHeldEnquiry(enquiry()).waitingNote).toBeNull();
-
-    const waiting = describeHeldEnquiry(enquiry({ bookingRequestId: 42 }));
-    expect(waiting.canDismiss).toBe(false);
-    expect(waiting.waitingNote).toBe("Website booking request #42 cannot be approved until you choose its lead.");
+    expect(describeHeldEnquiry(enquiry({ bookingRequestId: 42 })).canDismiss).toBe(false);
   });
 
   it("falls back sensibly when details are missing", () => {
-    const view = describeHeldEnquiry(enquiry({ firstName: "", lastName: null, sourceName: null, provider: null, campaignName: null, phone: null, email: null }));
+    const view = describeHeldEnquiry(enquiry({ firstName: "", lastName: null, sourceName: null, provider: null, phone: null, email: null }));
 
     expect(view.title).toBe("Unnamed enquiry");
     expect(view.origin).toBe("External enquiry");
@@ -59,9 +61,10 @@ describe("describeHeldEnquiry", () => {
   });
 });
 
-describe("heldEnquiriesHeading", () => {
-  it("counts what is waiting, and says when more are waiting than are listed", () => {
-    expect(heldEnquiriesHeading({ totalWaiting: 2, items: [enquiry(), enquiry({ id: 8 })] })).toBe("Held enquiries (2)");
-    expect(heldEnquiriesHeading({ totalWaiting: 250, items: [enquiry()] })).toBe("Held enquiries (250, showing the oldest 1)");
+describe("heldEnquiriesTitle", () => {
+  it("counts what is waiting", () => {
+    expect(heldEnquiriesTitle(1)).toBe("1 enquiry needs your decision");
+    expect(heldEnquiriesTitle(2)).toBe("2 enquiries need your decision");
+    expect(heldEnquiriesTitle(1250)).toBe("1,250 enquiries need your decision");
   });
 });

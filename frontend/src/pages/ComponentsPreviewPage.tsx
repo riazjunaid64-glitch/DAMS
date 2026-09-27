@@ -13,14 +13,17 @@ import {
   Dropdown,
   EmptyState,
   FilterBar,
+  IconAlert,
   IconCircle,
   IconFilter,
+  IconInbox,
   IconPlus,
   InfoCard,
   KeyValueGrid,
   ListCard,
   LoadMore,
   Modal,
+  Notice,
   NumberField,
   PageHeader,
   Pagination,
@@ -418,10 +421,20 @@ function EmptyToastPhotosSection() {
   const toast = useToast();
   const [photos, setPhotos] = useState(PHOTOS.slice(0, 3));
   return (
-    <Section n="13" title="Empty state, toast, photos">
+    <Section n="13" title="Empty state, notice, toast, photos">
       <div className="grid gap-5 lg:grid-cols-3">
         <Sample label="Empty state">
           <EmptyState title="Nothing here yet" message="Short dummy helper text" action={<Button variant="outline">Action</Button>} />
+        </Sample>
+        <Sample label="Notice · gold with action (button drops below on phone)" className="lg:col-span-2">
+          <Notice
+            tone="gold"
+            icon={<IconInbox size={18} />}
+            title="3 items waiting"
+            message="Short dummy helper text"
+            action={<Button variant="outline" size="sm">Review</Button>}
+          />
+          <Notice tone="red" icon={<IconAlert size={18} />} title="Something needs fixing" message="Short dummy helper text" />
         </Sample>
         <Sample label="Toast · success / error">
           <div className="flex flex-wrap gap-2">
