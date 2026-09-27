@@ -1397,13 +1397,13 @@ namespace DAMS.Application.Services
             // day, not to the UTC day before it.
             if (filter.CreatedFrom.HasValue)
             {
-                var from = PakistanTime.StartOfBusinessDateUtc(filter.CreatedFrom.Value);
+                var from = PakistanTime.StartOfBusinessDateUtc(PakistanDay(filter.CreatedFrom.Value));
                 query = query.Where(l => l.CreatedAt >= from);
             }
 
             if (filter.CreatedTo.HasValue)
             {
-                var to = PakistanTime.StartOfBusinessDateUtc(filter.CreatedTo.Value.AddDays(1));
+                var to = PakistanTime.StartOfBusinessDateUtc(PakistanDay(filter.CreatedTo.Value).AddDays(1));
                 query = query.Where(l => l.CreatedAt < to);
             }
 
@@ -1425,6 +1425,14 @@ namespace DAMS.Application.Services
 
             return query;
         }
+
+        /// <summary>
+        /// The Pakistan day a From or To value names. A plain date ("2026-09-27") is that day; a
+        /// value sent with a zone, such as a browser's toISOString() of Pakistan midnight
+        /// ("2026-09-26T19:00:00Z"), is the Pakistan day that instant falls on.
+        /// </summary>
+        private static DateTime PakistanDay(DateTime value) =>
+            value.Kind == DateTimeKind.Unspecified ? value.Date : PakistanTime.ToBusinessDate(value);
 
         public async Task<List<LeadActivityDto>> GetTimelineAsync(
             int leadId, LeadUserContext ctx, int? take = null, int? before = null, CancellationToken cancellationToken = default)
@@ -2981,7 +2989,7 @@ namespace DAMS.Application.Services
 
         private async Task<LeadResponseDto?> LoadResponseAsync(int id, CancellationToken cancellationToken)
         {
-            // Writes hand back the same light lead the list uses. The page header — tab
+            // Writes hand back the whole lead without the page header. The page header — tab
             // counts, last contact, who converted or closed it — is loaded only by
             // GET /api/leads/{id}. The tracker is left alone: callers such as the website
             // booking-request flow still hold entities of their own that have not been saved yet.

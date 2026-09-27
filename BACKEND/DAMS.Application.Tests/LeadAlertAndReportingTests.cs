@@ -1324,10 +1324,13 @@ public sealed class LeadAlertAndReportingTests
             (await h.Leads.GetLeadsAsync(new LeadFilterDto { CreatedFrom = from, CreatedTo = to }, h.Admin))
                 .Items.Select(l => l.Id).OrderBy(id => id).ToArray();
 
-        // As a date box sends the day ("2026-09-27"), and as a browser's toISOString() does.
+        // As a date box sends the day ("2026-09-27"), and as toISOString() sends it from a date
+        // picked as UTC midnight or as Pakistan midnight (19:00 UTC the day before).
         var utcMidnight = DateTime.SpecifyKind(day, DateTimeKind.Utc);
+        var pakistanMidnight = PakistanTime.StartOfBusinessDateUtc(day);
         Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(day, day));
         Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(utcMidnight, utcMidnight));
+        Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(pakistanMidnight, pakistanMidnight));
         Assert.Equal(new[] { dayBefore }, await Created(day.AddDays(-1), day.AddDays(-1)));
         Assert.Equal(new[] { dayAfter }, await Created(day.AddDays(1), day.AddDays(1)));
         Assert.Equal(2, (await h.Leads.GetSummaryAsync(new LeadFilterDto { CreatedFrom = day, CreatedTo = day }, h.Admin)).Total);
