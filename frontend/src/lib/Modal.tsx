@@ -1,5 +1,5 @@
-import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
+import { Overlay } from "../components/ui";
 
 interface Props {
   open: boolean;
@@ -8,22 +8,15 @@ interface Props {
   align?: "center" | "top";
 }
 
+/**
+ * Backdrop-only popup for existing screens that draw their own panel as `children`. It shares the
+ * shared Overlay (Esc, backdrop, scroll lock, focus kept inside); new screens use Modal from
+ * components/ui, which draws the panel too.
+ */
 export default function Modal({ open, onClose, children, align = "center" }: Props) {
-  if (!open) return null;
-
-  return createPortal(
-    <div
-      className={`fixed inset-0 z-[100] flex p-4 ${
-        align === "top" ? "items-start justify-center overflow-y-auto" : "items-center justify-center"
-      }`}
-    >
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-fade-in"
-        onClick={onClose}
-        aria-hidden
-      />
+  return (
+    <Overlay open={open} onClose={onClose} placement={align}>
       {children}
-    </div>,
-    document.body,
+    </Overlay>
   );
 }
