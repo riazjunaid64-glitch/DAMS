@@ -899,7 +899,6 @@ public sealed class LeadAlertAndReportingTests
 
         Assert.Contains(dashboard.LossReasons, r => r.ReasonName == "Budget issue" && r.Count == 1);
         Assert.Contains(dashboard.ByEmployee, e => e.EmployeeId == h.SalesEmployeeId && e.WonLeads == 1);
-        Assert.Contains(dashboard.ByTeam, t => t.TeamId == h.TeamId && t.WonLeads == 1);
     }
 
     [Fact]

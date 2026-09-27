@@ -44,7 +44,7 @@ namespace DAMS.Application.Services
             if (dto.JoinDate.Year < 1900)
                 throw new Exception("Join date is not valid.");
 
-            await EnsureLinkableAsync(dto.UserId, dto.TeamId, employeeId: null);
+            await EnsureLinkableAsync(dto.UserId, employeeId: null);
 
             var employee = new Employee
             {
@@ -57,8 +57,7 @@ namespace DAMS.Application.Services
                 Salary     = dto.Salary,
                 JoinDate   = dto.JoinDate,
                 Status     = dto.Status,
-                UserId     = dto.UserId,
-                TeamId     = dto.TeamId
+                UserId     = dto.UserId
             };
 
             _context.Employees.Add(employee);
@@ -102,15 +101,13 @@ namespace DAMS.Application.Services
             if (dto.Status     != null) employee.Status     = dto.Status.Value;
 
             // -1 is the explicit "unlink" signal; null simply means "leave as it is".
-            if (dto.UserId != null || dto.TeamId != null)
+            if (dto.UserId != null)
             {
-                var newUserId = dto.UserId == null ? employee.UserId : dto.UserId == -1 ? null : dto.UserId;
-                var newTeamId = dto.TeamId == null ? employee.TeamId : dto.TeamId == -1 ? null : dto.TeamId;
+                var newUserId = dto.UserId == -1 ? null : dto.UserId;
 
-                await EnsureLinkableAsync(newUserId, newTeamId, employee.Id);
+                await EnsureLinkableAsync(newUserId, employee.Id);
 
                 employee.UserId = newUserId;
-                employee.TeamId = newTeamId;
             }
 
             employee.UpdatedAt = DateTime.UtcNow;
@@ -808,17 +805,16 @@ namespace DAMS.Application.Services
             JoinDate   = e.JoinDate,
             Status     = e.Status,
             UserId     = e.UserId,
-            TeamId     = e.TeamId,
             CreatedAt  = e.CreatedAt,
             UpdatedAt  = e.UpdatedAt
         };
 
         /// <summary>
-        /// Validates the login and team an employee is being attached to. One login maps to
+        /// Validates the login an employee is being attached to. One login maps to
         /// at most one employee, so a mistyped id cannot silently give someone else's
         /// account access to a colleague's leads.
         /// </summary>
-        private async Task EnsureLinkableAsync(int? userId, int? teamId, int? employeeId)
+        private async Task EnsureLinkableAsync(int? userId, int? employeeId)
         {
             if (userId.HasValue)
             {
@@ -831,9 +827,6 @@ namespace DAMS.Application.Services
                 if (taken)
                     throw new Exception("That login account is already linked to another employee.");
             }
-
-            if (teamId.HasValue && !await _context.Teams.AnyAsync(t => t.Id == teamId.Value))
-                throw new Exception("The selected team does not exist.");
         }
 
         private static AttendanceResponseDto MapAttendance(EmployeeAttendance a) => new()

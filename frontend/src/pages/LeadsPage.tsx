@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
+import { can } from "../features/access/permissions.ts";
 import {
   Button,
   DataTable,
@@ -46,7 +47,6 @@ import {
   type LeadSource,
   type ProjectLookup,
   type StaffMember,
-  type Team,
   type UnitLookup,
 } from "../features/leads/types.ts";
 
@@ -54,15 +54,14 @@ type Props = { user: User | null };
 type Lookups = {
   sources: LeadSource[];
   reasons: ClosureReason[];
-  teams: Team[];
   staff: StaffMember[];
   projects: ProjectLookup[];
 };
 
-const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], teams: [], staff: [], projects: [] };
+const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], staff: [], projects: [] };
 
 /** Every URL filter the list honours; Reset clears all of them (sorting stays). */
-const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
+const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
 
 export default function LeadsPage({ user }: Props) {
   return <CrmAccess user={user}>{user && <LeadsWorkspace user={user} />}</CrmAccess>;
@@ -263,7 +262,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         lookups={lookups}
-        canAssign={user.role === "Admin" || user.role === "Manager"}
+        canAssign={can(user.role, "crm.manage")}
         onCreated={(leadId) => navigate(`/crm/leads/${leadId}`)}
       />
     </div>
@@ -301,7 +300,7 @@ function NextAction({ lead }: { lead: Lead }) {
 
 /**
  * A salesperson's table (simple) carries only what decides their next move: who, from where, for
- * what, how far along, and what happened last and comes next. Qualification, owner and team are the
+ * what, how far along, and what happened last and comes next. Qualification and owner are the
  * admin and manager's concern and stay on their table and on the lead itself.
  */
 function leadColumns(simple: boolean): DataTableColumn<Lead>[] {
@@ -344,8 +343,8 @@ function leadColumns(simple: boolean): DataTableColumn<Lead>[] {
     },
     !simple && {
       key: "owner",
-      header: "Owner / Team",
-      render: (lead) => <>{lead.assignedEmployeeName ?? "Unassigned"}<span className={muted}>{lead.assignedTeamName ?? "No team"}</span></>,
+      header: "Owner",
+      render: (lead) => lead.assignedEmployeeName ?? "Unassigned",
     },
     {
       key: "activity",
@@ -373,7 +372,7 @@ function LeadCard({ lead, simple }: { lead: Lead; simple: boolean }) {
 }
 
 function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { open: boolean; onClose: () => void; lookups: Lookups; canAssign: boolean; onCreated: (id: number) => void }) {
-  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "", assignedTeamId: "" };
+  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "" };
   const [form, setForm] = useState(initial);
   const formId = useId();
   const [units, setUnits] = useState<UnitLookup[]>([]);
@@ -392,20 +391,8 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     if (key === "phone" || key === "whatsappNumber" || key === "email") { setDuplicate(null); setConflict(null); }
   };
 
-  const assignableStaff = lookups.staff.filter((member) =>
-    member.canOwnLeads && (!form.assignedTeamId || member.teamId === Number(form.assignedTeamId)));
-  const setAssignmentTeam = (teamId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(current.assignedEmployeeId));
-    return {
-      ...current,
-      assignedTeamId: teamId,
-      assignedEmployeeId: employee && teamId && employee.teamId !== Number(teamId) ? "" : current.assignedEmployeeId,
-    };
-  });
-  const setAssignmentEmployee = (employeeId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(employeeId));
-    return { ...current, assignedEmployeeId: employeeId, assignedTeamId: employee?.teamId?.toString() ?? current.assignedTeamId };
-  });
+  const assignableStaff = lookups.staff.filter((member) => member.canOwnLeads);
+  const setAssignmentEmployee = (employeeId: string) => set("assignedEmployeeId", employeeId);
 
   useEffect(() => {
     const id = Number(form.interestedProjectId);
@@ -436,7 +423,6 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           budgetMin: form.budgetMin ? Number(form.budgetMin) : null,
           budgetMax: form.budgetMax ? Number(form.budgetMax) : null,
           assignedEmployeeId: canAssign && form.assignedEmployeeId ? Number(form.assignedEmployeeId) : null,
-          assignedTeamId: canAssign && form.assignedTeamId ? Number(form.assignedTeamId) : null,
           allowDuplicate: addToLeadId != null,
           expectedExistingLeadId: addToLeadId ?? null,
         }),
@@ -525,7 +511,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           <SelectField label="Purchase intent" value={form.purchaseIntent} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"].map((v) => [v, stageLabel(v)])} />
           <SelectField label="Payment preference" value={form.paymentPreference} onChange={(v) => set("paymentPreference", v)} options={paymentPreferences.map((v) => [v, stageLabel(v)])} />
         </FormSection>
-        {canAssign && <FormSection title="Ownership"><SelectField label="Team" value={form.assignedTeamId} onChange={setAssignmentTeam} options={lookups.teams.filter((v) => v.isActive).map((v) => [String(v.id), v.name])} /><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
+        {canAssign && <FormSection title="Ownership"><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
         <TextArea label="Initial notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
       </form>
     </Modal>

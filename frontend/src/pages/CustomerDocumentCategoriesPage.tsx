@@ -1,6 +1,7 @@
 import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { User } from "../App.tsx";
+import { can } from "../features/access/permissions.ts";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Modal from "../lib/Modal.tsx";
@@ -25,9 +26,9 @@ export default function CustomerDocumentCategoriesPage({ user }: Props) {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Document categories could not be loaded."); }
     finally { setLoading(false); }
   }, []);
-  useEffect(() => { if (user?.role === "Admin") void load(); }, [load, user]);
+  useEffect(() => { if (can(user?.role, "documents")) void load(); }, [load, user]);
 
-  if (user?.role !== "Admin") return <Container className="py-16 text-center text-[var(--text-muted)]">Admin access required.</Container>;
+  if (!can(user?.role, "documents")) return <Container className="py-16 text-center text-[var(--text-muted)]">You do not have access to document setup.</Container>;
 
   const remove = async (category: DocumentCategory) => {
     if (!window.confirm(`Delete unused category “${category.name}”? This cannot be undone.`)) return;

@@ -115,14 +115,11 @@ public class MetaUnassignedLeadNotificationTests
     }
 
     [Fact]
-    public async Task ARepeatEnquiryOnALeadParkedOnATeam_AlertsThatTeamsManager()
+    public async Task ARepeatEnquiryOnAnUnassignedLead_AlertsSupervisors()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
         var (_, page) = await h.ConnectPageAsync();
         var lead = await ReceiveAsync(h, page.ExternalId, "lead-1");
-
-        // Handed to a team, but no salesperson yet: there is still no owner to tell.
-        await h.Leads.Leads.AssignAsync(lead.Id, new AssignLeadDto { TeamId = h.Leads.TeamId }, h.Leads.Admin);
 
         await ReceiveAsync(h, page.ExternalId, "lead-2");
 

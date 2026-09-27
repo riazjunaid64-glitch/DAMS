@@ -215,8 +215,6 @@ namespace DAMS.Application.DTOs.NotificationDtos
 
         public List<int> UserIds { get; set; } = new();
 
-        public int? TeamId { get; set; }
-
         public int? ProjectId { get; set; }
 
         public List<int> BookingIds { get; set; } = new();

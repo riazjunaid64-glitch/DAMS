@@ -80,10 +80,6 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? AssignedEmployeeName { get; set; }
 
-        public int? AssignedTeamId { get; set; }
-
-        public string? AssignedTeamName { get; set; }
-
         public LeadAssignmentState AssignmentState { get; set; }
 
         public DateTime? AssignedAt { get; set; }
@@ -164,8 +160,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int? LeadSourceId { get; set; }
 
         public int? AssignedEmployeeId { get; set; }
-
-        public int? AssignedTeamId { get; set; }
 
         public int? ProjectId { get; set; }
 

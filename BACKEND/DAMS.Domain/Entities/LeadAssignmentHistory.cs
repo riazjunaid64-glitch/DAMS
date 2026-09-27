@@ -9,11 +9,7 @@ namespace DAMS.Domain.Entities
 
         public int? PreviousEmployeeId { get; set; }
 
-        public int? PreviousTeamId { get; set; }
-
         public int? AssignedEmployeeId { get; set; }
-
-        public int? AssignedTeamId { get; set; }
 
         public string? Reason { get; set; }
 

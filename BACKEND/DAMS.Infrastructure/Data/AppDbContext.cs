@@ -77,7 +77,6 @@ namespace DAMS.Infrastructure.Data
         public DbSet<RebateCreditAllocation> RebateCreditAllocations { get; set; }
         public DbSet<FinancialEvidence> FinancialEvidence { get; set; }
         public DbSet<FinancialWorkflowAuditEntry> FinancialWorkflowAuditEntries { get; set; }
-        public DbSet<Team> Teams { get; set; }
         public DbSet<LeadSource> LeadSources { get; set; }
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
         public DbSet<Lead> Leads { get; set; }
@@ -124,7 +123,9 @@ namespace DAMS.Infrastructure.Data
                 // Lead management introduces internal staff logins. Manager and Employee are
                 // the two sales roles the lead workflow authorises against.
                 new Role { RoleId = 3, Role_name = "Manager" },
-                new Role { RoleId = 4, Role_name = "Employee" }
+                new Role { RoleId = 4, Role_name = "Employee" },
+                // Works bookings, finance, projects and customers. Has no Lead CRM access.
+                new Role { RoleId = 5, Role_name = "Accountant" }
             );
 
             modelBuilder.Entity<User>(entity =>
@@ -707,28 +708,11 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(e => e.UserId)
                       .IsUnique()
                       .HasFilter("[UserId] IS NOT NULL");
-                entity.HasIndex(e => e.TeamId);
 
                 entity.HasOne(e => e.User)
                       .WithMany()
                       .HasForeignKey(e => e.UserId)
                       .OnDelete(DeleteBehavior.SetNull);
-
-                entity.HasOne(e => e.Team)
-                      .WithMany(t => t.Members)
-                      .HasForeignKey(e => e.TeamId)
-                      .OnDelete(DeleteBehavior.SetNull);
-            });
-
-            modelBuilder.Entity<Team>(entity =>
-            {
-                entity.Property(t => t.Name).IsRequired().HasMaxLength(150);
-                entity.HasIndex(t => t.Name).IsUnique();
-
-                entity.HasOne(t => t.ManagerEmployee)
-                      .WithMany()
-                      .HasForeignKey(t => t.ManagerEmployeeId)
-                      .OnDelete(DeleteBehavior.NoAction);
             });
 
             modelBuilder.Entity<EmployeeAttendance>(entity =>
@@ -2035,7 +2019,6 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(l => l.Stage);
                 entity.HasIndex(l => l.CreatedAt);
                 entity.HasIndex(l => new { l.AssignedEmployeeId, l.Stage });
-                entity.HasIndex(l => new { l.AssignedTeamId, l.Stage });
                 entity.HasIndex(l => new { l.Stage, l.CreatedAt });
                 entity.HasIndex(l => l.NextActionAt);
                 entity.HasIndex(l => l.LastActivityAt);
@@ -2062,10 +2045,6 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(l => l.AssignedEmployeeId)
                       .OnDelete(DeleteBehavior.Restrict);
-                entity.HasOne(l => l.AssignedTeam)
-                      .WithMany()
-                      .HasForeignKey(l => l.AssignedTeamId)
-                      .OnDelete(DeleteBehavior.SetNull);
                 entity.HasOne(l => l.InterestedProject)
                       .WithMany()
                       .HasForeignKey(l => l.InterestedProjectId)

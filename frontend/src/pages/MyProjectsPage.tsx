@@ -5,6 +5,7 @@ import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
 import { formatPkr } from "../utils/currency.ts";
+import { homePathFor } from "../features/access/permissions.ts";
 
 type Props = { user: User | null };
 
@@ -462,13 +463,13 @@ export default function MyProjectsPage({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const isClient = user && user.role !== "Admin";
+  const isClient = user?.role === "Client";
 
   useEffect(() => {
-    if (user?.role === "Admin") {
-      navigate("/", { replace: true });
+    if (user && !isClient) {
+      navigate(homePathFor(user.role), { replace: true });
     }
-  }, [user, navigate]);
+  }, [user, isClient, navigate]);
 
   useEffect(() => {
     if (!isClient) return;
@@ -521,7 +522,7 @@ export default function MyProjectsPage({ user }: Props) {
     load();
   }, [isClient, reloadKey]);
 
-  if (user?.role === "Admin") return null;
+  if (user && !isClient) return null;
 
   if (!user) {
     return (

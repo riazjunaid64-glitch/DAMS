@@ -14,7 +14,7 @@ import {
 } from "../components/ui";
 import NotificationBell from "../features/notifications/NotificationBell.tsx";
 import { SITE_CONTACT } from "../lib/siteContact.ts";
-import { homePathFor, isSalesRole } from "./navigation.tsx";
+import { can, homePathFor, isSalesRole, roleLabel } from "../features/access/permissions.ts";
 
 interface AppLayoutProps {
   user: User | null;
@@ -24,7 +24,11 @@ interface AppLayoutProps {
   onLogout: () => void;
 }
 
-const ROLE_LABELS: Record<string, string> = { Manager: "Sales manager", Employee: "Sales employee" };
+const ROLE_LABELS: Record<string, string> = {
+  Manager: roleLabel("Manager"),
+  Employee: roleLabel("Employee"),
+  Accountant: roleLabel("Accountant"),
+};
 
 /**
  * The app shell: white sidebar and top bar on desktop; top bar and bottom nav on phone. The menu
@@ -36,7 +40,7 @@ export default function AppLayout({ user, navGroups, displayName, setModal, onLo
   const section = activeNavItem(navGroups, pathname);
   const group = section && navGroups.find((g) => g.items.includes(section));
   const innerPage = section != null && pathname !== section.to;
-  const staff = user != null && (user.role === "Admin" || isSalesRole(user.role));
+  const staff = user != null && (can(user.role, "finance") || can(user.role, "crm") || isSalesRole(user.role));
 
   const crumbs: Crumb[] = [
     ...(group?.label ? [{ label: group.label }] : []),

@@ -1,3 +1,4 @@
+import { can } from "../../features/access/permissions.ts";
 import AppSelect from "../../lib/AppSelect.tsx";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -44,7 +45,7 @@ const unitStatusColors: Record<string, string> = {
 
 export default function UnitOverviewTab({ unit, project, user, onUnitUpdate, coverImage }: Props) {
   const navigate = useNavigate();
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "projects.write");
   const [showEditForm, setShowEditForm] = useState(false);
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [unitError, setUnitError] = useState<string | null>(null);

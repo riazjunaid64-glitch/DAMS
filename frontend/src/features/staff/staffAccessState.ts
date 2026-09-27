@@ -207,7 +207,6 @@ export interface StaffAccountForm {
   fullName: string;
   email: string;
   role: string;
-  teamId: string;
   jobTitle: string;
   department: string;
   phone: string;
@@ -223,7 +222,6 @@ export function newProvisionForm(employee: StaffAccount | null): StaffAccountFor
     fullName: employee?.fullName ?? "",
     email: employee?.email ?? "",
     role: "Employee",
-    teamId: employee?.teamId?.toString() ?? "",
     jobTitle: employee?.jobTitle ?? "Sales Executive",
     department: employee?.department ?? "Sales",
     phone: employee?.phone ?? "",
@@ -310,7 +308,6 @@ export function buildProvisionPayload(form: StaffAccountForm, locked: StaffAccou
     fullName: form.fullName.trim(),
     email: form.email.trim(),
     role: form.role,
-    teamId: toId(form.teamId),
   };
 
   if (usesExistingEmployee(form, locked)) return base;
@@ -324,14 +321,10 @@ export function buildProvisionPayload(form: StaffAccountForm, locked: StaffAccou
   };
 }
 
-/**
- * Role, team and employment status are the only things this endpoint changes. `-1` is how it
- * has always been told to remove team membership.
- */
+/** Role and employment status are the only things this endpoint changes. */
 export function buildUpdatePayload(form: StaffAccountForm) {
   return {
     role: form.role,
-    teamId: form.teamId ? Number(form.teamId) : -1,
     status: form.status,
   };
 }

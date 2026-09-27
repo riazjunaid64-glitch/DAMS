@@ -95,30 +95,4 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int DisplayOrder { get; set; }
     }
-
-    public class TeamDto
-    {
-        public int Id { get; set; }
-
-        public string Name { get; set; } = string.Empty;
-
-        public int? ManagerEmployeeId { get; set; }
-
-        public string? ManagerName { get; set; }
-
-        public bool IsActive { get; set; }
-
-        public int MemberCount { get; set; }
-    }
-
-    public class SaveTeamDto
-    {
-        [Required]
-        [StringLength(150, MinimumLength = 2)]
-        public string Name { get; set; } = string.Empty;
-
-        public int? ManagerEmployeeId { get; set; }
-
-        public bool IsActive { get; set; } = true;
-    }
 }

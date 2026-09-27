@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -9,7 +10,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/finance/opening-balances")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public sealed class OpeningBalancesController : ControllerBase
     {
         private readonly IOpeningBalanceService _service;

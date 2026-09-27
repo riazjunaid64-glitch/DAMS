@@ -1,3 +1,4 @@
+import { can } from "../../features/access/permissions.ts";
 import { useState } from "react";
 import type { User } from "../../App.tsx";
 import type { ProjectMedia, UploadMediaDto } from "../../types/media.ts";
@@ -15,7 +16,7 @@ interface Props {
 }
 
 export default function ProjectMediaTab({ projectId, media, onMediaChange, user, loading }: Props) {
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "projects.write");
   const [showUpload, setShowUpload] = useState(false);
   const [uploading, setUploading] = useState(false);
 

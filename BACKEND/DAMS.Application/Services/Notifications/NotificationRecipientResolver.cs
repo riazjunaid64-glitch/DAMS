@@ -29,7 +29,7 @@ namespace DAMS.Application.Services.Notifications
                 NotificationAudienceType.AllSalesEmployees => await StaffAsync(LeadRoles.Employee, cancellationToken),
                 NotificationAudienceType.AllManagers => await StaffAsync(LeadRoles.Manager, cancellationToken),
                 NotificationAudienceType.AllInternalStaff => await InternalStaffAsync(cancellationToken),
-                NotificationAudienceType.Team => await TeamAsync(selection.TeamId, cancellationToken),
+                NotificationAudienceType.Team => await SupervisorsAsync(cancellationToken),
                 NotificationAudienceType.CustomersInProject => await CustomersInProjectAsync(selection.ProjectId, cancellationToken),
                 NotificationAudienceType.CustomersOfBookings => await CustomersOfBookingsAsync(selection.BookingIds, cancellationToken),
                 NotificationAudienceType.CustomersWithOverdueInstallments => await OverdueCustomersAsync(cancellationToken),
@@ -81,7 +81,7 @@ namespace DAMS.Application.Services.Notifications
             NotificationAudienceType.AllSalesEmployees => "All sales employees",
             NotificationAudienceType.AllManagers => "All managers",
             NotificationAudienceType.AllInternalStaff => "All internal staff",
-            NotificationAudienceType.Team => "One team",
+            NotificationAudienceType.Team => "Admins and sales managers",
             NotificationAudienceType.CustomersInProject => "Customers connected to a project",
             NotificationAudienceType.CustomersOfBookings => $"Customers of {selection.BookingIds.Count} booking(s)",
             NotificationAudienceType.CustomersWithOverdueInstallments => "Customers with overdue installments",
@@ -140,24 +140,20 @@ namespace DAMS.Application.Services.Notifications
             return employees.Concat(admins).ToList();
         }
 
-        private async Task<List<int>> TeamAsync(int? teamId, CancellationToken cancellationToken)
+        /// <summary>
+        /// Stored jobs that used to name a sales team now go to the people who supervise
+        /// leads: every admin, and every sales manager with an active employee record.
+        /// </summary>
+        private async Task<List<int>> SupervisorsAsync(CancellationToken cancellationToken)
         {
-            if (teamId is null or <= 0)
-                return new List<int>();
-
-            var members = await _context.Employees
+            var managers = await StaffAsync(LeadRoles.Manager, cancellationToken);
+            var admins = await _context.Users
                 .AsNoTracking()
-                .Where(e => e.TeamId == teamId && e.UserId != null && e.Status == EmployeeStatus.Active)
-                .Select(e => e.UserId!.Value)
+                .Where(u => u.Role.Role_name == LeadRoles.Admin && u.AccountStatus == UserAccountStatus.Active)
+                .Select(u => u.UserId)
                 .ToListAsync(cancellationToken);
 
-            var manager = await _context.Teams
-                .AsNoTracking()
-                .Where(t => t.Id == teamId && t.ManagerEmployee != null && t.ManagerEmployee.UserId != null)
-                .Select(t => t.ManagerEmployee!.UserId!.Value)
-                .ToListAsync(cancellationToken);
-
-            return members.Concat(manager).ToList();
+            return managers.Concat(admins).ToList();
         }
 
         private async Task<List<int>> CustomersInProjectAsync(int? projectId, CancellationToken cancellationToken)

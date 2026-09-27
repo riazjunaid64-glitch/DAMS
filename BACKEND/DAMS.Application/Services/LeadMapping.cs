@@ -53,8 +53,6 @@ namespace DAMS.Application.Services
                 Notes = l.Notes,
                 AssignedEmployeeId = l.AssignedEmployeeId,
                 AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
-                AssignedTeamId = l.AssignedTeamId,
-                AssignedTeamName = l.AssignedTeam != null ? l.AssignedTeam.Name : null,
                 AssignmentState = l.AssignmentState,
                 AssignedAt = l.AssignedAt,
                 Stage = l.Stage,

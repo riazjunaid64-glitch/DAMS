@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Api.Filters;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -11,7 +12,7 @@ namespace DAMS.Api.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class FinanceController : ControllerBase
     {
         private readonly IFinanceService _financeService;

@@ -231,7 +231,7 @@ describe("request payloads", () => {
     // Creating the employment record too: the HR fields are the request's own to send.
     expect(Object.keys(buildProvisionPayload(newProvisionForm(null))).sort()).toEqual([
       "department", "email", "existingEmployeeId", "existingUserId", "fullName",
-      "joinDate", "jobTitle", "phone", "role", "teamId",
+      "joinDate", "jobTitle", "phone", "role",
     ].sort());
   });
 
@@ -239,7 +239,7 @@ describe("request payloads", () => {
     // Same guard, other branch: still a named whitelist, and still nothing extra. The HR
     // fields are gone because the service ignores them for an existing employee.
     expect(Object.keys(buildProvisionPayload(form)).sort()).toEqual([
-      "email", "existingEmployeeId", "existingUserId", "fullName", "role", "teamId",
+      "email", "existingEmployeeId", "existingUserId", "fullName", "role",
     ].sort());
   });
 
@@ -253,18 +253,12 @@ describe("request payloads", () => {
     const payload = buildProvisionPayload(newProvisionForm(null));
     expect(payload.existingEmployeeId).toBeNull();
     expect(payload.existingUserId).toBeNull();
-    expect(payload.teamId).toBeNull();
   });
 
-  it("sends only role, team and employment status on update, with no password", () => {
-    const payload = buildUpdatePayload(newManageForm(account({ role: "Manager", teamId: 3, status: "OnLeave" })));
-    expect(payload).toEqual({ role: "Manager", teamId: 3, status: "OnLeave" });
+  it("sends only role and employment status on update, with no password", () => {
+    const payload = buildUpdatePayload(newManageForm(account({ role: "Manager", status: "OnLeave" })));
+    expect(payload).toEqual({ role: "Manager", status: "OnLeave" });
     expect(JSON.stringify(payload).toLowerCase()).not.toContain("password");
-  });
-
-  it("keeps the established way of clearing a team", () => {
-    const payload = buildUpdatePayload(newManageForm(account({ teamId: null })));
-    expect(payload.teamId).toBe(-1);
   });
 });
 

@@ -20,7 +20,7 @@ export function initialForm(action: LeadAction, lead: Lead): Record<string, stri
     case "edit": return {
       firstName: lead.firstName, lastName: lead.lastName ?? "", phone: lead.phone ?? "", whatsappNumber: lead.whatsappNumber ?? "", email: lead.email ?? "", address: lead.address ?? "", city: lead.city ?? "", preferredContactMethod: lead.preferredContactMethod, preferredContactTime: lead.preferredContactTime ?? "", sourceDetails: lead.sourceDetails ?? "", campaignName: lead.campaignName ?? "", campaignReference: lead.campaignReference ?? "", adReference: lead.adReference ?? "", interestedProjectId: lead.interestedProjectId?.toString() ?? "", interestedUnitId: lead.interestedUnitId?.toString() ?? "", propertyType: lead.propertyType ?? "", preferredLocation: lead.preferredLocation ?? "", budgetMin: lead.budgetMin?.toString() ?? "", budgetMax: lead.budgetMax?.toString() ?? "", purchaseIntent: lead.purchaseIntent, paymentPreference: lead.paymentPreference, notes: lead.notes ?? "",
     };
-    case "assign": return { employeeId: lead.assignedEmployeeId?.toString() ?? "", teamId: lead.assignedTeamId?.toString() ?? "", reason: "" };
+    case "assign": return { employeeId: lead.assignedEmployeeId?.toString() ?? "", reason: "" };
     case "stage": return { stage: "", notes: "" };
     case "qualification": return { qualification: lead.qualification, notes: "" };
     case "communication": return { channel: "Phone", direction: "Outbound", occurredAt: toLocalInput(new Date()), connected: true, summary: "", customerResponse: "", nextAction: "", nextActionAt: "" };

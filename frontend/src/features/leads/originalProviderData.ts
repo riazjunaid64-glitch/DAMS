@@ -1,10 +1,13 @@
+import { can } from "../access/permissions.ts";
+
 /**
  * The original provider payload holds the enquirer's personal details and every answer
  * verbatim, so only the roles the API serves it to are offered it at all. Only Meta stores an
  * original response and webhook event; for any other channel there is nothing to show.
  */
+
 export function canViewOriginalProviderData(role: string | null | undefined, provider: string) {
-  return (role === "Admin" || role === "Manager") && provider === "meta";
+  return can(role, "crm.manage") && provider === "meta";
 }
 
 // A bare number too long to survive JSON.parse exactly. Meta sends its ids as strings, but one

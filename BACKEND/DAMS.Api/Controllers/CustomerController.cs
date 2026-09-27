@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
@@ -9,7 +10,7 @@ namespace DAMS.Api.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class CustomerController : ControllerBase
     {
         private readonly ICustomerService _customerService;

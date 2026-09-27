@@ -13,7 +13,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/finance/commissions-rebates")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public sealed class CommissionRebatesController : ControllerBase
     {
         private readonly ICommissionRebateService _service;

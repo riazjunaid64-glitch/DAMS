@@ -7,6 +7,7 @@ import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
 import { detachPushOnLogout } from "./features/notifications/push.ts";
 import { ToastProvider } from "./components/ui";
 import AppLayout from "./layouts/AppLayout.tsx";
+import { can } from "./features/access/permissions.ts";
 import { homePathFor, navigationFor } from "./layouts/navigation.tsx";
 
 const AboutPage = lazy(() => import("./pages/AboutPage.tsx"));
@@ -155,7 +156,7 @@ function App() {
               />
             }
           >
-            {/* Sales staff start in the Lead CRM; everyone else on the home page. */}
+            {/* Sales staff start in the Lead CRM. Accountants start on bookings. */}
             <Route path="/" element={home === "/" ? <HomePage /> : <Navigate to={home} replace />} />
             <Route path="/landing" element={<LandingPage />} />
             <Route path="/projects" element={<ProjectsPage user={user} />} />
@@ -196,7 +197,7 @@ function App() {
             <Route path="/notifications" element={<NotificationsPage user={user} />} />
             <Route path="/notifications/settings" element={<NotificationAdminPage user={user} />} />
             {/* Internal preview of the shared components: dev builds, or admins in production. */}
-            {(import.meta.env.DEV || user?.role === "Admin") && (
+            {(import.meta.env.DEV || can(user?.role, "notifications.admin")) && (
               <Route path="/dev/components" element={<ComponentsPreviewPage />} />
             )}
           </Route>

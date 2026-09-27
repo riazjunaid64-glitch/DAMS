@@ -57,7 +57,6 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
     /// <summary>A customer with no DAMS login — receipts must still reach them by email.</summary>
     public int LoginlessCustomerId { get; private set; }
 
-    public int TeamId { get; private set; }
     public int ProjectId { get; private set; }
     public int UnitId { get; private set; }
     public int SecondUnitId { get; private set; }
@@ -147,15 +146,6 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
         var salesEmployee = NewEmployee("Sana Sales", sales.UserId);
         var otherEmployee = NewEmployee("Omar Sales", otherSales.UserId);
         Db.Employees.AddRange(managerEmployee, salesEmployee, otherEmployee);
-        await Db.SaveChangesAsync();
-
-        var team = new Team { Name = "North Sales", ManagerEmployeeId = managerEmployee.Id, IsActive = true };
-        Db.Teams.Add(team);
-        await Db.SaveChangesAsync();
-        TeamId = team.Id;
-
-        managerEmployee.TeamId = team.Id;
-        salesEmployee.TeamId = team.Id;
         await Db.SaveChangesAsync();
 
         var project = new Project { ProjectName = "Floria Heights", Location = "Lahore", CreatedById = admin.UserId };

@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App.tsx";
+import { can } from "../features/access/permissions.ts";
 import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
@@ -32,10 +33,10 @@ type Tab = "rates" | "revenue" | "vendors" | "payable" | "opening" | "year";
 
 export default function FinanceSettingsPage({ user }: Props) {
   const navigate = useNavigate();
-  useEffect(() => { if (user && user.role !== "Admin") navigate("/"); }, [user, navigate]);
+  useEffect(() => { if (user && !can(user.role, "finance")) navigate("/"); }, [user, navigate]);
 
   if (!user) return <StatePanel title="Sign in required" message="Sign in with an Admin account to manage finance settings." />;
-  if (user.role !== "Admin") return <StatePanel title="Admin access required" message="Only an Admin can change withholding tax rates, vendors and the financial year." />;
+  if (!can(user.role, "finance")) return <StatePanel title="Finance access required" message="Only an Admin or Accountant can change withholding tax rates, vendors and the financial year." />;
   return <SettingsWorkspace />;
 }
 

@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -68,7 +69,7 @@ function formatRequestDate(date: string) {
 
 export default function BookingRequestsPage({ user }: Props) {
   const navigate = useNavigate();
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
 
   const [requests, setRequests] = useState<BookingRequest[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);

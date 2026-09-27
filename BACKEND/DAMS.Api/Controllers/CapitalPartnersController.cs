@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Api.Filters;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -11,7 +12,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/finance/partners")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public sealed class CapitalPartnersController : ControllerBase
     {
         private readonly ICapitalPartnerService _service;

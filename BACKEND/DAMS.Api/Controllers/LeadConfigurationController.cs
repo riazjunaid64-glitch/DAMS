@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace DAMS.Api.Controllers
 {
     /// <summary>
-    /// Lead sources, closure reasons and teams. Any staff member can read them (the lead
+    /// Lead sources and closure reasons. Any staff member can read them (the lead
     /// forms need them); only an admin or sales manager may change them.
     /// </summary>
     [Route("api/lead-config")]
@@ -52,19 +52,5 @@ namespace DAMS.Api.Controllers
         [Authorize(Roles = LeadRoles.Admin)]
         public Task<IActionResult> UpdateClosureReason(int id, [FromBody] UpdateLeadClosureReasonDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _configuration.UpdateClosureReasonAsync(id, dto, ctx, cancellationToken), cancellationToken);
-
-        [HttpGet("teams")]
-        public Task<IActionResult> GetTeams(CancellationToken cancellationToken) =>
-            RunAsync(_ => _configuration.GetTeamsAsync(cancellationToken), cancellationToken);
-
-        [HttpPost("teams")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public Task<IActionResult> CreateTeam([FromBody] SaveTeamDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _configuration.CreateTeamAsync(dto, ctx, cancellationToken), cancellationToken);
-
-        [HttpPut("teams/{id:int}")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public Task<IActionResult> UpdateTeam(int id, [FromBody] SaveTeamDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _configuration.UpdateTeamAsync(id, dto, ctx, cancellationToken), cancellationToken);
     }
 }

@@ -15,8 +15,5 @@ namespace DAMS.Application.DTOs.EmployeeDtos
 
         /// <summary>Login account link. Send -1 to clear it.</summary>
         public int? UserId { get; set; }
-
-        /// <summary>Team membership. Send -1 to clear it.</summary>
-        public int? TeamId { get; set; }
     }
 }

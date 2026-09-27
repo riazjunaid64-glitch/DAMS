@@ -1,3 +1,4 @@
+import { can } from "../../features/access/permissions.ts";
 import AppSelect from "../../lib/AppSelect.tsx";
 import { useDeferredValue, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -126,7 +127,7 @@ const getPercent = (value: number, total: number) => {
 
 export default function ProjectUnitsTab({ units, projectId, user, onUnitsChange, statusFilter, onStatusFilterChange }: Props) {
   const navigate = useNavigate();
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "projects.write");
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");

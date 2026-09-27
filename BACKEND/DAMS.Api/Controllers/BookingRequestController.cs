@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingRequestDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
@@ -61,7 +62,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpGet]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         public async Task<IActionResult> GetBookingRequests(
             [FromQuery] BookingRequestStatus? status,
             [FromQuery] int? projectId,
@@ -103,7 +104,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("{id:int}/approve")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         public async Task<IActionResult> ApproveBookingRequest([FromRoute] int id)
         {
             var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -122,7 +123,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("{id:int}/reject")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         public async Task<IActionResult> RejectBookingRequest([FromRoute] int id, [FromBody] RejectBookingRequestDto? dto)
         {
             var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -161,7 +162,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpGet("stats")]
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         public async Task<IActionResult> GetStats()
         {
             var stats = await _bookingRequestService.GetBookingRequestStatsAsync();

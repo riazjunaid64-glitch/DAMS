@@ -48,8 +48,6 @@ namespace DAMS.Application.Services
             string? CampaignReference,
             int? EmployeeId,
             string? EmployeeName,
-            int? TeamId,
-            string? TeamName,
             int? ClosureReasonId,
             string? ClosureReasonName,
             DateTime CreatedAt,
@@ -68,12 +66,6 @@ namespace DAMS.Application.Services
                     l.CampaignReference,
                     l.AssignedEmployeeId,
                     l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
-                    l.AssignedTeamId != null
-                        ? l.AssignedTeamId
-                        : (l.AssignedEmployee != null ? l.AssignedEmployee.TeamId : null),
-                    l.AssignedTeam != null
-                        ? l.AssignedTeam.Name
-                        : (l.AssignedEmployee != null && l.AssignedEmployee.Team != null ? l.AssignedEmployee.Team.Name : null),
                     l.ClosureReasonId,
                     l.ClosureReason != null ? l.ClosureReason.Name : null,
                     l.CreatedAt,
@@ -196,7 +188,7 @@ namespace DAMS.Application.Services
                 TotalLeads = facts.Count,
                 OpenLeads = facts.Count(f => !LeadStageRules.IsClosed(f.Stage)),
                 InProgressLeads = facts.Count(f => !LeadStageRules.IsClosed(f.Stage)),
-                UnassignedLeads = facts.Count(f => f.EmployeeId == null && f.TeamId == null && !LeadStageRules.IsClosed(f.Stage)),
+                UnassignedLeads = facts.Count(f => f.EmployeeId == null && !LeadStageRules.IsClosed(f.Stage)),
                 WonLeads = won,
                 LostLeads = facts.Count(f => f.Stage == LeadStage.Lost),
                 DormantLeads = facts.Count(f => f.Stage == LeadStage.Dormant),
@@ -207,8 +199,7 @@ namespace DAMS.Application.Services
                 BySource = BuildSourcePerformance(facts),
                 ByCampaign = BuildCampaignPerformance(facts),
                 LossReasons = BuildLossReasons(facts),
-                ByEmployee = BuildEmployeePerformance(facts),
-                ByTeam = BuildTeamPerformance(facts)
+                ByEmployee = BuildEmployeePerformance(facts)
             };
         }
 
@@ -228,7 +219,7 @@ namespace DAMS.Application.Services
         private static List<EmployeePerformanceDto> BuildEmployeePerformance(IReadOnlyCollection<LeadFact> facts) =>
             facts
                 .Where(f => f.EmployeeId != null)
-                .GroupBy(f => new { EmployeeId = f.EmployeeId!.Value, f.EmployeeName, f.TeamName })
+                .GroupBy(f => new { EmployeeId = f.EmployeeId!.Value, f.EmployeeName })
                 .Select(g =>
                 {
                     var responseHours = g
@@ -242,7 +233,6 @@ namespace DAMS.Application.Services
                     {
                         EmployeeId = g.Key.EmployeeId,
                         EmployeeName = g.Key.EmployeeName ?? string.Empty,
-                        TeamName = g.Key.TeamName,
                         TotalLeads = g.Count(),
                         ActiveLeads = g.Count(f => !LeadStageRules.IsClosed(f.Stage)),
                         WonLeads = wonCount,
@@ -313,27 +303,6 @@ namespace DAMS.Application.Services
                     Count = g.Count()
                 })
                 .OrderByDescending(r => r.Count)
-                .ToList();
-
-        private static List<TeamPerformanceDto> BuildTeamPerformance(IReadOnlyCollection<LeadFact> facts) =>
-            facts
-                .Where(f => f.TeamId != null)
-                .GroupBy(f => new { TeamId = f.TeamId!.Value, f.TeamName })
-                .Select(g =>
-                {
-                    var total = g.Count();
-                    var won = g.Count(f => f.Stage == LeadStage.Won);
-
-                    return new TeamPerformanceDto
-                    {
-                        TeamId = g.Key.TeamId,
-                        TeamName = g.Key.TeamName ?? string.Empty,
-                        TotalLeads = total,
-                        WonLeads = won,
-                        ConversionRatePercent = Percent(won, total)
-                    };
-                })
-                .OrderByDescending(r => r.WonLeads)
                 .ToList();
 
         private static double Percent(int part, int total) =>

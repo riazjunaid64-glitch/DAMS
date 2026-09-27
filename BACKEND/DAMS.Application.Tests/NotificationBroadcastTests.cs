@@ -87,18 +87,18 @@ public sealed class NotificationBroadcastTests
     }
 
     [Fact]
-    public async Task AMessageToATeamReachesItsMembersAndItsManager()
+    public async Task ATeamAudienceCanNoLongerBeComposed()
     {
         await using var h = await NotificationTestHarness.CreateAsync();
-        await h.EnableChannelsAsync();
 
-        await SendAsync(h, new NotificationAudienceDto { Type = NotificationAudienceType.Team, TeamId = h.TeamId });
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Admin.ComposeAsync(new ComposeNotificationDto
+        {
+            Title = "Notice",
+            Message = "Body",
+            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.Team }
+        }, h.AdminCtx));
 
-        var recipients = (await h.NotificationsAsync()).Select(n => n.RecipientUserId!.Value).ToHashSet();
-        Assert.Contains(h.SalesUserId, recipients);
-        Assert.Contains(h.ManagerUserId, recipients);
-        // Omar is deliberately not on this team.
-        Assert.DoesNotContain(h.OtherSalesUserId, recipients);
+        Assert.Contains("Sales teams have been removed", error.Message);
     }
 
     [Fact]
@@ -346,7 +346,7 @@ public sealed class NotificationBroadcastTests
         {
             Title = "Notice",
             Message = "Body",
-            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.Team, TeamId = 99_999 }
+            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.SelectedUsers, UserIds = { 999_999 } }
         }, h.AdminCtx));
     }
 

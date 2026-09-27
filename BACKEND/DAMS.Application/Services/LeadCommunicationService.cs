@@ -200,7 +200,7 @@ namespace DAMS.Application.Services
 
             if (mentionedUserIds.Count > 0)
                 LeadTimeline.Record(_context, lead, LeadActivityType.TeamMemberMentioned,
-                    $"{mentionedUserIds.Count} team member(s) mentioned.", ctx);
+                    $"{mentionedUserIds.Count} colleague(s) mentioned.", ctx);
 
             lead.UpdatedAt = DateTime.UtcNow;
 

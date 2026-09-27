@@ -86,7 +86,7 @@ namespace DAMS.Application.Services
             var employee = await context.Employees
                 .AsNoTracking()
                 .Where(e => e.Id == employeeId)
-                .Select(e => new { e.Id, e.Status, e.TeamId })
+                .Select(e => new { e.Id, e.Status })
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("Employee not found.");
 
@@ -102,25 +102,15 @@ namespace DAMS.Application.Services
             var mentioned = await context.Employees
                 .AsNoTracking()
                 .Where(e => e.UserId == mentionedUserId)
-                .Select(e => new { e.Id, e.Status, e.TeamId })
+                .Select(e => new { e.Id, e.Status })
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException("You can only mention active colleagues who work on leads.");
 
             if (mentioned.Status != EmployeeStatus.Active)
                 throw new InvalidOperationException("You can only mention active colleagues who work on leads.");
 
-            if (actor.IsAdmin || actor.IsManager)
+            if (actor.IsAdmin || actor.IsManager || actor.IsEmployee)
                 return;
-
-            if (actor.IsEmployee)
-            {
-                if (mentioned.Id == actor.EmployeeId ||
-                    (actor.TeamId.HasValue && mentioned.TeamId == actor.TeamId) ||
-                    (lead.AssignedEmployeeId.HasValue && mentioned.Id == lead.AssignedEmployeeId.Value))
-                    return;
-
-                throw new LeadAuthorizationException("You can only mention people on your team or the lead owner.");
-            }
 
             throw new LeadAuthorizationException("You do not have access to the lead workspace.");
         }

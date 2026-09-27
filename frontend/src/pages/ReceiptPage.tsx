@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -14,7 +15,7 @@ export default function ReceiptPage({ user }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
 
   useEffect(() => {
     if (!user || !bookingId || !paymentId) return;

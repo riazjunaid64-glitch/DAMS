@@ -199,7 +199,6 @@ export type AudienceType =
   | "AllSalesEmployees"
   | "AllManagers"
   | "AllInternalStaff"
-  | "Team"
   | "CustomersInProject"
   | "CustomersOfBookings"
   | "CustomersWithOverdueInstallments"
@@ -217,7 +216,6 @@ export interface ComposeRequest {
   audience: {
     type: AudienceType;
     userIds: number[];
-    teamId: number | null;
     projectId: number | null;
     bookingIds: number[];
     leadIds: number[];

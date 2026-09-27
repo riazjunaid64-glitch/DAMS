@@ -8,6 +8,11 @@ namespace DAMS.Domain.Enums
         AllSalesEmployees = 2,
         AllManagers = 3,
         AllInternalStaff = 4,
+
+        /// <summary>
+        /// Kept so jobs saved before sales teams were removed still load. Resolving it
+        /// now delivers to admins and sales managers. New sends must not use it.
+        /// </summary>
         Team = 5,
         CustomersInProject = 6,
         CustomersOfBookings = 7,
