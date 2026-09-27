@@ -343,8 +343,8 @@ namespace DAMS.Application.Services.Notifications
                     if (booking == null)
                         return (false, gone);
 
-                    // Admins run the finance desk; a customer may only open their own booking.
-                    if (ctx.IsAdmin || booking.UserId == ctx.UserId)
+                    // Admins and accountants run the finance desk; a customer may only open their own booking.
+                    if (ctx.IsFinanceDesk || booking.UserId == ctx.UserId)
                         return (true, "Opened.");
 
                     return (false, denied);
@@ -361,7 +361,7 @@ namespace DAMS.Application.Services.Notifications
                     if (customer == null)
                         return (false, gone);
 
-                    return ctx.IsAdmin || customer.UserId == ctx.UserId
+                    return ctx.IsFinanceDesk || customer.UserId == ctx.UserId
                         ? (true, "Opened.")
                         : (false, denied);
                 }
@@ -377,7 +377,7 @@ namespace DAMS.Application.Services.Notifications
                     if (request == null)
                         return (false, gone);
 
-                    return ctx.IsAdmin || request.UserId == ctx.UserId
+                    return ctx.IsFinanceDesk || request.UserId == ctx.UserId
                         ? (true, "Opened.")
                         : (false, denied);
                 }
@@ -393,7 +393,7 @@ namespace DAMS.Application.Services.Notifications
                     if (task == null)
                         return (false, gone);
 
-                    return ctx.IsAdmin || task.UserId == ctx.UserId
+                    return ctx.IsFinanceDesk || task.UserId == ctx.UserId
                         ? (true, "Opened.")
                         : (false, denied);
                 }
@@ -465,13 +465,15 @@ namespace DAMS.Application.Services.Notifications
                 return visible ? (true, "Opened.") : (false, denied);
             }
 
-            var adminRoute = path == "/bookings"
+            if (path == "/notifications/settings")
+                return ctx.IsAdmin ? (true, "Opened.") : (false, denied);
+
+            var financeRoute = path == "/bookings"
                              || path.StartsWith("/confirmed-bookings", StringComparison.OrdinalIgnoreCase)
                              || path.StartsWith("/customers", StringComparison.OrdinalIgnoreCase)
                              || path.StartsWith("/employees", StringComparison.OrdinalIgnoreCase)
-                             || path.StartsWith("/finance", StringComparison.OrdinalIgnoreCase)
-                             || path == "/notifications/settings";
-            return adminRoute && ctx.IsAdmin ? (true, "Opened.") : (false, denied);
+                             || path.StartsWith("/finance", StringComparison.OrdinalIgnoreCase);
+            return financeRoute && ctx.IsFinanceDesk ? (true, "Opened.") : (false, denied);
         }
 
         private static bool TryRouteId(string path, string prefix, out int id)
@@ -504,30 +506,15 @@ namespace DAMS.Application.Services.Notifications
             var employee = await _context.Employees
                 .AsNoTracking()
                 .Where(e => e.UserId == ctx.UserId)
-                .Select(e => new { e.Id, e.TeamId })
+                .Select(e => new { e.Id })
                 .FirstOrDefaultAsync(cancellationToken);
-
-            var managedTeamIds = new List<int>();
-            if (employee != null)
-            {
-                if (employee.TeamId.HasValue)
-                    managedTeamIds.Add(employee.TeamId.Value);
-
-                managedTeamIds.AddRange(await _context.Teams
-                    .AsNoTracking()
-                    .Where(t => t.ManagerEmployeeId == employee.Id)
-                    .Select(t => t.Id)
-                    .ToListAsync(cancellationToken));
-            }
 
             return new LeadUserContext
             {
                 UserId = ctx.UserId,
                 Role = ctx.Role,
                 DisplayName = ctx.DisplayName,
-                EmployeeId = employee?.Id,
-                TeamId = employee?.TeamId,
-                ManagedTeamIds = managedTeamIds.Distinct().ToList()
+                EmployeeId = employee?.Id
             };
         }
 

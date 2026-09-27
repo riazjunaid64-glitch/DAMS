@@ -1,11 +1,14 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import ErrorBoundary from "./lib/ErrorBoundary.tsx";
 import { api, refreshAccessToken, setAccessToken } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
 import { detachPushOnLogout } from "./features/notifications/push.ts";
+import { ToastProvider } from "./components/ui";
 import AppLayout from "./layouts/AppLayout.tsx";
+import { can } from "./features/access/permissions.ts";
+import { homePathFor, navigationFor } from "./layouts/navigation.tsx";
 
 const AboutPage = lazy(() => import("./pages/AboutPage.tsx"));
 const ContactPage = lazy(() => import("./pages/ContactPage.tsx"));
@@ -42,19 +45,13 @@ const NotificationsPage = lazy(() => import("./pages/NotificationsPage.tsx"));
 const ActivateAccountPage = lazy(() => import("./pages/ActivateAccountPage.tsx"));
 const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage.tsx"));
 const NotificationAdminPage = lazy(() => import("./pages/NotificationAdminPage.tsx"));
+const ComponentsPreviewPage = lazy(() => import("./pages/ComponentsPreviewPage.tsx"));
 
 export interface User {
   userId: string;
   email: string;
   role: string;
 }
-
-const NAV_LINKS = [
-  { to: "/", label: "Home" },
-  { to: "/projects", label: "Projects" },
-  { to: "/about", label: "About" },
-  { to: "/contact", label: "Contact" },
-];
 
 const AUTH_SESSION_EVENT = "dams-auth-session";
 
@@ -75,33 +72,8 @@ function App() {
     () => (user?.email ? user.email.split("@")[0] : "User"),
     [user]
   );
-  const displayInitial = displayName[0]?.toUpperCase() ?? "U";
-
-  const mainNavLinks = useMemo(() => {
-    if (user?.role === "Admin") {
-      return [
-        ...NAV_LINKS,
-        { to: "/crm", label: "Lead CRM" },
-        { to: "/bookings", label: "Requests" },
-        { to: "/confirmed-bookings", label: "Bookings" },
-        { to: "/customers", label: "Customers" },
-        { to: "/customer-document-categories", label: "Document Setup" },
-        { to: "/employees", label: "Employees" },
-        { to: "/finance", label: "Finance" },
-        { to: "/notifications/settings", label: "Notifications" },
-      ];
-    }
-
-    if (user?.role === "Manager" || user?.role === "Employee") {
-      return [...NAV_LINKS, { to: "/crm", label: "Lead CRM" }];
-    }
-
-    if (user) {
-      return [...NAV_LINKS, { to: "/my-projects", label: "My Projects" }];
-    }
-
-    return NAV_LINKS;
-  }, [user]);
+  const navGroups = useMemo(() => navigationFor(user?.role), [user?.role]);
+  const home = homePathFor(user?.role);
 
   const fetchProfile = async () => {
     const res = await api("/api/Auth/profile");
@@ -168,6 +140,7 @@ function App() {
 
   return (
     <ProjectsProvider>
+      <ToastProvider>
       {/* Keyed on the path so navigating to another screen clears a caught error. */}
       <ErrorBoundary resetKey={location.pathname}>
       <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-[var(--app-text-muted)]">Loading…</div>}>
@@ -176,15 +149,15 @@ function App() {
             element={
               <AppLayout
                 user={user}
-                mainNavLinks={mainNavLinks}
+                navGroups={navGroups}
                 displayName={displayName}
-                displayInitial={displayInitial}
                 setModal={setModal}
                 onLogout={() => void logout()}
               />
             }
           >
-            <Route path="/" element={<HomePage />} />
+            {/* Sales staff start in the Lead CRM. Accountants start on bookings. */}
+            <Route path="/" element={home === "/" ? <HomePage /> : <Navigate to={home} replace />} />
             <Route path="/landing" element={<LandingPage />} />
             <Route path="/projects" element={<ProjectsPage user={user} />} />
             <Route path="/projects/:id" element={<ProjectDetailPage user={user} />} />
@@ -223,6 +196,10 @@ function App() {
             <Route path="/crm/settings" element={<CrmSettingsPage user={user} />} />
             <Route path="/notifications" element={<NotificationsPage user={user} />} />
             <Route path="/notifications/settings" element={<NotificationAdminPage user={user} />} />
+            {/* Internal preview of the shared components: dev builds, or admins in production. */}
+            {(import.meta.env.DEV || can(user?.role, "notifications.admin")) && (
+              <Route path="/dev/components" element={<ComponentsPreviewPage />} />
+            )}
           </Route>
         </Routes>
       </Suspense>
@@ -240,6 +217,7 @@ function App() {
           }}
         />
       )}
+      </ToastProvider>
     </ProjectsProvider>
   );
 }

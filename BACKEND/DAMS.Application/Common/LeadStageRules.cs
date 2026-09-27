@@ -20,17 +20,22 @@ namespace DAMS.Application.Common
         public static readonly LeadStage[] NewStages =
             { LeadStage.New, LeadStage.FirstContactPending };
 
-        /// <summary>Being worked: contacted and not yet closed. Grouped as In Progress.</summary>
+        /// <summary>
+        /// Everything that is not Won, Lost or Dormant, including leads nobody has contacted yet.
+        /// This is the "In progress" card and status filter on the redesigned lists.
+        /// </summary>
         public static readonly LeadStage[] InProgressStages =
         {
+            LeadStage.New, LeadStage.FirstContactPending,
             LeadStage.Contacted, LeadStage.Qualified, LeadStage.SiteVisitScheduled,
             LeadStage.SiteVisitCompleted, LeadStage.Negotiation, LeadStage.DocumentsInProgress,
             LeadStage.BookingPending
         };
 
-        /// <summary>Closed without converting. Dormant is a lost lead parked for a later revisit.</summary>
-        public static readonly LeadStage[] LostStages =
-            { LeadStage.Lost, LeadStage.Dormant };
+        /// <summary>Closed without converting. Dormant is its own group.</summary>
+        public static readonly LeadStage[] LostStages = { LeadStage.Lost };
+
+        public static readonly LeadStage[] DormantStages = { LeadStage.Dormant };
 
         private static readonly LeadStage[] WonStages = { LeadStage.Won };
 
@@ -41,18 +46,21 @@ namespace DAMS.Application.Common
             LeadStageGroup.InProgress => InProgressStages,
             LeadStageGroup.Won => WonStages,
             LeadStageGroup.Lost => LostStages,
+            LeadStageGroup.Dormant => DormantStages,
             _ => throw new ArgumentOutOfRangeException(nameof(group), group, "Unknown lead stage group.")
         };
 
         /// <summary>
         /// The simple stage a detailed stage belongs to. The server is the only place this mapping
         /// lives: lead responses carry the result, so the salesperson screens never keep a copy.
+        /// New is checked first because the In progress filter deliberately includes new leads too.
         /// </summary>
         public static LeadStageGroup GroupOf(LeadStage stage) =>
             Array.IndexOf(NewStages, stage) >= 0 ? LeadStageGroup.New :
             Array.IndexOf(InProgressStages, stage) >= 0 ? LeadStageGroup.InProgress :
             Array.IndexOf(WonStages, stage) >= 0 ? LeadStageGroup.Won :
             Array.IndexOf(LostStages, stage) >= 0 ? LeadStageGroup.Lost :
+            Array.IndexOf(DormantStages, stage) >= 0 ? LeadStageGroup.Dormant :
             throw new ArgumentOutOfRangeException(nameof(stage), stage, "Stage has no simple stage; add it to one of the groups.");
 
         public static readonly IReadOnlySet<LeadStage> ReopenableStages =

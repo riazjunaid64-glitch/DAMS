@@ -13,8 +13,6 @@ namespace DAMS.Domain.Entities
         // connected before an employee can work their own leads.
         public int? UserId { get; set; }
 
-        public int? TeamId { get; set; }
-
         public string JobTitle { get; set; } = string.Empty;
 
         public string Department { get; set; } = string.Empty;
@@ -36,8 +34,6 @@ namespace DAMS.Domain.Entities
         public DateTime? UpdatedAt { get; set; }
 
         public User? User { get; set; }
-
-        public Team? Team { get; set; }
 
         public ICollection<EmployeeAttendance> Attendances { get; set; } = new List<EmployeeAttendance>();
 

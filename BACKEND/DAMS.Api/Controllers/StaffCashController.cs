@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using System.Security.Claims;
 using DAMS.Api.Filters;
 using DAMS.Application.DTOs.FinanceDtos;
@@ -11,7 +12,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/finance/staff-cash")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public sealed class StaffCashController : ControllerBase
     {
         private readonly IStaffCashService _service;

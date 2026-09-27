@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { can } from "../features/access/permissions.ts";
 import { api } from "../api/api";
 import { useProjects } from "../contexts/projectsContextValue";
 import {
@@ -47,7 +48,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const [trialFrom, setTrialFrom] = useState(calendarMonthStart(pakistanToday()));
   const [trialTo, setTrialTo] = useState(pakistanToday());
   // null until read back — a P&L preset must not name a financial year the client has not set.
-  const { startMonth, failed: startMonthFailed } = useFinancialYearStartMonth(user?.role === "Admin");
+  const { startMonth, failed: startMonthFailed } = useFinancialYearStartMonth(can(user?.role, "finance"));
   const [pnl, setPnl] = useState<Pnl | null>(null);
   const [trial, setTrial] = useState<LoadedTrial | null>(null);
   const [balance, setBalance] = useState<BalanceSheet | null>(null);
@@ -59,7 +60,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   const reportDebounceTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    if (user?.role !== "Admin") { navigate("/"); return; }
+    if (!can(user?.role, "finance")) { navigate("/"); return; }
   }, [user, navigate]);
 
   const query = useCallback((includePeriod: boolean) => {
@@ -83,7 +84,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   }), [trialDateMode, projectId, asAt, trialFrom, trialTo]);
 
   const load = useCallback(async () => {
-    if (user?.role !== "Admin") return;
+    if (!can(user?.role, "finance")) return;
     reportController.current?.abort();
     const controller = new AbortController();
     reportController.current = controller;
@@ -127,7 +128,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
   // Report filters can be expensive. Coalesce quick edits and cancel the previous SQL request as
   // soon as a newer filter/tab supersedes it; the request id remains a second correctness guard.
   useEffect(() => {
-    if (user?.role !== "Admin") return;
+    if (!can(user?.role, "finance")) return;
     // Invalidate immediately rather than waiting for the debounce timer, so an abort that settles
     // during those 250 ms cannot clear the loading state or paint the previous filter's report.
     reportController.current?.abort();
@@ -188,7 +189,7 @@ export default function FinanceReportsPage({ user }: { user: User | null }) {
     } finally { setExporting(false); }
   };
 
-  if (user?.role !== "Admin") return null;
+  if (!can(user?.role, "finance")) return null;
   const currentTrialError = trialFilterError(currentTrialFilters());
   return <Container className="py-8">
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">

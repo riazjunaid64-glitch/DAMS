@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -63,7 +64,7 @@ export default function ConfirmedBookingsPage({ user }: Props) {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
 
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {

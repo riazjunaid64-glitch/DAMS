@@ -17,7 +17,7 @@ namespace DAMS.Application.Tests;
 
 /// <summary>
 /// A miniature but complete DAMS: seeded roles, sources and closure reasons, one project
-/// with units, a manager and two employees on a team, plus every lead service wired to the
+/// with units, a manager and two sales employees, plus every lead service wired to the
 /// same DbContext exactly as the API wires them.
 /// </summary>
 internal sealed class LeadTestHarness : IAsyncDisposable
@@ -54,7 +54,6 @@ internal sealed class LeadTestHarness : IAsyncDisposable
     public int ManagerEmployeeId { get; private set; }
     public int SalesEmployeeId { get; private set; }
     public int OtherSalesEmployeeId { get; private set; }
-    public int TeamId { get; private set; }
     public int ProjectId { get; private set; }
     public int UnitId { get; private set; }
     public int SecondUnitId { get; private set; }
@@ -165,16 +164,6 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         SalesEmployeeId = salesEmployee.Id;
         OtherSalesEmployeeId = otherEmployee.Id;
 
-        var team = new Team { Name = "North Sales", ManagerEmployeeId = managerEmployee.Id, IsActive = true };
-        Db.Teams.Add(team);
-        await Db.SaveChangesAsync();
-        TeamId = team.Id;
-
-        managerEmployee.TeamId = team.Id;
-        salesEmployee.TeamId = team.Id;
-        // Omar is deliberately left off the team so cross-team access can be tested.
-        await Db.SaveChangesAsync();
-
         var project = new Project { ProjectName = "Floria Heights", Location = "Lahore", CreatedById = admin.UserId };
         Db.Projects.Add(project);
         await Db.SaveChangesAsync();
@@ -188,8 +177,8 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         SecondUnitId = secondUnit.Id;
 
         Admin = Context(admin.UserId, LeadRoles.Admin, "Ayesha Admin");
-        Manager = Context(manager.UserId, LeadRoles.Manager, "Mahmood Manager", managerEmployee.Id, team.Id, new[] { team.Id });
-        Sales = Context(sales.UserId, LeadRoles.Employee, "Sana Sales", salesEmployee.Id, team.Id);
+        Manager = Context(manager.UserId, LeadRoles.Manager, "Mahmood Manager", managerEmployee.Id);
+        Sales = Context(sales.UserId, LeadRoles.Employee, "Sana Sales", salesEmployee.Id);
         OtherSales = Context(otherSales.UserId, LeadRoles.Employee, "Omar Sales", otherEmployee.Id);
         Client = Context(client.UserId, "Client", "Client Person");
     }
@@ -204,15 +193,13 @@ internal sealed class LeadTestHarness : IAsyncDisposable
     };
 
     private static LeadUserContext Context(
-        int userId, string role, string name, int? employeeId = null, int? teamId = null, int[]? managedTeams = null) =>
+        int userId, string role, string name, int? employeeId = null) =>
         new()
         {
             UserId = userId,
             Role = role,
             DisplayName = name,
-            EmployeeId = employeeId,
-            TeamId = teamId,
-            ManagedTeamIds = managedTeams ?? Array.Empty<int>()
+            EmployeeId = employeeId
         };
 
     private static User NewUser(string name, string email, int roleId) => new()
@@ -303,7 +290,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         (await Leads.GetByIdAsync(leadId, Admin))!.ConcurrencyToken;
 
     public Task<List<LeadActivity>> TimelineAsync(int leadId) =>
-        Db.LeadActivities.AsNoTracking().Where(a => a.LeadId == leadId).ToListAsync();
+        Db.LeadActivities.AsNoTracking().Where(a => a.LeadId == leadId).OrderBy(a => a.Id).ToListAsync();
 
     public ValueTask DisposeAsync() => Db.DisposeAsync();
 

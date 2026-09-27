@@ -383,11 +383,11 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
-    public void EveryCustomerDocumentEndpoint_IsServerRestrictedToAdmin()
+    public void EveryCustomerDocumentEndpoint_IsServerRestrictedToAdminAndAccountant()
     {
         var authorize = typeof(CustomerDocumentsController).GetCustomAttribute<AuthorizeAttribute>();
         Assert.NotNull(authorize);
-        Assert.Equal("Admin", authorize!.Roles);
+        Assert.Equal(AppRoles.AdminOrAccountant, authorize!.Roles);
     }
 
     [Fact]

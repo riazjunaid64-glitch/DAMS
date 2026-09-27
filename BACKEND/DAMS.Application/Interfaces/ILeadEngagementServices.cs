@@ -24,7 +24,7 @@ namespace DAMS.Application.Interfaces
 
         Task<LeadFollowUpDto> RescheduleAsync(int followUpId, RescheduleLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
-        Task<LeadFollowUpDto> CancelAsync(int followUpId, string reason, LeadUserContext ctx, CancellationToken cancellationToken = default);
+        Task<LeadFollowUpDto> CancelAsync(int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<List<LeadFollowUpDto>> GetForLeadAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
@@ -95,12 +95,6 @@ namespace DAMS.Application.Interfaces
         Task<LeadClosureReasonDto> CreateClosureReasonAsync(CreateLeadClosureReasonDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<LeadClosureReasonDto> UpdateClosureReasonAsync(int id, UpdateLeadClosureReasonDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task<List<TeamDto>> GetTeamsAsync(CancellationToken cancellationToken = default);
-
-        Task<TeamDto> CreateTeamAsync(SaveTeamDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task<TeamDto> UpdateTeamAsync(int id, SaveTeamDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
     }
 
     public interface ILeadReportingService

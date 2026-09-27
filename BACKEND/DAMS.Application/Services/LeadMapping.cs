@@ -53,8 +53,6 @@ namespace DAMS.Application.Services
                 Notes = l.Notes,
                 AssignedEmployeeId = l.AssignedEmployeeId,
                 AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
-                AssignedTeamId = l.AssignedTeamId,
-                AssignedTeamName = l.AssignedTeam != null ? l.AssignedTeam.Name : null,
                 AssignmentState = l.AssignmentState,
                 AssignedAt = l.AssignedAt,
                 Stage = l.Stage,
@@ -196,6 +194,7 @@ namespace DAMS.Application.Services
                 NextAction = c.NextAction,
                 NextActionAt = c.NextActionAt,
                 ExternalProvider = c.ExternalProvider,
+                Connected = c.Connected,
                 CreatedAt = c.CreatedAt,
                 Attachments = c.Attachments.Select(d => new LeadDocumentDto
                 {

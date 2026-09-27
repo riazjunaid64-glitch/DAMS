@@ -109,6 +109,7 @@ namespace DAMS.Application.Services
                 {
                     a.Channel = dto.Channel;
                     a.Notes = dto.Summary.Trim();
+                    a.NewValue = dto.Connected ? "Connected" : "No answer";
                     a.OccurredAt = occurredAt;
                 });
 
@@ -199,7 +200,7 @@ namespace DAMS.Application.Services
 
             if (mentionedUserIds.Count > 0)
                 LeadTimeline.Record(_context, lead, LeadActivityType.TeamMemberMentioned,
-                    $"{mentionedUserIds.Count} team member(s) mentioned.", ctx);
+                    $"{mentionedUserIds.Count} colleague(s) mentioned.", ctx);
 
             lead.UpdatedAt = DateTime.UtcNow;
 
@@ -261,9 +262,10 @@ namespace DAMS.Application.Services
         private static string BuildSummary(RecordLeadCommunicationDto dto)
         {
             var direction = dto.Direction == LeadCommunicationDirection.Inbound ? "Inbound" : "Outbound";
+            var channel = LeadDisplay.Words(dto.Channel);
             return dto.Connected
-                ? $"{direction} {dto.Channel} recorded."
-                : $"{direction} {dto.Channel} attempt — no answer.";
+                ? $"{direction} {channel} recorded."
+                : $"{direction} {channel} attempt — no answer.";
         }
 
         private async Task<LeadCommunicationDto> LoadAsync(int id, CancellationToken cancellationToken) =>

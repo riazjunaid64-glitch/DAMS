@@ -33,6 +33,27 @@ namespace DAMS.Application.Services.Notifications
             NotificationType.AccountSecurity
         };
 
+        /// <summary>
+        /// Bookings, payments, installments and the rest of the company desk. Lead types are
+        /// absent: an accountant does not work the Lead CRM.
+        /// </summary>
+        private static readonly HashSet<NotificationType> AccountantTypes = new()
+        {
+            NotificationType.PaymentReceipt,
+            NotificationType.BookingRequestReceived,
+            NotificationType.BookingApproved,
+            NotificationType.BookingRejected,
+            NotificationType.BookingCancelled,
+            NotificationType.PossessionGiven,
+            NotificationType.SaleCompleted,
+            NotificationType.InstallmentDue,
+            NotificationType.InstallmentOverdue,
+            NotificationType.ProjectUpdated,
+            NotificationType.EmployeeTaskAssigned,
+            NotificationType.AdminAnnouncement,
+            NotificationType.AccountSecurity
+        };
+
         private static readonly HashSet<NotificationType> EmployeeTypes = new()
         {
             NotificationType.LeadCreated,
@@ -132,6 +153,7 @@ namespace DAMS.Application.Services.Notifications
             {
                 LeadRoles.Admin or LeadRoles.Manager => CrmSupervisorTypes.Contains(type),
                 LeadRoles.Employee => EmployeeTypes.Contains(type),
+                AppRoles.Accountant => AccountantTypes.Contains(type),
                 "Client" => CustomerTypes.Contains(type),
                 _ => false
             };
@@ -151,6 +173,7 @@ namespace DAMS.Application.Services.Notifications
             "Client" => "Booking, payment, installment, project, announcement and account updates will appear here.",
             LeadRoles.Manager => "Lead, escalation, integration and account updates will appear here.",
             LeadRoles.Employee => "Assigned leads, follow-ups, visits, mentions, tasks and account updates will appear here.",
+            AppRoles.Accountant => "Booking, payment, installment, project and account updates will appear here.",
             LeadRoles.Admin => "Administrative, staff, integration, delivery and account updates will appear here.",
             _ => "No notification categories are available for this account."
         };
@@ -222,6 +245,7 @@ namespace DAMS.Application.Services.Notifications
             {
                 "Client" => query.Where(CustomerResourceFilter(scope.UserId)),
                 LeadRoles.Admin or LeadRoles.Manager or LeadRoles.Employee => query.Where(StaffResourceFilter(scope)),
+                AppRoles.Accountant => query.Where(AccountantResourceFilter(scope)),
                 _ => query.Where(_ => false)
             };
 
@@ -260,6 +284,42 @@ namespace DAMS.Application.Services.Notifications
                 && (!_context.Installments.Any(i => i.Id == n.EntityId)
                     || _context.Installments.Any(i => i.Id == n.EntityId && i.Booking.Customer.UserId == userId)));
 
+        /// <summary>
+        /// The company desk. Booking, payment and installment rows are visible because the
+        /// accountant runs those records; lead rows never reach this filter.
+        /// </summary>
+        private Expression<Func<Notification, bool>> AccountantResourceFilter(ResourceScope scope)
+        {
+            var userId = scope.UserId;
+            return n =>
+                (n.Type == NotificationType.AdminAnnouncement
+                 && (n.EntityType == NotificationEntityType.None || n.EntityType == NotificationEntityType.Announcement))
+                || (n.Type == NotificationType.AccountSecurity
+                    && (n.EntityType == NotificationEntityType.None
+                        || n.EntityType == NotificationEntityType.Announcement
+                        || (n.EntityType == NotificationEntityType.Account
+                            && (n.EntityId == null || n.EntityId <= 0 || n.EntityId == userId))))
+                // Like Admin, the accountant runs every project, so no project row is withheld.
+                || (n.Type == NotificationType.ProjectUpdated
+                    && (n.EntityType == NotificationEntityType.Announcement
+                        || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0)))
+                || (n.Type == NotificationType.EmployeeTaskAssigned
+                    && n.EntityType == NotificationEntityType.EmployeeTask && n.EntityId > 0
+                    && (!_context.EmployeeTasks.Any(t => t.Id == n.EntityId)
+                        || _context.EmployeeTasks.Any(t => t.Id == n.EntityId
+                            && t.Employee.UserId == userId
+                            && t.Employee.Status == EmployeeStatus.Active)))
+                || n.Type == NotificationType.PaymentReceipt
+                || n.Type == NotificationType.BookingRequestReceived
+                || n.Type == NotificationType.BookingApproved
+                || n.Type == NotificationType.BookingRejected
+                || n.Type == NotificationType.BookingCancelled
+                || n.Type == NotificationType.PossessionGiven
+                || n.Type == NotificationType.SaleCompleted
+                || n.Type == NotificationType.InstallmentDue
+                || n.Type == NotificationType.InstallmentOverdue;
+        }
+
         private Expression<Func<Notification, bool>> StaffResourceFilter(ResourceScope scope)
         {
             var userId = scope.UserId;
@@ -267,6 +327,7 @@ namespace DAMS.Application.Services.Notifications
             var isAdmin = scope.Role == LeadRoles.Admin;
             var isManager = scope.Role == LeadRoles.Manager;
             var isCrmSupervisor = isAdmin || isManager;
+            var seesEveryProject = isAdmin;
             var supervisory = SupervisoryLeadTypes;
 
             return n =>
@@ -287,13 +348,10 @@ namespace DAMS.Application.Services.Notifications
                     && (n.EntityType == NotificationEntityType.Announcement
                         || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0
                             && (!_context.Projects.Any(p => p.Id == n.EntityId)
-                                || isAdmin
+                                || seesEveryProject
                                 || _context.EmployeeTasks.Any(t => t.ProjectId == n.EntityId
                                     && t.Employee.Status == EmployeeStatus.Active
-                                    && (t.Employee.UserId == userId
-                                        || (isManager && t.Employee.Team != null
-                                            && t.Employee.Team.ManagerEmployee != null
-                                            && t.Employee.Team.ManagerEmployee.UserId == userId)))))))
+                                    && t.Employee.UserId == userId)))))
                 || (n.Type == NotificationType.EmployeeTaskAssigned
                     && n.EntityType == NotificationEntityType.EmployeeTask && n.EntityId > 0
                     && (!_context.EmployeeTasks.Any(t => t.Id == n.EntityId)
@@ -489,10 +547,10 @@ namespace DAMS.Application.Services.Notifications
                     return await _context.EmployeeTasks.AnyAsync(task =>
                         task.ProjectId == entityId.Value
                         && task.Employee.Status == EmployeeStatus.Active
-                        && (task.Employee.UserId == recipient.UserId
-                            || (task.Employee.Team != null
-                                && task.Employee.Team.ManagerEmployee != null
-                                && task.Employee.Team.ManagerEmployee.UserId == recipient.UserId)), cancellationToken);
+                        && task.Employee.UserId == recipient.UserId, cancellationToken);
+
+                if (string.Equals(recipient.Role, AppRoles.Accountant, StringComparison.OrdinalIgnoreCase))
+                    return await _context.Projects.AnyAsync(p => p.Id == entityId.Value, cancellationToken);
 
                 if (!string.Equals(recipient.Role, "Client", StringComparison.OrdinalIgnoreCase))
                     return false;
@@ -576,7 +634,7 @@ namespace DAMS.Application.Services.Notifications
 
             var employee = await _context.Employees.AsNoTracking()
                 .Where(e => e.UserId == recipient.UserId && e.Status == EmployeeStatus.Active)
-                .Select(e => new { e.Id, e.TeamId })
+                .Select(e => new { e.Id })
                 .FirstOrDefaultAsync(cancellationToken);
             if (employee == null)
                 return false;
@@ -690,7 +748,7 @@ namespace DAMS.Application.Services.Notifications
             NormalizeRole(role) switch
             {
                 "Client" => hasCustomer,
-                LeadRoles.Manager or LeadRoles.Employee => hasEmployee,
+                LeadRoles.Manager or LeadRoles.Employee or AppRoles.Accountant => hasEmployee,
                 LeadRoles.Admin => true,
                 _ => false
             };
@@ -702,6 +760,7 @@ namespace DAMS.Application.Services.Notifications
         {
             LeadRoles.Admin or LeadRoles.Manager => CrmSupervisorTypes,
             LeadRoles.Employee => EmployeeTypes,
+            AppRoles.Accountant => AccountantTypes,
             "Client" => CustomerTypes,
             _ => EmptyTypes
         };
@@ -716,6 +775,7 @@ namespace DAMS.Application.Services.Notifications
             if (string.Equals(role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)) return LeadRoles.Admin;
             if (string.Equals(role, LeadRoles.Manager, StringComparison.OrdinalIgnoreCase)) return LeadRoles.Manager;
             if (string.Equals(role, LeadRoles.Employee, StringComparison.OrdinalIgnoreCase)) return LeadRoles.Employee;
+            if (string.Equals(role, AppRoles.Accountant, StringComparison.OrdinalIgnoreCase)) return AppRoles.Accountant;
             if (string.Equals(role, "Client", StringComparison.OrdinalIgnoreCase)) return "Client";
             return null;
         }

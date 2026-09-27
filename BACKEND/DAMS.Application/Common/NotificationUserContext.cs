@@ -21,6 +21,11 @@ namespace DAMS.Application.Common
 
         public bool IsEmployee => string.Equals(Role, LeadRoles.Employee, StringComparison.OrdinalIgnoreCase);
 
+        public bool IsAccountant => string.Equals(Role, AppRoles.Accountant, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Admin and Accountant both run bookings, finance, customers and projects.</summary>
+        public bool IsFinanceDesk => IsAdmin || IsAccountant;
+
         public bool IsStaff => IsAdmin || IsManager || IsEmployee;
     }
 

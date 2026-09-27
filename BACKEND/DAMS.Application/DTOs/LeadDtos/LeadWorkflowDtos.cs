@@ -97,8 +97,6 @@ namespace DAMS.Application.DTOs.LeadDtos
     {
         public int? EmployeeId { get; set; }
 
-        public int? TeamId { get; set; }
-
         [StringLength(500)]
         public string? Reason { get; set; }
     }
@@ -111,13 +109,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? PreviousEmployeeName { get; set; }
 
-        public int? PreviousTeamId { get; set; }
-
         public int? AssignedEmployeeId { get; set; }
 
         public string? AssignedEmployeeName { get; set; }
-
-        public int? AssignedTeamId { get; set; }
 
         public string? Reason { get; set; }
 
@@ -164,9 +158,8 @@ namespace DAMS.Application.DTOs.LeadDtos
         /// <summary>Stage to reopen into. Must be an active (non-terminal) stage.</summary>
         public LeadStage Stage { get; set; } = LeadStage.Contacted;
 
-        [Required]
-        [StringLength(1000, MinimumLength = 3)]
-        public string Reason { get; set; } = string.Empty;
+        [StringLength(1000)]
+        public string? Reason { get; set; }
     }
 
     public class ConvertLeadDto

@@ -4,6 +4,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace DAMS.Api.Controllers
 {
@@ -37,7 +38,6 @@ namespace DAMS.Api.Controllers
             [FromQuery] LeadQualification? qualification,
             [FromQuery] int? sourceId,
             [FromQuery] int? employeeId,
-            [FromQuery] int? teamId,
             [FromQuery] int? projectId,
             [FromQuery] LeadPaymentPreference? paymentPreference,
             [FromQuery] int? unitId,
@@ -61,7 +61,6 @@ namespace DAMS.Api.Controllers
                 Qualification = qualification,
                 LeadSourceId = sourceId,
                 AssignedEmployeeId = employeeId,
-                AssignedTeamId = teamId,
                 ProjectId = projectId,
                 PaymentPreference = paymentPreference,
                 UnitId = unitId,
@@ -140,13 +139,16 @@ namespace DAMS.Api.Controllers
             RunAsync(ctx => _leads.CloseAsync(id, dormant: true, dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("{id:int}/reopen")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public Task<IActionResult> Reopen(int id, [FromBody] ReopenLeadDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _leads.ReopenAsync(id, dto, ctx, cancellationToken), cancellationToken);
+        [Authorize(Roles = LeadRoles.Staff)]
+        public Task<IActionResult> Reopen(
+            int id,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ReopenLeadDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.ReopenAsync(id, dto ?? new ReopenLeadDto(), ctx, cancellationToken), cancellationToken);
 
         /// <summary>Converts the lead into a customer and booking. Idempotent.</summary>
         [HttpPost("{id:int}/convert")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Staff)]
         public Task<IActionResult> Convert(int id, [FromBody] ConvertLeadDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.ConvertAsync(id, dto, ctx, cancellationToken), cancellationToken);
 

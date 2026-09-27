@@ -6,6 +6,9 @@ namespace DAMS.Infrastructure.Data
 {
     public class AppDbContext : DbContext
     {
+        /// <summary>Set when a unit change is saved inside a transaction that has not committed.</summary>
+        internal bool ProjectListCachePending { get; set; }
+
         public AppDbContext(DbContextOptions<AppDbContext> options)
             : base(options)
         {
@@ -18,6 +21,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ClientEmailVerification> ClientEmailVerifications { get; set; }
 
         public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
+        public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
+        public DbSet<UnitTypeMigrationNote> UnitTypeMigrationNotes { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -72,7 +77,6 @@ namespace DAMS.Infrastructure.Data
         public DbSet<RebateCreditAllocation> RebateCreditAllocations { get; set; }
         public DbSet<FinancialEvidence> FinancialEvidence { get; set; }
         public DbSet<FinancialWorkflowAuditEntry> FinancialWorkflowAuditEntries { get; set; }
-        public DbSet<Team> Teams { get; set; }
         public DbSet<LeadSource> LeadSources { get; set; }
         public DbSet<LeadClosureReason> LeadClosureReasons { get; set; }
         public DbSet<Lead> Leads { get; set; }
@@ -119,7 +123,9 @@ namespace DAMS.Infrastructure.Data
                 // Lead management introduces internal staff logins. Manager and Employee are
                 // the two sales roles the lead workflow authorises against.
                 new Role { RoleId = 3, Role_name = "Manager" },
-                new Role { RoleId = 4, Role_name = "Employee" }
+                new Role { RoleId = 4, Role_name = "Employee" },
+                // Works bookings, finance, projects and customers. Has no Lead CRM access.
+                new Role { RoleId = 5, Role_name = "Accountant" }
             );
 
             modelBuilder.Entity<User>(entity =>
@@ -158,6 +164,17 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(v => v.UserId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<StaffAccessAudit>(entity =>
+            {
+                entity.HasIndex(a => new { a.EmployeeId, a.OccurredAt });
+            });
+
+            modelBuilder.Entity<UnitTypeMigrationNote>(entity =>
+            {
+                entity.Property(n => n.UnitType).IsRequired().HasMaxLength(100);
+                entity.HasIndex(n => n.UnitType).IsUnique();
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
@@ -691,28 +708,11 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(e => e.UserId)
                       .IsUnique()
                       .HasFilter("[UserId] IS NOT NULL");
-                entity.HasIndex(e => e.TeamId);
 
                 entity.HasOne(e => e.User)
                       .WithMany()
                       .HasForeignKey(e => e.UserId)
                       .OnDelete(DeleteBehavior.SetNull);
-
-                entity.HasOne(e => e.Team)
-                      .WithMany(t => t.Members)
-                      .HasForeignKey(e => e.TeamId)
-                      .OnDelete(DeleteBehavior.SetNull);
-            });
-
-            modelBuilder.Entity<Team>(entity =>
-            {
-                entity.Property(t => t.Name).IsRequired().HasMaxLength(150);
-                entity.HasIndex(t => t.Name).IsUnique();
-
-                entity.HasOne(t => t.ManagerEmployee)
-                      .WithMany()
-                      .HasForeignKey(t => t.ManagerEmployeeId)
-                      .OnDelete(DeleteBehavior.NoAction);
             });
 
             modelBuilder.Entity<EmployeeAttendance>(entity =>
@@ -1709,16 +1709,34 @@ namespace DAMS.Infrastructure.Data
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChanges(acceptAllChangesOnSuccess);
+            var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
+            var result = base.SaveChanges(acceptAllChangesOnSuccess);
+            if (unitsChanged && !enlisted)
+                ProjectListCache.Bump();
+            return result;
         }
 
-        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
+        public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
+            var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            if (unitsChanged && !enlisted)
+                ProjectListCache.Bump();
+            return result;
         }
+
+        private bool UnitRowsChanged() =>
+            ChangeTracker.Entries<Unit>().Any(e =>
+                e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified);
 
         private static CustomerDocumentCategory SeedDocumentCategory(
             int id, string name, string code, bool required, int order, DateTime createdAt) => new()
@@ -2001,7 +2019,6 @@ namespace DAMS.Infrastructure.Data
                 entity.HasIndex(l => l.Stage);
                 entity.HasIndex(l => l.CreatedAt);
                 entity.HasIndex(l => new { l.AssignedEmployeeId, l.Stage });
-                entity.HasIndex(l => new { l.AssignedTeamId, l.Stage });
                 entity.HasIndex(l => new { l.Stage, l.CreatedAt });
                 entity.HasIndex(l => l.NextActionAt);
                 entity.HasIndex(l => l.LastActivityAt);
@@ -2028,10 +2045,6 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(l => l.AssignedEmployeeId)
                       .OnDelete(DeleteBehavior.Restrict);
-                entity.HasOne(l => l.AssignedTeam)
-                      .WithMany()
-                      .HasForeignKey(l => l.AssignedTeamId)
-                      .OnDelete(DeleteBehavior.SetNull);
                 entity.HasOne(l => l.InterestedProject)
                       .WithMany()
                       .HasForeignKey(l => l.InterestedProjectId)

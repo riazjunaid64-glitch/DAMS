@@ -1,14 +1,15 @@
+using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Domain.Entities;
 
 namespace DAMS.Application.Common
 {
     public static class LeadRoles
     {
-        public const string Admin = "Admin";
-        public const string Manager = "Manager";
-        public const string Employee = "Employee";
+        public const string Admin = AppRoles.Admin;
+        public const string Manager = AppRoles.Manager;
+        public const string Employee = AppRoles.Employee;
 
-        /// <summary>Roles allowed anywhere in the lead workspace.</summary>
+        /// <summary>Roles allowed anywhere in the lead workspace. Accountant is not one of them.</summary>
         public const string Staff = Admin + "," + Manager + "," + Employee;
 
         public const string AdminOrManager = Admin + "," + Manager;
@@ -29,11 +30,6 @@ namespace DAMS.Application.Common
 
         /// <summary>The employee record linked to this login, when there is one.</summary>
         public int? EmployeeId { get; init; }
-
-        public int? TeamId { get; init; }
-
-        /// <summary>Teams a manager is responsible for: their own plus any they manage.</summary>
-        public IReadOnlyList<int> ManagedTeamIds { get; init; } = Array.Empty<int>();
 
         public bool IsAdmin => string.Equals(Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase);
 
@@ -62,8 +58,8 @@ namespace DAMS.Application.Common
             {
                 var employeeId = ctx.EmployeeId;
                 // Employees see leads they own. Assigned tasks/visits and mentions can notify
-                // them or let them complete that one work item, but they do not silently grant
-                // full lead-record access across teams.
+                // them or let them complete that one work item, but they do not grant access
+                // to anyone else's leads.
                 return query.Where(l => employeeId != null && l.AssignedEmployeeId == employeeId);
             }
 
@@ -83,16 +79,68 @@ namespace DAMS.Application.Common
                 throw new LeadAuthorizationException("Only an admin or manager can change lead ownership.");
         }
 
-        public static void EnsureCanConvert(LeadUserContext ctx)
+        /// <summary>
+        /// Admin and Manager can convert any lead. An employee can convert only a lead
+        /// assigned to them. Callers that have no lead yet (customer search) pass null and
+        /// stay limited to admin and manager.
+        /// </summary>
+        public static void EnsureCanConvert(LeadUserContext ctx, Lead? lead = null)
         {
-            if (!ctx.IsAdmin && !ctx.IsManager)
-                throw new LeadAuthorizationException("Only an admin or manager can convert a lead into a booking.");
+            if (ctx.IsAdmin || ctx.IsManager)
+                return;
+
+            if (ctx.IsEmployee
+                && ctx.EmployeeId != null
+                && lead != null
+                && lead.AssignedEmployeeId == ctx.EmployeeId)
+                return;
+
+            throw new LeadAuthorizationException(
+                ctx.IsEmployee
+                    ? "You can only convert leads assigned to you."
+                    : "Only an admin or manager can convert a lead into a booking.");
         }
 
-        public static void EnsureCanReopen(LeadUserContext ctx)
+        /// <summary>
+        /// Price, discount, booking amount and the choice of an existing customer are
+        /// admin and manager decisions. A salesperson converting their own lead gets the
+        /// unit's standard terms and a customer matched or created from the lead, so any of
+        /// these sent by an employee is refused rather than quietly applied or dropped.
+        /// </summary>
+        public static void EnsureCanSetConversionTerms(LeadUserContext ctx, ConvertLeadDto dto)
         {
-            if (!ctx.IsAdmin && !ctx.IsManager)
-                throw new LeadAuthorizationException("Only an admin or manager can reopen a closed lead.");
+            if (!ctx.IsEmployee)
+                return;
+
+            if (dto.CustomerId.HasValue
+                || dto.AgreedSalePrice.HasValue
+                || dto.DiscountPercent.HasValue
+                || !string.IsNullOrWhiteSpace(dto.DiscountReason)
+                || dto.BookingAmountRequired.HasValue
+                || dto.BookingAmountDueDate.HasValue)
+                throw new LeadAuthorizationException(
+                    "Only an admin or manager can set the price, discount, booking amount or customer when converting a lead.");
+        }
+
+        /// <summary>
+        /// Admin and Manager can reopen any closed lead. An employee can reopen only a
+        /// lead assigned to them; it stays assigned to them.
+        /// </summary>
+        public static void EnsureCanReopen(LeadUserContext ctx, Lead? lead = null)
+        {
+            if (ctx.IsAdmin || ctx.IsManager)
+                return;
+
+            if (ctx.IsEmployee
+                && ctx.EmployeeId != null
+                && lead != null
+                && lead.AssignedEmployeeId == ctx.EmployeeId)
+                return;
+
+            throw new LeadAuthorizationException(
+                ctx.IsEmployee
+                    ? "You can only reopen leads assigned to you."
+                    : "Only an admin or manager can reopen a closed lead.");
         }
 
         public static void EnsureCanConfigure(LeadUserContext ctx)
@@ -102,7 +150,7 @@ namespace DAMS.Application.Common
         }
 
         /// <summary>
-        /// A held enquiry names leads from any team, so deciding it needs a role that can
+        /// A held enquiry names leads from any owner, so deciding it needs a role that can
         /// see them all.
         /// </summary>
         public static void EnsureCanResolveIntakeHolds(LeadUserContext ctx)
@@ -131,6 +179,12 @@ namespace DAMS.Application.Common
     public class LeadAuthorizationException : Exception
     {
         public LeadAuthorizationException(string message) : base(message) { }
+    }
+
+    /// <summary>Raised when a staff employee record does not exist. Surfaced as 404.</summary>
+    public class StaffNotFoundException : Exception
+    {
+        public StaffNotFoundException(string message) : base(message) { }
     }
 
     /// <summary>Raised when a lead is missing or outside the caller's scope.</summary>

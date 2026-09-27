@@ -39,7 +39,5 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         /// ownership is recorded against the employee but authorised on the user.
         /// </summary>
         public int? UserId { get; set; }
-
-        public int? TeamId { get; set; }
     }
 }

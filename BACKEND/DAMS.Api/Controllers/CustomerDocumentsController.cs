@@ -12,7 +12,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/customer-documents")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class CustomerDocumentsController : ControllerBase
     {
         private readonly ICustomerDocumentService _documents;

@@ -4,7 +4,6 @@ import type {
   LeadSource,
   ProjectLookup,
   StaffMember,
-  Team,
   UnitLookup,
 } from "./types.ts";
 
@@ -25,10 +24,9 @@ export async function apiJson<T>(endpoint: string, options?: RequestInit): Promi
 }
 
 export async function loadCrmLookups() {
-  const [sources, reasons, teams, staff, projects] = await Promise.all([
+  const [sources, reasons, staff, projects] = await Promise.all([
     apiJson<LeadSource[]>("/api/lead-config/sources"),
     apiJson<ClosureReason[]>("/api/lead-config/closure-reasons"),
-    apiJson<Team[]>("/api/lead-config/teams"),
     apiJson<StaffMember[]>("/api/staff/directory"),
     loadProjects(),
   ]);
@@ -36,7 +34,6 @@ export async function loadCrmLookups() {
   return {
     sources,
     reasons,
-    teams,
     staff,
     projects,
   };

@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -69,7 +70,7 @@ export default function EmployeeDetailPage({ user }: Props) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "employees");
 
   useEffect(() => {
     if (!isAdmin) { navigate("/employees"); return; }

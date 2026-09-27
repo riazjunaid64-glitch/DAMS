@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -9,7 +10,7 @@ namespace DAMS.Api.Controllers
     /// <summary>Suppliers and contractors. Their filer status is what picks the withholding rate.</summary>
     [Route("api/finance/vendors")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class VendorsController : ControllerBase
     {
         private readonly IVendorService _vendors;

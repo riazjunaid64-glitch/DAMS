@@ -1,4 +1,5 @@
 import { type ReactNode } from "react";
+import { Tabs } from "../components/ui";
 
 export interface Tab {
   id: string;
@@ -16,37 +17,20 @@ interface TabLayoutProps {
   children: ReactNode;
 }
 
+/** Tabs over their content, for existing screens; drawn by the shared Tabs. */
 export default function TabLayout({ tabs, activeTab, onTabChange, ariaLabel = "Sections", children }: TabLayoutProps) {
   return (
     <div>
-      <div className="tab-bar-wrapper">
-        <div className="tab-bar" role="tablist" aria-label={ariaLabel}>
-          {tabs.map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => !tab.disabled && onTabChange(tab.id)}
-                disabled={tab.disabled}
-                className={`tab-item ${isActive ? "tab-item--active" : ""} ${tab.disabled ? "tab-item--disabled" : ""}`}
-                role="tab"
-                aria-selected={isActive}
-                id={`tab-${tab.id}`}
-              >
-                {tab.icon && <span className="tab-item__icon">{tab.icon}</span>}
-                <span>{tab.label}</span>
-                {tab.badge !== undefined && (
-                  <span className={`tab-item__badge ${isActive ? "tab-item__badge--active" : ""}`}>
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+      <div className="sticky top-14 z-20 border-b border-line bg-page/90 px-4 py-3 backdrop-blur md:top-16 md:px-6 lg:px-8">
+        <Tabs
+          aria-label={ariaLabel}
+          value={activeTab}
+          onChange={onTabChange}
+          items={tabs.map(({ badge, ...tab }) => ({ ...tab, count: badge }))}
+        />
       </div>
 
-      <div className="tab-content animate-fade-in" key={activeTab}>
+      <div className="animate-fade-in min-h-[50vh]" role="tabpanel" aria-labelledby={`tab-${activeTab}`} key={activeTab}>
         {children}
       </div>
     </div>

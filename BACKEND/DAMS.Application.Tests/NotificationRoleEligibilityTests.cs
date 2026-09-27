@@ -39,6 +39,19 @@ public sealed class NotificationRoleEligibilityTests
     }
 
     [Fact]
+    public async Task AccountantGetsBookingAndFinanceNotificationsButNotLeadOnes()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+
+        Assert.True(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.PaymentReceipt));
+        Assert.True(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.BookingApproved));
+        Assert.True(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.InstallmentDue));
+        Assert.False(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.LeadAssigned));
+        Assert.False(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.LeadCreated));
+        Assert.False(h.Eligibility.CanRoleReceive(AppRoles.Accountant, NotificationType.IntegrationAttentionRequired));
+    }
+
+    [Fact]
     public async Task UnauthorizedCategoryFiltersAndPreferenceWritesAreRejected()
     {
         await using var h = await NotificationTestHarness.CreateAsync();

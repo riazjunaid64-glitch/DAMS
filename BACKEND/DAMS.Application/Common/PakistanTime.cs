@@ -19,7 +19,21 @@ namespace DAMS.Application.Common
         /// two disagree, so anything that dates an accounting event from a stored timestamp must
         /// come through here rather than taking <c>.Date</c> off the raw UTC value.
         /// </summary>
-        public static DateTime ToBusinessDate(DateTime utc) => (utc + Offset).Date;
+        public static DateTime ToBusinessDate(DateTime utc) => (AsUtc(utc) + Offset).Date;
+
+        /// <summary>
+        /// The same instant on the Pakistan clock. Fixed UTC+5, because Pakistan does not
+        /// observe daylight saving, so a missing OS timezone must not fall back to UTC.
+        /// </summary>
+        public static DateTime ToLocal(DateTime utc) =>
+            DateTime.SpecifyKind(AsUtc(utc) + Offset, DateTimeKind.Unspecified);
+
+        private static DateTime AsUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
 
         public static DateTime StartOfBusinessDateUtc(DateTime businessDate) =>
             DateTime.SpecifyKind(businessDate.Date - Offset, DateTimeKind.Utc);

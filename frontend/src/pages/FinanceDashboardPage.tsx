@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -449,7 +450,7 @@ const emptyExpenseForm = (): ExpenseFormState => ({
 
 export default function FinanceDashboardPage({ user }: Props) {
   const navigate = useNavigate();
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "finance");
   const { projects } = useProjects();
 
   const [financeAccounts, setFinanceAccounts] = useState<FinanceAccountOption[]>([]);

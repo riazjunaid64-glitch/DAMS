@@ -2,21 +2,26 @@
  * What a signed-in role may do in CRM settings. The server enforces every rule here
  * (StaffManagementService); these only keep the screen from offering what it would refuse.
  */
+import { can } from "../access/permissions.ts";
 
-/** Admins and Sales Managers run CRM settings; salespeople do not. */
-export const canOpenCrmSettings = (actorRole: string) =>
-  actorRole === "Admin" || actorRole === "Manager";
+/** Admins and Sales Managers run CRM settings; salespeople and accountants do not. */
+export const canOpenCrmSettings = (actorRole: string) => can(actorRole, "crm.settings");
 
-/** Only an Admin may hand out the Admin role. */
+/** Only an Admin may hand out Admin or Accountant. A manager gives the two sales roles. */
 export const grantableRoles = (actorRole: string): [string, string][] => [
-  ...(actorRole === "Admin" ? [["Admin", "Admin"] as [string, string]] : []),
-  ["Manager", "Sales Manager"],
-  ["Employee", "Sales Employee"],
+  ...(can(actorRole, "staff.admin")
+    ? [
+        ["Admin", "Admin"] as [string, string],
+        ["Accountant", "Accountant"] as [string, string],
+      ]
+    : []),
+  ["Manager", "Sales manager"],
+  ["Employee", "Sales employee"],
 ];
 
-/** A non-admin may act only on accounts that are already staff below Admin. */
+/** A non-admin may act only on logins that are already a sales role. */
 export const canActOnAccount = (actorRole: string, accountRole?: string | null) =>
-  actorRole === "Admin" || accountRole === "Manager" || accountRole === "Employee";
+  can(actorRole, "staff.admin") || accountRole === "Manager" || accountRole === "Employee";
 
-/** Employment status is HR data from the Admin-only Employees area. */
-export const canChangeEmploymentStatus = (actorRole: string) => actorRole === "Admin";
+/** Employment status is HR data. CRM settings leaves it to an Admin. */
+export const canChangeEmploymentStatus = (actorRole: string) => can(actorRole, "staff.admin");

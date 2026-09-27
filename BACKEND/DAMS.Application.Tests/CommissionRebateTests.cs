@@ -21,11 +21,11 @@ public sealed class CommissionRebateTests
     private static readonly FinancialWorkflowActor Actor = new(77, "Finance Admin");
 
     [Fact]
-    public void Controller_IsRestrictedToAdmins()
+    public void Controller_IsRestrictedToAdminsAndAccountants()
     {
         var authorization = typeof(CommissionRebatesController).GetCustomAttribute<AuthorizeAttribute>();
         Assert.NotNull(authorization);
-        Assert.Equal("Admin", authorization.Roles);
+        Assert.Equal(AppRoles.AdminOrAccountant, authorization.Roles);
         Assert.All(typeof(CommissionRebatesController).GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(m => m.DeclaringType == typeof(CommissionRebatesController)), m => Assert.NotNull(m));
     }

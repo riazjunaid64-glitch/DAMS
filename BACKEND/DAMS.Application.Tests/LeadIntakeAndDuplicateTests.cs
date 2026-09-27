@@ -504,133 +504,33 @@ public sealed class LeadIntakeAndDuplicateTests
     internal static async Task<int> ReasonIdAsync(LeadTestHarness h, string code) =>
         await h.Db.LeadClosureReasons.Where(r => r.Code == code).Select(r => r.Id).FirstAsync();
 
-    // ── KAN-18: Lead initial assignment validates both employee and team ──
+    // ── Assignment on creation is the employee, and nothing else ──
 
     [Fact]
-    public async Task KAN18_EmployeeNotInTeam_ThrowsInvalidOperationException()
+    public async Task Creating_with_an_employee_assigns_that_owner()
     {
         await using var h = await LeadTestHarness.CreateAsync();
 
-        // Omar (OtherSales) is deliberately NOT on the North Sales team.
+        var dto = LeadTestHarness.Intake();
+        dto.AssignedEmployeeId = h.SalesEmployeeId;
+
+        var result = await h.Leads.IngestAsync(dto, h.Admin);
+
+        Assert.False(result.IsDuplicate);
+        Assert.NotNull(result.Lead);
+        Assert.Equal(h.SalesEmployeeId, result.Lead!.AssignedEmployeeId);
+        Assert.Equal(LeadAssignmentState.Assigned, result.Lead.AssignmentState);
+    }
+
+    [Fact]
+    public async Task A_manager_can_assign_any_salesperson_on_creation()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
         var dto = LeadTestHarness.Intake();
         dto.AssignedEmployeeId = h.OtherSalesEmployeeId;
-        dto.AssignedTeamId = h.TeamId;
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Leads.IngestAsync(dto, h.Admin));
-    }
-
-    [Fact]
-    public async Task KAN18_InactiveTeam_ThrowsInvalidOperationException()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var inactiveTeam = new Team { Name = "Inactive Team", IsActive = false };
-        h.Db.Teams.Add(inactiveTeam);
-        await h.Db.SaveChangesAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        dto.AssignedTeamId = inactiveTeam.Id;
-
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Leads.IngestAsync(dto, h.Admin));
-    }
-
-    [Fact]
-    public async Task KAN18_ValidEmployeeAndTeam_Succeeds()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        dto.AssignedTeamId = h.TeamId;
-
-        var result = await h.Leads.IngestAsync(dto, h.Admin);
-
-        Assert.False(result.IsDuplicate);
-        Assert.NotNull(result.Lead);
-        Assert.Equal(h.SalesEmployeeId, result.Lead!.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, result.Lead.AssignedTeamId);
-        Assert.Equal(LeadAssignmentState.Assigned, result.Lead.AssignmentState);
-    }
-
-    [Fact]
-    public async Task KAN18_EmployeeOnly_Succeeds()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        // No team — should default to the employee's team.
-
-        var result = await h.Leads.IngestAsync(dto, h.Admin);
-
-        Assert.False(result.IsDuplicate);
-        Assert.NotNull(result.Lead);
-        Assert.Equal(h.SalesEmployeeId, result.Lead!.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, result.Lead.AssignedTeamId);
-    }
-
-    [Fact]
-    public async Task KAN18_TeamOnly_Succeeds()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedTeamId = h.TeamId;
-        // No employee — team-only assignment should succeed.
-
-        var result = await h.Leads.IngestAsync(dto, h.Admin);
-
-        Assert.False(result.IsDuplicate);
-        Assert.NotNull(result.Lead);
-        Assert.Null(result.Lead!.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, result.Lead.AssignedTeamId);
-        Assert.Equal(LeadAssignmentState.Assigned, result.Lead.AssignmentState);
-    }
-
-    [Fact]
-    public async Task KAN38_Manager_AnyTeam_Succeeds()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var otherTeam = new Team { Name = "South Sales", ManagerEmployeeId = h.OtherSalesEmployeeId, IsActive = true };
-        h.Db.Teams.Add(otherTeam);
-        await h.Db.SaveChangesAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedTeamId = otherTeam.Id;
-
-        // Managers assign across every team, exactly like an admin.
         var result = await h.Leads.IngestAsync(dto, h.Manager);
-        Assert.Equal(otherTeam.Id, result.Lead!.AssignedTeamId);
-    }
-
-    [Fact]
-    public async Task KAN18_Admin_AnyTeam_Succeeds()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-
-        var otherTeam = new Team { Name = "East Sales", IsActive = true };
-        h.Db.Teams.Add(otherTeam);
-        await h.Db.SaveChangesAsync();
-
-        // Move Sana to East Sales so the employee↔team check passes.
-        var sana = await h.Db.Employees.FindAsync(h.SalesEmployeeId);
-        sana!.TeamId = otherTeam.Id;
-        await h.Db.SaveChangesAsync();
-
-        var dto = LeadTestHarness.Intake();
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        dto.AssignedTeamId = otherTeam.Id;
-
-        // Admin can assign to any team — no manager scope restriction.
-        var result = await h.Leads.IngestAsync(dto, h.Admin);
-
-        Assert.False(result.IsDuplicate);
-        Assert.NotNull(result.Lead);
-        Assert.Equal(h.SalesEmployeeId, result.Lead!.AssignedEmployeeId);
-        Assert.Equal(otherTeam.Id, result.Lead.AssignedTeamId);
+        Assert.Equal(h.OtherSalesEmployeeId, result.Lead!.AssignedEmployeeId);
     }
 }

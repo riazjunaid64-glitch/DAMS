@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Api.Filters;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
@@ -13,7 +14,7 @@ namespace DAMS.Api.Controllers
     /// </summary>
     [Route("api/finance/wht")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class WhtController : ControllerBase
     {
         private readonly IWhtService _wht;

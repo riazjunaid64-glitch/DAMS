@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -21,7 +22,7 @@ export default function ApplicationFormPage({ user }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
   const fromCreate = state?.fromCreate ?? false;
 
   // Re-print path: load an existing booking by id when no data was passed via navigation state.

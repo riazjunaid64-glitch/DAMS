@@ -23,11 +23,13 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int NewLeads { get; set; }
 
-        /// <summary>Contacted and still open: the In Progress step of the simplified pipeline.</summary>
+        /// <summary>Every lead that is not Won, Lost or Dormant, including ones not yet contacted.</summary>
         public int InProgressLeads { get; set; }
 
-        /// <summary>Closed without converting, Dormant included.</summary>
+        /// <summary>Stage Lost only. Dormant is counted separately.</summary>
         public int LostLeads { get; set; }
+
+        public int DormantLeads { get; set; }
 
         public int ActiveLeads { get; set; }
 
@@ -58,8 +60,6 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string EmployeeName { get; set; } = string.Empty;
 
-        public string? TeamName { get; set; }
-
         public int TotalLeads { get; set; }
 
         public int ActiveLeads { get; set; }
@@ -84,6 +84,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int OpenLeads { get; set; }
 
+        /// <summary>Same leads as <see cref="OpenLeads"/>: everything that is not Won, Lost or Dormant.</summary>
+        public int InProgressLeads { get; set; }
+
         public int UnassignedLeads { get; set; }
 
         public int WonLeads { get; set; }
@@ -107,8 +110,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public List<LeadClosureReasonCountDto> LossReasons { get; set; } = new();
 
         public List<EmployeePerformanceDto> ByEmployee { get; set; } = new();
-
-        public List<TeamPerformanceDto> ByTeam { get; set; } = new();
     }
 
     public class LeadSourcePerformanceDto
@@ -154,19 +155,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public string ReasonName { get; set; } = string.Empty;
 
         public int Count { get; set; }
-    }
-
-    public class TeamPerformanceDto
-    {
-        public int TeamId { get; set; }
-
-        public string TeamName { get; set; } = string.Empty;
-
-        public int TotalLeads { get; set; }
-
-        public int WonLeads { get; set; }
-
-        public double ConversionRatePercent { get; set; }
     }
 
     public class LeadAlertScanResultDto

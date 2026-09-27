@@ -6,6 +6,7 @@ import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
 import TabLayout from "../lib/TabLayout.tsx";
 import { formatFloor } from "../lib/floors.ts";
+import { homePathFor } from "../features/access/permissions.ts";
 
 type Props = { user: User | null };
 
@@ -110,13 +111,13 @@ export default function MyProjectDetailPage({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
 
-  const isClient = user && user.role !== "Admin";
+  const isClient = user?.role === "Client";
 
   useEffect(() => {
-    if (user?.role === "Admin") {
-      navigate("/", { replace: true });
+    if (user && !isClient) {
+      navigate(homePathFor(user.role), { replace: true });
     }
-  }, [user, navigate]);
+  }, [user, isClient, navigate]);
 
   const load = useCallback(async () => {
     if (!bookingId || Number.isNaN(bookingId)) return;
@@ -143,7 +144,7 @@ export default function MyProjectDetailPage({ user }: Props) {
     load();
   }, [isClient, load]);
 
-  if (user?.role === "Admin") return null;
+  if (user && !isClient) return null;
 
   if (!user) {
     return (

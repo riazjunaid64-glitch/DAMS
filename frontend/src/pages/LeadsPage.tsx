@@ -1,20 +1,34 @@
-import AppSelect from "../lib/AppSelect.tsx";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
-import Button from "../lib/Button.tsx";
+import { can } from "../features/access/permissions.ts";
 import {
-  CrmAccess,
-  CrmHeader,
-  CrmModal,
-  ErrorBanner,
-  inputClass,
-  Label,
-  MetricCard,
-  QualificationBadge,
-  StageBadge,
-  StatePanel,
-} from "../features/leads/CrmUi.tsx";
+  Button,
+  DataTable,
+  DEFAULT_PAGE_SIZE,
+  Dropdown,
+  EmptyState,
+  FilterBar,
+  IconPlus,
+  IconUsers,
+  ListCard,
+  LoadMore,
+  Modal,
+  NumberField,
+  PageHeader,
+  Pagination,
+  StatSummary,
+  StatusBadge,
+  TextArea,
+  TextField,
+  useIsPhone,
+  type DataTableColumn,
+  type FilterDef,
+  type FilterValues,
+  type StatCardProps,
+  type StatusTone,
+} from "../components/ui";
+import { CrmAccess, ErrorBanner } from "../features/leads/CrmUi.tsx";
 import { apiJson, jsonRequest, loadCrmLookups, loadUnits } from "../features/leads/leadApi.ts";
 import { describeConflict, describeDuplicate, type DuplicateMatch } from "../features/leads/duplicateResolution.ts";
 import HeldEnquiriesPanel from "../features/leads/HeldEnquiriesPanel.tsx";
@@ -32,7 +46,6 @@ import {
   type LeadSource,
   type ProjectLookup,
   type StaffMember,
-  type Team,
   type UnitLookup,
 } from "../features/leads/types.ts";
 
@@ -40,15 +53,14 @@ type Props = { user: User | null };
 type Lookups = {
   sources: LeadSource[];
   reasons: ClosureReason[];
-  teams: Team[];
   staff: StaffMember[];
   projects: ProjectLookup[];
 };
 
-/** Every list filter the page reads from the URL, whether or not the bar shows a control for it. */
-const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "teamId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
+const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], staff: [], projects: [] };
 
-const EMPTY_LOOKUPS: Lookups = { sources: [], reasons: [], teams: [], staff: [], projects: [] };
+/** Every URL filter the list honours; Reset clears all of them (sorting stays). */
+const FILTER_KEYS = ["search", "stage", "stageGroup", "qualification", "sourceId", "employeeId", "projectId", "paymentPreference", "unitId", "campaign", "unassigned", "overdue", "inactive", "createdFrom", "createdTo"];
 
 export default function LeadsPage({ user }: Props) {
   return <CrmAccess user={user}>{user && <LeadsWorkspace user={user} />}</CrmAccess>;
@@ -56,6 +68,7 @@ export default function LeadsPage({ user }: Props) {
 
 function LeadsWorkspace({ user }: { user: User }) {
   const navigate = useNavigate();
+  const isPhone = useIsPhone();
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<LeadList | null>(null);
   const [dashboard, setDashboard] = useState<Record<string, unknown> | null>(null);
@@ -68,35 +81,33 @@ function LeadsWorkspace({ user }: { user: User }) {
   // admins and managers keep the detailed stages, qualification and ownership they run the CRM by.
   const isSalesperson = user.role === "Employee";
 
-  const updateParam = (key: string, value: string) => {
+  const updateParams = (changes: FilterValues) => {
     const next = new URLSearchParams(params);
-    if (value) next.set(key, value); else next.delete(key);
-    if (key !== "page") next.set("page", "1");
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value); else next.delete(key);
+    }
+    if (!("page" in changes)) next.set("page", "1");
     setParams(next);
   };
+  const updateParam = (key: string, value: string) => updateParams({ [key]: value });
 
-  // Clears every filter, including the ones with no control on the bar (an old bookmark's
-  // "qualification" or "overdue"), so a list that looks filtered for no visible reason can be reset.
-  // Sorting is not a filter and stays.
+  // Clears every URL filter, including ones with no control on the bar (an old bookmark's
+  // "qualification" or "overdue"). Sorting is not a filter and stays.
   const hasFilters = FILTER_KEYS.some((key) => params.get(key));
-  const clearFilters = () => {
-    const next = new URLSearchParams(params);
-    for (const key of FILTER_KEYS) next.delete(key);
-    next.set("page", "1");
-    setParams(next);
-  };
+  const clearFilters = () => updateParams(Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])));
 
   // The bar exposes search, stage, source and project (and payment, for admins and managers). The rest stay honoured because the URL is
   // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
   // exactly as it did, and the server contract is unchanged.
   const query = useMemo(() => {
+    const allowed = [...FILTER_KEYS, "sortBy", "sortDesc"];
     const q = new URLSearchParams();
-    for (const key of [...FILTER_KEYS, "sortBy", "sortDesc"]) {
+    for (const key of allowed) {
       const value = params.get(key);
       if (value) q.set(key, value);
     }
     q.set("page", String(Number.isFinite(page) && page > 0 ? page : 1));
-    q.set("pageSize", "20");
+    q.set("pageSize", String(DEFAULT_PAGE_SIZE));
     return q.toString();
   }, [page, params]);
 
@@ -122,171 +133,254 @@ function LeadsWorkspace({ user }: { user: User }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Phone lists grow with "Load more" instead of paging. The extra pages belong to the query that
+  // fetched them, so a filter change drops them in the same render rather than in an effect.
+  const [more, setMore] = useState<{ query: string; items: Lead[]; page: number; loading: boolean }>({ query: "", items: [], page: 0, loading: false });
+  const extra = more.query === query ? more : null;
+  const loadMore = async () => {
+    if (!data) return;
+    const nextPage = (extra?.page ?? data.page) + 1;
+    const q = new URLSearchParams(query);
+    q.set("page", String(nextPage));
+    setMore({ query, items: extra?.items ?? [], page: extra?.page ?? data.page, loading: true });
+    try {
+      const next = await apiJson<LeadList>(`/api/leads?${q.toString()}`);
+      setMore((current) => current.query === query
+        ? { query, items: [...current.items, ...next.items], page: nextPage, loading: false }
+        : current);
+    } catch (caught) {
+      setMore((current) => ({ ...current, loading: false }));
+      setError(caught instanceof Error ? caught.message : "More leads could not be loaded.");
+    }
+  };
+  const leads = data ? (isPhone && extra ? [...data.items, ...extra.items] : data.items) : [];
+  // Everything before the first page on screen counts as shown, so "Showing 40 of 437" stays true
+  // for a phone that opened a link to page 3.
+  const shownOnPhone = data ? (data.page - 1) * data.pageSize + leads.length : 0;
+
   const metrics = dashboardMetrics(isSalesperson, dashboard);
+  const [total, ...cards] = metrics;
+  const toStatCard = (metric: Metric): StatCardProps => {
+    // A card that switches a filter on has to switch it off again. Stage lands in a dropdown the
+    // operator can see and reset, but "unassigned" and "overdue" have no control of their own on
+    // this bar — so pressing the card again is the way back, and the card shows it is pressed
+    // rather than leaving the list quietly filtered.
+    const applied = !!metric.filter && params.get(metric.filter.key) === metric.filter.value;
+    return {
+      label: metric.label,
+      value: metric.value,
+      tone: metric.tone,
+      selected: applied,
+      onClick: metric.filter ? () => updateParam(metric.filter!.key, applied ? "" : metric.filter!.value) : undefined,
+    };
+  };
+
+  const filters: FilterDef[] = [
+    isSalesperson
+      ? { type: "select", key: "stageGroup", label: "Stage", options: leadStageGroups.map((v) => ({ value: v, label: stageLabel(v) })) }
+      : { type: "select", key: "stage", label: "Stage", options: leadStages.map((v) => ({ value: v, label: stageLabel(v) })) },
+    { type: "select", key: "sourceId", label: "Source", options: lookups.sources.map((v) => ({ value: String(v.id), label: v.name })) },
+    { type: "select", key: "projectId", label: "Project", options: lookups.projects.map((v) => ({ value: String(v.id), label: v.name })) },
+    ...(isSalesperson ? [] : [{
+      type: "select" as const,
+      key: "paymentPreference",
+      label: "Payment",
+      options: paymentPreferences.filter((v) => v !== "Unknown").map((v) => ({ value: v, label: stageLabel(v) })),
+    }]),
+  ];
 
   return (
-    <>
-      <CrmHeader
-        title={isSalesperson ? "My lead workspace" : "Lead management"}
-        subtitle="Capture, assign, work, and convert property enquiries while preserving every customer interaction."
-        role={user.role}
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7">
+      <PageHeader
+        title={isSalesperson ? "My leads" : "Lead CRM"}
+        subtitle={isSalesperson ? "Your assigned enquiries and what comes next." : "Capture, assign, work and convert property enquiries."}
         actions={
           <>
             {!isSalesperson && <Button variant="outline" onClick={() => navigate("/crm/settings")}>CRM settings</Button>}
-            <Button onClick={() => setCreateOpen(true)}><IconPlus className="h-4 w-4" />New lead</Button>
+            <Button icon={<IconPlus size={16} />} onClick={() => setCreateOpen(true)} className="max-md:hidden">New lead</Button>
           </>
         }
       />
 
-      <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-        {!isSalesperson && <HeldEnquiriesPanel onResolved={() => void load()} />}
+      {error && <ErrorBanner message={error} onRetry={() => void load()} />}
+      {!isSalesperson && <HeldEnquiriesPanel onResolved={() => void load()} />}
 
-        <section aria-label="Lead summary" className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
-          {metrics.map((metric) => {
-            // A card that switches a filter on has to switch it off again. Stage lands in a
-            // dropdown the operator can see and reset, but "unassigned" and "overdue" have no
-            // control of their own on this bar — so pressing the card again is the way back, and
-            // the card shows it is pressed rather than leaving the list quietly filtered.
-            const applied = !!metric.filter && params.get(metric.filter.key) === metric.filter.value;
-            return (
-              <MetricCard
-                key={metric.label}
-                label={metric.label}
-                value={metric.value}
-                icon={METRIC_ICONS[metric.id]}
-                active={applied}
-                onClick={metric.filter ? () => updateParam(metric.filter!.key, applied ? "" : metric.filter!.value) : undefined}
-              />
-            );
-          })}
-        </section>
+      {total && (
+        <StatSummary
+          total={{ label: total.label, value: total.value }}
+          items={cards.map(toStatCard)}
+          phoneColumns={cards.length === 3 ? 3 : 2}
+        />
+      )}
 
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="relative w-full lg:max-w-md">
-              <span aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconSearch className="h-4 w-4" /></span>
-              <input
-                className={`${inputClass} pl-10`}
-                value={params.get("search") ?? ""}
-                onChange={(event) => updateParam("search", event.target.value)}
-                placeholder="Search name, phone, email, campaign…"
-                aria-label="Search leads"
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              {isSalesperson
-                ? <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stageGroup") ?? ""} onChange={(v) => updateParam("stageGroup", v)} options={leadStageGroups.map((v) => [v, stageLabel(v)])} />
-                : <BarSelect label="Stage" icon={<IconLayers className="h-4 w-4" />} value={params.get("stage") ?? ""} onChange={(v) => updateParam("stage", v)} options={leadStages.map((v) => [v, stageLabel(v)])} />}
-              <BarSelect label="Source" icon={<IconMegaphone className="h-4 w-4" />} value={params.get("sourceId") ?? ""} onChange={(v) => updateParam("sourceId", v)} options={lookups.sources.map((v) => [String(v.id), v.name])} />
-              <BarSelect label="Project" icon={<IconBuilding className="h-4 w-4" />} value={params.get("projectId") ?? ""} onChange={(v) => updateParam("projectId", v)} options={lookups.projects.map((v) => [String(v.id), v.name])} />
-              {!isSalesperson && <BarSelect label="Payment" icon={<IconWallet className="h-4 w-4" />} value={params.get("paymentPreference") ?? ""} onChange={(v) => updateParam("paymentPreference", v)} options={paymentPreferences.filter((v) => v !== "Unknown").map((v) => [v, stageLabel(v)])} />}
-              {hasFilters && <Button variant="ghost" onClick={clearFilters}>Clear filters</Button>}
-            </div>
-          </div>
-        </section>
+      <FilterBar
+        search={{ value: params.get("search") ?? "", onSearch: (value) => updateParam("search", value), placeholder: "Search name, phone, email, campaign…" }}
+        filters={filters}
+        values={Object.fromEntries(filters.map((filter) => [filter.key, params.get(filter.key) ?? ""]))}
+        onChange={updateParams}
+        onReset={clearFilters}
+        onAdd={() => setCreateOpen(true)}
+        addLabel="New lead"
+      />
 
-        {loading && !data ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-32 animate-pulse rounded-2xl bg-[var(--surface-glass)]" />)}</div>
-        ) : !data || data.items.length === 0 ? (
-          <StatePanel title="No leads found" message={hasFilters ? "No accessible leads match these filters. Clear the filters or capture a new enquiry." : "No leads yet. Capture a new enquiry to start."} action={hasFilters ? <Button variant="outline" onClick={clearFilters}>Clear filters</Button> : <Button onClick={() => setCreateOpen(true)}>Create lead</Button>} />
-        ) : (
-          <LeadTable leads={data.items} simple={isSalesperson} />
-        )}
-
-        {data && data.totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-[var(--text-muted)]">
-            <span>{data.totalCount} leads</span>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => updateParam("page", String(page - 1))}>Previous</Button>
-              <span>Page {data.page} of {data.totalPages}</span>
-              <Button size="sm" variant="outline" disabled={page >= data.totalPages} onClick={() => updateParam("page", String(page + 1))}>Next</Button>
-            </div>
-          </div>
-        )}
-      </div>
+      {loading && !data ? (
+        <div className="flex flex-col gap-2.5">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-16 animate-pulse rounded-card bg-track" />)}</div>
+      ) : !data || data.items.length === 0 ? (
+        <EmptyState
+          icon={<IconUsers size={26} />}
+          title="No leads found"
+          message={hasFilters ? "No leads match these filters. Clear the filters or capture a new enquiry." : "No leads yet. Capture a new enquiry to start."}
+          action={hasFilters
+            ? <Button variant="outline" onClick={clearFilters}>Clear filters</Button>
+            : <Button variant="outline" onClick={() => setCreateOpen(true)}>New lead</Button>}
+        />
+      ) : (
+        <>
+          <DataTable
+            caption="Leads"
+            rows={leads}
+            rowKey={(lead) => lead.id}
+            columns={leadColumns(isSalesperson)}
+            onRowClick={(lead) => navigate(`/crm/leads/${lead.id}`)}
+            minWidth={isSalesperson ? 860 : 980}
+            phoneCard={(lead) => <LeadCard lead={lead} simple={isSalesperson} />}
+          />
+          <Pagination
+            className="max-md:hidden"
+            page={data.page}
+            pageSize={data.pageSize}
+            totalCount={data.totalCount}
+            totalPages={data.totalPages}
+            itemLabel="leads"
+            onPageChange={(next) => updateParams({ page: String(next) })}
+          />
+          <LoadMore
+            className="md:hidden"
+            shown={shownOnPhone}
+            total={data.totalCount}
+            loading={extra?.loading ?? false}
+            onLoadMore={() => void loadMore()}
+          />
+        </>
+      )}
 
       <LeadCreateModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         lookups={lookups}
-        canAssign={user.role === "Admin" || user.role === "Manager"}
+        canAssign={can(user.role, "crm.manage")}
         onCreated={(leadId) => navigate(`/crm/leads/${leadId}`)}
       />
-    </>
+    </div>
+  );
+}
+
+/** Badge colour: Dormant is orange; otherwise the stage group the server sent decides. */
+function stageTone(lead: Lead): StatusTone {
+  if (lead.stage === "Dormant") return "orange";
+  return lead.stageGroup === "Won" ? "green" : lead.stageGroup === "Lost" ? "red" : "blue";
+}
+
+/** A salesperson sees the simple stage the server grouped the lead into; others see the detailed stage. */
+function StageBadge({ lead, simple }: { lead: Lead; simple: boolean }) {
+  return <StatusBadge status={lead.stage} tone={stageTone(lead)}>{stageLabel(simple ? lead.stageGroup : lead.stage)}</StatusBadge>;
+}
+
+const QUALIFICATION_TONES: Record<string, StatusTone> = { Hot: "red", Warm: "orange", Cold: "blue" };
+
+const contactOf = (lead: Lead) => lead.phone ?? lead.whatsappNumber ?? lead.email;
+
+/** A closed lead has nothing scheduled by design, so it says so rather than reading as an omission. */
+function NextAction({ lead }: { lead: Lead }) {
+  const closed = isClosedStage(lead.stage);
+  const overdue = isPastServerTime(lead.nextActionAt) && !closed;
+  return (
+    <span className={overdue ? "font-bold text-danger" : undefined}>
+      {lead.nextActionSummary ?? "—"}
+      <span className={`block text-label ${overdue ? "" : "text-ink-muted"}`}>
+        {closed ? "Completed" : lead.nextActionAt ? formatDateTime(lead.nextActionAt) : "Not scheduled"}
+      </span>
+    </span>
   );
 }
 
 /**
  * A salesperson's table (simple) carries only what decides their next move: who, from where, for
- * what, how far along, and what happened last and comes next. Qualification, owner and team are the
+ * what, how far along, and what happened last and comes next. Qualification and owner are the
  * admin and manager's concern and stay on their table and on the lead itself.
  */
-function LeadTable({ leads, simple }: { leads: Lead[]; simple: boolean }) {
-  const headers = simple
-    ? ["Lead", "Source", "Project / Interest", "Stage", "Last activity", "Next action"]
-    : ["Lead", "Interest", "Stage", "Qualification", "Owner / Team", "Last activity", "Next action", "Created"];
-  const contactOf = (lead: Lead) => lead.phone ?? lead.whatsappNumber ?? lead.email;
+function leadColumns(simple: boolean): DataTableColumn<Lead>[] {
+  const muted = "block text-label text-ink-muted";
+  const columns: (DataTableColumn<Lead> | false)[] = [
+    {
+      key: "lead",
+      header: "Lead",
+      className: "min-w-[190px]",
+      render: (lead) => (
+        <>
+          <Link className="font-extrabold text-ink no-underline hover:underline" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
+          {simple
+            ? <span className={muted}>{contactOf(lead) ?? "No contact details"}</span>
+            : <>
+                <span className={muted}>{lead.leadReference}{contactOf(lead) && ` · ${contactOf(lead)}`}</span>
+                <span className={muted}>{lead.sourceName}</span>
+              </>}
+        </>
+      ),
+    },
+    simple && { key: "source", header: "Source", render: (lead) => lead.sourceName },
+    {
+      key: "interest",
+      header: simple ? "Project / Interest" : "Interest",
+      className: "max-w-[190px]",
+      render: (lead) => (
+        <>
+          {lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}
+          {lead.interestedUnitNumber && <span className={muted}>Unit {lead.interestedUnitNumber}</span>}
+        </>
+      ),
+    },
+    { key: "stage", header: "Stage", className: "whitespace-nowrap", render: (lead) => <StageBadge lead={lead} simple={simple} /> },
+    !simple && {
+      key: "qualification",
+      header: "Qualification",
+      className: "whitespace-nowrap",
+      render: (lead) => <StatusBadge status={lead.qualification} tone={QUALIFICATION_TONES[lead.qualification] ?? "grey"} />,
+    },
+    !simple && {
+      key: "owner",
+      header: "Owner",
+      render: (lead) => lead.assignedEmployeeName ?? "Unassigned",
+    },
+    {
+      key: "activity",
+      header: "Last activity",
+      className: "max-w-[220px]",
+      render: (lead) => <>{lead.lastActivitySummary ?? "No activity"}<span className={muted}>{formatDateTime(lead.lastActivityAt)}</span></>,
+    },
+    { key: "next", header: "Next action", className: "max-w-[190px]", render: (lead) => <NextAction lead={lead} /> },
+    !simple && { key: "created", header: "Created", className: "whitespace-nowrap text-label text-ink-muted", render: (lead) => formatDateTime(lead.createdAt) },
+  ];
+  return columns.filter((column): column is DataTableColumn<Lead> => column !== false);
+}
+
+function LeadCard({ lead, simple }: { lead: Lead; simple: boolean }) {
   return (
-    <>
-      <div className="hidden overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] md:block">
-        <div className="overflow-x-auto">
-          <table className={`w-full text-left ${simple ? "min-w-[860px]" : "min-w-[980px]"}`}>
-            <thead className="border-b border-[var(--border)] bg-[var(--surface-glass)] text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--text-muted)]">
-              <tr>{headers.map((h) => <th className="px-4 py-4 align-bottom" key={h}>{h}</th>)}</tr>
-            </thead>
-            <tbody>
-              {leads.map((lead) => {
-                const closed = isClosedStage(lead.stage);
-                const overdue = isPastServerTime(lead.nextActionAt) && !closed;
-                return (
-                  <tr key={lead.id} className="border-b border-[var(--border)] align-top transition last:border-0 hover:bg-[var(--surface-glass-hover)]">
-                    <td className="px-4 py-4">
-                      <Link className="font-semibold text-[var(--text-heading)] transition hover:text-[var(--accent)]" to={`/crm/leads/${lead.id}`}>{lead.fullName}</Link>
-                      {simple
-                        ? <p className="mt-1 text-xs text-[var(--text-muted)]">{contactOf(lead) ?? "No contact details"}</p>
-                        : <>
-                            <p className="mt-1 text-xs text-[var(--text-muted)]">{lead.leadReference}{contactOf(lead) && ` · ${contactOf(lead)}`}</p>
-                            <p className="text-xs text-[var(--text-muted)]">{lead.sourceName}</p>
-                          </>}
-                    </td>
-                    {simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.sourceName}</td>}
-                    <td className="max-w-[190px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry"}{lead.interestedUnitNumber && <p className="mt-1 text-xs text-[var(--text-muted)]">Unit {lead.interestedUnitNumber}</p>}</td>
-                    <td className="whitespace-nowrap px-4 py-4"><StageBadge stage={simple ? lead.stageGroup : lead.stage} /></td>
-                    {!simple && <td className="whitespace-nowrap px-4 py-4"><QualificationBadge value={lead.qualification} /></td>}
-                    {!simple && <td className="px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}<p className="mt-1 text-xs text-[var(--text-muted)]">{lead.assignedTeamName ?? "No team"}</p></td>}
-                    <td className="max-w-[220px] px-4 py-4 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}<p className="mt-1 text-xs text-[var(--text-muted)]">{formatDateTime(lead.lastActivityAt)}</p></td>
-                    {/* A closed lead has nothing scheduled by design, so it says so rather than
-                        reading as an omission next to leads that really are missing a next step. */}
-                    <td className={`max-w-[190px] px-4 py-4 text-sm ${overdue ? "font-semibold text-rose-400" : "text-[var(--text-secondary)]"}`}>{lead.nextActionSummary ?? "—"}<p className={`mt-1 text-xs ${overdue ? "" : "text-[var(--text-muted)]"}`}>{closed ? "Completed" : lead.nextActionAt ? formatDateTime(lead.nextActionAt) : "Not scheduled"}</p></td>
-                    {!simple && <td className="px-4 py-4 text-xs text-[var(--text-muted)]">{formatDateTime(lead.createdAt)}</td>}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="grid gap-3 md:hidden">
-        {leads.map((lead) => (
-          <Link key={lead.id} to={`/crm/leads/${lead.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
-            <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{lead.fullName}</p><p className="text-xs text-[var(--text-muted)]">{simple ? `${lead.sourceName} · ${contactOf(lead) ?? "No contact details"}` : `${lead.leadReference} · ${contactOf(lead) ?? "No contact details"}`}</p></div><StageBadge stage={simple ? lead.stageGroup : lead.stage} /></div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-[var(--text-muted)]">
-              {simple
-                ? <div><p className="uppercase">Last activity</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.lastActivitySummary ?? "No activity"}</p></div>
-                : <div><p className="uppercase">Owner</p><p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.assignedEmployeeName ?? "Unassigned"}</p></div>}
-              <div><p className="uppercase">Next action</p>{simple && <p className="mt-1 text-sm text-[var(--text-secondary)]">{lead.nextActionSummary ?? "—"}</p>}<p className="mt-1 text-sm text-[var(--text-secondary)]">{isClosedStage(lead.stage) ? "Completed" : formatDateTime(lead.nextActionAt)}</p></div>
-            </div>
-          </Link>
-        ))}
-      </div>
-    </>
+    <ListCard
+      to={`/crm/leads/${lead.id}`}
+      reference={simple ? lead.sourceName : lead.leadReference}
+      badge={<StageBadge lead={lead} simple={simple} />}
+      title={lead.fullName}
+      detail={[lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry", contactOf(lead) ?? "No contact details"].join(" · ")}
+      value={<NextAction lead={lead} />}
+    />
   );
 }
 
 function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { open: boolean; onClose: () => void; lookups: Lookups; canAssign: boolean; onCreated: (id: number) => void }) {
-  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "", assignedTeamId: "" };
+  const initial = { firstName: "", lastName: "", phone: "", whatsappNumber: "", email: "", city: "", address: "", preferredContactMethod: "Phone", preferredContactTime: "", sourceCode: "manual", sourceDetails: "", campaignName: "", interestedProjectId: "", interestedUnitId: "", propertyType: "", preferredLocation: "", budgetMin: "", budgetMax: "", purchaseIntent: "Unknown", paymentPreference: "Unknown", notes: "", assignedEmployeeId: "" };
   const [form, setForm] = useState(initial);
+  const formId = useId();
   const [units, setUnits] = useState<UnitLookup[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -303,20 +397,8 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
     if (key === "phone" || key === "whatsappNumber" || key === "email") { setDuplicate(null); setConflict(null); }
   };
 
-  const assignableStaff = lookups.staff.filter((member) =>
-    member.canOwnLeads && (!form.assignedTeamId || member.teamId === Number(form.assignedTeamId)));
-  const setAssignmentTeam = (teamId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(current.assignedEmployeeId));
-    return {
-      ...current,
-      assignedTeamId: teamId,
-      assignedEmployeeId: employee && teamId && employee.teamId !== Number(teamId) ? "" : current.assignedEmployeeId,
-    };
-  });
-  const setAssignmentEmployee = (employeeId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(employeeId));
-    return { ...current, assignedEmployeeId: employeeId, assignedTeamId: employee?.teamId?.toString() ?? current.assignedTeamId };
-  });
+  const assignableStaff = lookups.staff.filter((member) => member.canOwnLeads);
+  const setAssignmentEmployee = (employeeId: string) => set("assignedEmployeeId", employeeId);
 
   useEffect(() => {
     const id = Number(form.interestedProjectId);
@@ -347,7 +429,6 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           budgetMin: form.budgetMin ? Number(form.budgetMin) : null,
           budgetMax: form.budgetMax ? Number(form.budgetMax) : null,
           assignedEmployeeId: canAssign && form.assignedEmployeeId ? Number(form.assignedEmployeeId) : null,
-          assignedTeamId: canAssign && form.assignedTeamId ? Number(form.assignedTeamId) : null,
           allowDuplicate: addToLeadId != null,
           expectedExistingLeadId: addToLeadId ?? null,
         }),
@@ -371,11 +452,20 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
   };
 
   return (
-    <CrmModal open={open} onClose={onClose} wide title="Capture a new lead" subtitle="Duplicate matching runs before a new prospect is created." footer={<div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={() => void submit()} disabled={saving}>{saving ? "Checking…" : "Create lead"}</Button></div>}>
-      <form onSubmit={(e) => { e.preventDefault(); void submit(); }} className="space-y-5">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="New lead"
+      size="lg"
+      phoneLayout="fullscreen"
+      busy={saving}
+      primaryAction={{ label: saving ? "Checking…" : "Create lead", form: formId, loading: saving }}
+    >
+      <form id={formId} onSubmit={(e) => { e.preventDefault(); void submit(); }} className="flex flex-col gap-6">
+        <p className="m-0 text-small text-ink-muted">Duplicate matching runs before a new prospect is created.</p>
         {error && <ErrorBanner message={error} />}
         {conflictResolution && (
-          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
+          <div className="rounded-card border border-gold-line bg-gold-soft p-4 text-sm text-warning">
             <p className="font-semibold">{conflictResolution.heading}</p>
             <p className="mt-1">{conflictResolution.explanation}</p>
             <p className="mt-1">{conflictResolution.addOutcome}</p>
@@ -391,7 +481,7 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           </div>
         )}
         {duplicateResolution && (
-          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-4 text-sm text-amber-200">
+          <div className="rounded-card border border-gold-line bg-gold-soft p-4 text-sm text-warning">
             <p className="font-semibold">{duplicateResolution.heading}</p>
             <p className="mt-1">{duplicateResolution.explanation}</p>
             {duplicateResolution.addLabel && <p className="mt-1">{duplicateResolution.addOutcome}</p>}
@@ -402,121 +492,66 @@ function LeadCreateModal({ open, onClose, lookups, canAssign, onCreated }: { ope
           </div>
         )}
         <FormSection title="Contact">
-          <TextField label="First name" required value={form.firstName} onChange={(v) => set("firstName", v)} />
-          <TextField label="Last name" value={form.lastName} onChange={(v) => set("lastName", v)} />
-          <TextField label="Phone" value={form.phone} onChange={(v) => set("phone", v)} inputMode="tel" />
-          <TextField label="WhatsApp" value={form.whatsappNumber} onChange={(v) => set("whatsappNumber", v)} inputMode="tel" />
-          <TextField label="Email" value={form.email} onChange={(v) => set("email", v)} type="email" />
-          <TextField label="City" value={form.city} onChange={(v) => set("city", v)} />
-          <TextField label="Address" value={form.address} onChange={(v) => set("address", v)} wide />
+          <TextField label="First name" required value={form.firstName} onChange={(e) => set("firstName", e.target.value)} />
+          <TextField label="Last name" value={form.lastName} onChange={(e) => set("lastName", e.target.value)} />
+          <TextField label="Phone" value={form.phone} onChange={(e) => set("phone", e.target.value)} type="tel" />
+          <TextField label="WhatsApp" value={form.whatsappNumber} onChange={(e) => set("whatsappNumber", e.target.value)} type="tel" />
+          <TextField label="Email" value={form.email} onChange={(e) => set("email", e.target.value)} type="email" />
+          <TextField label="City" value={form.city} onChange={(e) => set("city", e.target.value)} />
+          <TextField label="Address" value={form.address} onChange={(e) => set("address", e.target.value)} className="sm:col-span-2" />
           <SelectField label="Preferred contact" value={form.preferredContactMethod} onChange={(v) => set("preferredContactMethod", v)} options={["Phone", "Whatsapp", "Email", "Sms", "InPerson"].map((v) => [v, stageLabel(v)])} />
-          <TextField label="Preferred time" value={form.preferredContactTime} onChange={(v) => set("preferredContactTime", v)} />
+          <TextField label="Preferred time" value={form.preferredContactTime} onChange={(e) => set("preferredContactTime", e.target.value)} />
         </FormSection>
         <FormSection title="Source and attribution">
           <SelectField label="Lead source" required value={form.sourceCode} onChange={(v) => set("sourceCode", v)} options={lookups.sources.map((v) => [v.code, v.name])} />
-          <TextField label="Source details" value={form.sourceDetails} onChange={(v) => set("sourceDetails", v)} />
-          <TextField label="Campaign" value={form.campaignName} onChange={(v) => set("campaignName", v)} />
+          <TextField label="Source details" value={form.sourceDetails} onChange={(e) => set("sourceDetails", e.target.value)} />
+          <TextField label="Campaign" value={form.campaignName} onChange={(e) => set("campaignName", e.target.value)} />
         </FormSection>
         <FormSection title="Property interest">
           <SelectField label="Project" value={form.interestedProjectId} onChange={(v) => { set("interestedProjectId", v); set("interestedUnitId", ""); }} options={lookups.projects.map((v) => [String(v.id), v.name])} />
           <SelectField label="Unit" value={form.interestedUnitId} onChange={(v) => set("interestedUnitId", v)} options={units.map((v) => [String(v.id), v.number])} />
-          <TextField label="Property type" value={form.propertyType} onChange={(v) => set("propertyType", v)} />
-          <TextField label="Preferred location" value={form.preferredLocation} onChange={(v) => set("preferredLocation", v)} />
-          <TextField label="Minimum budget" value={form.budgetMin} onChange={(v) => set("budgetMin", v)} type="number" />
-          <TextField label="Maximum budget" value={form.budgetMax} onChange={(v) => set("budgetMax", v)} type="number" />
+          <TextField label="Property type" value={form.propertyType} onChange={(e) => set("propertyType", e.target.value)} />
+          <TextField label="Preferred location" value={form.preferredLocation} onChange={(e) => set("preferredLocation", e.target.value)} />
+          <NumberField label="Minimum budget" prefix="Rs" value={form.budgetMin} onChange={(v) => set("budgetMin", v)} />
+          <NumberField label="Maximum budget" prefix="Rs" value={form.budgetMax} onChange={(v) => set("budgetMax", v)} />
           <SelectField label="Purchase intent" value={form.purchaseIntent} onChange={(v) => set("purchaseIntent", v)} options={["Unknown", "SelfUse", "Investment", "Rental", "Resale"].map((v) => [v, stageLabel(v)])} />
           <SelectField label="Payment preference" value={form.paymentPreference} onChange={(v) => set("paymentPreference", v)} options={paymentPreferences.map((v) => [v, stageLabel(v)])} />
         </FormSection>
-        {canAssign && <FormSection title="Ownership"><SelectField label="Team" value={form.assignedTeamId} onChange={setAssignmentTeam} options={lookups.teams.filter((v) => v.isActive).map((v) => [String(v.id), v.name])} /><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
-        <div><Label>Initial notes</Label><textarea className={`${inputClass} min-h-24 resize-y`} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></div>
+        {canAssign && <FormSection title="Ownership"><SelectField label="Employee" value={form.assignedEmployeeId} onChange={setAssignmentEmployee} options={assignableStaff.map((v) => [String(v.employeeId), v.fullName])} /></FormSection>}
+        <TextArea label="Initial notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
       </form>
-    </CrmModal>
+    </Modal>
   );
 }
+
+type Metric = { id: string; label: string; value: number | string; tone?: StatusTone; filter?: { key: string; value: string } };
 
 /**
  * Four figures, one per card, in the shape the design asks for: how many, how many closed each way,
  * and the rate that falls out of the two; admins and managers also get the queue waiting for an owner. A salesperson gets their own leads by the four simple stages;
  * what is due or overdue shows on each lead's Next action instead of as a card of its own.
  */
-function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unknown> | null) {
+function dashboardMetrics(isSalesperson: boolean, dashboard: Record<string, unknown> | null): Metric[] {
   const d = dashboard ?? {};
   const n = (key: string) => Number(d[key] ?? 0);
   if (isSalesperson) return [
     { id: "total", label: "Total assigned", value: n("totalAssigned") },
-    { id: "inProgress", label: "In progress", value: n("inProgressLeads"), filter: { key: "stageGroup", value: "InProgress" } },
-    { id: "won", label: "Won", value: n("conversions"), filter: { key: "stageGroup", value: "Won" } },
-    { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stageGroup", value: "Lost" } },
+    { id: "inProgress", label: "In progress", value: n("inProgressLeads"), tone: "blue", filter: { key: "stageGroup", value: "InProgress" } },
+    { id: "won", label: "Won", value: n("conversions"), tone: "green", filter: { key: "stageGroup", value: "Won" } },
+    { id: "lost", label: "Lost", value: n("lostLeads"), tone: "red", filter: { key: "stageGroup", value: "Lost" } },
   ];
   return [
     { id: "total", label: "All leads", value: n("totalLeads") },
-    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), filter: { key: "unassigned", value: "true" } },
-    { id: "won", label: "Won", value: n("wonLeads"), filter: { key: "stage", value: "Won" } },
-    { id: "lost", label: "Lost", value: n("lostLeads"), filter: { key: "stage", value: "Lost" } },
+    { id: "unassigned", label: "Unassigned", value: n("unassignedLeads"), tone: "orange", filter: { key: "unassigned", value: "true" } },
+    { id: "won", label: "Won", value: n("wonLeads"), tone: "green", filter: { key: "stage", value: "Won" } },
+    { id: "lost", label: "Lost", value: n("lostLeads"), tone: "red", filter: { key: "stage", value: "Lost" } },
     { id: "rate", label: "Conversion", value: `${n("conversionRatePercent").toFixed(1)}%` },
   ];
 }
 
-const METRIC_ICONS: Record<string, ReactNode> = {
-  total: <IconUsers className="h-5 w-5" />,
-  won: <IconTrophy className="h-5 w-5" />,
-  lost: <IconCircleX className="h-5 w-5" />,
-  rate: <IconTrendingUp className="h-5 w-5" />,
-  inProgress: <IconLayers className="h-5 w-5" />,
-  unassigned: <IconUserQuestion className="h-5 w-5" />,
-};
-
-/**
- * A native select wearing the mock's chip: the platform's own dropdown on every device — keyboard,
- * screen reader and mobile picker included — with only the arrow replaced so the chip keeps a fixed
- * width instead of growing to its longest option.
- */
-function BarSelect({ label, icon, value, onChange, options }: { label: string; icon: ReactNode; value: string; onChange: (value: string) => void; options: readonly (readonly string[])[] }) {
-  return (
-    <div className="relative shrink-0">
-      <span aria-hidden="true" className="pointer-events-none absolute -top-2 left-2.5 z-10 rounded bg-[var(--bg-card)] px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
-      <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-[var(--accent)]">{icon}</span>
-      <AppSelect
-        aria-label={label}
-        className="w-[124px] cursor-pointer appearance-none rounded-xl border border-[var(--border)] bg-[var(--input-bg)] py-2.5 pl-9 pr-8 text-sm font-medium text-[var(--text-primary)] outline-none transition hover:border-[var(--border-hover)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-glow)]"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        <option value="">All</option>
-        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-      </AppSelect>
-      <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]"><IconChevronDown className="h-3.5 w-3.5" /></span>
-    </div>
-  );
-}
-
-function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return <fieldset><legend className="mb-3 text-sm font-semibold text-[var(--text-heading)]">{title}</legend><div className="grid gap-3 sm:grid-cols-2">{children}</div></fieldset>;
-}
-function TextField({ label, value, onChange, required, wide, type = "text", inputMode }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; wide?: boolean; type?: string; inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"] }) {
-  return <div className={wide ? "sm:col-span-2" : ""}><Label required={required}>{label}</Label><input required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)} type={type} inputMode={inputMode} /></div>;
+function FormSection({ title, children }: { title: string; children: ReactNode }) {
+  return <fieldset className="m-0 border-0 p-0"><legend className="mb-3 p-0 text-body font-extrabold text-ink">{title}</legend><div className="grid gap-4 sm:grid-cols-2">{children}</div></fieldset>;
 }
 function SelectField({ label, value, onChange, options, required }: { label: string; value: string; onChange: (value: string) => void; options: string[][]; required?: boolean }) {
-  return <div><Label required={required}>{label}</Label><AppSelect required={required} className={inputClass} value={value} onChange={(e) => onChange(e.target.value)}><option value="">Select…</option>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</AppSelect></div>;
+  return <Dropdown label={label} required={required} value={value} onChange={onChange} placeholder="Select…" options={[{ value: "", label: "Select…" }, ...options.map(([v, l]) => ({ value: v, label: l }))]} />;
 }
-
-/* Icons are inline SVG on purpose: nothing to install, version or ship, no runtime cost beyond the
-   markup, and each glyph travels inside this page's own chunk. One 24px stroked grid throughout. */
-const ico = (className?: string) => ({
-  className: className ?? "h-4 w-4", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
-  strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true,
-});
-type IconProps = { className?: string };
-
-function IconPlus({ className }: IconProps) { return <svg {...ico(className)} strokeWidth={2.2}><path d="M12 5v14" /><path d="M5 12h14" /></svg>; }
-function IconSearch({ className }: IconProps) { return <svg {...ico(className)}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></svg>; }
-function IconChevronDown({ className }: IconProps) { return <svg {...ico(className)} strokeWidth={2.4}><path d="m6 9 6 6 6-6" /></svg>; }
-function IconLayers({ className }: IconProps) { return <svg {...ico(className)}><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 14 9 5 9-5" /></svg>; }
-function IconMegaphone({ className }: IconProps) { return <svg {...ico(className)}><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 9a4 4 0 0 1 0 6" /><path d="M19 6a8 8 0 0 1 0 12" /></svg>; }
-function IconBuilding({ className }: IconProps) { return <svg {...ico(className)}><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1" /><path d="M10 21v-3h4v3" /></svg>; }
-function IconWallet({ className }: IconProps) { return <svg {...ico(className)}><path d="M4 7a2 2 0 0 1 2-2h11a1 1 0 0 1 1 1v2" /><rect x="3" y="8" width="18" height="12" rx="2" /><path d="M16 14h.01" /></svg>; }
-function IconUsers({ className }: IconProps) { return <svg {...ico(className)}><circle cx="9" cy="8" r="3.2" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16.5 5.5a3.2 3.2 0 0 1 0 5.6" /><path d="M18 14.6A6 6 0 0 1 21 20" /></svg>; }
-function IconTrophy({ className }: IconProps) { return <svg {...ico(className)}><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z" /><path d="M7 6H4v1a3 3 0 0 0 3 3" /><path d="M17 6h3v1a3 3 0 0 1-3 3" /><path d="M12 14v3" /><path d="M8.5 20h7" /><path d="M10 17h4l.5 3h-5l.5-3Z" /></svg>; }
-function IconCircleX({ className }: IconProps) { return <svg {...ico(className)}><circle cx="12" cy="12" r="9" /><path d="m15 9-6 6" /><path d="m9 9 6 6" /></svg>; }
-function IconTrendingUp({ className }: IconProps) { return <svg {...ico(className)}><path d="m3 17 6-6 4 4 8-8" /><path d="M15 7h6v6" /></svg>; }
-function IconUserQuestion({ className }: IconProps) { return <svg {...ico(className)}><circle cx="10" cy="8" r="3.2" /><path d="M4 20a6 6 0 0 1 12 0" /><path d="M18.5 8.5a1.6 1.6 0 1 1 2.2 1.5c-.5.3-.7.7-.7 1.2" /><path d="M20 14h.01" /></svg>; }

@@ -14,7 +14,7 @@ namespace DAMS.Application.Services
     public class StaffManagementService : IStaffManagementService
     {
         private static readonly string[] StaffRoles =
-            { LeadRoles.Admin, LeadRoles.Manager, LeadRoles.Employee };
+            { LeadRoles.Admin, LeadRoles.Manager, LeadRoles.Employee, AppRoles.Accountant };
 
         private readonly AppDbContext _context;
         private readonly IStaffInvitationService _invitations;
@@ -34,16 +34,7 @@ namespace DAMS.Application.Services
             var query = _context.Employees
                 .AsNoTracking()
                 .Include(e => e.User).ThenInclude(u => u!.Role)
-                .Include(e => e.Team)
                 .Where(e => e.Status == EmployeeStatus.Active);
-
-            // Admins and managers assign across every team, so they see the whole directory.
-            if (actor.IsEmployee)
-            {
-                var teamId = actor.TeamId;
-                query = query.Where(e => e.Id == actor.EmployeeId ||
-                    (teamId.HasValue && e.TeamId == teamId));
-            }
 
             return await query
                 .OrderBy(e => e.FullName)
@@ -54,8 +45,6 @@ namespace DAMS.Application.Services
                     FullName = e.FullName,
                     Email = e.User != null ? e.User.Email : e.Email,
                     Role = e.User != null ? e.User.Role.Role_name : null,
-                    TeamId = e.TeamId,
-                    TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
                     CanOwnLeads = e.User != null &&
                         e.User.AccountStatus == UserAccountStatus.Active &&
@@ -76,15 +65,12 @@ namespace DAMS.Application.Services
                     FullName = e.FullName,
                     Email = e.User != null ? e.User.Email : e.Email,
                     Role = e.User != null ? e.User.Role.Role_name : null,
-                    TeamId = e.TeamId,
-                    TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
                     CanOwnLeads = e.User != null && e.User.AccountStatus == UserAccountStatus.Active,
                     JobTitle = e.JobTitle,
                     Department = e.Department,
                     Phone = e.Phone,
                     JoinDate = e.JoinDate,
-                    IsTeamManager = _context.Teams.Any(t => t.ManagerEmployeeId == e.Id),
                     Access = e.User == null
                         ? StaffAccountAccess.None
                         : e.User.AccountStatus == UserAccountStatus.Invited
@@ -150,21 +136,14 @@ namespace DAMS.Application.Services
                     .Where(l => l.ConvertedCustomerId != null)
                     .Select(l => l.ConvertedCustomerId!.Value);
 
-                var managedTeamIds = actor.ManagedTeamIds.ToArray();
-                var managedUserIds = _context.Employees
+                var ownUserId = actor.UserId;
+                var ownBookingCustomerIds = _context.Bookings
                     .AsNoTracking()
-                    .Where(e => e.UserId != null
-                                && (e.Id == actor.EmployeeId
-                                    || (e.TeamId.HasValue && managedTeamIds.Contains(e.TeamId.Value))))
-                    .Select(e => e.UserId!.Value);
-
-                var managedBookingCustomerIds = _context.Bookings
-                    .AsNoTracking()
-                    .Where(b => b.AssignedSalesUserId != null && managedUserIds.Contains(b.AssignedSalesUserId.Value))
+                    .Where(b => b.AssignedSalesUserId == ownUserId)
                     .Select(b => b.CustomerId);
 
                 query = query.Where(c => visibleLeadCustomerIds.Contains(c.Id)
-                                         || managedBookingCustomerIds.Contains(c.Id));
+                                         || ownBookingCustomerIds.Contains(c.Id));
             }
 
             return await query
@@ -190,7 +169,6 @@ namespace DAMS.Application.Services
 
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
             EnsureCanGrantRole(actor, role.Role_name);
-            await ValidateTeamAsync(dto.TeamId, cancellationToken);
 
             // Assigned inside the transaction below and read after it commits. Initialised here
             // because the compiler cannot prove a lambda ran, and because a retry re-runs the
@@ -282,7 +260,6 @@ namespace DAMS.Application.Services
                             + "Set their employment back to Active first.");
 
                     employee.User = user;
-                    employee.TeamId = dto.TeamId ?? employee.TeamId;
                     employee.UpdatedAt = DateTime.UtcNow;
                 }
                 else
@@ -295,7 +272,6 @@ namespace DAMS.Application.Services
                         Phone = dto.Phone.Trim(),
                         JobTitle = dto.JobTitle.Trim(),
                         Department = dto.Department.Trim(),
-                        TeamId = dto.TeamId,
                         JoinDate = (dto.JoinDate ?? DateTime.UtcNow).Date,
                         Status = EmployeeStatus.Active
                     };
@@ -377,31 +353,13 @@ namespace DAMS.Application.Services
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
             EnsureCanGrantRole(actor, role.Role_name);
 
-            // Employment status (including Terminated) is HR data owned by the Admin-only
-            // Employees area. A manager's save may carry it unchanged but never change it.
+            // Employment status (including Terminated) decides whether a staff login works, so
+            // only an admin changes it, here or in Employees. A manager's save may carry it
+            // unchanged but never change it.
             if (!actor.IsAdmin && dto.Status.HasValue && dto.Status.Value != employee.Status)
                 throw new LeadAuthorizationException("Only an admin can change an employee's employment status.");
 
-            var managesActiveTeam = await _context.Teams
-                .AnyAsync(t => t.ManagerEmployeeId == employeeId && t.IsActive, cancellationToken);
-            if (managesActiveTeam &&
-                role.Role_name != LeadRoles.Manager &&
-                role.Role_name != LeadRoles.Admin)
-                throw new InvalidOperationException(
-                    "Reassign this employee's active sales team before removing the Sales Manager role.");
-
-            if (managesActiveTeam && dto.Status.HasValue && dto.Status != EmployeeStatus.Active)
-                throw new InvalidOperationException(
-                    "Reassign this employee's active sales team before changing their employment status.");
-
             employee.User.RoleId = role.RoleId;
-
-            if (dto.TeamId.HasValue)
-            {
-                var newTeamId = dto.TeamId.Value == -1 ? null : dto.TeamId;
-                await ValidateTeamAsync(newTeamId, cancellationToken);
-                employee.TeamId = newTeamId;
-            }
 
             if (dto.Status.HasValue)
                 employee.Status = dto.Status.Value;
@@ -413,6 +371,136 @@ namespace DAMS.Application.Services
 
             await _context.SaveChangesAsync(cancellationToken);
             return await LoadAccountAsync(employee.Id, cancellationToken);
+        }
+
+        public Task<StaffAccountDto> DisableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: false, cancellationToken);
+
+        public Task<StaffAccountDto> EnableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: true, cancellationToken);
+
+        public async Task<List<StaffAccessAuditDto>> GetAccessHistoryAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default)
+        {
+            EnsureCanManageStaff(actor);
+
+            if (!await _context.Employees.AnyAsync(e => e.Id == employeeId, cancellationToken))
+                throw new StaffNotFoundException("Employee not found.");
+
+            var rows = await _context.StaffAccessAudits
+                .AsNoTracking()
+                .Where(a => a.EmployeeId == employeeId)
+                .OrderByDescending(a => a.OccurredAt)
+                .ThenByDescending(a => a.Id)
+                .ToListAsync(cancellationToken);
+
+            var actorIds = rows.Select(r => r.PerformedByUserId).Distinct().ToArray();
+            var names = await _context.Users
+                .AsNoTracking()
+                .Where(u => actorIds.Contains(u.UserId))
+                .ToDictionaryAsync(u => u.UserId, u => u.FullName, cancellationToken);
+
+            return rows.Select(a => new StaffAccessAuditDto
+            {
+                Id = a.Id,
+                EmployeeId = a.EmployeeId,
+                UserId = a.UserId,
+                PerformedByUserId = a.PerformedByUserId,
+                PerformedByName = names.GetValueOrDefault(a.PerformedByUserId),
+                AccessEnabled = a.AccessEnabled,
+                OccurredAt = a.OccurredAt
+            }).ToList();
+        }
+
+        private async Task<StaffAccountDto> SetAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            bool enabled,
+            CancellationToken cancellationToken)
+        {
+            EnsureCanManageStaff(actor);
+
+            // Serializable so two admins cannot each see the other as still active and
+            // turn both of the last admins off.
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // A retry must re-read from the database: the failed attempt left this user
+                // changed in memory and its audit row pending, so without this the retry would
+                // see the new status already applied, save nothing, and report success.
+                _context.ChangeTracker.Clear();
+
+                await using var transaction = await BeginProvisioningAsync(cancellationToken);
+
+                var employee = await _context.Employees
+                    .Include(e => e.User).ThenInclude(u => u!.Role)
+                    .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
+                    ?? throw new StaffNotFoundException("Employee not found.");
+
+                if (employee.User == null)
+                    throw new InvalidOperationException("This employee has no login account. Connect an account first.");
+
+                if (actor.UserId == employee.User.UserId
+                    || (actor.EmployeeId.HasValue && actor.EmployeeId.Value == employee.Id))
+                    throw new LeadAuthorizationException("You cannot change your own access.");
+
+                EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
+
+                if (enabled && employee.User.AccountStatus == UserAccountStatus.Invited)
+                    throw new InvalidOperationException(
+                        "An invited login is turned on when they choose a password. Only a disabled login can be turned back on here.");
+
+                // A login that never set a password goes back to waiting for its invitation, not
+                // to Active: Active with no password cannot sign in, and invitation redemption and
+                // resend both only accept Invited, so it would be stuck for good.
+                var target = !enabled
+                    ? UserAccountStatus.Disabled
+                    : string.IsNullOrEmpty(employee.User.Password)
+                        ? UserAccountStatus.Invited
+                        : UserAccountStatus.Active;
+                if (employee.User.AccountStatus == target)
+                {
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                    return;
+                }
+
+                if (!enabled
+                    && string.Equals(employee.User.Role?.Role_name, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+                {
+                    var otherActiveAdmins = await _context.Users.CountAsync(
+                        u => u.UserId != employee.User.UserId
+                             && u.AccountStatus == UserAccountStatus.Active
+                             && u.Role.Role_name == LeadRoles.Admin,
+                        cancellationToken);
+                    if (otherActiveAdmins == 0)
+                        throw new InvalidOperationException("The last active admin cannot be turned off.");
+                }
+
+                employee.User.AccountStatus = target;
+                if (!enabled)
+                {
+                    employee.User.RefreshToken = null;
+                    employee.User.RefreshTokenExpiresAt = null;
+                }
+
+                employee.UpdatedAt = DateTime.UtcNow;
+                _context.StaffAccessAudits.Add(new StaffAccessAudit
+                {
+                    EmployeeId = employee.Id,
+                    UserId = employee.User.UserId,
+                    PerformedByUserId = actor.UserId,
+                    AccessEnabled = enabled,
+                    OccurredAt = DateTime.UtcNow
+                });
+
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+            });
+
+            return await LoadAccountAsync(employeeId, cancellationToken);
         }
 
         /// <summary>
@@ -438,8 +526,7 @@ namespace DAMS.Application.Services
 
         private IQueryable<Employee> AccountQuery() => _context.Employees
             .AsNoTracking()
-            .Include(e => e.User).ThenInclude(u => u!.Role)
-            .Include(e => e.Team);
+            .Include(e => e.User).ThenInclude(u => u!.Role);
 
         private async Task<StaffAccountDto> LoadAccountAsync(int employeeId, CancellationToken cancellationToken) =>
             await AccountQuery()
@@ -451,15 +538,12 @@ namespace DAMS.Application.Services
                     FullName = e.FullName,
                     Email = e.User != null ? e.User.Email : e.Email,
                     Role = e.User != null ? e.User.Role.Role_name : null,
-                    TeamId = e.TeamId,
-                    TeamName = e.Team != null ? e.Team.Name : null,
                     Status = e.Status,
                     CanOwnLeads = e.User != null && e.User.AccountStatus == UserAccountStatus.Active,
                     JobTitle = e.JobTitle,
                     Department = e.Department,
                     Phone = e.Phone,
                     JoinDate = e.JoinDate,
-                    IsTeamManager = _context.Teams.Any(t => t.ManagerEmployeeId == e.Id),
                     Access = e.User == null
                         ? StaffAccountAccess.None
                         : e.User.AccountStatus == UserAccountStatus.Invited
@@ -487,13 +571,17 @@ namespace DAMS.Application.Services
         }
 
         /// <summary>
-        /// The Admin role reaches Finance and every other admin-only area, so only an Admin may
-        /// hand it out. Otherwise a manager could make anyone — themselves included — an Admin.
+        /// Admin and Accountant reach finance and the rest of the company, so only an Admin may
+        /// hand either out. A manager can give Sales manager or Sales employee only.
         /// </summary>
         private static void EnsureCanGrantRole(LeadUserContext actor, string roleName)
         {
-            if (!actor.IsAdmin && string.Equals(roleName, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
-                throw new LeadAuthorizationException("Only an admin can give someone the Admin role.");
+            if (actor.IsAdmin)
+                return;
+
+            if (string.Equals(roleName, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(roleName, AppRoles.Accountant, StringComparison.OrdinalIgnoreCase))
+                throw new LeadAuthorizationException("Only an admin can give someone the Admin or Accountant role.");
         }
 
         /// <summary>
@@ -520,18 +608,11 @@ namespace DAMS.Application.Services
                 string.Equals(r, requested?.Trim(), StringComparison.OrdinalIgnoreCase));
 
             if (canonical == null)
-                throw new InvalidOperationException("Role must be Admin, Manager, or Employee.");
+                throw new InvalidOperationException("Role must be Admin, Sales manager, Sales employee or Accountant.");
 
             return await _context.Roles.FirstOrDefaultAsync(
                        r => r.Role_name == canonical, cancellationToken)
-                   ?? throw new InvalidOperationException($"The {canonical} role is not configured. Apply the Lead Management migration.");
-        }
-
-        private async Task ValidateTeamAsync(int? teamId, CancellationToken cancellationToken)
-        {
-            if (teamId.HasValue &&
-                !await _context.Teams.AnyAsync(t => t.Id == teamId.Value && t.IsActive, cancellationToken))
-                throw new InvalidOperationException("The selected active team does not exist.");
+                   ?? throw new InvalidOperationException($"The {canonical} role is not configured. Apply the latest migration.");
         }
 
         private static string NormalizeEmail(string email)

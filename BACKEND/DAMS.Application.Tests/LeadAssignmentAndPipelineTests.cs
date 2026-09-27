@@ -20,7 +20,6 @@ public sealed class LeadAssignmentAndPipelineTests
         var lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
 
         Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, lead.AssignedTeamId);
         Assert.Equal(LeadAssignmentState.Assigned, lead.AssignmentState);
         Assert.Equal(LeadStage.FirstContactPending, lead.Stage);
         Assert.NotNull(lead.AssignedAt);
@@ -35,26 +34,27 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task Reassignment_KeepsPreviousOwner_AndRequiresAReason()
+    public async Task Reassignment_KeepsPreviousOwner_WithOrWithoutAReason()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
         await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
 
-        var missingReason = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId }, h.Admin));
-        Assert.Contains("reason", missingReason.Message, StringComparison.OrdinalIgnoreCase);
+        var withoutReason = await h.Leads.AssignAsync(leadId,
+            new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId }, h.Admin);
+        Assert.Equal(h.OtherSalesEmployeeId, withoutReason.AssignedEmployeeId);
+        Assert.Null((await h.Leads.GetAssignmentHistoryAsync(leadId, h.Admin))[0].Reason);
 
         var lead = await h.Leads.AssignAsync(leadId,
-            new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "Sana is on leave." }, h.Admin);
+            new AssignLeadDto { EmployeeId = h.SalesEmployeeId, Reason = "Sana is on leave." }, h.Admin);
 
         Assert.Equal(LeadAssignmentState.Reassigned, lead.AssignmentState);
-        Assert.Equal(h.OtherSalesEmployeeId, lead.AssignedEmployeeId);
+        Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
 
         var history = await h.Leads.GetAssignmentHistoryAsync(leadId, h.Admin);
-        Assert.Equal(2, history.Count);
+        Assert.Equal(3, history.Count);
         var latest = history[0];
-        Assert.Equal(h.SalesEmployeeId, latest.PreviousEmployeeId);
+        Assert.Equal(h.OtherSalesEmployeeId, latest.PreviousEmployeeId);
         Assert.Equal("Sana is on leave.", latest.Reason);
 
         var timeline = await h.TimelineAsync(leadId);
@@ -75,52 +75,21 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task ReassignmentRejectsEmployeeAndTeamFromDifferentTeams()
+    public async Task AnAccountantSeesNoLeads()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var otherTeam = new Team { Name = "South Sales", IsActive = true };
-        h.Db.Teams.Add(otherTeam);
-        await h.Db.SaveChangesAsync();
-        var leadId = await h.CreateLeadAsync();
+        await h.CreateLeadAsync();
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.AssignAsync(leadId, new AssignLeadDto
-            {
-                EmployeeId = h.SalesEmployeeId,
-                TeamId = otherTeam.Id
-            }, h.Admin));
+        var accountant = new LeadUserContext
+        {
+            UserId = h.AdminUserId,
+            Role = AppRoles.Accountant,
+            DisplayName = "Books",
+            EmployeeId = h.SalesEmployeeId
+        };
 
-        Assert.Contains("not a member", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task EmployeeOnlyCreationRejectsAnInactiveEmployeeTeam()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
-        team.IsActive = false;
-        await h.Db.SaveChangesAsync();
-
-        var dto = LeadTestHarness.Intake(phone: "0300-5555555", email: "inactive-team@example.com");
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.IngestAsync(dto, h.Admin));
-
-        Assert.Contains("not active", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task EmployeeCreationOnAnInactiveOwnTeamExplainsTheBlock()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
-        team.IsActive = false;
-        await h.Db.SaveChangesAsync();
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-6666666", email: "employee-inactive-team@example.com"), h.Sales));
-
-        Assert.Contains("cannot create leads", error.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Leads.GetLeadsAsync(new LeadFilterDto(), accountant));
     }
 
     [Fact]
@@ -356,26 +325,40 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task ReopeningIsRecorded_AndRestrictedToAdminsAndManagers()
+    public async Task EmployeeReopensOwnLostAndDormantLeads_AndCannotReopenSomeoneElses()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var leadId = await h.CreateWorkedLeadAsync();
-        var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
-        await h.Leads.CloseAsync(leadId, dormant: true, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
+        var dormantId = await h.CreateWorkedLeadAsync();
+        var lostId = await h.CreateWorkedLeadAsync("0300-2223344");
+        var dormantReason = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision");
+        var lostReason = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested");
+        await h.Leads.CloseAsync(dormantId, dormant: true, new CloseLeadDto { ClosureReasonId = dormantReason }, h.Sales);
+        await h.Leads.CloseAsync(lostId, dormant: false, new CloseLeadDto { ClosureReasonId = lostReason }, h.Sales);
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.ReopenAsync(leadId, new ReopenLeadDto { Reason = "They called back." }, h.Sales));
+        await Assert.ThrowsAsync<LeadNotFoundException>(() =>
+            h.Leads.ReopenAsync(dormantId, new ReopenLeadDto { Reason = "They called back." }, h.OtherSales));
 
-        var lead = await h.Leads.ReopenAsync(leadId,
-            new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "They called back." }, h.Manager);
+        var dormant = await h.Leads.ReopenAsync(dormantId,
+            new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "They called back." }, h.Sales);
+        var lost = await h.Leads.ReopenAsync(lostId,
+            new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "They called back." }, h.Sales);
 
-        Assert.Equal(LeadStage.Contacted, lead.Stage);
-        Assert.Null(lead.ClosureReasonId);
-        Assert.Null(lead.ClosedAt);
+        Assert.Equal(LeadStage.Contacted, dormant.Stage);
+        Assert.Equal(h.SalesEmployeeId, dormant.AssignedEmployeeId);
+        Assert.Equal(LeadStage.Contacted, lost.Stage);
+        Assert.Equal(h.SalesEmployeeId, lost.AssignedEmployeeId);
+        Assert.Null(dormant.ClosureReasonId);
+        Assert.Null(dormant.ClosedAt);
 
-        var reopened = (await h.TimelineAsync(leadId)).Single(a => a.Type == LeadActivityType.LeadReopened);
+        var reopened = (await h.TimelineAsync(dormantId)).Single(a => a.Type == LeadActivityType.LeadReopened);
         Assert.Contains("Dormant", reopened.PreviousValue);
         Assert.Equal("They called back.", reopened.Notes);
+
+        var managerLeadId = await h.CreateWorkedLeadAsync("0300-5556677");
+        await h.Leads.CloseAsync(managerLeadId, dormant: true, new CloseLeadDto { ClosureReasonId = dormantReason }, h.Sales);
+        var byManager = await h.Leads.ReopenAsync(managerLeadId,
+            new ReopenLeadDto { Stage = LeadStage.Contacted, Reason = "They called back." }, h.Manager);
+        Assert.Equal(LeadStage.Contacted, byManager.Stage);
     }
 
     [Fact]
@@ -422,7 +405,7 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task MentioningAColleagueNotifiesButDoesNotShareLeadAcrossTeams()
+    public async Task MentioningAColleagueNotifiesButDoesNotShareTheLead()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
@@ -430,21 +413,15 @@ public sealed class LeadAssignmentAndPipelineTests
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
+        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
         {
             Body = "Omar, can you cover the viewing?",
             MentionedUserIds = { h.OtherSalesUserId }
-        }, h.Sales));
-
-        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
-        {
-            Body = "Manager, please review.",
-            MentionedUserIds = { h.ManagerUserId }
         }, h.Sales);
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
         Assert.True(await h.Db.Notifications.AnyAsync(
-            n => n.RecipientUserId == h.ManagerUserId && n.Type == NotificationType.UserMentioned));
+            n => n.RecipientUserId == h.OtherSalesUserId && n.Type == NotificationType.UserMentioned));
     }
 
     [Fact]

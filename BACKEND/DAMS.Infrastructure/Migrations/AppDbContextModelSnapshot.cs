@@ -1962,9 +1962,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int>("Status")
                         .HasColumnType("int");
 
-                    b.Property<int?>("TeamId")
-                        .HasColumnType("int");
-
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("datetime2");
 
@@ -1972,8 +1969,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasColumnType("int");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("TeamId");
 
                     b.HasIndex("UserId")
                         .IsUnique()
@@ -3904,9 +3899,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("AssignedEmployeeId")
                         .HasColumnType("int");
 
-                    b.Property<int?>("AssignedTeamId")
-                        .HasColumnType("int");
-
                     b.Property<int>("AssignmentState")
                         .HasColumnType("int");
 
@@ -4131,8 +4123,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasIndex("AssignedEmployeeId", "Stage");
 
-                    b.HasIndex("AssignedTeamId", "Stage");
-
                     b.HasIndex("ExternalProvider", "ExternalLeadId")
                         .IsUnique()
                         .HasFilter("[ExternalProvider] IS NOT NULL AND [ExternalLeadId] IS NOT NULL");
@@ -4256,16 +4246,10 @@ namespace DAMS.Infrastructure.Migrations
                     b.Property<int?>("AssignedEmployeeId")
                         .HasColumnType("int");
 
-                    b.Property<int?>("AssignedTeamId")
-                        .HasColumnType("int");
-
                     b.Property<int>("LeadId")
                         .HasColumnType("int");
 
                     b.Property<int?>("PreviousEmployeeId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("PreviousTeamId")
                         .HasColumnType("int");
 
                     b.Property<string>("Reason")
@@ -6640,7 +6624,42 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             RoleId = 4,
                             Role_name = "Employee"
+                        },
+                        new
+                        {
+                            RoleId = 5,
+                            Role_name = "Accountant"
                         });
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.StaffAccessAudit", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("AccessEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("PerformedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EmployeeId", "OccurredAt");
+
+                    b.ToTable("StaffAccessAudits");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.StaffCashTransfer", b =>
@@ -6751,41 +6770,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UserId", "CreatedAt");
 
                     b.ToTable("StaffInvitations");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("bit");
-
-                    b.Property<int?>("ManagerEmployeeId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("nvarchar(150)");
-
-                    b.Property<DateTime?>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ManagerEmployeeId");
-
-                    b.HasIndex("Name")
-                        .IsUnique();
-
-                    b.ToTable("Teams");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>
@@ -7128,6 +7112,30 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId", "IsCover");
 
                     b.ToTable("UnitMedias");
+                });
+
+            modelBuilder.Entity("DAMS.Domain.Entities.UnitTypeMigrationNote", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("NotedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UnitType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UnitType")
+                        .IsUnique();
+
+                    b.ToTable("UnitTypeMigrationNotes");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
@@ -7716,17 +7724,10 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.Employee", b =>
                 {
-                    b.HasOne("DAMS.Domain.Entities.Team", "Team")
-                        .WithMany("Members")
-                        .HasForeignKey("TeamId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("DAMS.Domain.Entities.User", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("Team");
 
                     b.Navigation("User");
                 });
@@ -8053,11 +8054,6 @@ namespace DAMS.Infrastructure.Migrations
                         .HasForeignKey("AssignedEmployeeId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("DAMS.Domain.Entities.Team", "AssignedTeam")
-                        .WithMany()
-                        .HasForeignKey("AssignedTeamId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.HasOne("DAMS.Domain.Entities.LeadClosureReason", "ClosureReason")
                         .WithMany()
                         .HasForeignKey("ClosureReasonId")
@@ -8090,8 +8086,6 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("AssignedEmployee");
-
-                    b.Navigation("AssignedTeam");
 
                     b.Navigation("ClosureReason");
 
@@ -8562,16 +8556,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Employee", "ManagerEmployee")
-                        .WithMany()
-                        .HasForeignKey("ManagerEmployeeId")
-                        .OnDelete(DeleteBehavior.NoAction);
-
-                    b.Navigation("ManagerEmployee");
-                });
-
             modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
@@ -8891,11 +8875,6 @@ namespace DAMS.Infrastructure.Migrations
             modelBuilder.Entity("DAMS.Domain.Entities.StaffCashTransfer", b =>
                 {
                     b.Navigation("Attachment");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Team", b =>
-                {
-                    b.Navigation("Members");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.ThirdPartyAttribution", b =>

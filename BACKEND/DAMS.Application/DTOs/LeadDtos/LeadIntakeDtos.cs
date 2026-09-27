@@ -91,8 +91,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         /// <summary>Optional owner to assign straight away (admin/manager only).</summary>
         public int? AssignedEmployeeId { get; set; }
 
-        public int? AssignedTeamId { get; set; }
-
         // ── External channel metadata ──
         [StringLength(50)]
         public string? ExternalProvider { get; set; }

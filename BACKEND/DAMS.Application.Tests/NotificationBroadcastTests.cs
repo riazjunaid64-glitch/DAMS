@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.NotificationDtos;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -87,18 +88,39 @@ public sealed class NotificationBroadcastTests
     }
 
     [Fact]
-    public async Task AMessageToATeamReachesItsMembersAndItsManager()
+    public async Task ATeamAudienceCanNoLongerBeComposed()
     {
         await using var h = await NotificationTestHarness.CreateAsync();
-        await h.EnableChannelsAsync();
 
-        await SendAsync(h, new NotificationAudienceDto { Type = NotificationAudienceType.Team, TeamId = h.TeamId });
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Admin.ComposeAsync(new ComposeNotificationDto
+        {
+            Title = "Notice",
+            Message = "Body",
+            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.Team }
+        }, h.AdminCtx));
 
-        var recipients = (await h.NotificationsAsync()).Select(n => n.RecipientUserId!.Value).ToHashSet();
-        Assert.Contains(h.SalesUserId, recipients);
-        Assert.Contains(h.ManagerUserId, recipients);
-        // Omar is deliberately not on this team.
-        Assert.DoesNotContain(h.OtherSalesUserId, recipients);
+        Assert.Contains("Sales teams have been removed", error.Message);
+    }
+
+    [Fact]
+    public async Task ATeamSendStoredBeforeTeamsWereRemovedFailsRatherThanReachingAWiderGroup()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        h.Db.NotificationJobs.Add(new NotificationJob
+        {
+            Title = "Team huddle",
+            Message = "Body",
+            AudienceType = NotificationAudienceType.Team,
+            AudienceJson = "{\"TeamId\":1}",
+            CreatedByUserId = h.AdminUserId
+        });
+        await h.Db.SaveChangesAsync();
+
+        await h.Processor.ProcessScheduledJobsAsync(10);
+
+        var job = await h.Db.NotificationJobs.AsNoTracking().SingleAsync();
+        Assert.Equal(NotificationJobStatus.Failed, job.Status);
+        Assert.Empty(await h.NotificationsAsync());
     }
 
     [Fact]
@@ -346,7 +368,7 @@ public sealed class NotificationBroadcastTests
         {
             Title = "Notice",
             Message = "Body",
-            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.Team, TeamId = 99_999 }
+            Audience = new NotificationAudienceDto { Type = NotificationAudienceType.SelectedUsers, UserIds = { 999_999 } }
         }, h.AdminCtx));
     }
 

@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
@@ -47,7 +48,7 @@ export default function CustomersPage({ user }: Props) {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "customers");
 
   useEffect(() => {
     if (!isAdmin) return;

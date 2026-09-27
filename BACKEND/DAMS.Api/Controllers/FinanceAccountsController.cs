@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
@@ -9,7 +10,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/finance/accounts")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public sealed class FinanceAccountsController : ControllerBase
     {
         private readonly IFinanceAccountService _service;

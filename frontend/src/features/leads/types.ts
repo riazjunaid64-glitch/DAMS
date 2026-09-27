@@ -53,8 +53,6 @@ export interface Lead {
   notes?: string | null;
   assignedEmployeeId?: number | null;
   assignedEmployeeName?: string | null;
-  assignedTeamId?: number | null;
-  assignedTeamName?: string | null;
   assignmentState: string;
   assignedAt?: string | null;
   stage: LeadStage;
@@ -223,30 +221,18 @@ export interface ClosureReason {
   displayOrder: number;
 }
 
-export interface Team {
-  id: number;
-  name: string;
-  managerEmployeeId?: number | null;
-  managerName?: string | null;
-  isActive: boolean;
-  memberCount: number;
-}
-
 export interface StaffMember {
   employeeId: number;
   userId?: number | null;
   fullName: string;
   email?: string | null;
   role?: string | null;
-  teamId?: number | null;
-  teamName?: string | null;
   status: string;
   canOwnLeads: boolean;
   jobTitle?: string;
   department?: string;
   phone?: string;
   joinDate?: string;
-  isTeamManager?: boolean;
 }
 
 /**
@@ -390,8 +376,6 @@ export interface AssignmentHistory {
   id: number;
   previousEmployeeName?: string | null;
   assignedEmployeeName?: string | null;
-  previousTeamId?: number | null;
-  assignedTeamId?: number | null;
   reason?: string | null;
   assignedByName?: string | null;
   assignedAt: string;
@@ -408,9 +392,9 @@ export const paymentPreferences = ["Unknown", "Installments", "NeedsDetails", "C
 export const isClosedStage = (stage: string) =>
   stage === "Won" || stage === "Lost" || stage === "Dormant";
 
-/** The salesperson's four-step pipeline (the server's LeadStageGroup). Which detailed stage falls in which
+/** The salesperson's simple pipeline (the server's LeadStageGroup). Which detailed stage falls in which
  *  step is decided only on the server (LeadStageRules.GroupOf) and arrives on each lead as `stageGroup`. */
-export const leadStageGroups = ["New", "InProgress", "Won", "Lost"] as const;
+export const leadStageGroups = ["New", "InProgress", "Won", "Lost", "Dormant"] as const;
 export type LeadStageGroup = (typeof leadStageGroups)[number];
 
 /** Minute precision: a CRM timeline is read at a glance, and seconds are noise in every column

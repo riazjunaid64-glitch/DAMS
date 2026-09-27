@@ -112,7 +112,7 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(0, (await h.Alerts.RunScanAsync()).NotificationsCreated);
         Assert.Equal(2, await FollowUpAlertsAsync(h, NotificationType.FollowUpDue, h.SalesUserId));
         Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.FollowUpDue
-            && n.Message.Contains($"{newDueAt:yyyy-MM-dd HH:mm}")));
+            && n.Message.Contains(LeadDisplay.When(newDueAt))));
 
         // Once completed it is never reminded again.
         await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto { Outcome = "Spoke to them" }, h.Sales);
@@ -448,7 +448,7 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(2, await h.Db.Notifications.CountAsync(
             n => n.RecipientUserId == h.SalesUserId && n.Type == NotificationType.SiteVisitReminder));
         Assert.True(await h.Db.Notifications.AnyAsync(n => n.Type == NotificationType.SiteVisitReminder
-            && n.Message.StartsWith($"{slot.AddHours(5):HH:mm}")));
+            && n.Message.Contains(LeadDisplay.When(slot.AddHours(5)))));
     }
 
     [Fact]
@@ -786,33 +786,44 @@ public sealed class LeadAlertAndReportingTests
 
         Assert.Equal(5, dashboard.TotalAssigned);
         Assert.Equal(1, dashboard.NewLeads);
-        Assert.Equal(1, dashboard.InProgressLeads);
+        Assert.Equal(2, dashboard.InProgressLeads);
         Assert.Equal(1, dashboard.Conversions);
-        // A dormant lead did not convert either, so it counts as lost in the simple view.
-        Assert.Equal(2, dashboard.LostLeads);
+        Assert.Equal(1, dashboard.LostLeads);
+        Assert.Equal(1, dashboard.DormantLeads);
         Assert.Equal(dashboard.TotalAssigned,
-            dashboard.NewLeads + dashboard.InProgressLeads + dashboard.Conversions + dashboard.LostLeads);
+            dashboard.InProgressLeads + dashboard.Conversions + dashboard.LostLeads + dashboard.DormantLeads);
 
         async Task<int[]> IdsIn(LeadStageGroup group) =>
             (await h.Leads.GetLeadsAsync(new LeadFilterDto { StageGroup = group }, h.Sales))
                 .Items.Select(l => l.Id).OrderBy(id => id).ToArray();
 
         Assert.Equal(new[] { fresh }, await IdsIn(LeadStageGroup.New));
-        Assert.Equal(new[] { inProgress }, await IdsIn(LeadStageGroup.InProgress));
+        Assert.Equal(new[] { fresh, inProgress }.OrderBy(id => id).ToArray(), await IdsIn(LeadStageGroup.InProgress));
         Assert.Equal(new[] { won }, await IdsIn(LeadStageGroup.Won));
-        Assert.Equal(new[] { lost, dormant }.OrderBy(id => id).ToArray(), await IdsIn(LeadStageGroup.Lost));
+        Assert.Equal(new[] { lost }, await IdsIn(LeadStageGroup.Lost));
+        Assert.Equal(new[] { dormant }, await IdsIn(LeadStageGroup.Dormant));
     }
 
     [Fact]
-    public void KAN39_EveryPipelineStageBelongsToExactlyOneSimpleStage()
+    public void KAN41_StatusGroupsCoverEveryStageOnceExceptNewAlsoSittingInProgress()
     {
         foreach (var stage in Enum.GetValues<LeadStage>())
         {
             var groups = Enum.GetValues<LeadStageGroup>()
                 .Where(g => LeadStageRules.StagesIn(g).Contains(stage))
                 .ToList();
-            Assert.True(groups.Count == 1, $"{stage} sits in {groups.Count} simple stages.");
-            Assert.Equal(groups[0], LeadStageRules.GroupOf(stage));
+            if (LeadStageRules.NewStages.Contains(stage))
+            {
+                Assert.Contains(LeadStageGroup.New, groups);
+                Assert.Contains(LeadStageGroup.InProgress, groups);
+                Assert.Equal(2, groups.Count);
+                Assert.Equal(LeadStageGroup.New, LeadStageRules.GroupOf(stage));
+            }
+            else
+            {
+                Assert.True(groups.Count == 1, $"{stage} sits in {groups.Count} simple stages.");
+                Assert.Equal(groups[0], LeadStageRules.GroupOf(stage));
+            }
         }
     }
 
@@ -905,7 +916,6 @@ public sealed class LeadAlertAndReportingTests
 
         Assert.Contains(dashboard.LossReasons, r => r.ReasonName == "Budget issue" && r.Count == 1);
         Assert.Contains(dashboard.ByEmployee, e => e.EmployeeId == h.SalesEmployeeId && e.WonLeads == 1);
-        Assert.Contains(dashboard.ByTeam, t => t.TeamId == h.TeamId && t.WonLeads == 1);
     }
 
     [Fact]

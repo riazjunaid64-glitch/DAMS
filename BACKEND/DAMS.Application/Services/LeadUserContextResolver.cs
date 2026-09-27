@@ -28,7 +28,7 @@ namespace DAMS.Application.Services
             var employee = await _context.Employees
                 .AsNoTracking()
                 .Where(e => e.UserId == userId)
-                .Select(e => new { e.Id, e.TeamId, e.FullName, e.Status })
+                .Select(e => new { e.Id, e.FullName, e.Status })
                 .FirstOrDefaultAsync(cancellationToken);
 
             if ((role.Equals(LeadRoles.Manager, StringComparison.OrdinalIgnoreCase)
@@ -38,29 +38,12 @@ namespace DAMS.Application.Services
                 throw new LeadAuthorizationException("Your staff account is not active. Ask an Admin to reactivate it.");
             }
 
-            var managedTeamIds = new List<int>();
-            if (employee != null)
-            {
-                if (employee.TeamId.HasValue)
-                    managedTeamIds.Add(employee.TeamId.Value);
-
-                var ownedTeams = await _context.Teams
-                    .AsNoTracking()
-                    .Where(t => t.ManagerEmployeeId == employee.Id)
-                    .Select(t => t.Id)
-                    .ToListAsync(cancellationToken);
-
-                managedTeamIds.AddRange(ownedTeams);
-            }
-
             return new LeadUserContext
             {
                 UserId = userId,
                 Role = role,
                 DisplayName = employee?.FullName ?? displayName,
-                EmployeeId = employee?.Id,
-                TeamId = employee?.TeamId,
-                ManagedTeamIds = managedTeamIds.Distinct().ToList()
+                EmployeeId = employee?.Id
             };
         }
     }

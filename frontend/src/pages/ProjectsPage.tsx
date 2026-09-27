@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api } from "../api/api.ts";
@@ -47,7 +48,7 @@ export default function ProjectsPage({ user }: Props) {
   const [projectForm, setProjectForm] = useState(emptyForm);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "projects.write");
 
   // Per-field validation. A field is "invalid" only if the rule returns a message.
   const fieldErrors = useMemo(() => {
