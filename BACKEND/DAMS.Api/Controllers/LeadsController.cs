@@ -77,6 +77,29 @@ namespace DAMS.Api.Controllers
                 SortDescending = sortDesc
             }, ctx, cancellationToken), cancellationToken);
 
+        /// <summary>
+        /// The list's card numbers: Total, In progress, Won, Lost and Dormant. Takes the list's
+        /// filters except status, so each card counts what the list shows for that status.
+        /// </summary>
+        [HttpGet("summary")]
+        public Task<IActionResult> GetSummary(
+            [FromQuery] string? search,
+            [FromQuery] DateTime? createdFrom,
+            [FromQuery] DateTime? createdTo,
+            [FromQuery] int? sourceId,
+            [FromQuery] int? employeeId,
+            [FromQuery] bool? unassigned,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.GetSummaryAsync(new LeadFilterDto
+            {
+                SearchTerm = search,
+                CreatedFrom = createdFrom,
+                CreatedTo = createdTo,
+                LeadSourceId = sourceId,
+                AssignedEmployeeId = employeeId,
+                Unassigned = unassigned
+            }, ctx, cancellationToken), cancellationToken);
+
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id, CancellationToken cancellationToken)
         {
@@ -107,9 +130,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> GetExternalSubmissionRaw(int id, int submissionId, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.GetExternalSubmissionRawAsync(id, submissionId, ctx, cancellationToken), cancellationToken);
 
+        /// <summary>Newest first, 50 at a time; <c>before</c> is the oldest entry already shown.</summary>
         [HttpGet("{id:int}/timeline")]
-        public Task<IActionResult> GetTimeline(int id, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _leads.GetTimelineAsync(id, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> GetTimeline(
+            int id, [FromQuery] int? take, [FromQuery] int? before, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.GetTimelineAsync(id, ctx, take, before, cancellationToken), cancellationToken);
 
         [HttpGet("{id:int}/assignment-history")]
         public Task<IActionResult> GetAssignmentHistory(int id, CancellationToken cancellationToken) =>

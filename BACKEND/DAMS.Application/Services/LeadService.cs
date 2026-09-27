@@ -25,6 +25,8 @@ namespace DAMS.Application.Services
     {
         private const string DefaultSourceCode = "manual";
         private const int IntakeHoldPageSize = 200;
+        private const int TimelinePageSize = 50;
+        private const int MaxTimelinePageSize = 100;
         /// <summary>How long a write waits for another request's contact lock. Well inside the
         /// 30-second command timeout; only reached under heavy contention for one contact.
         /// Settable only so a test can reach the timeout without waiting for it.</summary>
@@ -1272,7 +1274,7 @@ namespace DAMS.Application.Services
         {
             LeadAccess.EnsureStaff(ctx);
 
-            var query = LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx);
+            var query = FilterLeads(LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx), filter);
 
             if (filter.Stage.HasValue)
                 query = query.Where(l => l.Stage == filter.Stage.Value);
@@ -1283,6 +1285,70 @@ namespace DAMS.Application.Services
                 query = query.Where(l => groupStages.Contains(l.Stage));
             }
 
+            var totalCount = await query.CountAsync(cancellationToken);
+
+            var page = Math.Max(1, filter.Page);
+            var pageSize = Math.Clamp(filter.PageSize, 1, 100);
+
+            query = (filter.SortBy?.ToLowerInvariant()) switch
+            {
+                "lastactivity" => filter.SortDescending
+                    ? query.OrderByDescending(l => l.LastActivityAt).ThenByDescending(l => l.Id)
+                    : query.OrderBy(l => l.LastActivityAt).ThenBy(l => l.Id),
+                "nextaction" => filter.SortDescending
+                    ? query.OrderByDescending(l => l.NextActionAt).ThenByDescending(l => l.Id)
+                    : query.OrderBy(l => l.NextActionAt).ThenBy(l => l.Id),
+                "stage" => filter.SortDescending
+                    ? query.OrderByDescending(l => l.Stage).ThenByDescending(l => l.Id)
+                    : query.OrderBy(l => l.Stage).ThenBy(l => l.Id),
+                _ => filter.SortDescending
+                    ? query.OrderByDescending(l => l.CreatedAt).ThenByDescending(l => l.Id)
+                    : query.OrderBy(l => l.CreatedAt).ThenBy(l => l.Id)
+            };
+
+            var items = await query
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(LeadMapping.ToListItem)
+                .ToListAsync(cancellationToken);
+
+            return new LeadListDto { Items = items, TotalCount = totalCount, Page = page, PageSize = pageSize };
+        }
+
+        public async Task<LeadSummaryDto> GetSummaryAsync(LeadFilterDto filter, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            LeadAccess.EnsureStaff(ctx);
+
+            // One grouped count. Each card adds up the same stages the list's status filter picks,
+            // so a card always shows the total the list reaches when that status is chosen.
+            var byStage = await FilterLeads(LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx), filter)
+                .GroupBy(l => l.Stage)
+                .Select(g => new { Stage = g.Key, Count = g.Count() })
+                .ToListAsync(cancellationToken);
+
+            int CountIn(LeadStageGroup group)
+            {
+                var stages = LeadStageRules.StagesIn(group);
+                return byStage.Where(s => stages.Contains(s.Stage)).Sum(s => s.Count);
+            }
+
+            return new LeadSummaryDto
+            {
+                Total = byStage.Sum(s => s.Count),
+                InProgress = CountIn(LeadStageGroup.InProgress),
+                Won = CountIn(LeadStageGroup.Won),
+                Lost = CountIn(LeadStageGroup.Lost),
+                Dormant = CountIn(LeadStageGroup.Dormant)
+            };
+        }
+
+        /// <summary>
+        /// Every list filter except status (<see cref="LeadFilterDto.Stage"/> and
+        /// <see cref="LeadFilterDto.StageGroup"/>). The list and its summary both filter through
+        /// here, so the cards and the table can never count different leads.
+        /// </summary>
+        private IQueryable<Lead> FilterLeads(IQueryable<Lead> query, LeadFilterDto filter)
+        {
             if (filter.AssignmentState.HasValue)
                 query = query.Where(l => l.AssignmentState == filter.AssignmentState.Value);
 
@@ -1327,12 +1393,17 @@ namespace DAMS.Application.Services
             if (filter.UnitId.HasValue)
                 query = query.Where(l => l.InterestedUnitId == filter.UnitId.Value);
 
+            // From and To are Pakistan days: a lead created at 2 AM Pakistan time belongs to that
+            // day, not to the UTC day before it.
             if (filter.CreatedFrom.HasValue)
-                query = query.Where(l => l.CreatedAt >= filter.CreatedFrom.Value);
+            {
+                var from = PakistanTime.StartOfBusinessDateUtc(PakistanDay(filter.CreatedFrom.Value));
+                query = query.Where(l => l.CreatedAt >= from);
+            }
 
             if (filter.CreatedTo.HasValue)
             {
-                var to = filter.CreatedTo.Value.Date.AddDays(1);
+                var to = PakistanTime.StartOfBusinessDateUtc(PakistanDay(filter.CreatedTo.Value).AddDays(1));
                 query = query.Where(l => l.CreatedAt < to);
             }
 
@@ -1343,51 +1414,55 @@ namespace DAMS.Application.Services
                 query = query.Where(l =>
                     l.FirstName.ToLower().Contains(term)
                     || (l.LastName != null && l.LastName.ToLower().Contains(term))
+                    // A full name ("Hamza Iqbal") is in neither name on its own.
+                    || (l.LastName != null && (l.FirstName + " " + l.LastName).ToLower().Contains(term))
+                    || (l.City != null && l.City.ToLower().Contains(term))
                     || l.LeadReference.ToLower().Contains(term)
                     || (l.NormalizedEmail != null && l.NormalizedEmail.Contains(term))
                     || (digits != "" && l.NormalizedPhone != null && l.NormalizedPhone.Contains(digits))
                     || (digits != "" && l.NormalizedWhatsapp != null && l.NormalizedWhatsapp.Contains(digits)));
             }
 
-            var totalCount = await query.CountAsync(cancellationToken);
-
-            var page = Math.Max(1, filter.Page);
-            var pageSize = Math.Clamp(filter.PageSize, 1, 100);
-
-            query = (filter.SortBy?.ToLowerInvariant()) switch
-            {
-                "lastactivity" => filter.SortDescending
-                    ? query.OrderByDescending(l => l.LastActivityAt).ThenByDescending(l => l.Id)
-                    : query.OrderBy(l => l.LastActivityAt).ThenBy(l => l.Id),
-                "nextaction" => filter.SortDescending
-                    ? query.OrderByDescending(l => l.NextActionAt).ThenByDescending(l => l.Id)
-                    : query.OrderBy(l => l.NextActionAt).ThenBy(l => l.Id),
-                "stage" => filter.SortDescending
-                    ? query.OrderByDescending(l => l.Stage).ThenByDescending(l => l.Id)
-                    : query.OrderBy(l => l.Stage).ThenBy(l => l.Id),
-                _ => filter.SortDescending
-                    ? query.OrderByDescending(l => l.CreatedAt).ThenByDescending(l => l.Id)
-                    : query.OrderBy(l => l.CreatedAt).ThenBy(l => l.Id)
-            };
-
-            var items = await query
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .Select(LeadMapping.ToResponse(_context))
-                .ToListAsync(cancellationToken);
-
-            return new LeadListDto { Items = items, TotalCount = totalCount, Page = page, PageSize = pageSize };
+            return query;
         }
 
-        public async Task<List<LeadActivityDto>> GetTimelineAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// The Pakistan day a From or To value names. A plain date ("2026-09-27") is that day; a
+        /// value sent with a zone, such as a browser's toISOString() of Pakistan midnight
+        /// ("2026-09-26T19:00:00Z"), is the Pakistan day that instant falls on.
+        /// </summary>
+        private static DateTime PakistanDay(DateTime value) =>
+            value.Kind == DateTimeKind.Unspecified ? value.Date : PakistanTime.ToBusinessDate(value);
+
+        public async Task<List<LeadActivityDto>> GetTimelineAsync(
+            int leadId, LeadUserContext ctx, int? take = null, int? before = null, CancellationToken cancellationToken = default)
         {
             await EnsureVisibleAsync(leadId, ctx, cancellationToken);
 
-            return await _context.LeadActivities
+            var query = _context.LeadActivities
                 .AsNoTracking()
-                .Where(a => a.LeadId == leadId && !LeadTimeline.NotShownOnTimeline.Contains(a.Type))
+                .Where(a => a.LeadId == leadId && !LeadTimeline.NotShownOnTimeline.Contains(a.Type));
+
+            if (before.HasValue)
+            {
+                // Newest first means by when it happened, and a call logged afterwards is dated when
+                // it took place, so ids are not in that order: older is decided by the time and then
+                // the id of the entry the last page ended on.
+                var cursor = await _context.LeadActivities
+                    .AsNoTracking()
+                    .Where(a => a.Id == before.Value && a.LeadId == leadId)
+                    .Select(a => new { a.OccurredAt, a.Id })
+                    .FirstOrDefaultAsync(cancellationToken)
+                    ?? throw new LeadNotFoundException("That timeline entry was not found on this lead.");
+
+                query = query.Where(a => a.OccurredAt < cursor.OccurredAt
+                                         || (a.OccurredAt == cursor.OccurredAt && a.Id < cursor.Id));
+            }
+
+            return await query
                 .OrderByDescending(a => a.OccurredAt)
                 .ThenByDescending(a => a.Id)
+                .Take(Math.Clamp(take ?? TimelinePageSize, 1, MaxTimelinePageSize))
                 .Select(LeadMapping.ToActivityDto)
                 .ToListAsync(cancellationToken);
         }
@@ -2914,7 +2989,7 @@ namespace DAMS.Application.Services
 
         private async Task<LeadResponseDto?> LoadResponseAsync(int id, CancellationToken cancellationToken)
         {
-            // Writes hand back the same light lead the list uses. The page header — tab
+            // Writes hand back the whole lead without the page header. The page header — tab
             // counts, last contact, who converted or closed it — is loaded only by
             // GET /api/leads/{id}. The tracker is left alone: callers such as the website
             // booking-request flow still hold entities of their own that have not been saved yet.

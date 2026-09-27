@@ -37,7 +37,18 @@ namespace DAMS.Application.Interfaces
 
         Task<LeadListDto> GetLeadsAsync(LeadFilterDto filter, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
-        Task<List<LeadActivityDto>> GetTimelineAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
+        /// <summary>
+        /// How many of the caller's leads are in each status, for every list filter except status
+        /// itself, so the numbers match what the list shows when a status is picked.
+        /// </summary>
+        Task<LeadSummaryDto> GetSummaryAsync(LeadFilterDto filter, LeadUserContext ctx, CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Newest first, <paramref name="take"/> at a time (50 unless asked, at most 100). Pass the
+        /// id of the oldest entry already shown as <paramref name="before"/> for the page after it.
+        /// </summary>
+        Task<List<LeadActivityDto>> GetTimelineAsync(
+            int leadId, LeadUserContext ctx, int? take = null, int? before = null, CancellationToken cancellationToken = default);
 
         Task<List<LeadAssignmentHistoryDto>> GetAssignmentHistoryAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 

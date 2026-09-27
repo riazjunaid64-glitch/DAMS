@@ -2636,6 +2636,93 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Equal("existing@example.com", stored.Email);
     }
 
+    /// <summary>
+    /// KAN-48. The leads list's cards are one grouped query that agrees with the list for every
+    /// status, and the full-name and city search, the Pakistan-day date range and the timeline's
+    /// pages all run as SQL on the real server.
+    /// </summary>
+    [SqlServerFact]
+    public async Task TheLeadsSummaryIsOneQueryThatAgreesWithTheList_AndSearchDatesAndTimelinePagesRun_OnRealSqlServer()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var counter = new CommandCounter();
+        var admin = new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" };
+        await using var db = new AppDbContext(OptionsWith(database.ConnectionString, counter));
+        await db.Database.MigrateAsync();
+        using var dispatcher = SqlLeadDispatcher(db);
+        var leads = SqlLeadService(db, dispatcher);
+        var dayStart = PakistanTime.StartOfBusinessDateUtc(new DateTime(2026, 9, 27));
+
+        async Task<int> LeadAsync(string firstName, string lastName, string city, string phone, LeadStage stage, DateTime createdAt)
+        {
+            var leadId = (await leads.IngestAsync(new LeadIntakeDto
+            {
+                FirstName = firstName, LastName = lastName, City = city, Phone = phone, SourceCode = "walk_in"
+            }, admin)).Lead!.Id;
+            await db.Leads.Where(l => l.Id == leadId).ExecuteUpdateAsync(s => s
+                .SetProperty(l => l.Stage, stage)
+                .SetProperty(l => l.CreatedAt, createdAt));
+            return leadId;
+        }
+
+        var hamza = await LeadAsync("Hamza", "Iqbal", "Islamabad", "03001230001", LeadStage.Contacted, dayStart.AddHours(2));
+        await LeadAsync("Sana", "Malik", "Lahore", "03001230002", LeadStage.New, dayStart.AddHours(23));
+        await LeadAsync("Ali", "Raza", "Karachi", "03001230003", LeadStage.Won, dayStart.AddHours(-1));
+        await LeadAsync("Omar", "Khan", "Lahore", "03001230004", LeadStage.Lost, dayStart.AddHours(12));
+        await LeadAsync("Zara", "Shah", "Multan", "03001230005", LeadStage.Dormant, dayStart.AddHours(25));
+
+        var summary = await MeasureAsync(counter, () => leads.GetSummaryAsync(new LeadFilterDto(), admin));
+        Assert.Equal(1, summary.Commands);
+        var cards = summary.Result;
+        Assert.Equal((5, 2, 1, 1, 1), (cards.Total, cards.InProgress, cards.Won, cards.Lost, cards.Dormant));
+
+        async Task<int> ListedAsync(LeadStageGroup group) =>
+            (await leads.GetLeadsAsync(new LeadFilterDto { StageGroup = group }, admin)).TotalCount;
+        Assert.Equal(cards.InProgress, await ListedAsync(LeadStageGroup.InProgress));
+        Assert.Equal(cards.Won, await ListedAsync(LeadStageGroup.Won));
+        Assert.Equal(cards.Lost, await ListedAsync(LeadStageGroup.Lost));
+        Assert.Equal(cards.Dormant, await ListedAsync(LeadStageGroup.Dormant));
+
+        var found = await leads.GetLeadsAsync(new LeadFilterDto { SearchTerm = "hamza iqbal" }, admin);
+        Assert.Equal(hamza, Assert.Single(found.Items).Id);
+        Assert.Equal(2, (await leads.GetSummaryAsync(new LeadFilterDto { SearchTerm = "lahore" }, admin)).Total);
+
+        // 2 AM and 11 PM Pakistan time on the 27th count; 11 PM the night before and 1 AM after do not.
+        var onTheDay = await leads.GetSummaryAsync(
+            new LeadFilterDto { CreatedFrom = new DateTime(2026, 9, 27), CreatedTo = new DateTime(2026, 9, 27) }, admin);
+        Assert.Equal((3, 2, 0, 1, 0), (onTheDay.Total, onTheDay.InProgress, onTheDay.Won, onTheDay.Lost, onTheDay.Dormant));
+
+        // Entries sharing a time and written out of time order still page without a gap or a repeat.
+        var start = DateTime.UtcNow.AddDays(-3);
+        for (var i = 0; i < 12; i++)
+        {
+            db.LeadActivities.Add(new LeadActivity
+            {
+                LeadId = hamza, Type = LeadActivityType.InternalNote, Summary = $"Entry {i}",
+                IsSystemGenerated = true, OccurredAt = start.AddMinutes(i * 7 % 5)
+            });
+        }
+        await db.SaveChangesAsync();
+
+        var expected = await db.LeadActivities.AsNoTracking()
+            .Where(a => a.LeadId == hamza && !LeadTimeline.NotShownOnTimeline.Contains(a.Type))
+            .OrderByDescending(a => a.OccurredAt)
+            .ThenByDescending(a => a.Id)
+            .Select(a => a.Id)
+            .ToListAsync();
+        var walked = new List<int>();
+        int? before = null;
+        while (true)
+        {
+            var page = await leads.GetTimelineAsync(hamza, admin, take: 5, before: before);
+            if (page.Count == 0)
+                break;
+            walked.AddRange(page.Select(a => a.Id));
+            before = page[^1].Id;
+        }
+        Assert.Equal(expected, walked);
+    }
+
     [SqlServerFact]
     public async Task ExternalLeadFinalizationFailure_RollsBackAndReplayQueuesOneNotification()
     {

@@ -1215,6 +1215,153 @@ public sealed class LeadAlertAndReportingTests
                         && n.Title.StartsWith("Bring back today"))
             .ToListAsync();
 
+    // ── KAN-48: the leads list's cards, search and dates ─────────────────────────
+
+    [Fact]
+    public async Task KAN48_TheSummaryCountsEachStatusOfTheCallersLeads_ExactlyAsTheListFiltersThem()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await h.CreateWorkedLeadAsync("0300-1110001");
+
+        var fresh = await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Nadia", phone: "03337776666", email: "n@x.com"));
+        await h.Leads.AssignAsync(fresh, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+
+        var won = await h.CreateWorkedLeadAsync("0300-1110002");
+        await h.Leads.ConvertAsync(won, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
+
+        var lost = await h.CreateWorkedLeadAsync("0300-1110003");
+        await h.Leads.CloseAsync(lost, dormant: false, new CloseLeadDto
+        {
+            ClosureReasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested")
+        }, h.Sales);
+
+        var dormant = await h.CreateWorkedLeadAsync("0300-1110004");
+        await h.Leads.CloseAsync(dormant, dormant: true, new CloseLeadDto
+        {
+            ClosureReasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "delayed_decision")
+        }, h.Sales);
+
+        var theirs = await h.CreateWorkedLeadAsync("03219998888");
+        await h.Leads.AssignAsync(theirs,
+            new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId, Reason = "handover" }, h.Admin);
+
+        await h.CreateLeadAsync(LeadTestHarness.Intake(firstName: "Omar", phone: "03331112222", email: "o@x.com"));
+
+        // In progress includes the new leads nobody has contacted yet; Lost leaves Dormant out.
+        Assert.Equal((7, 4, 1, 1, 1), Counts(await h.Leads.GetSummaryAsync(new LeadFilterDto(), h.Admin)));
+        Assert.Equal((7, 4, 1, 1, 1), Counts(await h.Leads.GetSummaryAsync(new LeadFilterDto(), h.Manager)));
+        Assert.Equal((5, 2, 1, 1, 1), Counts(await h.Leads.GetSummaryAsync(new LeadFilterDto(), h.Sales)));
+
+        // Each card is the total the list reaches when that status is picked.
+        foreach (var ctx in new[] { h.Admin, h.Sales })
+        {
+            var summary = await h.Leads.GetSummaryAsync(new LeadFilterDto(), ctx);
+            async Task<int> Listed(LeadStageGroup? group) =>
+                (await h.Leads.GetLeadsAsync(new LeadFilterDto { StageGroup = group }, ctx)).TotalCount;
+
+            Assert.Equal(await Listed(null), summary.Total);
+            Assert.Equal(await Listed(LeadStageGroup.InProgress), summary.InProgress);
+            Assert.Equal(await Listed(LeadStageGroup.Won), summary.Won);
+            Assert.Equal(await Listed(LeadStageGroup.Lost), summary.Lost);
+            Assert.Equal(await Listed(LeadStageGroup.Dormant), summary.Dormant);
+        }
+
+        // The list's other filters apply; its status filters do not, as every card shows its own.
+        Assert.Equal((1, 1, 0, 0, 0), Counts(await h.Leads.GetSummaryAsync(new LeadFilterDto { Unassigned = true }, h.Admin)));
+        Assert.Equal((1, 1, 0, 0, 0), Counts(await h.Leads.GetSummaryAsync(
+            new LeadFilterDto { AssignedEmployeeId = h.OtherSalesEmployeeId }, h.Admin)));
+        Assert.Equal((1, 1, 0, 0, 0), Counts(await h.Leads.GetSummaryAsync(new LeadFilterDto { SearchTerm = "Nadia" }, h.Admin)));
+        Assert.Equal((7, 4, 1, 1, 1), Counts(await h.Leads.GetSummaryAsync(
+            new LeadFilterDto { Stage = LeadStage.Won, StageGroup = LeadStageGroup.Lost }, h.Admin)));
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Leads.GetSummaryAsync(new LeadFilterDto(), h.Client));
+    }
+
+    [Fact]
+    public async Task KAN48_SearchFindsAFullNameAndACity_AsTheSearchBoxPromises()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var hamza = LeadTestHarness.Intake(firstName: "Hamza", phone: "03001230001", email: "hamza@x.com");
+        hamza.LastName = "Iqbal";
+        hamza.City = "Islamabad";
+        var hamzaId = await h.CreateLeadAsync(hamza);
+        var other = LeadTestHarness.Intake(firstName: "Hamza", phone: "03001230002", email: "ali@x.com");
+        other.LastName = "Ali";
+        other.City = "Lahore";
+        var otherId = await h.CreateLeadAsync(other);
+
+        async Task<int[]> Found(string search) =>
+            (await h.Leads.GetLeadsAsync(new LeadFilterDto { SearchTerm = search }, h.Admin))
+                .Items.Select(l => l.Id).OrderBy(id => id).ToArray();
+
+        Assert.Equal(new[] { hamzaId }, await Found("Hamza Iqbal"));
+        Assert.Equal(new[] { hamzaId }, await Found(" hamza iqbal "));
+        Assert.Equal(new[] { hamzaId }, await Found("Islam"));
+        Assert.Equal(new[] { otherId }, await Found("lahore"));
+        Assert.Equal(new[] { hamzaId, otherId }, await Found("Hamza"));
+        Assert.Equal(1, (await h.Leads.GetSummaryAsync(new LeadFilterDto { SearchTerm = "Hamza Iqbal" }, h.Admin)).Total);
+    }
+
+    [Fact]
+    public async Task KAN48_FromAndToArePakistanDays_ForTheListAndTheSummary()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var day = new DateTime(2026, 9, 27);
+
+        async Task<int> CreatedAtAsync(string phone, DateTime utc)
+        {
+            var leadId = await h.CreateLeadAsync(LeadTestHarness.Intake(phone: phone, email: $"{phone}@x.com"));
+            await SetCreatedAtAsync(h, leadId, utc);
+            return leadId;
+        }
+
+        var dayBefore = await CreatedAtAsync("03001110001", PakistanAt(day.AddDays(-1), 23, 30));
+        var earlyMorning = await CreatedAtAsync("03001110002", PakistanAt(day, 2));        // 21:00 UTC the day before
+        var lateEvening = await CreatedAtAsync("03001110003", PakistanAt(day, 23, 59));
+        var dayAfter = await CreatedAtAsync("03001110004", PakistanAt(day.AddDays(1), 0, 30)); // 19:30 UTC the same day
+
+        async Task<int[]> Created(DateTime from, DateTime to) =>
+            (await h.Leads.GetLeadsAsync(new LeadFilterDto { CreatedFrom = from, CreatedTo = to }, h.Admin))
+                .Items.Select(l => l.Id).OrderBy(id => id).ToArray();
+
+        // As a date box sends the day ("2026-09-27"), and as toISOString() sends it from a date
+        // picked as UTC midnight or as Pakistan midnight (19:00 UTC the day before).
+        var utcMidnight = DateTime.SpecifyKind(day, DateTimeKind.Utc);
+        var pakistanMidnight = PakistanTime.StartOfBusinessDateUtc(day);
+        Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(day, day));
+        Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(utcMidnight, utcMidnight));
+        Assert.Equal(new[] { earlyMorning, lateEvening }, await Created(pakistanMidnight, pakistanMidnight));
+        Assert.Equal(new[] { dayBefore }, await Created(day.AddDays(-1), day.AddDays(-1)));
+        Assert.Equal(new[] { dayAfter }, await Created(day.AddDays(1), day.AddDays(1)));
+        Assert.Equal(2, (await h.Leads.GetSummaryAsync(new LeadFilterDto { CreatedFrom = day, CreatedTo = day }, h.Admin)).Total);
+    }
+
+    [Fact]
+    public async Task KAN48_TheListSendsSlimRows_WithOnlyWhatTheListShows()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await h.CreateWorkedLeadAsync();
+
+        var row = Assert.Single((await h.Leads.GetLeadsAsync(new LeadFilterDto(), h.Admin)).Items);
+        Assert.IsType<LeadListItemDto>(row);
+
+        // Named as the API writes them (camelCase).
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(row,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        Assert.Equal(
+            new[]
+            {
+                "id", "leadReference", "firstName", "lastName", "fullName", "phone", "city", "propertyType",
+                "paymentPreference", "purchaseIntent", "sourceName", "stage", "stageGroup", "assignedEmployeeId",
+                "assignedEmployeeName", "lastActivityAt", "lastActivitySummary", "nextActionAt", "nextActionSummary",
+                "createdAt"
+            }.Order(),
+            json.EnumerateObject().Select(p => p.Name).Order());
+    }
+
+    private static (int Total, int InProgress, int Won, int Lost, int Dormant) Counts(LeadSummaryDto summary) =>
+        (summary.Total, summary.InProgress, summary.Won, summary.Lost, summary.Dormant);
+
     // ── Helpers that move the clock on stored rows ──────────────────────────────
 
     private static async Task AgeAssignmentAsync(LeadTestHarness h, int leadId, int hours)
