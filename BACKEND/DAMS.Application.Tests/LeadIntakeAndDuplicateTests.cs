@@ -85,6 +85,8 @@ public sealed class LeadIntakeAndDuplicateTests
         Assert.True(duplicate.IsDuplicate);
         Assert.Null(duplicate.Lead);
         Assert.Equal("phone", duplicate.Match!.MatchedOn);
+        Assert.Equal("Bilal Khan", duplicate.Match.LeadName);
+        Assert.Equal(LeadStageGroup.New, duplicate.Match.LeadStageGroup);
         Assert.Equal(1, await h.Db.Leads.CountAsync());
     }
 

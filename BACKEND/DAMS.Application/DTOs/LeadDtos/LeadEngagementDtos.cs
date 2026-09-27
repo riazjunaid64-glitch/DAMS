@@ -63,6 +63,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public DateTime? NextActionAt { get; set; }
 
+        /// <summary>The follow-up created when this exchange scheduled the next one.</summary>
+        public int? FollowUpId { get; set; }
+
         public string? ExternalProvider { get; set; }
 
         /// <summary>False when the customer did not answer.</summary>

@@ -2190,6 +2190,12 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(c => c.EmployeeId)
                       .OnDelete(DeleteBehavior.Restrict);
+                // NoAction, not Cascade: a lead already cascades to both rows, and a second
+                // cascade path from the follow-up is rejected by SQL Server.
+                entity.HasOne(c => c.FollowUp)
+                      .WithMany()
+                      .HasForeignKey(c => c.FollowUpId)
+                      .OnDelete(DeleteBehavior.NoAction);
             });
 
             modelBuilder.Entity<LeadFollowUp>(entity =>

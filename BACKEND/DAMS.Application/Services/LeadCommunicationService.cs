@@ -12,15 +12,45 @@ namespace DAMS.Application.Services
     {
         private readonly AppDbContext _context;
         private readonly ILeadNotificationService _notifications;
+        private readonly ILeadFollowUpService _followUps;
 
-        public LeadCommunicationService(AppDbContext context, ILeadNotificationService notifications)
+        public LeadCommunicationService(
+            AppDbContext context, ILeadNotificationService notifications, ILeadFollowUpService followUps)
         {
             _context = context;
             _notifications = notifications;
+            _followUps = followUps;
         }
 
         public async Task<LeadCommunicationDto> RecordAsync(
             int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        {
+            // Scheduling the next follow-up writes the communication and the follow-up together.
+            // Production SQL retries transient errors, and EF refuses a transaction opened
+            // outside that strategy. Join a transaction the caller already has rather than
+            // nesting one. The in-memory store is not relational, so it takes the direct path.
+            if (!dto.NextActionAt.HasValue
+                || !_context.Database.IsRelational()
+                || _context.Database.CurrentTransaction != null)
+                return await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
+
+            var attempt = 0;
+            return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                // A retry replays a rolled-back save. Rows from the failed attempt are still
+                // marked stored in the tracker, so they have to be dropped before the replay.
+                if (attempt++ > 0)
+                    _context.ChangeTracker.Clear();
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                var recorded = await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return recorded;
+            });
+        }
+
+        private async Task<LeadCommunicationDto> RecordCoreAsync(
+            int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var lead = await LeadGate.LoadActiveAsync(_context, leadId, ctx, cancellationToken);
 
@@ -52,6 +82,16 @@ namespace DAMS.Application.Services
                                    && c.ExternalMessageId == externalMessageId, cancellationToken);
                 if (usedOnAnotherLead)
                     throw new InvalidOperationException("That external message is already linked to another lead.");
+            }
+
+            // Resolved before anything is staged. A caller with no employee, on a lead with no
+            // owner, must fail with nothing written — including the communication itself.
+            if (dto.NextActionAt.HasValue)
+            {
+                if (dto.NextActionAt <= DateTime.UtcNow.AddMinutes(-1))
+                    throw new InvalidOperationException("The next action must be scheduled for a future time.");
+
+                await LeadGate.ResolveWorkerAsync(_context, null, lead, ctx, cancellationToken);
             }
 
             var communication = new LeadCommunication
@@ -96,12 +136,6 @@ namespace DAMS.Application.Services
                 }
             }
 
-            if (dto.NextActionAt.HasValue)
-            {
-                if (dto.NextActionAt <= DateTime.UtcNow.AddMinutes(-1))
-                    throw new InvalidOperationException("The next action must be scheduled for a future time.");
-            }
-
             lead.UpdatedAt = DateTime.UtcNow;
 
             var activity = LeadTimeline.Record(_context, lead, ActivityTypeFor(dto.Channel, dto.Connected),
@@ -113,12 +147,35 @@ namespace DAMS.Application.Services
                     a.OccurredAt = occurredAt;
                 });
 
-            await _context.SaveChangesAsync(cancellationToken);
+            if (dto.NextActionAt.HasValue)
+            {
+                // The communication is already tracked, so the follow-up service's save writes
+                // both rows. RecordAsync has already joined them in one transaction when the
+                // store supports one, so a failure here does not leave the communication behind.
+                var title = LeadContactNormalizer.Clean(dto.NextAction);
+                var scheduled = await _followUps.CreateAsync(lead.Id, new CreateLeadFollowUpDto
+                {
+                    Type = FollowUpTypeFor(dto.Channel),
+                    Title = string.IsNullOrEmpty(title) ? "Follow up" : LeadContactNormalizer.Limit(title, 200),
+                    DueAt = dto.NextActionAt.Value,
+                    Priority = TaskPriority.Medium
+                }, ctx, cancellationToken);
 
-            // The activity's link to the communication needs the generated id.
-            activity.CommunicationId = communication.Id;
-            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
-            await _context.SaveChangesAsync(cancellationToken);
+                communication.FollowUpId = scheduled.Id;
+                activity.CommunicationId = communication.Id;
+                await _context.SaveChangesAsync(cancellationToken);
+                await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+
+                // The activity's link to the communication needs the generated id.
+                activity.CommunicationId = communication.Id;
+                await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
 
             return await LoadAsync(communication.Id, cancellationToken);
         }
@@ -241,6 +298,14 @@ namespace DAMS.Application.Services
                 .Select(LeadMapping.ToCommentDto)
                 .ToListAsync(cancellationToken);
         }
+
+        private static LeadFollowUpType FollowUpTypeFor(LeadCommunicationChannel channel) => channel switch
+        {
+            LeadCommunicationChannel.Phone => LeadFollowUpType.Call,
+            LeadCommunicationChannel.Whatsapp => LeadFollowUpType.Whatsapp,
+            LeadCommunicationChannel.Email => LeadFollowUpType.Email,
+            _ => LeadFollowUpType.Call
+        };
 
         private static LeadActivityType ActivityTypeFor(LeadCommunicationChannel channel, bool connected)
         {

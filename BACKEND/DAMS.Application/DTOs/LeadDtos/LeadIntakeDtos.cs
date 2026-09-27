@@ -161,7 +161,12 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? LeadReference { get; set; }
 
+        public string? LeadName { get; set; }
+
         public LeadStage? LeadStage { get; set; }
+
+        /// <summary>The simple status (New, In progress, Won, Lost, Dormant).</summary>
+        public LeadStageGroup? LeadStageGroup { get; set; }
 
         public string? LeadOwnerName { get; set; }
 
@@ -221,6 +226,9 @@ namespace DAMS.Application.DTOs.LeadDtos
         public string LeadName { get; set; } = string.Empty;
 
         public LeadStage LeadStage { get; set; }
+
+        /// <summary>The simple status (New, In progress, Won, Lost, Dormant).</summary>
+        public LeadStageGroup LeadStageGroup { get; set; }
 
         public string? LeadOwnerName { get; set; }
 

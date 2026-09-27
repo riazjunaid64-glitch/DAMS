@@ -369,28 +369,44 @@ namespace DAMS.Application.Services.Integrations
         {
             await EnsureConnectionExistsAsync(connectionId, cancellationToken);
 
-            var resources = await _context.ExternalIntegrationResources
+            var rows = await _context.ExternalIntegrationResources
                 .AsNoTracking()
                 .Where(r => r.ExternalIntegrationConnectionId == connectionId)
                 .OrderBy(r => r.Name)
-                .Select(r => new MetaResourceDto
+                .Select(r => new
                 {
-                    Id = r.Id,
-                    ResourceType = r.ResourceType,
-                    ExternalId = r.ExternalId,
-                    ParentExternalId = r.ParentExternalId,
-                    Name = r.Name,
-                    ExternalStatus = r.ExternalStatus,
-                    IsEnabled = r.IsEnabled,
-                    IsActive = r.IsActive,
-                    IsSubscribed = r.IsSubscribed,
-                    LastSeenAt = r.LastSeenAt
+                    r.Id,
+                    r.ResourceType,
+                    r.ExternalId,
+                    r.ParentExternalId,
+                    r.Name,
+                    r.ExternalStatus,
+                    r.IsEnabled,
+                    r.IsActive,
+                    r.IsSubscribed,
+                    r.LastSeenAt,
+                    r.MetadataJson
                 })
                 .ToListAsync(cancellationToken);
+
+            var resources = rows.Select(r => new MetaResourceDto
+            {
+                Id = r.Id,
+                ResourceType = r.ResourceType,
+                ExternalId = r.ExternalId,
+                ParentExternalId = r.ParentExternalId,
+                Name = r.Name,
+                ExternalStatus = r.ExternalStatus,
+                IsEnabled = r.IsEnabled,
+                IsActive = r.IsActive,
+                IsSubscribed = r.IsSubscribed,
+                LastSeenAt = r.LastSeenAt
+            }).ToList();
 
             var formIds = resources
                 .Where(r => r.ResourceType == ExternalResourceTypes.LeadForm)
                 .Select(r => r.ExternalId)
+                .Distinct()
                 .ToList();
             if (formIds.Count > 0)
             {
@@ -400,14 +416,66 @@ namespace DAMS.Application.Services.Integrations
                     .Select(m => new
                     {
                         m.FormExternalId,
-                        ProjectName = m.InterestedProject != null ? m.InterestedProject.ProjectName : null
+                        ProjectName = m.InterestedProject != null ? m.InterestedProject.ProjectName : null,
+                        AnswersSetUp = m.AnswerMappingsJson != null
                     })
-                    .ToDictionaryAsync(m => m.FormExternalId, m => m.ProjectName, cancellationToken);
+                    .ToDictionaryAsync(m => m.FormExternalId, cancellationToken);
 
+                var leadCounts = (await _context.LeadExternalSubmissions
+                    .AsNoTracking()
+                    .Where(s => s.Provider == IntegrationProviders.Meta
+                                && s.ExternalFormReference != null
+                                && formIds.Contains(s.ExternalFormReference))
+                    .GroupBy(s => s.ExternalFormReference!)
+                    .Select(g => new { FormId = g.Key, Count = g.Count() })
+                    .ToListAsync(cancellationToken))
+                    .ToDictionary(g => g.FormId, g => g.Count);
+
+                var metadataById = rows.ToDictionary(r => r.Id, r => r.MetadataJson);
                 foreach (var form in resources.Where(r => r.ResourceType == ExternalResourceTypes.LeadForm))
                 {
-                    form.HasFormMapping = mappings.TryGetValue(form.ExternalId, out var projectName);
-                    form.FormMappingProjectName = projectName;
+                    if (mappings.TryGetValue(form.ExternalId, out var mapping))
+                    {
+                        form.HasFormMapping = true;
+                        form.FormMappingProjectName = mapping.ProjectName;
+                        form.AnswersSetUp = mapping.AnswersSetUp;
+                    }
+
+                    form.ChoiceQuestionCount = ChoiceQuestionCount(metadataById[form.Id]);
+                    form.LeadCount = leadCounts.TryGetValue(form.ExternalId, out var count) ? count : 0;
+                }
+            }
+
+            var pageIds = resources
+                .Where(r => r.ResourceType == ExternalResourceTypes.FacebookPage)
+                .Select(r => r.ExternalId)
+                .Distinct()
+                .ToList();
+            if (pageIds.Count > 0)
+            {
+                var since = DateTime.UtcNow.AddDays(-7);
+                var pageStats = (await _context.LeadExternalSubmissions
+                    .AsNoTracking()
+                    .Where(s => s.Provider == IntegrationProviders.Meta
+                                && s.PageExternalId != null
+                                && pageIds.Contains(s.PageExternalId))
+                    .GroupBy(s => s.PageExternalId!)
+                    .Select(g => new
+                    {
+                        PageId = g.Key,
+                        LastLeadAt = g.Max(s => (DateTime?)s.ReceivedAt),
+                        LeadsLast7Days = g.Count(s => s.ReceivedAt >= since)
+                    })
+                    .ToListAsync(cancellationToken))
+                    .ToDictionary(g => g.PageId!);
+
+                foreach (var page in resources.Where(r => r.ResourceType == ExternalResourceTypes.FacebookPage))
+                {
+                    if (!pageStats.TryGetValue(page.ExternalId, out var stats))
+                        continue;
+
+                    page.LastLeadAt = stats.LastLeadAt;
+                    page.LeadsLast7Days = stats.LeadsLast7Days;
                 }
             }
 
@@ -432,6 +500,15 @@ namespace DAMS.Application.Services.Integrations
                 })
                 .Where(group => group.Items.Count > 0)
                 .ToList();
+        }
+
+        /// <summary>Null when the form's questions have not been read yet; otherwise how many offer a choice.</summary>
+        private static int? ChoiceQuestionCount(string? metadataJson)
+        {
+            if (string.IsNullOrWhiteSpace(metadataJson))
+                return null;
+
+            return LeadFormQuestions.Read(metadataJson).Count(q => q.Options is { Count: > 0 });
         }
 
         private static string Label(string resourceType) => resourceType switch

@@ -177,7 +177,14 @@ namespace DAMS.Application.Services
                             && (reopenedAt == null || c.CreatedAt >= reopenedAt))
                 .OrderByDescending(c => c.OccurredAt)
                 .ThenByDescending(c => c.Id)
-                .Select(c => new { At = c.NextActionAt, Summary = c.NextAction ?? c.Summary })
+                // A follow-up linked to this exchange already carries the plan. Counting the
+                // communication as well would leave it Overdue after that follow-up is done.
+                // An older row with no follow-up still contributes, when it is the latest exchange.
+                .Select(c => new
+                {
+                    At = c.FollowUpId == null ? c.NextActionAt : null,
+                    Summary = c.NextAction ?? c.Summary
+                })
                 .FirstOrDefaultAsync(cancellationToken);
 
             var next = new[] { followUp, visit, communication }

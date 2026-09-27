@@ -707,6 +707,8 @@ namespace DAMS.Application.Services
                     l.Id,
                     l.LeadReference,
                     l.Stage,
+                    l.FirstName,
+                    l.LastName,
                     l.NormalizedPhone,
                     l.NormalizedWhatsapp,
                     l.NormalizedEmail,
@@ -723,7 +725,11 @@ namespace DAMS.Application.Services
                     MatchedOn = MatchedOn(normalizedPhone, normalizedWhatsapp, openLead.NormalizedPhone, openLead.NormalizedWhatsapp),
                     LeadId = openLead.Id,
                     LeadReference = openLead.LeadReference,
+                    LeadName = openLead.LastName == null || openLead.LastName == ""
+                        ? openLead.FirstName
+                        : openLead.FirstName + " " + openLead.LastName,
                     LeadStage = openLead.Stage,
+                    LeadStageGroup = LeadStageRules.GroupOf(openLead.Stage),
                     LeadOwnerName = openLead.OwnerName
                 }).ToList();
 
@@ -905,6 +911,7 @@ namespace DAMS.Application.Services
                             LeadReference = l.LeadReference,
                             LeadName = l.Name,
                             LeadStage = l.Stage,
+                            LeadStageGroup = LeadStageRules.GroupOf(l.Stage),
                             LeadOwnerName = l.OwnerName,
                             MatchedOn = MatchedOn(phone, whatsapp, l.NormalizedPhone, l.NormalizedWhatsapp),
                             IsOpen = !LeadStageRules.IsClosed(l.Stage)
@@ -1221,7 +1228,7 @@ namespace DAMS.Application.Services
 
             return await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
                 .Where(l => l.Id == id)
-                .Select(LeadMapping.ToResponse(_context))
+                .Select(LeadMapping.ToDetail(_context))
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
@@ -1342,7 +1349,7 @@ namespace DAMS.Application.Services
 
             return await _context.LeadActivities
                 .AsNoTracking()
-                .Where(a => a.LeadId == leadId)
+                .Where(a => a.LeadId == leadId && !LeadTimeline.NotShownOnTimeline.Contains(a.Type))
                 .OrderByDescending(a => a.OccurredAt)
                 .ThenByDescending(a => a.Id)
                 .Select(LeadMapping.ToActivityDto)
@@ -1902,7 +1909,7 @@ namespace DAMS.Application.Services
                 a =>
                 {
                     a.Notes = LeadContactNormalizer.Clean(dto.Notes);
-                    a.PreviousValue = previous.ToString();
+                    a.PreviousValue = LeadDisplay.Status(previous);
                     a.NewValue = reason.Name;
                 });
 
@@ -1966,12 +1973,12 @@ namespace DAMS.Application.Services
 
             var reopenReason = LeadContactNormalizer.Clean(dto.Reason);
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadReopened,
-                $"Lead reopened from {LeadDisplay.Words(previousStage)} into {LeadDisplay.Words(dto.Stage)}.", ctx,
+                $"Lead reopened (was {LeadDisplay.Status(previousStage)}).", ctx,
                 a =>
                 {
                     a.Notes = reopenReason;
                     a.PreviousValue = previousReason == null ? previousStage.ToString() : $"{previousStage} ({previousReason})";
-                    a.NewValue = dto.Stage.ToString();
+                    a.NewValue = LeadDisplay.Status(dto.Stage);
                 });
 
             await NotifyOwnerAsync(lead, NotificationType.LeadAssigned,
@@ -2139,6 +2146,7 @@ namespace DAMS.Application.Services
                     bookingRow.BookingRequestId = linkedRequest.Id;
                 }
 
+                var stageBeforeWin = lead.Stage;
                 lead.Stage = LeadStage.Won;
                 lead.ConvertedAt = DateTime.UtcNow;
                 lead.ConvertedByUserId = ctx.UserId;
@@ -2169,8 +2177,8 @@ namespace DAMS.Application.Services
                     $"Lead converted and marked Won ({booking.BookingReference}).", ctx,
                     a =>
                     {
-                        a.PreviousValue = LeadStage.BookingPending.ToString();
-                        a.NewValue = LeadStage.Won.ToString();
+                        a.PreviousValue = LeadDisplay.Status(stageBeforeWin);
+                        a.NewValue = LeadDisplay.Status(LeadStage.Won);
                         a.BookingId = booking.Id;
                         a.CustomerId = customerId;
                     });
@@ -2735,10 +2743,10 @@ namespace DAMS.Application.Services
 
         private async Task<LeadResponseDto?> LoadResponseAsync(int id, CancellationToken cancellationToken)
         {
-            // Read back through the same untracked projection a GET would use, so the
-            // response can never disagree with it. The change tracker is deliberately left
-            // alone: callers such as the website booking-request flow still hold entities of
-            // their own that have not been saved yet.
+            // Writes hand back the same light lead the list uses. The page header — tab
+            // counts, last contact, who converted or closed it — is loaded only by
+            // GET /api/leads/{id}. The tracker is left alone: callers such as the website
+            // booking-request flow still hold entities of their own that have not been saved yet.
             return await _context.Leads
                 .AsNoTracking()
                 .Where(l => l.Id == id)

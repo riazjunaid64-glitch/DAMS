@@ -83,8 +83,8 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         // decision rather than a conversion that quietly cannot link anything.
         AccountLinks = new CustomerAccountLinkService(db, Clock);
         Leads = new LeadService(db, customers, bookings, Notifications, alertOptions, AccountLinks);
-        Communications = new LeadCommunicationService(db, Notifications);
         FollowUps = new LeadFollowUpService(db, Notifications);
+        Communications = new LeadCommunicationService(db, Notifications, FollowUps);
         SiteVisits = new LeadSiteVisitService(db, Notifications);
         DocumentStorage = new MemoryLeadDocumentStorage();
         Documents = new LeadDocumentService(db, DocumentStorage, NullLogger<LeadDocumentService>.Instance);

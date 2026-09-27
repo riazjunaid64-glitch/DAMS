@@ -31,6 +31,12 @@ namespace DAMS.Domain.Entities
 
         public DateTime? NextActionAt { get; set; }
 
+        /// <summary>
+        /// The follow-up created for <see cref="NextActionAt"/>. Null on rows recorded
+        /// before that link existed; their plan is still the lead's next action on its own.
+        /// </summary>
+        public int? FollowUpId { get; set; }
+
         /// <summary>False when the customer could not be reached (a contact attempt).</summary>
         public bool Connected { get; set; } = true;
 
@@ -44,6 +50,8 @@ namespace DAMS.Domain.Entities
         public Lead Lead { get; set; } = null!;
 
         public Employee? Employee { get; set; }
+
+        public LeadFollowUp? FollowUp { get; set; }
 
         public ICollection<LeadDocument> Attachments { get; set; } = new List<LeadDocument>();
     }
