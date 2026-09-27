@@ -109,7 +109,8 @@ namespace DAMS.Application.Services
                 TotalAssigned = await mine.CountAsync(cancellationToken),
                 NewLeads = await mine.CountAsync(l => LeadStageRules.NewStages.Contains(l.Stage), cancellationToken),
                 InProgressLeads = await mine.CountAsync(l => LeadStageRules.InProgressStages.Contains(l.Stage), cancellationToken),
-                LostLeads = await mine.CountAsync(l => LeadStageRules.LostStages.Contains(l.Stage), cancellationToken),
+                LostLeads = await mine.CountAsync(l => l.Stage == LeadStage.Lost, cancellationToken),
+                DormantLeads = await mine.CountAsync(l => l.Stage == LeadStage.Dormant, cancellationToken),
                 ActiveLeads = await open.CountAsync(cancellationToken),
                 LeadsWithoutRecentActivity = await open.CountAsync(
                     l => (l.LastActivityAt == null ? l.CreatedAt : l.LastActivityAt.Value) < inactiveCutoff, cancellationToken),
@@ -194,6 +195,7 @@ namespace DAMS.Application.Services
             {
                 TotalLeads = facts.Count,
                 OpenLeads = facts.Count(f => !LeadStageRules.IsClosed(f.Stage)),
+                InProgressLeads = facts.Count(f => !LeadStageRules.IsClosed(f.Stage)),
                 UnassignedLeads = facts.Count(f => f.EmployeeId == null && f.TeamId == null && !LeadStageRules.IsClosed(f.Stage)),
                 WonLeads = won,
                 LostLeads = facts.Count(f => f.Stage == LeadStage.Lost),

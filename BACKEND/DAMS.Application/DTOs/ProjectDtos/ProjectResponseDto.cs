@@ -23,5 +23,13 @@ namespace DAMS.Application.DTOs.ProjectDtos
         public ProjectStatus Status { get; set; }
 
         public DateTime CreatedAt { get; set; }
+
+        public int TotalUnits { get; set; }
+
+        public int AvailableUnits { get; set; }
+
+        public int BookedUnits { get; set; }
+
+        public int SoldUnits { get; set; }
     }
 }

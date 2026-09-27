@@ -83,16 +83,41 @@ namespace DAMS.Application.Common
                 throw new LeadAuthorizationException("Only an admin or manager can change lead ownership.");
         }
 
-        public static void EnsureCanConvert(LeadUserContext ctx)
+        /// <summary>
+        /// Admin and Manager can convert any lead. An employee can convert only a lead
+        /// assigned to them. Callers that have no lead yet (customer search) pass null and
+        /// stay limited to admin and manager.
+        /// </summary>
+        public static void EnsureCanConvert(LeadUserContext ctx, Lead? lead = null)
         {
-            if (!ctx.IsAdmin && !ctx.IsManager)
-                throw new LeadAuthorizationException("Only an admin or manager can convert a lead into a booking.");
+            if (ctx.IsAdmin || ctx.IsManager)
+                return;
+
+            if (ctx.IsEmployee && lead != null && lead.AssignedEmployeeId == ctx.EmployeeId)
+                return;
+
+            throw new LeadAuthorizationException(
+                ctx.IsEmployee
+                    ? "You can only convert leads assigned to you."
+                    : "Only an admin or manager can convert a lead into a booking.");
         }
 
-        public static void EnsureCanReopen(LeadUserContext ctx)
+        /// <summary>
+        /// Admin and Manager can reopen any closed lead. An employee can reopen only a
+        /// lead assigned to them; it stays assigned to them.
+        /// </summary>
+        public static void EnsureCanReopen(LeadUserContext ctx, Lead? lead = null)
         {
-            if (!ctx.IsAdmin && !ctx.IsManager)
-                throw new LeadAuthorizationException("Only an admin or manager can reopen a closed lead.");
+            if (ctx.IsAdmin || ctx.IsManager)
+                return;
+
+            if (ctx.IsEmployee && lead != null && lead.AssignedEmployeeId == ctx.EmployeeId)
+                return;
+
+            throw new LeadAuthorizationException(
+                ctx.IsEmployee
+                    ? "You can only reopen leads assigned to you."
+                    : "Only an admin or manager can reopen a closed lead.");
         }
 
         public static void EnsureCanConfigure(LeadUserContext ctx)

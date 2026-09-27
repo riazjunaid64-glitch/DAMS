@@ -109,6 +109,7 @@ namespace DAMS.Application.Services
                 {
                     a.Channel = dto.Channel;
                     a.Notes = dto.Summary.Trim();
+                    a.NewValue = dto.Connected ? "Connected" : "No answer";
                     a.OccurredAt = occurredAt;
                 });
 

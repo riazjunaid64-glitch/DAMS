@@ -44,5 +44,20 @@ namespace DAMS.Application.Interfaces
             LeadUserContext actor,
             int employeeId,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Turns a staff login off and clears its refresh token. Leads stay assigned.
+        /// Separate from employment status.
+        /// </summary>
+        Task<StaffAccountDto> DisableAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>Turns a disabled staff login back on.</summary>
+        Task<StaffAccountDto> EnableAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            CancellationToken cancellationToken = default);
     }
 }

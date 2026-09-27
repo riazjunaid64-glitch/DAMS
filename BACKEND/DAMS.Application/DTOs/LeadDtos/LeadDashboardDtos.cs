@@ -23,11 +23,13 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int NewLeads { get; set; }
 
-        /// <summary>Contacted and still open: the In Progress step of the simplified pipeline.</summary>
+        /// <summary>Every lead that is not Won, Lost or Dormant, including ones not yet contacted.</summary>
         public int InProgressLeads { get; set; }
 
-        /// <summary>Closed without converting, Dormant included.</summary>
+        /// <summary>Stage Lost only. Dormant is counted separately.</summary>
         public int LostLeads { get; set; }
+
+        public int DormantLeads { get; set; }
 
         public int ActiveLeads { get; set; }
 
@@ -83,6 +85,9 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int TotalLeads { get; set; }
 
         public int OpenLeads { get; set; }
+
+        /// <summary>Same leads as <see cref="OpenLeads"/>: everything that is not Won, Lost or Dormant.</summary>
+        public int InProgressLeads { get; set; }
 
         public int UnassignedLeads { get; set; }
 

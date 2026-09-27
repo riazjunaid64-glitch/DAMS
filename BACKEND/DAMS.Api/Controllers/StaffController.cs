@@ -105,6 +105,44 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        [HttpPost("accounts/{employeeId:int}/disable-access")]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        public async Task<IActionResult> DisableAccess(int employeeId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var actor = await _resolver.ResolveAsync(User, cancellationToken);
+                return Ok(await _staff.DisableAccessAsync(actor, employeeId, cancellationToken));
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("accounts/{employeeId:int}/enable-access")]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        public async Task<IActionResult> EnableAccess(int employeeId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var actor = await _resolver.ResolveAsync(User, cancellationToken);
+                return Ok(await _staff.EnableAccessAsync(actor, employeeId, cancellationToken));
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         [HttpPut("accounts/{employeeId:int}")]
         [Authorize(Roles = LeadRoles.AdminOrManager)]
         public async Task<IActionResult> Update(

@@ -1708,9 +1708,6 @@ namespace DAMS.Application.Services
             var previousTeamId = lead.AssignedTeamId;
             var isReassignment = previousEmployeeId != null || previousTeamId != null;
 
-            if (isReassignment && string.IsNullOrWhiteSpace(dto.Reason))
-                throw new InvalidOperationException("A reason is required when changing lead ownership.");
-
             if (dto.EmployeeId == null && dto.TeamId == null)
             {
                 if (!isReassignment)
@@ -1749,7 +1746,7 @@ namespace DAMS.Application.Services
                 {
                     lead.Stage = LeadStage.FirstContactPending;
                     LeadTimeline.Record(_context, lead, LeadActivityType.StageChanged,
-                        "Stage moved to First Contact Pending after assignment.", ctx,
+                        "Stage moved to New after assignment.", ctx,
                         a =>
                         {
                             a.PreviousValue = LeadStage.New.ToString();
@@ -1855,7 +1852,7 @@ namespace DAMS.Application.Services
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.StageChanged,
-                $"Stage changed from {previous} to {dto.Stage}.", ctx,
+                $"Stage changed from {LeadDisplay.Words(previous)} to {LeadDisplay.Words(dto.Stage)}.", ctx,
                 a =>
                 {
                     a.Notes = LeadContactNormalizer.Clean(dto.Notes);
@@ -1946,11 +1943,11 @@ namespace DAMS.Application.Services
             lead.NextActionSummary = dormant && dto.ReactivateOn.HasValue ? "Revisit dormant lead" : null;
             lead.UpdatedAt = DateTime.UtcNow;
 
-            var cancelled = await CancelOpenWorkAsync(lead, $"Lead marked {lead.Stage}.", cancellationToken);
+            var cancelled = await CancelOpenWorkAsync(lead, $"Lead marked {LeadDisplay.Status(lead.Stage)}.", cancellationToken);
 
             LeadTimeline.Record(_context, lead,
                 dormant ? LeadActivityType.LeadDormant : LeadActivityType.LeadLost,
-                $"Lead marked {lead.Stage}: {reason.Name}.", ctx,
+                $"Lead marked {LeadDisplay.Status(lead.Stage)}: {reason.Name}.", ctx,
                 a =>
                 {
                     a.Notes = LeadContactNormalizer.Clean(dto.Notes);
@@ -1963,7 +1960,7 @@ namespace DAMS.Application.Services
                     $"{cancelled} open follow-up(s) and visit(s) cancelled with the lead.", ctx);
 
             await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadClosed,
-                $"{FullName(lead)} marked {lead.Stage}",
+                $"{FullName(lead)} marked {LeadDisplay.Status(lead.Stage)}",
                 $"Reason: {reason.Name}.",
                 $"closed:{lead.Stage}", cancellationToken: cancellationToken);
 
@@ -1974,8 +1971,6 @@ namespace DAMS.Application.Services
 
         public async Task<LeadResponseDto> ReopenAsync(int id, ReopenLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            LeadAccess.EnsureCanReopen(ctx);
-
             return await RunContactWriteAtomicallyAsync(ct => ReopenUnderLockAsync(id, dto, ctx, ct), cancellationToken);
         }
 
@@ -1983,6 +1978,7 @@ namespace DAMS.Application.Services
             int id, ReopenLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
+            LeadAccess.EnsureCanReopen(ctx, lead);
 
             if (!LeadStageRules.ReopenableStages.Contains(lead.Stage))
                 throw new InvalidOperationException("Only a lost or dormant lead can be reopened.");
@@ -2017,17 +2013,18 @@ namespace DAMS.Application.Services
             lead.ReactivateOn = null;
             lead.UpdatedAt = DateTime.UtcNow;
 
+            var reopenReason = LeadContactNormalizer.Clean(dto.Reason);
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadReopened,
                 $"Lead reopened from {previousStage} into {dto.Stage}.", ctx,
                 a =>
                 {
-                    a.Notes = dto.Reason.Trim();
+                    a.Notes = reopenReason;
                     a.PreviousValue = previousReason == null ? previousStage.ToString() : $"{previousStage} ({previousReason})";
                     a.NewValue = dto.Stage.ToString();
                 });
 
             await NotifyOwnerAsync(lead, NotificationType.LeadAssigned,
-                $"Lead reopened: {FullName(lead)}", dto.Reason.Trim(),
+                $"Lead reopened: {FullName(lead)}", reopenReason ?? "The lead is open again.",
                 $"reopen:{DateTime.UtcNow:yyyyMMddHHmmss}", cancellationToken);
 
             await SaveWithConcurrencyGuardAsync(cancellationToken);
@@ -2042,9 +2039,8 @@ namespace DAMS.Application.Services
         public async Task<LeadConversionResultDto> ConvertAsync(
             int id, ConvertLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            LeadAccess.EnsureCanConvert(ctx);
-
             var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
+            LeadAccess.EnsureCanConvert(ctx, lead);
 
             // Idempotent: a repeated request returns the first conversion rather than
             // creating a second customer or booking.
@@ -2580,7 +2576,7 @@ namespace DAMS.Application.Services
                 });
 
             await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadClosed,
-                $"{FullName(lead)} marked {lead.Stage}", summary,
+                $"{FullName(lead)} marked {LeadDisplay.Status(lead.Stage)}", summary,
                 $"closed:{lead.Stage}", cancellationToken: cancellationToken);
         }
 

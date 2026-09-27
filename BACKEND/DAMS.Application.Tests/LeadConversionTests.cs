@@ -1,8 +1,10 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -194,13 +196,28 @@ public sealed class LeadConversionTests
     }
 
     [Fact]
-    public async Task EmployeesCannotConvert()
+    public async Task EmployeeConvertsOwnLeadLikeAnAdmin()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Sales));
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Sales);
+
+        Assert.True(result.CustomerWasCreated);
+        Assert.Equal(1, await h.Db.Bookings.CountAsync());
+        var lead = await h.Db.Leads.SingleAsync(l => l.Id == leadId);
+        Assert.Equal(LeadStage.Won, lead.Stage);
+        Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
+    }
+
+    [Fact]
+    public async Task EmployeeCannotConvertSomeoneElsesLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        await Assert.ThrowsAsync<LeadNotFoundException>(() =>
+            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.OtherSales));
 
         Assert.Equal(0, await h.Db.Bookings.CountAsync());
     }
@@ -284,5 +301,39 @@ public sealed class LeadConversionTests
         Assert.Equal(500_000m, booking.BookingAmountRequired);
         // The lead reference is carried onto the booking for attribution reporting.
         Assert.StartsWith("LD-", booking.ReferenceId);
+    }
+
+    [Fact]
+    public async Task ProjectListReportsUnitCountsAndRefreshesAfterAStatusChange()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var projects = new ProjectService(h.Db, new MemoryCache(new MemoryCacheOptions()));
+
+        var before = Assert.Single(await projects.GetAllProjectsAsync());
+        Assert.Equal(2, before.TotalUnits);
+        Assert.Equal(2, before.AvailableUnits);
+        Assert.Equal(0, before.BookedUnits);
+        Assert.Equal(0, before.SoldUnits);
+
+        var unit = await h.Db.Units.SingleAsync(u => u.Id == h.UnitId);
+        unit.Status = UnitStatus.Booked;
+        await h.Db.SaveChangesAsync();
+
+        var after = Assert.Single(await projects.GetAllProjectsAsync());
+        Assert.Equal(2, after.TotalUnits);
+        Assert.Equal(1, after.AvailableUnits);
+        Assert.Equal(1, after.BookedUnits);
+        Assert.Equal(0, after.SoldUnits);
+    }
+
+    [Theory]
+    [InlineData("1 BED", "1 Bed")]
+    [InlineData("1 Bedroom", "1 Bed")]
+    [InlineData("PARKING SPACE", "Parking space")]
+    [InlineData("studio", "Studio")]
+    [InlineData("penthouse", null)]
+    public void UnitTypes_MapKnownValuesAndLeaveUnknownOnes(string raw, string? expected)
+    {
+        Assert.Equal(expected, UnitTypes.Canonical(raw));
     }
 }

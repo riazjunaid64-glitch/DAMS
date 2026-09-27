@@ -18,6 +18,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ClientEmailVerification> ClientEmailVerifications { get; set; }
 
         public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
+        public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -158,6 +159,11 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(v => v.UserId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<StaffAccessAudit>(entity =>
+            {
+                entity.HasIndex(a => new { a.EmployeeId, a.OccurredAt });
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
@@ -1709,16 +1715,28 @@ namespace DAMS.Infrastructure.Data
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChanges(acceptAllChangesOnSuccess);
+            var unitsChanged = UnitRowsChanged();
+            var result = base.SaveChanges(acceptAllChangesOnSuccess);
+            if (unitsChanged)
+                ProjectListCache.Bump();
+            return result;
         }
 
-        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
+        public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            var unitsChanged = UnitRowsChanged();
+            var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            if (unitsChanged)
+                ProjectListCache.Bump();
+            return result;
         }
+
+        private bool UnitRowsChanged() =>
+            ChangeTracker.Entries<Unit>().Any(e =>
+                e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified);
 
         private static CustomerDocumentCategory SeedDocumentCategory(
             int id, string name, string code, bool required, int order, DateTime createdAt) => new()

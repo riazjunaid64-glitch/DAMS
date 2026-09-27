@@ -61,7 +61,7 @@ namespace DAMS.Application.Services
             {
                 lead.Stage = LeadStage.SiteVisitScheduled;
                 LeadTimeline.Record(_context, lead, LeadActivityType.StageChanged,
-                    $"Stage changed from {previousStage} to {LeadStage.SiteVisitScheduled}.", ctx,
+                    $"Stage changed from {LeadDisplay.Words(previousStage)} to {LeadDisplay.Words(LeadStage.SiteVisitScheduled)}.", ctx,
                     a =>
                     {
                         a.PreviousValue = previousStage.ToString();
@@ -72,7 +72,7 @@ namespace DAMS.Application.Services
             lead.UpdatedAt = DateTime.UtcNow;
 
             var activity = LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitScheduled,
-                $"Site visit scheduled for {dto.ScheduledAt:yyyy-MM-dd HH:mm} UTC.", ctx,
+                $"Site visit scheduled for {LeadDisplay.When(dto.ScheduledAt)}.", ctx,
                 a => a.Notes = visit.MeetingLocation);
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -80,7 +80,7 @@ namespace DAMS.Application.Services
             activity.SiteVisitId = visit.Id;
             await NotifyEmployeeAsync(lead, employeeId, ctx, NotificationType.SiteVisitScheduled,
                 $"Site visit booked for {LeadService.FullName(lead)}",
-                $"{dto.ScheduledAt:yyyy-MM-dd HH:mm} UTC at {visit.MeetingLocation}.",
+                $"{LeadDisplay.When(dto.ScheduledAt)} at {visit.MeetingLocation}.",
                 $"visit:{visit.Id}", cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
@@ -117,10 +117,10 @@ namespace DAMS.Application.Services
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitRescheduled,
-                $"Site visit moved from {previous:yyyy-MM-dd HH:mm} to {dto.ScheduledAt:yyyy-MM-dd HH:mm} UTC.", ctx,
+                $"Site visit moved from {LeadDisplay.When(previous)} to {LeadDisplay.When(dto.ScheduledAt)}.", ctx,
                 a =>
                 {
-                    a.Notes = dto.Reason.Trim();
+                    a.Notes = LeadContactNormalizer.Clean(dto.Reason);
                     a.SiteVisitId = visit.Id;
                     a.PreviousValue = previous.ToString("u");
                     a.NewValue = dto.ScheduledAt.ToString("u");
@@ -161,7 +161,7 @@ namespace DAMS.Application.Services
             {
                 lead.Stage = LeadStage.SiteVisitCompleted;
                 LeadTimeline.Record(_context, lead, LeadActivityType.StageChanged,
-                    $"Stage changed from {previousStage} to {LeadStage.SiteVisitCompleted}.", ctx,
+                    $"Stage changed from {LeadDisplay.Words(previousStage)} to {LeadDisplay.Words(LeadStage.SiteVisitCompleted)}.", ctx,
                     a =>
                     {
                         a.PreviousValue = previousStage.ToString();
@@ -207,7 +207,7 @@ namespace DAMS.Application.Services
             var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, visit.LeadId, cancellationToken);
 
             visit.Status = status;
-            visit.CancellationReason = dto.Reason.Trim();
+            visit.CancellationReason = LeadContactNormalizer.Clean(dto.Reason);
             visit.UpdatedAt = DateTime.UtcNow;
             lead.UpdatedAt = DateTime.UtcNow;
 

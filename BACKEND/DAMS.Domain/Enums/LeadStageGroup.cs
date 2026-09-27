@@ -10,6 +10,9 @@ namespace DAMS.Domain.Enums
         New = 0,
         InProgress = 1,
         Won = 2,
-        Lost = 3
+        Lost = 3,
+
+        /// <summary>Appended so existing stored values of the groups above keep their meaning.</summary>
+        Dormant = 4
     }
 }

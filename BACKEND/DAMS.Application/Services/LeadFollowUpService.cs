@@ -56,7 +56,7 @@ namespace DAMS.Application.Services
                 dto.AssignedEmployeeId != null && dto.AssignedEmployeeId != lead.AssignedEmployeeId
                     ? LeadActivityType.TaskCreated
                     : LeadActivityType.FollowUpScheduled,
-                $"{dto.Type} scheduled for {dto.DueAt:yyyy-MM-dd HH:mm} UTC.", ctx,
+                $"{LeadDisplay.Words(dto.Type)} scheduled for {LeadDisplay.When(dto.DueAt)}.", ctx,
                 a => a.Notes = followUp.Title);
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -68,8 +68,8 @@ namespace DAMS.Application.Services
             if (ownerUserId.HasValue && ownerUserId != ctx.UserId)
             {
                 await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.FollowUpAssigned,
-                    $"New {dto.Type} on {LeadService.FullName(lead)}",
-                    $"{followUp.Title} — due {dto.DueAt:yyyy-MM-dd HH:mm} UTC.",
+                    $"New {LeadDisplay.Words(dto.Type)} on {LeadService.FullName(lead)}",
+                    $"{followUp.Title} — due {LeadDisplay.When(dto.DueAt)}.",
                     $"task:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken);
             }
 
@@ -91,7 +91,7 @@ namespace DAMS.Application.Services
             followUp.Status = LeadFollowUpStatus.Completed;
             followUp.CompletedAt = DateTime.UtcNow;
             followUp.CompletedByUserId = ctx.UserId;
-            followUp.Outcome = dto.Outcome.Trim();
+            followUp.Outcome = LeadContactNormalizer.Clean(dto.Outcome);
             followUp.UpdatedAt = DateTime.UtcNow;
 
             LeadFollowUp? next = null;
@@ -117,7 +117,7 @@ namespace DAMS.Application.Services
             }
 
             LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpCompleted,
-                $"{followUp.Type} completed.", ctx, a =>
+                $"{LeadDisplay.Words(followUp.Type)} completed.", ctx, a =>
                 {
                     a.Notes = followUp.Outcome;
                     a.FollowUpId = followUp.Id;
@@ -125,7 +125,7 @@ namespace DAMS.Application.Services
 
             if (next != null)
                 LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpScheduled,
-                    $"Next {next.Type} scheduled for {next.DueAt:yyyy-MM-dd HH:mm} UTC.", ctx,
+                    $"Next {LeadDisplay.Words(next.Type)} scheduled for {LeadDisplay.When(next.DueAt)}.", ctx,
                     a => a.Notes = next.Title);
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -136,11 +136,8 @@ namespace DAMS.Application.Services
         }
 
         public async Task<LeadFollowUpDto> CancelAsync(
-            int followUpId, string reason, LeadUserContext ctx, CancellationToken cancellationToken = default)
+            int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(reason))
-                throw new InvalidOperationException("A reason is required to cancel a follow-up.");
-
             var followUp = await LoadForWriteAsync(followUpId, ctx, cancellationToken);
 
             if (followUp.Status is LeadFollowUpStatus.Completed or LeadFollowUpStatus.Cancelled)
@@ -149,11 +146,11 @@ namespace DAMS.Application.Services
             var lead = await LeadGate.LoadActiveForAuthorizedWorkAsync(_context, followUp.LeadId, cancellationToken);
 
             followUp.Status = LeadFollowUpStatus.Cancelled;
-            followUp.Outcome = reason.Trim();
+            followUp.Outcome = LeadContactNormalizer.Clean(reason);
             followUp.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpCompleted,
-                $"{followUp.Type} cancelled.", ctx, a =>
+                $"{LeadDisplay.Words(followUp.Type)} cancelled.", ctx, a =>
                 {
                     a.Notes = followUp.Outcome;
                     a.FollowUpId = followUp.Id;
@@ -192,10 +189,10 @@ namespace DAMS.Application.Services
             followUp.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpRescheduled,
-                $"{followUp.Type} rescheduled for {dto.DueAt:yyyy-MM-dd HH:mm} UTC.", ctx,
+                $"{LeadDisplay.Words(followUp.Type)} rescheduled for {LeadDisplay.When(dto.DueAt)}.", ctx,
                 activity =>
                 {
-                    activity.Notes = dto.Reason.Trim();
+                    activity.Notes = LeadContactNormalizer.Clean(dto.Reason);
                     activity.PreviousValue = previousDueAt.ToString("O");
                     activity.NewValue = dto.DueAt.ToString("O");
                     activity.FollowUpId = followUp.Id;

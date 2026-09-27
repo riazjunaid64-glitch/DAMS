@@ -164,9 +164,8 @@ namespace DAMS.Application.DTOs.LeadDtos
         /// <summary>Stage to reopen into. Must be an active (non-terminal) stage.</summary>
         public LeadStage Stage { get; set; } = LeadStage.Contacted;
 
-        [Required]
-        [StringLength(1000, MinimumLength = 3)]
-        public string Reason { get; set; } = string.Empty;
+        [StringLength(1000)]
+        public string? Reason { get; set; }
     }
 
     public class ConvertLeadDto

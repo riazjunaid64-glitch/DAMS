@@ -84,7 +84,7 @@ namespace DAMS.Application.Services
                     await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
                         NotificationType.FirstContactOverdue,
                         $"First contact overdue: {name}",
-                        $"Assigned {lead.AssignedAt:yyyy-MM-dd HH:mm} UTC with no contact recorded yet.",
+                        $"Assigned {LeadDisplay.When(lead.AssignedAt!.Value)} with no contact recorded yet.",
                         $"FirstContactOverdue:{lead.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken))
                     result.NotificationsCreated++;
 
@@ -137,7 +137,7 @@ namespace DAMS.Application.Services
                     result.FollowUpsMarkedMissed++;
 
                     LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpMissed,
-                        $"{followUp.Type} missed — it was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.", null,
+                        $"{LeadDisplay.Words(followUp.Type)} missed — it was due {LeadDisplay.When(followUp.DueAt)}.", null,
                         a =>
                         {
                             a.FollowUpId = followUp.Id;
@@ -147,7 +147,7 @@ namespace DAMS.Application.Services
                     var escalated = await _notifications.QueueForSupervisorsAsync(lead,
                         NotificationType.ManagerAttentionRequired,
                         $"Follow-up missed on {name}",
-                        $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
+                        $"{followUp.Title} was due {LeadDisplay.When(followUp.DueAt)}.",
                         $"followup-missed:{followUp.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
@@ -162,7 +162,7 @@ namespace DAMS.Application.Services
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
                             NotificationType.FollowUpOverdue,
                             $"Follow-up overdue: {name}",
-                            $"{followUp.Title} was due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
+                            $"{followUp.Title} was due {LeadDisplay.When(followUp.DueAt)}.",
                             $"FollowUpOverdue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
@@ -174,7 +174,7 @@ namespace DAMS.Application.Services
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value,
                             NotificationType.FollowUpDue,
                             $"Follow-up due: {name}",
-                            $"{followUp.Title} is due {followUp.DueAt:yyyy-MM-dd HH:mm} UTC.",
+                            $"{followUp.Title} is due {LeadDisplay.When(followUp.DueAt)}.",
                             $"FollowUpDue:{followUp.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }
@@ -283,13 +283,13 @@ namespace DAMS.Application.Services
                     result.SiteVisitsMarkedMissed++;
 
                     LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitMissed,
-                        $"Site visit missed — it was scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC.", null,
+                        $"Site visit missed — it was scheduled for {LeadDisplay.When(visit.ScheduledAt)}.", null,
                         a => a.SiteVisitId = visit.Id);
 
                     var escalated = await _notifications.QueueForSupervisorsAsync(lead,
                         NotificationType.SiteVisitMissed,
                         $"Site visit missed: {name}",
-                        $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC with no outcome recorded.",
+                        $"Scheduled for {LeadDisplay.When(visit.ScheduledAt)} with no outcome recorded.",
                         $"visit-missed:{visit.Id}:{occurrence}", isEscalation: true, cancellationToken: cancellationToken);
 
                     result.NotificationsCreated += escalated;
@@ -305,7 +305,7 @@ namespace DAMS.Application.Services
                     if (remindersEnabled && ownerUserId.HasValue && advanceReady &&
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit coming up: {name}",
-                            $"Scheduled for {visit.ScheduledAt:yyyy-MM-dd HH:mm} UTC at {visit.MeetingLocation}.",
+                            $"Scheduled for {LeadDisplay.When(visit.ScheduledAt)} at {visit.MeetingLocation}.",
                             $"SiteVisitAdvance:{visit.Id}:{ownerUserId.Value}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
 
@@ -313,7 +313,7 @@ namespace DAMS.Application.Services
                         && visit.ScheduledAt >= dayStart && visit.ScheduledAt < nextDayStart &&
                         await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.SiteVisitReminder,
                             $"Site visit today: {name}",
-                            $"{visit.ScheduledAt:HH:mm} UTC at {visit.MeetingLocation}.",
+                            $"{LeadDisplay.When(visit.ScheduledAt)} at {visit.MeetingLocation}.",
                             $"SiteVisitToday:{visit.Id}:{ownerUserId.Value}:{bucket}:{occurrence}", cancellationToken: cancellationToken))
                         result.NotificationsCreated++;
                 }

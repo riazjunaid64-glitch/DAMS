@@ -415,6 +415,73 @@ namespace DAMS.Application.Services
             return await LoadAccountAsync(employee.Id, cancellationToken);
         }
 
+        public Task<StaffAccountDto> DisableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: false, cancellationToken);
+
+        public Task<StaffAccountDto> EnableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: true, cancellationToken);
+
+        private async Task<StaffAccountDto> SetAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            bool enabled,
+            CancellationToken cancellationToken)
+        {
+            EnsureCanManageStaff(actor);
+
+            var employee = await _context.Employees
+                .Include(e => e.User).ThenInclude(u => u!.Role)
+                .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
+                ?? throw new InvalidOperationException("Employee not found.");
+
+            if (employee.User == null)
+                throw new InvalidOperationException("This employee has no login account. Connect an account first.");
+
+            if (actor.UserId == employee.User.UserId
+                || (actor.EmployeeId.HasValue && actor.EmployeeId.Value == employee.Id))
+                throw new LeadAuthorizationException("You cannot change your own access.");
+
+            EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
+
+            var target = enabled ? UserAccountStatus.Active : UserAccountStatus.Disabled;
+            if (employee.User.AccountStatus == target)
+                return await LoadAccountAsync(employee.Id, cancellationToken);
+
+            if (!enabled
+                && string.Equals(employee.User.Role?.Role_name, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+            {
+                var otherActiveAdmins = await _context.Users.CountAsync(
+                    u => u.UserId != employee.User.UserId
+                         && u.AccountStatus == UserAccountStatus.Active
+                         && u.Role.Role_name == LeadRoles.Admin,
+                    cancellationToken);
+                if (otherActiveAdmins == 0)
+                    throw new InvalidOperationException("The last active admin cannot be turned off.");
+            }
+
+            employee.User.AccountStatus = target;
+            if (!enabled)
+            {
+                employee.User.RefreshToken = null;
+                employee.User.RefreshTokenExpiresAt = null;
+            }
+
+            employee.UpdatedAt = DateTime.UtcNow;
+            _context.StaffAccessAudits.Add(new StaffAccessAudit
+            {
+                EmployeeId = employee.Id,
+                UserId = employee.User.UserId,
+                PerformedByUserId = actor.UserId,
+                AccessEnabled = enabled,
+                OccurredAt = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync(cancellationToken);
+            return await LoadAccountAsync(employee.Id, cancellationToken);
+        }
+
         /// <summary>
         /// Serialisable, because "read this employee as unlinked, then link it" is only one
         /// linkage if nothing can slip between the two. Skipped on a non-relational provider,

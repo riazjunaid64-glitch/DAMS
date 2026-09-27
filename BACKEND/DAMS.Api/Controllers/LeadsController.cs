@@ -140,13 +140,13 @@ namespace DAMS.Api.Controllers
             RunAsync(ctx => _leads.CloseAsync(id, dormant: true, dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("{id:int}/reopen")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Staff)]
         public Task<IActionResult> Reopen(int id, [FromBody] ReopenLeadDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.ReopenAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
         /// <summary>Converts the lead into a customer and booking. Idempotent.</summary>
         [HttpPost("{id:int}/convert")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Staff)]
         public Task<IActionResult> Convert(int id, [FromBody] ConvertLeadDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _leads.ConvertAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
