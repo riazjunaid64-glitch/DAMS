@@ -107,49 +107,9 @@ export function QualificationBadge({ value }: { value: string }) {
   return <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${tone}`}>{value}</span>;
 }
 
-export function MetricCard({
-  label,
-  value,
-  detail,
-  icon,
-  active,
-  onClick,
-}: {
-  label: string;
-  value: string | number;
-  detail?: string;
-  icon?: ReactNode;
-  /** This card's filter is the one currently applied, so it reads as pressed and can be pressed off. */
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  const content = (
-    <div className="flex items-center gap-4">
-      {icon && (
-        <span aria-hidden="true" className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--accent)] ${active ? "bg-[var(--accent-glow-strong)]" : "bg-[var(--accent-glow)]"}`}>
-          {icon}
-        </span>
-      )}
-      <div className="min-w-0">
-        <p className="text-sm text-[var(--text-muted)]">{label}</p>
-        <p className="mt-0.5 text-2xl font-bold tabular-nums text-[var(--text-heading)]">{value}</p>
-        {detail && <p className="mt-1 text-xs text-[var(--text-muted)]">{detail}</p>}
-      </div>
-    </div>
-  );
-  const shell = `rounded-2xl border bg-[var(--bg-card)] p-5 ${active ? "border-[var(--accent)]" : "border-[var(--border)]"}`;
-  return onClick ? (
-    <button type="button" aria-pressed={active} onClick={onClick} className={`${shell} cursor-pointer text-left transition hover:border-[var(--accent)]/40 hover:bg-[var(--surface-glass-hover)]`}>
-      {content}
-    </button>
-  ) : (
-    <div className={shell}>{content}</div>
-  );
-}
-
 export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div role="alert" className="flex flex-col gap-3 rounded-xl border border-rose-500/25 bg-rose-500/[0.07] px-4 py-3 text-sm text-rose-300 sm:flex-row sm:items-center sm:justify-between">
+    <div role="alert" className="flex flex-col gap-3 rounded-card border border-danger-line bg-danger-soft px-4 py-3 text-sm font-bold text-danger sm:flex-row sm:items-center sm:justify-between">
       <span>{message}</span>
       {onRetry && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
     </div>

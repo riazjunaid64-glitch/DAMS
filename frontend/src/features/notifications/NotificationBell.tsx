@@ -102,14 +102,14 @@ export default function NotificationBell({ accountKey }: { accountKey: string | 
           aria-controls={open ? panelId : undefined}
           aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
           onClick={() => setOpen((value) => !value)}
-          className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 text-[var(--nav-text)] transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--nav-text-active)]"
+          className="relative inline-flex size-10 cursor-pointer items-center justify-center rounded-full border border-line bg-card text-ink transition hover:bg-page focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
             <path d="M13.73 21a2 2 0 0 1-3.46 0" />
           </svg>
           {unread > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-[1.15rem] items-center justify-center rounded-full bg-[var(--accent-warm)] px-1 text-[10px] font-bold leading-[1.15rem] text-[#1c1810]">
+            <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-[1.15rem] items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-[1.15rem] text-white ring-2 ring-card">
               {unread > 99 ? "99+" : unread}
             </span>
           )}
