@@ -1,8 +1,11 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.DTOs.UnitDtos;
+using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -194,13 +197,80 @@ public sealed class LeadConversionTests
     }
 
     [Fact]
-    public async Task EmployeesCannotConvert()
+    public async Task EmployeeConvertsOwnLeadLikeAnAdmin()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
-            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Sales));
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Sales);
+
+        Assert.True(result.CustomerWasCreated);
+        Assert.Equal(1, await h.Db.Bookings.CountAsync());
+        var lead = await h.Db.Leads.SingleAsync(l => l.Id == leadId);
+        Assert.Equal(LeadStage.Won, lead.Stage);
+        Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
+    }
+
+    public static TheoryData<string> SalespersonConversionTerms => new()
+    {
+        nameof(ConvertLeadDto.AgreedSalePrice),
+        nameof(ConvertLeadDto.DiscountPercent),
+        nameof(ConvertLeadDto.DiscountReason),
+        nameof(ConvertLeadDto.BookingAmountRequired),
+        nameof(ConvertLeadDto.BookingAmountDueDate),
+        nameof(ConvertLeadDto.CustomerId),
+    };
+
+    [Theory]
+    [MemberData(nameof(SalespersonConversionTerms))]
+    public async Task EmployeeCannotSetPriceDiscountBookingAmountOrCustomer(string field)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var customersBefore = await h.Db.Customers.CountAsync();
+        var dto = new ConvertLeadDto { UnitId = h.UnitId };
+        switch (field)
+        {
+            case nameof(ConvertLeadDto.AgreedSalePrice): dto.AgreedSalePrice = 1m; break;
+            case nameof(ConvertLeadDto.DiscountPercent): dto.DiscountPercent = 100m; break;
+            case nameof(ConvertLeadDto.DiscountReason): dto.DiscountReason = "Friend"; break;
+            case nameof(ConvertLeadDto.BookingAmountRequired): dto.BookingAmountRequired = 0m; break;
+            case nameof(ConvertLeadDto.BookingAmountDueDate): dto.BookingAmountDueDate = DateTime.UtcNow.AddYears(5); break;
+            case nameof(ConvertLeadDto.CustomerId): dto.CustomerId = 1; break;
+        }
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Leads.ConvertAsync(leadId, dto, h.Sales));
+
+        Assert.Equal(0, await h.Db.Bookings.CountAsync());
+        Assert.Equal(customersBefore, await h.Db.Customers.CountAsync());
+        Assert.NotEqual(LeadStage.Won, (await h.Db.Leads.AsNoTracking().SingleAsync(l => l.Id == leadId)).Stage);
+    }
+
+    [Fact]
+    public async Task ManagerCanStillSetConversionTerms()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto
+        {
+            UnitId = h.UnitId,
+            DiscountPercent = 5m,
+            DiscountReason = "Early booking"
+        }, h.Manager);
+
+        Assert.True(result.Created);
+        Assert.Equal(1, await h.Db.Bookings.CountAsync());
+    }
+
+    [Fact]
+    public async Task EmployeeCannotConvertSomeoneElsesLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        await Assert.ThrowsAsync<LeadNotFoundException>(() =>
+            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.OtherSales));
 
         Assert.Equal(0, await h.Db.Bookings.CountAsync());
     }
@@ -284,5 +354,96 @@ public sealed class LeadConversionTests
         Assert.Equal(500_000m, booking.BookingAmountRequired);
         // The lead reference is carried onto the booking for attribution reporting.
         Assert.StartsWith("LD-", booking.ReferenceId);
+    }
+
+    [Fact]
+    public async Task ProjectListReportsUnitCountsAndRefreshesAfterAStatusChange()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var projects = new ProjectService(h.Db, new MemoryCache(new MemoryCacheOptions()));
+
+        var before = Assert.Single(await projects.GetAllProjectsAsync());
+        Assert.Equal(2, before.TotalUnits);
+        Assert.Equal(2, before.AvailableUnits);
+        Assert.Equal(0, before.BookedUnits);
+        Assert.Equal(0, before.SoldUnits);
+
+        var unit = await h.Db.Units.SingleAsync(u => u.Id == h.UnitId);
+        unit.Status = UnitStatus.Booked;
+        await h.Db.SaveChangesAsync();
+
+        var after = Assert.Single(await projects.GetAllProjectsAsync());
+        Assert.Equal(2, after.TotalUnits);
+        Assert.Equal(1, after.AvailableUnits);
+        Assert.Equal(1, after.BookedUnits);
+        Assert.Equal(0, after.SoldUnits);
+    }
+
+    [Theory]
+    [InlineData("1 BED", "1 Bed")]
+    [InlineData("1 Bedroom", "1 Bed")]
+    [InlineData("PARKING SPACE", "Parking space")]
+    [InlineData("studio", "Studio")]
+    [InlineData("penthouse", null)]
+    public void UnitTypes_MapKnownValuesAndLeaveUnknownOnes(string raw, string? expected)
+    {
+        Assert.Equal(expected, UnitTypes.Canonical(raw));
+    }
+
+    [Fact]
+    public async Task CreatingOrChangingToAnUnknownUnitTypeIsRejected_ALegacyTypeCanStay()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var units = new UnitService(h.Db);
+
+        var rejected = await Assert.ThrowsAsync<InvalidOperationException>(() => units.CreateUnitAsync(new CreateUnitDto
+        {
+            ProjectId = h.ProjectId,
+            UnitNumber = "B-201",
+            UnitType = "Penthouse",
+            FloorNumber = 2,
+            Size = 900m,
+            Price = 8_000_000m
+        }));
+        Assert.Contains("Unit type must be one of", rejected.Message);
+
+        var created = await units.CreateUnitAsync(new CreateUnitDto
+        {
+            ProjectId = h.ProjectId,
+            UnitNumber = "B-202",
+            UnitType = "1 BED",
+            FloorNumber = 2,
+            Size = 900m,
+            Price = 8_000_000m
+        });
+        Assert.Equal("1 Bed", created.UnitType);
+
+        var legacy = await h.Db.Units.SingleAsync(u => u.Id == h.UnitId);
+        legacy.UnitType = "Apartment";
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var kept = await units.UpdateUnitAsync(h.UnitId, new UpdateUnitDto
+        {
+            UnitNumber = "A-101",
+            UnitType = "Apartment",
+            FloorNumber = 1,
+            Size = 1200m,
+            Price = 11_000_000m,
+            Status = nameof(UnitStatus.Available)
+        });
+        Assert.Equal("Apartment", kept.UnitType);
+        Assert.Equal(11_000_000m, kept.Price);
+
+        var changed = await Assert.ThrowsAsync<InvalidOperationException>(() => units.UpdateUnitAsync(h.UnitId, new UpdateUnitDto
+        {
+            UnitNumber = "A-101",
+            UnitType = "Villa",
+            FloorNumber = 1,
+            Size = 1200m,
+            Price = 11_000_000m,
+            Status = nameof(UnitStatus.Available)
+        }));
+        Assert.Contains("Unit type must be one of", changed.Message);
     }
 }

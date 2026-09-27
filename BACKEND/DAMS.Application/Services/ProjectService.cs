@@ -1,6 +1,7 @@
 using DAMS.Application.DTOs.ProjectDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
+using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +13,7 @@ namespace DAMS.Application.Services
         private readonly AppDbContext _context;
         private readonly IMemoryCache _cache;
         private static readonly TimeSpan ProjectsCacheDuration = TimeSpan.FromSeconds(30);
-        private const string AllProjectsCacheKey = "projects:all";
+        private static string AllProjectsCacheKey => $"projects:all:{ProjectListCache.Version}";
 
         public ProjectService(AppDbContext context, IMemoryCache cache)
         {
@@ -111,7 +112,15 @@ namespace DAMS.Application.Services
                 StartingDate = p.StartingDate,
                 ExpectedCompletionDate = p.ExpectedCompletionDate,
                 Status = p.Status,
-                CreatedAt = p.CreatedAt
+                CreatedAt = p.CreatedAt,
+                TotalUnits = p.Units.Count(),
+                AvailableUnits = p.Units.Count(u => u.Status == UnitStatus.Available),
+                BookedUnits = p.Units.Count(u =>
+                    u.Status == UnitStatus.PendingReview
+                    || u.Status == UnitStatus.Booked
+                    || u.Status == UnitStatus.Reserved
+                    || u.Status == UnitStatus.OnPaymentPlan),
+                SoldUnits = p.Units.Count(u => u.Status == UnitStatus.Sold)
             };
 
         private static ProjectResponseDto MapToResponse(Project project)

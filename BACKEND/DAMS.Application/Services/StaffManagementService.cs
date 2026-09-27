@@ -415,6 +415,136 @@ namespace DAMS.Application.Services
             return await LoadAccountAsync(employee.Id, cancellationToken);
         }
 
+        public Task<StaffAccountDto> DisableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: false, cancellationToken);
+
+        public Task<StaffAccountDto> EnableAccessAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
+            SetAccessAsync(actor, employeeId, enabled: true, cancellationToken);
+
+        public async Task<List<StaffAccessAuditDto>> GetAccessHistoryAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default)
+        {
+            EnsureCanManageStaff(actor);
+
+            if (!await _context.Employees.AnyAsync(e => e.Id == employeeId, cancellationToken))
+                throw new StaffNotFoundException("Employee not found.");
+
+            var rows = await _context.StaffAccessAudits
+                .AsNoTracking()
+                .Where(a => a.EmployeeId == employeeId)
+                .OrderByDescending(a => a.OccurredAt)
+                .ThenByDescending(a => a.Id)
+                .ToListAsync(cancellationToken);
+
+            var actorIds = rows.Select(r => r.PerformedByUserId).Distinct().ToArray();
+            var names = await _context.Users
+                .AsNoTracking()
+                .Where(u => actorIds.Contains(u.UserId))
+                .ToDictionaryAsync(u => u.UserId, u => u.FullName, cancellationToken);
+
+            return rows.Select(a => new StaffAccessAuditDto
+            {
+                Id = a.Id,
+                EmployeeId = a.EmployeeId,
+                UserId = a.UserId,
+                PerformedByUserId = a.PerformedByUserId,
+                PerformedByName = names.GetValueOrDefault(a.PerformedByUserId),
+                AccessEnabled = a.AccessEnabled,
+                OccurredAt = a.OccurredAt
+            }).ToList();
+        }
+
+        private async Task<StaffAccountDto> SetAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            bool enabled,
+            CancellationToken cancellationToken)
+        {
+            EnsureCanManageStaff(actor);
+
+            // Serializable so two admins cannot each see the other as still active and
+            // turn both of the last admins off.
+            await ExecuteResilientlyAsync(async () =>
+            {
+                // A retry must re-read from the database: the failed attempt left this user
+                // changed in memory and its audit row pending, so without this the retry would
+                // see the new status already applied, save nothing, and report success.
+                _context.ChangeTracker.Clear();
+
+                await using var transaction = await BeginProvisioningAsync(cancellationToken);
+
+                var employee = await _context.Employees
+                    .Include(e => e.User).ThenInclude(u => u!.Role)
+                    .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
+                    ?? throw new StaffNotFoundException("Employee not found.");
+
+                if (employee.User == null)
+                    throw new InvalidOperationException("This employee has no login account. Connect an account first.");
+
+                if (actor.UserId == employee.User.UserId
+                    || (actor.EmployeeId.HasValue && actor.EmployeeId.Value == employee.Id))
+                    throw new LeadAuthorizationException("You cannot change your own access.");
+
+                EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
+
+                if (enabled && employee.User.AccountStatus == UserAccountStatus.Invited)
+                    throw new InvalidOperationException(
+                        "An invited login is turned on when they choose a password. Only a disabled login can be turned back on here.");
+
+                // A login that never set a password goes back to waiting for its invitation, not
+                // to Active: Active with no password cannot sign in, and invitation redemption and
+                // resend both only accept Invited, so it would be stuck for good.
+                var target = !enabled
+                    ? UserAccountStatus.Disabled
+                    : string.IsNullOrEmpty(employee.User.Password)
+                        ? UserAccountStatus.Invited
+                        : UserAccountStatus.Active;
+                if (employee.User.AccountStatus == target)
+                {
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                    return;
+                }
+
+                if (!enabled
+                    && string.Equals(employee.User.Role?.Role_name, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+                {
+                    var otherActiveAdmins = await _context.Users.CountAsync(
+                        u => u.UserId != employee.User.UserId
+                             && u.AccountStatus == UserAccountStatus.Active
+                             && u.Role.Role_name == LeadRoles.Admin,
+                        cancellationToken);
+                    if (otherActiveAdmins == 0)
+                        throw new InvalidOperationException("The last active admin cannot be turned off.");
+                }
+
+                employee.User.AccountStatus = target;
+                if (!enabled)
+                {
+                    employee.User.RefreshToken = null;
+                    employee.User.RefreshTokenExpiresAt = null;
+                }
+
+                employee.UpdatedAt = DateTime.UtcNow;
+                _context.StaffAccessAudits.Add(new StaffAccessAudit
+                {
+                    EmployeeId = employee.Id,
+                    UserId = employee.User.UserId,
+                    PerformedByUserId = actor.UserId,
+                    AccessEnabled = enabled,
+                    OccurredAt = DateTime.UtcNow
+                });
+
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
+            });
+
+            return await LoadAccountAsync(employeeId, cancellationToken);
+        }
+
         /// <summary>
         /// Serialisable, because "read this employee as unlinked, then link it" is only one
         /// linkage if nothing can slip between the two. Skipped on a non-relational provider,

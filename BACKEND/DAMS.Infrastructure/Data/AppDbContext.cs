@@ -6,6 +6,9 @@ namespace DAMS.Infrastructure.Data
 {
     public class AppDbContext : DbContext
     {
+        /// <summary>Set when a unit change is saved inside a transaction that has not committed.</summary>
+        internal bool ProjectListCachePending { get; set; }
+
         public AppDbContext(DbContextOptions<AppDbContext> options)
             : base(options)
         {
@@ -18,6 +21,8 @@ namespace DAMS.Infrastructure.Data
         public DbSet<ClientEmailVerification> ClientEmailVerifications { get; set; }
 
         public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
+        public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
+        public DbSet<UnitTypeMigrationNote> UnitTypeMigrationNotes { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -158,6 +163,17 @@ namespace DAMS.Infrastructure.Data
                       .WithMany()
                       .HasForeignKey(v => v.UserId)
                       .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<StaffAccessAudit>(entity =>
+            {
+                entity.HasIndex(a => new { a.EmployeeId, a.OccurredAt });
+            });
+
+            modelBuilder.Entity<UnitTypeMigrationNote>(entity =>
+            {
+                entity.Property(n => n.UnitType).IsRequired().HasMaxLength(100);
+                entity.HasIndex(n => n.UnitType).IsUnique();
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
@@ -1709,16 +1725,34 @@ namespace DAMS.Infrastructure.Data
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChanges(acceptAllChangesOnSuccess);
+            var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
+            var result = base.SaveChanges(acceptAllChangesOnSuccess);
+            if (unitsChanged && !enlisted)
+                ProjectListCache.Bump();
+            return result;
         }
 
-        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
+        public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess,
             CancellationToken cancellationToken = default)
         {
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
-            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
+            var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            if (unitsChanged && !enlisted)
+                ProjectListCache.Bump();
+            return result;
         }
+
+        private bool UnitRowsChanged() =>
+            ChangeTracker.Entries<Unit>().Any(e =>
+                e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified);
 
         private static CustomerDocumentCategory SeedDocumentCategory(
             int id, string name, string code, bool required, int order, DateTime createdAt) => new()

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using DAMS.Application.Common;
 using DAMS.Application.Interfaces;
 using DAMS.Application.DTOs.UnitDtos;
 using DAMS.Infrastructure.Data;
@@ -35,7 +36,7 @@ namespace DAMS.Application.Services
         {
             ProjectId = dto.ProjectId,
             UnitNumber = unitNumber,
-            UnitType = dto.UnitType,
+            UnitType = UnitTypes.Require(dto.UnitType),
             FloorNumber = dto.FloorNumber,
             Size = dto.Size,
             Price = dto.Price
@@ -98,7 +99,7 @@ namespace DAMS.Application.Services
         await EnsureUnitNumberIsFree(unit.ProjectId, unitNumber, id);
 
         unit.UnitNumber = unitNumber;
-        unit.UnitType = dto.UnitType;
+        unit.UnitType = UnitTypes.ResolveForUpdate(dto.UnitType, unit.UnitType);
         unit.FloorNumber = dto.FloorNumber;
         unit.Size = dto.Size;
         unit.Price = dto.Price;

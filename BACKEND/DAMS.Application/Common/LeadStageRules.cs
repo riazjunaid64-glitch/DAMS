@@ -20,17 +20,22 @@ namespace DAMS.Application.Common
         public static readonly LeadStage[] NewStages =
             { LeadStage.New, LeadStage.FirstContactPending };
 
-        /// <summary>Being worked: contacted and not yet closed. Grouped as In Progress.</summary>
+        /// <summary>
+        /// Everything that is not Won, Lost or Dormant, including leads nobody has contacted yet.
+        /// This is the "In progress" card and status filter on the redesigned lists.
+        /// </summary>
         public static readonly LeadStage[] InProgressStages =
         {
+            LeadStage.New, LeadStage.FirstContactPending,
             LeadStage.Contacted, LeadStage.Qualified, LeadStage.SiteVisitScheduled,
             LeadStage.SiteVisitCompleted, LeadStage.Negotiation, LeadStage.DocumentsInProgress,
             LeadStage.BookingPending
         };
 
-        /// <summary>Closed without converting. Dormant is a lost lead parked for a later revisit.</summary>
-        public static readonly LeadStage[] LostStages =
-            { LeadStage.Lost, LeadStage.Dormant };
+        /// <summary>Closed without converting. Dormant is its own group.</summary>
+        public static readonly LeadStage[] LostStages = { LeadStage.Lost };
+
+        public static readonly LeadStage[] DormantStages = { LeadStage.Dormant };
 
         private static readonly LeadStage[] WonStages = { LeadStage.Won };
 
@@ -41,6 +46,7 @@ namespace DAMS.Application.Common
             LeadStageGroup.InProgress => InProgressStages,
             LeadStageGroup.Won => WonStages,
             LeadStageGroup.Lost => LostStages,
+            LeadStageGroup.Dormant => DormantStages,
             _ => throw new ArgumentOutOfRangeException(nameof(group), group, "Unknown lead stage group.")
         };
 

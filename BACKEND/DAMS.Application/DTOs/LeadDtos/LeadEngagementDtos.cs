@@ -65,6 +65,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? ExternalProvider { get; set; }
 
+        /// <summary>False when the customer did not answer.</summary>
+        public bool Connected { get; set; }
+
         public DateTime CreatedAt { get; set; }
 
         public List<LeadDocumentDto> Attachments { get; set; } = new();
@@ -140,9 +143,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     public class CompleteLeadFollowUpDto
     {
-        [Required]
-        [StringLength(1000, MinimumLength = 2)]
-        public string Outcome { get; set; } = string.Empty;
+        [StringLength(1000)]
+        public string? Outcome { get; set; }
 
         /// <summary>Optional next follow-up to schedule immediately after this one closes.</summary>
         public DateTime? NextFollowUpAt { get; set; }
@@ -158,9 +160,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public DateTime? RemindAt { get; set; }
 
-        [Required]
-        [StringLength(500, MinimumLength = 3)]
-        public string Reason { get; set; } = string.Empty;
+        [StringLength(500)]
+        public string? Reason { get; set; }
     }
 
     public class LeadFollowUpDto
@@ -236,9 +237,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public DateTime? RemindAt { get; set; }
 
-        [Required]
-        [StringLength(500, MinimumLength = 3)]
-        public string Reason { get; set; } = string.Empty;
+        [StringLength(500)]
+        public string? Reason { get; set; }
     }
 
     public class CompleteSiteVisitDto
@@ -259,9 +259,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     public class CloseSiteVisitDto
     {
-        [Required]
-        [StringLength(500, MinimumLength = 3)]
-        public string Reason { get; set; } = string.Empty;
+        [StringLength(500)]
+        public string? Reason { get; set; }
     }
 
     public class LeadSiteVisitDto

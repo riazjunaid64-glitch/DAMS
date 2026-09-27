@@ -196,6 +196,7 @@ namespace DAMS.Application.Services
                 NextAction = c.NextAction,
                 NextActionAt = c.NextActionAt,
                 ExternalProvider = c.ExternalProvider,
+                Connected = c.Connected,
                 CreatedAt = c.CreatedAt,
                 Attachments = c.Attachments.Select(d => new LeadDocumentDto
                 {

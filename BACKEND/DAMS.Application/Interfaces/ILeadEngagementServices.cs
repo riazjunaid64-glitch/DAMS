@@ -24,7 +24,7 @@ namespace DAMS.Application.Interfaces
 
         Task<LeadFollowUpDto> RescheduleAsync(int followUpId, RescheduleLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
-        Task<LeadFollowUpDto> CancelAsync(int followUpId, string reason, LeadUserContext ctx, CancellationToken cancellationToken = default);
+        Task<LeadFollowUpDto> CancelAsync(int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<List<LeadFollowUpDto>> GetForLeadAsync(int leadId, LeadUserContext ctx, CancellationToken cancellationToken = default);
 

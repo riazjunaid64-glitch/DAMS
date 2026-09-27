@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -774,5 +775,153 @@ public sealed class LeadEngagementTests
         var visits = await h.SiteVisits.GetForLeadAsync(leadId, h.Sales);
         var closed = visits.First(v => v.Id == visit.Id);
         Assert.Equal(LeadSiteVisitStatus.Cancelled, closed.Status);
+    }
+
+    [Fact]
+    public async Task OptionalReasonsSucceedWithoutOne_AndTheTimelineKeepsOneWhenSent()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        var followUp = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Call back",
+            DueAt = DateTime.UtcNow.AddDays(2)
+        }, h.Sales);
+        var rescheduled = await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+        {
+            DueAt = DateTime.UtcNow.AddDays(3)
+        }, h.Sales);
+        Assert.Equal(LeadFollowUpStatus.Pending, rescheduled.Status);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.FollowUpRescheduled).Notes);
+
+        await h.FollowUps.RescheduleAsync(followUp.Id, new RescheduleLeadFollowUpDto
+        {
+            DueAt = DateTime.UtcNow.AddDays(4),
+            Reason = "Customer asked for later"
+        }, h.Sales);
+        Assert.Equal("Customer asked for later",
+            (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.FollowUpRescheduled).Notes);
+
+        await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto(), h.Sales);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.FollowUpCompleted).Notes);
+
+        var toCancel = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Second call",
+            DueAt = DateTime.UtcNow.AddDays(2)
+        }, h.Sales);
+        await h.FollowUps.CancelAsync(toCancel.Id, null, h.Sales);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.FollowUpCompleted).Notes);
+
+        var withReason = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Third call",
+            DueAt = DateTime.UtcNow.AddDays(2)
+        }, h.Sales);
+        await h.FollowUps.CancelAsync(withReason.Id, "No longer needed", h.Sales);
+        Assert.Equal("No longer needed",
+            (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.FollowUpCompleted).Notes);
+
+        var visit = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(2),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(3)
+        }, h.Sales);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.SiteVisitRescheduled).Notes);
+        await h.SiteVisits.RescheduleAsync(visit.Id, new RescheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(4),
+            Reason = "Rain"
+        }, h.Sales);
+        Assert.Equal("Rain", (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.SiteVisitRescheduled).Notes);
+
+        await h.SiteVisits.CancelAsync(visit.Id, new CloseSiteVisitDto(), h.Sales);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.SiteVisitCancelled).Notes);
+
+        var missed = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(5),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        await h.SiteVisits.MarkMissedAsync(missed.Id, new CloseSiteVisitDto(), h.Sales);
+        Assert.Null((await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.SiteVisitMissed).Notes);
+        var missedNotices = await h.Db.Notifications
+            .Where(n => n.EntityId == leadId && n.Type == NotificationType.SiteVisitMissed)
+            .ToListAsync();
+        Assert.NotEmpty(missedNotices);
+        Assert.All(missedNotices, n => Assert.False(string.IsNullOrWhiteSpace(n.Message)));
+
+        var completed = await h.SiteVisits.ScheduleAsync(leadId, new ScheduleSiteVisitDto
+        {
+            ScheduledAt = DateTime.UtcNow.AddDays(6),
+            MeetingLocation = "Site office"
+        }, h.Sales);
+        await h.SiteVisits.CompleteAsync(completed.Id, new CompleteSiteVisitDto
+        {
+            Outcome = LeadSiteVisitOutcome.ReadyToBook,
+            NextAction = "Send the booking form"
+        }, h.Sales);
+        Assert.Contains("Ready to book",
+            (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.SiteVisitCompleted).Summary);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Whatsapp,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Sent the brochure.",
+            Connected = true
+        }, h.Sales);
+        Assert.Contains("WhatsApp",
+            (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.WhatsappActivity).Summary);
+        Assert.DoesNotContain("Whatsapp",
+            (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.WhatsappActivity).Summary);
+
+        var owned = await h.CreateWorkedLeadAsync("0300-4445566");
+        var lostReason = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested");
+        await h.Leads.CloseAsync(owned, dormant: false, new CloseLeadDto { ClosureReasonId = lostReason }, h.Sales);
+        var reopened = await h.Leads.ReopenAsync(owned, new ReopenLeadDto { Stage = LeadStage.FirstContactPending }, h.Sales);
+        Assert.Equal(LeadStage.FirstContactPending, reopened.Stage);
+        var reopenLine = (await h.TimelineAsync(owned)).Single(a => a.Type == LeadActivityType.LeadReopened);
+        Assert.Contains("New", reopenLine.Summary);
+        Assert.DoesNotContain("FirstContactPending", reopenLine.Summary);
+        Assert.Null(reopenLine.Notes);
+
+        var queue = await h.CreateLeadAsync(LeadTestHarness.Intake(
+            firstName: "Queue", phone: "0300-7778899", email: "queue@example.com"));
+        await h.Leads.AssignAsync(queue, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+        await h.Leads.AssignAsync(queue, new AssignLeadDto { EmployeeId = h.OtherSalesEmployeeId }, h.Admin);
+        var reassignmentMessages = await h.Db.Notifications
+            .Where(n => n.EntityId == queue && n.Type == NotificationType.LeadReassigned)
+            .Select(n => n.Message)
+            .ToListAsync();
+        Assert.Contains("Lead ownership was changed.", reassignmentMessages);
+        Assert.All(reassignmentMessages, message => Assert.False(string.IsNullOrWhiteSpace(message)));
+    }
+
+    [Fact]
+    public void PakistanTimeTextDoesNotDependOnTheOperatingSystemZone()
+    {
+        var text = LeadDisplay.When(new DateTime(2026, 9, 27, 11, 0, 0, DateTimeKind.Utc));
+        Assert.Equal("Sun 27 Sep, 4:00 PM", text);
+    }
+
+    [Fact]
+    public void AnEmployeeWithNoEmployeeRecordCannotConvertOrReopenByANullMatch()
+    {
+        var ctx = new LeadUserContext
+        {
+            UserId = 1,
+            Role = LeadRoles.Employee,
+            EmployeeId = null
+        };
+        var lead = new Lead { AssignedEmployeeId = null };
+
+        Assert.Throws<LeadAuthorizationException>(() => LeadAccess.EnsureCanConvert(ctx, lead));
+        Assert.Throws<LeadAuthorizationException>(() => LeadAccess.EnsureCanReopen(ctx, lead));
     }
 }

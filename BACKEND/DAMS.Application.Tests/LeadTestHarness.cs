@@ -303,7 +303,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         (await Leads.GetByIdAsync(leadId, Admin))!.ConcurrencyToken;
 
     public Task<List<LeadActivity>> TimelineAsync(int leadId) =>
-        Db.LeadActivities.AsNoTracking().Where(a => a.LeadId == leadId).ToListAsync();
+        Db.LeadActivities.AsNoTracking().Where(a => a.LeadId == leadId).OrderBy(a => a.Id).ToListAsync();
 
     public ValueTask DisposeAsync() => Db.DisposeAsync();
 

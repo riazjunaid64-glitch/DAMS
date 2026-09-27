@@ -27,6 +27,10 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
+    [AllowAnonymous]
+    [HttpGet("types")]
+    public IActionResult GetTypes() => Ok(DAMS.Application.Common.UnitTypes.Allowed);
+
     // Literal segment must come before "{id}" so /api/Unit/project/5 is not bound to GetById(id = "project").
     [AllowAnonymous]
     [HttpGet("project/{projectId:int}")]

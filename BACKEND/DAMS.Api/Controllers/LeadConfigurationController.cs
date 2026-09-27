@@ -27,12 +27,12 @@ namespace DAMS.Api.Controllers
             RunAsync(_ => _configuration.GetSourcesAsync(includeInactive, cancellationToken), cancellationToken);
 
         [HttpPost("sources")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Admin)]
         public Task<IActionResult> CreateSource([FromBody] CreateLeadSourceDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _configuration.CreateSourceAsync(dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPut("sources/{id:int}")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Admin)]
         public Task<IActionResult> UpdateSource(int id, [FromBody] UpdateLeadSourceDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _configuration.UpdateSourceAsync(id, dto, ctx, cancellationToken), cancellationToken);
 
@@ -44,12 +44,12 @@ namespace DAMS.Api.Controllers
             RunAsync(_ => _configuration.GetClosureReasonsAsync(includeInactive, kind, cancellationToken), cancellationToken);
 
         [HttpPost("closure-reasons")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Admin)]
         public Task<IActionResult> CreateClosureReason([FromBody] CreateLeadClosureReasonDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _configuration.CreateClosureReasonAsync(dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPut("closure-reasons/{id:int}")]
-        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        [Authorize(Roles = LeadRoles.Admin)]
         public Task<IActionResult> UpdateClosureReason(int id, [FromBody] UpdateLeadClosureReasonDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _configuration.UpdateClosureReasonAsync(id, dto, ctx, cancellationToken), cancellationToken);
 

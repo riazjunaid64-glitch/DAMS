@@ -755,6 +755,190 @@ public sealed class StaffManagementTests
         Assert.Contains("already exists", error.Message);
     }
 
+    [Fact]
+    public async Task Disable_and_enable_access_follow_the_staff_rules()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var staff = new StaffManagementService(h.Db, new FakeInvitations());
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        var sales = await h.Db.Users.SingleAsync(u => u.UserId == h.SalesUserId);
+        sales.Password = BCrypt.Net.BCrypt.HashPassword("sales-pass-1");
+        sales.RefreshToken = "stale-session";
+        sales.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1);
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var session = await auth.LoginAsync(new LoginRequestDto { Email = "sales@dams.test", Password = "sales-pass-1" });
+        Assert.NotNull(session);
+
+        var disabled = await staff.DisableAccessAsync(h.Admin, h.SalesEmployeeId);
+        Assert.Equal(StaffAccountAccess.Disabled, disabled.Access);
+
+        h.Db.ChangeTracker.Clear();
+        var salesAfter = await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == h.SalesUserId);
+        Assert.Equal(UserAccountStatus.Disabled, salesAfter.AccountStatus);
+        Assert.Null(salesAfter.RefreshToken);
+        Assert.Null(salesAfter.RefreshTokenExpiresAt);
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = "sales@dams.test", Password = "sales-pass-1" }));
+        Assert.Null(await auth.RefreshTokenAsync(new RefreshTokenRequestDto { RefreshToken = session!.RefreshToken }));
+
+        var stillAssigned = await h.Db.Leads.CountAsync(l => l.AssignedEmployeeId == h.SalesEmployeeId);
+        var enabled = await staff.EnableAccessAsync(h.Admin, h.SalesEmployeeId);
+        Assert.Equal(StaffAccountAccess.Active, enabled.Access);
+        Assert.NotNull(await auth.LoginAsync(new LoginRequestDto { Email = "sales@dams.test", Password = "sales-pass-1" }));
+        Assert.Equal(stillAssigned, await h.Db.Leads.CountAsync(l => l.AssignedEmployeeId == h.SalesEmployeeId));
+
+        var audit = await h.Db.StaffAccessAudits.OrderBy(a => a.Id).ToListAsync();
+        Assert.Equal(2, audit.Count);
+        Assert.False(audit[0].AccessEnabled);
+        Assert.True(audit[1].AccessEnabled);
+        Assert.All(audit, a => Assert.Equal(h.AdminUserId, a.PerformedByUserId));
+
+        var self = await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            staff.DisableAccessAsync(h.Manager, h.ManagerEmployeeId));
+        Assert.Contains("own access", self.Message, StringComparison.OrdinalIgnoreCase);
+
+        var adminEmployee = new Employee
+        {
+            FullName = "Ayesha Admin",
+            JobTitle = "Director",
+            Department = "Management",
+            Phone = "03001110000",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active,
+            UserId = h.AdminUserId
+        };
+        h.Db.Employees.Add(adminEmployee);
+        await h.Db.SaveChangesAsync();
+
+        var own = await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            staff.DisableAccessAsync(h.Admin, adminEmployee.Id));
+        Assert.Contains("own access", own.Message, StringComparison.OrdinalIgnoreCase);
+
+        var managerBlocked = await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            staff.DisableAccessAsync(h.Manager, adminEmployee.Id));
+        Assert.Contains("Admin", managerBlocked.Message);
+
+        var secondAdmin = new User
+        {
+            FullName = "Second Admin",
+            Email = "admin2@dams.test",
+            NormalizedEmail = EmailIdentity.Normalize("admin2@dams.test"),
+            Password = "hash",
+            RoleId = 1,
+            AccountStatus = UserAccountStatus.Active
+        };
+        h.Db.Users.Add(secondAdmin);
+        await h.Db.SaveChangesAsync();
+        var secondEmployee = new Employee
+        {
+            FullName = "Second Admin",
+            JobTitle = "Director",
+            Department = "Management",
+            Phone = "03001110001",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active,
+            UserId = secondAdmin.UserId
+        };
+        h.Db.Employees.Add(secondEmployee);
+        await h.Db.SaveChangesAsync();
+
+        var turnedOff = await staff.DisableAccessAsync(h.Admin, secondEmployee.Id);
+        Assert.Equal(StaffAccountAccess.Disabled, turnedOff.Access);
+
+        var actor = await h.Db.Users.SingleAsync(u => u.UserId == h.AdminUserId);
+        actor.AccountStatus = UserAccountStatus.Disabled;
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+        await staff.EnableAccessAsync(h.Admin, secondEmployee.Id);
+
+        var lastAdmin = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.DisableAccessAsync(h.Admin, secondEmployee.Id));
+        Assert.Contains("last active admin", lastAdmin.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Manager_can_turn_off_a_manager_or_employee_and_invited_logins_stay_invited()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var staff = new StaffManagementService(h.Db, new FakeInvitations());
+
+        var employee = await staff.DisableAccessAsync(h.Manager, h.SalesEmployeeId);
+        Assert.Equal(StaffAccountAccess.Disabled, employee.Access);
+
+        var otherManager = new User
+        {
+            FullName = "Second Manager",
+            Email = "manager2@dams.test",
+            NormalizedEmail = EmailIdentity.Normalize("manager2@dams.test"),
+            Password = BCrypt.Net.BCrypt.HashPassword("manager-pass-1"),
+            RoleId = 3,
+            AccountStatus = UserAccountStatus.Active
+        };
+        h.Db.Users.Add(otherManager);
+        await h.Db.SaveChangesAsync();
+        var otherManagerEmployee = new Employee
+        {
+            FullName = "Second Manager",
+            JobTitle = "Sales Manager",
+            Department = "Sales",
+            Phone = "03001110002",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active,
+            UserId = otherManager.UserId
+        };
+        h.Db.Employees.Add(otherManagerEmployee);
+        await h.Db.SaveChangesAsync();
+
+        var turnedOff = await staff.DisableAccessAsync(h.Manager, otherManagerEmployee.Id);
+        Assert.Equal(StaffAccountAccess.Disabled, turnedOff.Access);
+        var restored = await staff.EnableAccessAsync(h.Manager, otherManagerEmployee.Id);
+        Assert.Equal(StaffAccountAccess.Active, restored.Access);
+
+        var history = await staff.GetAccessHistoryAsync(h.Manager, otherManagerEmployee.Id);
+        Assert.Equal(2, history.Count);
+        Assert.Equal(h.Manager.DisplayName, history[0].PerformedByName);
+        Assert.True(history[0].AccessEnabled);
+
+        var invited = await staff.CreateAsync(h.Manager, NewStaff(email: "invitee@example.com", teamId: h.TeamId));
+        var stillInvited = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.EnableAccessAsync(h.Manager, invited.Account.EmployeeId));
+        Assert.Contains("invited", stillInvited.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(StaffAccountAccess.Invited,
+            (await staff.GetAccountsAsync()).Single(a => a.EmployeeId == invited.Account.EmployeeId).Access);
+
+        await Assert.ThrowsAsync<StaffNotFoundException>(() =>
+            staff.DisableAccessAsync(h.Admin, 999_999));
+    }
+
+    [Fact]
+    public async Task An_invited_login_turned_off_and_back_on_is_waiting_for_its_invitation_again()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+        var invited = await staff.CreateAsync(h.Admin, NewStaff(email: "paused@example.com", teamId: h.TeamId));
+        var employeeId = invited.Account.EmployeeId;
+
+        var off = await staff.DisableAccessAsync(h.Admin, employeeId);
+        Assert.Equal(StaffAccountAccess.Disabled, off.Access);
+
+        // It never set a password, so "on" must mean invited again, not Active with no way in.
+        var on = await staff.EnableAccessAsync(h.Admin, employeeId);
+        Assert.Equal(StaffAccountAccess.Invited, on.Access);
+        h.Db.ChangeTracker.Clear();
+        var user = await h.Db.Users.SingleAsync(u => u.UserId == invited.Account.UserId);
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+        Assert.Null(user.Password);
+
+        // And the invitation can be sent again, which requires Invited.
+        invitations.Calls.Clear();
+        var resent = await staff.ResendInvitationAsync(h.Admin, employeeId);
+        Assert.True(resent.Issued);
+        Assert.Single(invitations.Calls);
+    }
+
     private sealed class FixedTokenService : ITokenService
     {
         public string GenerateAccessToken(User user, string roleName) => "access-token";

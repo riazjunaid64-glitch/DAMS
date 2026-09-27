@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260927034220_AddStaffAccessAudit")]
+    partial class AddStaffAccessAudit
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -7158,30 +7161,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("UnitId", "IsCover");
 
                     b.ToTable("UnitMedias");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.UnitTypeMigrationNote", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("NotedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("UnitType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UnitType")
-                        .IsUnique();
-
-                    b.ToTable("UnitTypeMigrationNotes");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.User", b =>
