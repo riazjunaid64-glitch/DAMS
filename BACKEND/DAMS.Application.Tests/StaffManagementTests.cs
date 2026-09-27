@@ -78,7 +78,7 @@ public sealed class StaffManagementTests
     };
 
     [Fact]
-    public async Task Admin_creates_a_password_less_invited_login_linked_to_employee_and_team()
+    public async Task Admin_creates_a_password_less_invited_login_linked_to_the_employee()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var invitations = new FakeInvitations();
@@ -509,7 +509,7 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
-    public async Task Directory_respects_manager_team_employee_team_and_customer_isolation()
+    public async Task Directory_shows_every_colleague_to_sales_staff_and_nothing_to_customers()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var service = new StaffManagementService(h.Db, new FakeInvitations());
@@ -526,7 +526,7 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
-    public async Task Role_and_team_change_still_revokes_the_refresh_session_and_leaves_the_password_alone()
+    public async Task Role_change_still_revokes_the_refresh_session_and_leaves_the_password_alone()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var service = new StaffManagementService(h.Db, new FakeInvitations());

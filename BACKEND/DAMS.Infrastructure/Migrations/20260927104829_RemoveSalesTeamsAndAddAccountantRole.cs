@@ -17,8 +17,18 @@ namespace DAMS.Infrastructure.Migrations
             //   SELECT Id, LeadReference, AssignedTeamId
             //   FROM Leads
             //   WHERE AssignedTeamId IS NOT NULL AND AssignedEmployeeId IS NULL;
-            // Stored notification jobs that used the Team audience keep their rows.
-            // Resolving that audience now delivers to admins and sales managers.
+            // A send addressed to one team has no one left to go to. Any that has not finished
+            // is cancelled rather than widened to a bigger group; sent ones stay as history.
+            // AudienceType 5 is Team; Status 0/1/5 are Scheduled/Processing/Cancelled.
+            migrationBuilder.Sql("""
+                UPDATE [dbo].[NotificationJobs]
+                SET [Status] = 5,
+                    [CancelledAt] = SYSUTCDATETIME(),
+                    [FailureReason] = N'Cancelled because sales teams were removed.',
+                    [LockedUntil] = NULL,
+                    [LockedBy] = NULL
+                WHERE [AudienceType] = 5 AND [Status] IN (0, 1);
+                """);
 
             migrationBuilder.DropForeignKey(
                 name: "FK_Employees_Teams_TeamId",

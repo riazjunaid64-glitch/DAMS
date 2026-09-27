@@ -299,11 +299,10 @@ namespace DAMS.Application.Services.Notifications
                         || n.EntityType == NotificationEntityType.Announcement
                         || (n.EntityType == NotificationEntityType.Account
                             && (n.EntityId == null || n.EntityId <= 0 || n.EntityId == userId))))
+                // Like Admin, the accountant runs every project, so no project row is withheld.
                 || (n.Type == NotificationType.ProjectUpdated
                     && (n.EntityType == NotificationEntityType.Announcement
-                        || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0
-                            && (!_context.Projects.Any(p => p.Id == n.EntityId)
-                                || _context.Projects.Any(p => p.Id == n.EntityId)))))
+                        || (n.EntityType == NotificationEntityType.Project && n.EntityId > 0)))
                 || (n.Type == NotificationType.EmployeeTaskAssigned
                     && n.EntityType == NotificationEntityType.EmployeeTask && n.EntityId > 0
                     && (!_context.EmployeeTasks.Any(t => t.Id == n.EntityId)

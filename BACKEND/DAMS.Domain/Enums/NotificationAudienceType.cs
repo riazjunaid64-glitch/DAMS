@@ -10,8 +10,8 @@ namespace DAMS.Domain.Enums
         AllInternalStaff = 4,
 
         /// <summary>
-        /// Kept so jobs saved before sales teams were removed still load. Resolving it
-        /// now delivers to admins and sales managers. New sends must not use it.
+        /// Kept so jobs saved before sales teams were removed still load as history. The
+        /// migration cancelled every unfinished one, and resolving it is refused.
         /// </summary>
         Team = 5,
         CustomersInProject = 6,

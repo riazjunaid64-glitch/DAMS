@@ -25,8 +25,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                var result = await _employeeService.CreateEmployeeAsync(dto);
+                var result = await _employeeService.CreateEmployeeAsync(dto, User.IsInRole(AppRoles.Admin));
                 return Ok(result);
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -56,8 +60,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                var result = await _employeeService.UpdateEmployeeAsync(id, dto);
+                var result = await _employeeService.UpdateEmployeeAsync(id, dto, User.IsInRole(AppRoles.Admin));
                 return Ok(result);
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -70,8 +78,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                await _employeeService.DeleteEmployeeAsync(id);
+                await _employeeService.DeleteEmployeeAsync(id, User.IsInRole(AppRoles.Admin));
                 return Ok(new { message = "Employee deleted successfully." });
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {

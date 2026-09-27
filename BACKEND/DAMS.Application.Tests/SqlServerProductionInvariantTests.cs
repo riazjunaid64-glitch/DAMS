@@ -5771,6 +5771,56 @@ public sealed class SqlServerProductionInvariantTests
     /// </para>
     /// </summary>
     [SqlServerFact]
+    public async Task RemovingSalesTeams_CancelsUnfinishedTeamSends_AndSeedsTheAccountantRole()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260927042303_RecordUnmatchedUnitTypes");
+
+        // The NotificationJobs table is the same on both sides of this migration, so the
+        // current model can write the rows a team send left behind.
+        await using (var db = new AppDbContext(options))
+        {
+            NotificationJob Job(string title, NotificationAudienceType audience, NotificationJobStatus status) => new()
+            {
+                Title = title,
+                Message = "Body",
+                AudienceType = audience,
+                AudienceJson = "{\"TeamId\":1}",
+                Status = status,
+                CreatedByUserId = 1
+            };
+            db.NotificationJobs.AddRange(
+                Job("scheduled team", NotificationAudienceType.Team, NotificationJobStatus.Scheduled),
+                Job("interrupted team", NotificationAudienceType.Team, NotificationJobStatus.Processing),
+                Job("sent team", NotificationAudienceType.Team, NotificationJobStatus.Sent),
+                Job("scheduled staff", NotificationAudienceType.AllInternalStaff, NotificationJobStatus.Scheduled));
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var jobs = await db.NotificationJobs.AsNoTracking().ToDictionaryAsync(j => j.Title);
+
+            // Nothing unfinished that named a team is left to be widened to a bigger group.
+            Assert.Equal(NotificationJobStatus.Cancelled, jobs["scheduled team"].Status);
+            Assert.Equal(NotificationJobStatus.Cancelled, jobs["interrupted team"].Status);
+            Assert.NotNull(jobs["scheduled team"].CancelledAt);
+
+            // History and other audiences are untouched.
+            Assert.Equal(NotificationJobStatus.Sent, jobs["sent team"].Status);
+            Assert.Equal(NotificationJobStatus.Scheduled, jobs["scheduled staff"].Status);
+
+            Assert.True(await db.Roles.AnyAsync(r => r.RoleId == 5 && r.Role_name == AppRoles.Accountant));
+        }
+    }
+
+    [SqlServerFact]
     public async Task StaffInvitationMigration_KeepsExistingLoginsActiveAndEnforcesInvitationInvariants()
     {
         await using var database = await SqlTestDatabase.CreateAsync();

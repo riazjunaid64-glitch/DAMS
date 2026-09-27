@@ -70,6 +70,21 @@ public sealed class AuthAccountStatusTests
         Assert.Null(await h.Auth.LoginAsync(Login("manager@dams.test", RightPassword)));
     }
 
+    [Fact]
+    public async Task An_accountant_login_needs_an_active_employment_record_like_sales_staff()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        Assert.NotNull(await h.Auth.LoginAsync(Login("accountant@dams.test", RightPassword)));
+
+        // A login with the Accountant role but no employee record is not a working account.
+        Assert.Null(await h.Auth.LoginAsync(Login("unlinked-accountant@dams.test", RightPassword)));
+
+        await h.SetEmployeeStatusAsync("accountant@dams.test", EmployeeStatus.Terminated);
+
+        Assert.Null(await h.Auth.LoginAsync(Login("accountant@dams.test", RightPassword)));
+    }
+
     // ── Refresh ─────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -329,19 +344,23 @@ public sealed class AuthAccountStatusTests
             db.Roles.AddRange(
                 new Role { RoleId = 1, Role_name = "Admin" },
                 new Role { RoleId = 2, Role_name = "Client" },
-                new Role { RoleId = 3, Role_name = "Manager" });
+                new Role { RoleId = 3, Role_name = "Manager" },
+                new Role { RoleId = 5, Role_name = "Accountant" });
 
             var hashed = BCrypt.Net.BCrypt.HashPassword(RightPassword);
             var client = NewUser(2, "Cara Client", "client@dams.test", UserAccountStatus.Active, hashed);
             var invited = NewUser(3, "Sana Sales", "invited@dams.test", UserAccountStatus.Invited, null);
             var disabled = NewUser(3, "Zara Left", "disabled@dams.test", UserAccountStatus.Disabled, hashed);
             var manager = NewUser(3, "Mona Manager", "manager@dams.test", UserAccountStatus.Active, hashed);
-            db.Users.AddRange(client, invited, disabled, manager);
+            var accountant = NewUser(5, "Asma Accountant", "accountant@dams.test", UserAccountStatus.Active, hashed);
+            var unlinkedAccountant = NewUser(5, "Umar Unlinked", "unlinked-accountant@dams.test", UserAccountStatus.Active, hashed);
+            db.Users.AddRange(client, invited, disabled, manager, accountant, unlinkedAccountant);
             await db.SaveChangesAsync();
 
-            // Only the staff logins have employment records; the client deliberately has none.
+            // Only the staff logins have employment records; the client and the unlinked
+            // accountant deliberately have none.
             db.Employees.AddRange(
-                NewEmployee(invited), NewEmployee(disabled), NewEmployee(manager));
+                NewEmployee(invited), NewEmployee(disabled), NewEmployee(manager), NewEmployee(accountant));
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
 

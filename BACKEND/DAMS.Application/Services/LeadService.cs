@@ -2600,14 +2600,19 @@ namespace DAMS.Application.Services
             // switched off, whose owner cannot sign in to see the work.
             if (employee.UserId.HasValue)
             {
-                var loginUsable = await _context.Users.AnyAsync(
-                    u => u.UserId == employee.UserId.Value
-                        && u.AccountStatus == UserAccountStatus.Active,
-                    cancellationToken);
+                var login = await _context.Users
+                    .Where(u => u.UserId == employee.UserId.Value)
+                    .Select(u => new { u.AccountStatus, u.Role.Role_name })
+                    .FirstOrDefaultAsync(cancellationToken);
 
-                if (!loginUsable)
+                if (login == null || login.AccountStatus != UserAccountStatus.Active)
                     throw new InvalidOperationException(
                         $"{employee.FullName} has not activated their DAMS login yet, so they cannot be given leads.");
+
+                // The owner has to be able to open the lead. An Accountant login has no Lead CRM.
+                if (login.Role_name is not (LeadRoles.Admin or LeadRoles.Manager or LeadRoles.Employee))
+                    throw new InvalidOperationException(
+                        $"{employee.FullName} does not work in the Lead CRM, so they cannot be given leads.");
             }
 
             return employee;

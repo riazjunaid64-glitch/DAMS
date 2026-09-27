@@ -70,6 +70,8 @@ function formatRequestDate(date: string) {
 export default function BookingRequestsPage({ user }: Props) {
   const navigate = useNavigate();
   const isAdmin = can(user?.role, "bookings");
+  // Opening or connecting the request's lead is Lead CRM work; the Accountant only reads here.
+  const canWorkLead = can(user?.role, "crm");
 
   const [requests, setRequests] = useState<BookingRequest[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -533,28 +535,34 @@ export default function BookingRequestsPage({ user }: Props) {
             {/* Footer Actions */}
             {selectedRequest.status === "Pending" && (
               <div className="sticky bottom-0 z-10 flex items-center justify-between border-t border-[var(--border)] px-6 py-4 bg-[var(--surface-glass)]">
-                <p className="max-w-sm text-xs text-[var(--text-muted)]">This inquiry does not reserve the unit. Work, close, or convert it from the Lead CRM so the full timeline is retained.</p>
-                <Button
-                  onClick={() => selectedRequest.leadId ? navigate(`/crm/leads/${selectedRequest.leadId}`) : void handleBackfill()}
-                  disabled={actionLoading}
-                >
-                  {actionLoading ? (
-                    <>
-                      <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M21 12a9 9 0 11-6.219-8.56"/>
-                      </svg>
-                      Connecting...
-                    </>
-                  ) : (
-                    <>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                        <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
-                        <polyline points="22 4 12 14.01 9 11.01"/>
-                      </svg>
-                      {selectedRequest.leadId ? "Open Connected Lead" : "Connect Historical Lead"}
-                    </>
-                  )}
-                </Button>
+                <p className="max-w-sm text-xs text-[var(--text-muted)]">
+                  {canWorkLead
+                    ? "This inquiry does not reserve the unit. Work, close, or convert it from the Lead CRM so the full timeline is retained."
+                    : "This inquiry does not reserve the unit. The sales team works, closes, or converts it in the Lead CRM."}
+                </p>
+                {canWorkLead && (
+                  <Button
+                    onClick={() => selectedRequest.leadId ? navigate(`/crm/leads/${selectedRequest.leadId}`) : void handleBackfill()}
+                    disabled={actionLoading}
+                  >
+                    {actionLoading ? (
+                      <>
+                        <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 12a9 9 0 11-6.219-8.56"/>
+                        </svg>
+                        Connecting...
+                      </>
+                    ) : (
+                      <>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                          <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                          <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                        {selectedRequest.leadId ? "Open Connected Lead" : "Connect Historical Lead"}
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
             )}
           </div>

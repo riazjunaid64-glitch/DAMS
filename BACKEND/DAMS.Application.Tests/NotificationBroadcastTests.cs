@@ -1,5 +1,6 @@
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.NotificationDtos;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -99,6 +100,27 @@ public sealed class NotificationBroadcastTests
         }, h.AdminCtx));
 
         Assert.Contains("Sales teams have been removed", error.Message);
+    }
+
+    [Fact]
+    public async Task ATeamSendStoredBeforeTeamsWereRemovedFailsRatherThanReachingAWiderGroup()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        h.Db.NotificationJobs.Add(new NotificationJob
+        {
+            Title = "Team huddle",
+            Message = "Body",
+            AudienceType = NotificationAudienceType.Team,
+            AudienceJson = "{\"TeamId\":1}",
+            CreatedByUserId = h.AdminUserId
+        });
+        await h.Db.SaveChangesAsync();
+
+        await h.Processor.ProcessScheduledJobsAsync(10);
+
+        var job = await h.Db.NotificationJobs.AsNoTracking().SingleAsync();
+        Assert.Equal(NotificationJobStatus.Failed, job.Status);
+        Assert.Empty(await h.NotificationsAsync());
     }
 
     [Fact]

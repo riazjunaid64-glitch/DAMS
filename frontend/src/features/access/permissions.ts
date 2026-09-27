@@ -14,7 +14,9 @@ export type Capability =
   | "employees"
   | "finance"
   | "documents"
-  | "notifications.admin";
+  | "notifications.admin"
+  /** Give roles and change employment status in CRM settings. Admin only. */
+  | "staff.admin";
 
 const ALL: Capability[] = [
   "crm",
@@ -28,6 +30,7 @@ const ALL: Capability[] = [
   "finance",
   "documents",
   "notifications.admin",
+  "staff.admin",
 ];
 
 const BY_ROLE: Record<string, ReadonlySet<Capability>> = {
@@ -57,7 +60,8 @@ export function isSalesRole(role: string | null | undefined): boolean {
 /** Where a role lands after login, and where the logo goes. */
 export function homePathFor(role: string | null | undefined): string {
   if (isSalesRole(role)) return "/crm";
-  if (role === "Accountant") return "/bookings";
+  // Confirmed bookings, not the requests inbox: working a request happens in the Lead CRM.
+  if (role === "Accountant") return "/confirmed-bookings";
   return "/";
 }
 

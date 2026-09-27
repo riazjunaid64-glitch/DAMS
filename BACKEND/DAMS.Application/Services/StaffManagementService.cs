@@ -353,8 +353,9 @@ namespace DAMS.Application.Services
             var role = await ResolveRoleAsync(dto.Role, cancellationToken);
             EnsureCanGrantRole(actor, role.Role_name);
 
-            // Employment status (including Terminated) is HR data owned by the Admin-only
-            // Employees area. A manager's save may carry it unchanged but never change it.
+            // Employment status (including Terminated) decides whether a staff login works, so
+            // only an admin changes it, here or in Employees. A manager's save may carry it
+            // unchanged but never change it.
             if (!actor.IsAdmin && dto.Status.HasValue && dto.Status.Value != employee.Status)
                 throw new LeadAuthorizationException("Only an admin can change an employee's employment status.");
 

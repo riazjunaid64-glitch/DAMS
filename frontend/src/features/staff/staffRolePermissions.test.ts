@@ -28,5 +28,6 @@ describe("CRM settings role checks", () => {
   it("keeps employment status with the Admin", () => {
     expect(canChangeEmploymentStatus("Admin")).toBe(true);
     expect(canChangeEmploymentStatus("Manager")).toBe(false);
+    expect(canChangeEmploymentStatus("Accountant")).toBe(false);
   });
 });

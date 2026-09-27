@@ -55,7 +55,7 @@ namespace DAMS.Api.Controllers
             // The same non-disclosing denial the customer portal gives. A 403 here would have
             // separated "somebody else's request" from "no such request", which is exactly what
             // somebody walking the id space is trying to learn.
-            if (role != "Admin" && result.UserId?.ToString() != userIdClaim)
+            if (role is not (AppRoles.Admin or AppRoles.Accountant) && result.UserId?.ToString() != userIdClaim)
                 return NotFound(new { message = "Booking request not found." });
 
             return Ok(result);
@@ -103,8 +103,11 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        // Approving converts the request's lead (marks it Won, creates the customer and booking),
+        // and rejecting closes its held enquiries. Both are Lead CRM decisions, so the Accountant,
+        // who can read every request, does not make them.
         [HttpPost("{id:int}/approve")]
-        [Authorize(Roles = AppRoles.AdminOrAccountant)]
+        [Authorize(Roles = AppRoles.Admin)]
         public async Task<IActionResult> ApproveBookingRequest([FromRoute] int id)
         {
             var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -123,7 +126,7 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpPost("{id:int}/reject")]
-        [Authorize(Roles = AppRoles.AdminOrAccountant)]
+        [Authorize(Roles = AppRoles.Admin)]
         public async Task<IActionResult> RejectBookingRequest([FromRoute] int id, [FromBody] RejectBookingRequestDto? dto)
         {
             var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);

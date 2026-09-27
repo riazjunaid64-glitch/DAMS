@@ -32,7 +32,11 @@ namespace DAMS.Application.Services
 
         // ─── Employee CRUD ───────────────────────────────────────────────────────
 
-        public async Task<EmployeeResponseDto> CreateEmployeeAsync(CreateEmployeeDto dto)
+        /// <param name="actorIsAdmin">
+        /// Admin and Accountant both run this area, but only an Admin decides who can sign in to
+        /// DAMS. Linking a login is that decision, so the Accountant may not make it.
+        /// </param>
+        public async Task<EmployeeResponseDto> CreateEmployeeAsync(CreateEmployeeDto dto, bool actorIsAdmin)
         {
             if (dto.Salary < 0)
                 throw new Exception("Salary cannot be negative.");
@@ -43,6 +47,9 @@ namespace DAMS.Application.Services
 
             if (dto.JoinDate.Year < 1900)
                 throw new Exception("Join date is not valid.");
+
+            if (!actorIsAdmin && dto.UserId.HasValue)
+                throw new LeadAuthorizationException(OnlyAdminLinksLogins);
 
             await EnsureLinkableAsync(dto.UserId, employeeId: null);
 
@@ -86,10 +93,26 @@ namespace DAMS.Application.Services
             return list.Select(MapEmployee).ToList();
         }
 
-        public async Task<EmployeeResponseDto> UpdateEmployeeAsync(int id, UpdateEmployeeDto dto)
+        /// <param name="actorIsAdmin">
+        /// Staff sign-in needs a linked login and an Active employee record, so relinking a login or
+        /// changing the status of an employee who has one grants or removes DAMS access. Only an
+        /// Admin may do either; the Accountant can still edit everything else.
+        /// </param>
+        public async Task<EmployeeResponseDto> UpdateEmployeeAsync(int id, UpdateEmployeeDto dto, bool actorIsAdmin)
         {
             var employee = await _context.Employees.FindAsync(id)
                 ?? throw new Exception("Employee not found.");
+
+            if (!actorIsAdmin)
+            {
+                var newUserId = dto.UserId == -1 ? null : dto.UserId;
+                if (dto.UserId != null && newUserId != employee.UserId)
+                    throw new LeadAuthorizationException(OnlyAdminLinksLogins);
+
+                if (employee.UserId != null && dto.Status != null && dto.Status.Value != employee.Status)
+                    throw new LeadAuthorizationException(
+                        "Only an admin can change the status of an employee who has a DAMS login.");
+            }
 
             if (dto.FullName   != null) employee.FullName   = dto.FullName.Trim();
             if (dto.JobTitle   != null) employee.JobTitle   = dto.JobTitle.Trim();
@@ -115,10 +138,14 @@ namespace DAMS.Application.Services
             return MapEmployee(employee);
         }
 
-        public async Task DeleteEmployeeAsync(int id)
+        public async Task DeleteEmployeeAsync(int id, bool actorIsAdmin)
         {
             var employee = await _context.Employees.FindAsync(id)
                 ?? throw new Exception("Employee not found.");
+
+            // Removing the record ends that login's DAMS access, the same as changing its status.
+            if (!actorIsAdmin && employee.UserId != null)
+                throw new LeadAuthorizationException("Only an admin can delete an employee who has a DAMS login.");
 
             // Deleting would cascade-delete the salary history while the linked Expense
             // rows survive, leaving the finance ledger and salary records inconsistent.
@@ -808,6 +835,8 @@ namespace DAMS.Application.Services
             CreatedAt  = e.CreatedAt,
             UpdatedAt  = e.UpdatedAt
         };
+
+        private const string OnlyAdminLinksLogins = "Only an admin can link or unlink an employee's DAMS login.";
 
         /// <summary>
         /// Validates the login an employee is being attached to. One login maps to

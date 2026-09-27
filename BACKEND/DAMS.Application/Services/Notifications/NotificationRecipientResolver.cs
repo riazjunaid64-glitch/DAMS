@@ -29,7 +29,10 @@ namespace DAMS.Application.Services.Notifications
                 NotificationAudienceType.AllSalesEmployees => await StaffAsync(LeadRoles.Employee, cancellationToken),
                 NotificationAudienceType.AllManagers => await StaffAsync(LeadRoles.Manager, cancellationToken),
                 NotificationAudienceType.AllInternalStaff => await InternalStaffAsync(cancellationToken),
-                NotificationAudienceType.Team => await SupervisorsAsync(cancellationToken),
+                // The migration cancelled every unfinished team send. One that still reaches here fails
+                // rather than going to a wider group than the one it was written for.
+                NotificationAudienceType.Team => throw new InvalidOperationException(
+                    "Sales teams have been removed, so this send has no audience."),
                 NotificationAudienceType.CustomersInProject => await CustomersInProjectAsync(selection.ProjectId, cancellationToken),
                 NotificationAudienceType.CustomersOfBookings => await CustomersOfBookingsAsync(selection.BookingIds, cancellationToken),
                 NotificationAudienceType.CustomersWithOverdueInstallments => await OverdueCustomersAsync(cancellationToken),
@@ -81,7 +84,7 @@ namespace DAMS.Application.Services.Notifications
             NotificationAudienceType.AllSalesEmployees => "All sales employees",
             NotificationAudienceType.AllManagers => "All managers",
             NotificationAudienceType.AllInternalStaff => "All internal staff",
-            NotificationAudienceType.Team => "Admins and sales managers",
+            NotificationAudienceType.Team => "One team (teams removed)",
             NotificationAudienceType.CustomersInProject => "Customers connected to a project",
             NotificationAudienceType.CustomersOfBookings => $"Customers of {selection.BookingIds.Count} booking(s)",
             NotificationAudienceType.CustomersWithOverdueInstallments => "Customers with overdue installments",
@@ -138,22 +141,6 @@ namespace DAMS.Application.Services.Notifications
                 .ToListAsync(cancellationToken);
 
             return employees.Concat(admins).ToList();
-        }
-
-        /// <summary>
-        /// Stored jobs that used to name a sales team now go to the people who supervise
-        /// leads: every admin, and every sales manager with an active employee record.
-        /// </summary>
-        private async Task<List<int>> SupervisorsAsync(CancellationToken cancellationToken)
-        {
-            var managers = await StaffAsync(LeadRoles.Manager, cancellationToken);
-            var admins = await _context.Users
-                .AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin && u.AccountStatus == UserAccountStatus.Active)
-                .Select(u => u.UserId)
-                .ToListAsync(cancellationToken);
-
-            return managers.Concat(admins).ToList();
         }
 
         private async Task<List<int>> CustomersInProjectAsync(int? projectId, CancellationToken cancellationToken)

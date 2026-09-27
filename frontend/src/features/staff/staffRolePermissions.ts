@@ -9,7 +9,7 @@ export const canOpenCrmSettings = (actorRole: string) => can(actorRole, "crm.set
 
 /** Only an Admin may hand out Admin or Accountant. A manager gives the two sales roles. */
 export const grantableRoles = (actorRole: string): [string, string][] => [
-  ...(can(actorRole, "notifications.admin")
+  ...(can(actorRole, "staff.admin")
     ? [
         ["Admin", "Admin"] as [string, string],
         ["Accountant", "Accountant"] as [string, string],
@@ -21,7 +21,7 @@ export const grantableRoles = (actorRole: string): [string, string][] => [
 
 /** A non-admin may act only on logins that are already a sales role. */
 export const canActOnAccount = (actorRole: string, accountRole?: string | null) =>
-  can(actorRole, "notifications.admin") || accountRole === "Manager" || accountRole === "Employee";
+  can(actorRole, "staff.admin") || accountRole === "Manager" || accountRole === "Employee";
 
 /** Employment status is HR data. CRM settings leaves it to an Admin. */
-export const canChangeEmploymentStatus = (actorRole: string) => can(actorRole, "notifications.admin");
+export const canChangeEmploymentStatus = (actorRole: string) => can(actorRole, "staff.admin");
