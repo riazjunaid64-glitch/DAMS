@@ -55,6 +55,19 @@ namespace DAMS.Domain.Entities
         /// <summary>Number of operator-requested recovery attempts.</summary>
         public int RetryCount { get; set; }
 
+        /// <summary>
+        /// How many times reconciliation has put this event back on the queue after a transient
+        /// failure used up its attempts. Capped, so a lead Meta cannot return is not retried forever.
+        /// </summary>
+        public int RequeueCount { get; set; }
+
+        /// <summary>
+        /// True when the failure that left this event Failed was a timeout, an outage, a rate
+        /// limit, or an unexpected error — the kind reconciliation may try again. A bad payload,
+        /// an id that cannot be stored, or a lead Meta says does not exist leaves this false.
+        /// </summary>
+        public bool FailureWasTransient { get; set; }
+
         /// <summary>When an operator last moved this event back to the processing queue.</summary>
         public DateTime? LastRetriedAt { get; set; }
 

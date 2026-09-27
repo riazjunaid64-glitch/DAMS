@@ -3,6 +3,7 @@ using System.Text.Json;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Application.Services.Integrations;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -569,6 +570,93 @@ public class MetaIntegrationSecurityTests
         Assert.Equal(1, repeated.RetryCount);
         Assert.Equal(1, await h.Db.Leads.CountAsync());
     }
+
+    [Fact]
+    public async Task RetryFailed_RequeuesEveryEligibleEvent_AndRecentCountIgnoresOldOnes()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        var off = new ExternalIntegrationResource
+        {
+            ExternalIntegrationConnectionId = connection.Id,
+            Provider = IntegrationProviders.Meta,
+            ResourceType = ExternalResourceTypes.FacebookPage,
+            ExternalId = "page-off",
+            Name = "Off",
+            IsEnabled = false,
+            IsActive = true
+        };
+        h.Db.ExternalIntegrationResources.Add(off);
+        await h.Db.SaveChangesAsync();
+
+        var newest = DateTime.UtcNow.AddHours(-1);
+        var olderRecent = DateTime.UtcNow.AddHours(-2);
+        h.Db.ExternalIntegrationEvents.AddRange(
+            FailedEvent(connection.Id, page.Id, "recent", newest),
+            FailedEvent(connection.Id, page.Id, "old", DateTime.UtcNow.AddDays(-8)),
+            FailedEvent(connection.Id, off.Id, "skipped", olderRecent));
+        await h.Db.SaveChangesAsync();
+
+        var shown = Assert.Single(await h.Integration.GetConnectionsAsync());
+        Assert.Equal(3, shown.FailedEventCount);
+        Assert.Equal(2, shown.RecentFailedCount);
+        Assert.Equal(newest, shown.LastFailedAt);
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Sales));
+
+        var result = await h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Manager);
+        Assert.Equal(2, result.Requeued);
+
+        var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+        Assert.Equal(2, events.Count(e => e.Status == ExternalIntegrationEventStatus.Pending && e.RetryCount == 1));
+        Assert.Equal(2, await h.Db.ExternalIntegrationEventRetries.CountAsync());
+        var skipped = Assert.Single(events, e => e.EventKey.EndsWith(":skipped"));
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, skipped.Status);
+
+        var after = Assert.Single(await h.Integration.GetConnectionsAsync());
+        Assert.Equal(1, after.FailedEventCount);
+        Assert.Equal(1, after.RecentFailedCount);
+        Assert.Equal(olderRecent, after.LastFailedAt);
+
+        var again = await h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Admin);
+        Assert.Equal(0, again.Requeued);
+        Assert.Equal(2, await h.Db.ExternalIntegrationEventRetries.CountAsync());
+    }
+
+    [Fact]
+    public async Task RetryFailed_RefusesADisconnectedConnection()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var (connection, page) = await h.ConnectPageAsync();
+        h.Db.ExternalIntegrationEvents.Add(FailedEvent(connection.Id, page.Id, "stuck", DateTime.UtcNow));
+        connection.Status = ExternalIntegrationConnectionStatus.Disconnected;
+        await h.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Admin));
+
+        Assert.Contains("Reconnect", error.Message);
+        Assert.Equal(ExternalIntegrationEventStatus.Failed,
+            (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
+    }
+
+    private static ExternalIntegrationEvent FailedEvent(int connectionId, int pageId, string leadgenId, DateTime failedAt) =>
+        new()
+        {
+            Provider = IntegrationProviders.Meta,
+            ExternalIntegrationConnectionId = connectionId,
+            ExternalIntegrationResourceId = pageId,
+            EventType = "leadgen",
+            EventKey = MetaWebhookIntakeService.EventKey(connectionId, pageId.ToString(), leadgenId),
+            RawPayloadJson = "{}",
+            ReceivedAt = failedAt.AddMinutes(-30),
+            ProcessedAt = failedAt,
+            Status = ExternalIntegrationEventStatus.Failed,
+            FailureWasTransient = true,
+            LastError = "Meta could not be reached.",
+            Attempts = 6
+        };
 
     [Fact]
     public async Task DisablingANonOwningOrAlreadyDisabledPage_NeverUnsubscribesTheActiveOwner()

@@ -446,6 +446,11 @@ public class MetaGraphClientHttpTests
     [InlineData(HttpStatusCode.BadRequest, 102, null, "Session key invalid or no longer valid", typeof(MetaAuthorizationException), 1)]
     [InlineData(HttpStatusCode.BadRequest, 200, 460, "The session has been invalidated because the user changed their password.", typeof(MetaAuthorizationException), 1)]
     [InlineData(HttpStatusCode.BadRequest, 100, 33, "Unsupported get request. Object with ID '12345678901234567' does not exist.", typeof(MetaPermanentException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 80004, null, "(#80004) There have been too many calls from this ad-account.", typeof(MetaTransientException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 80014, null, "(#80014) There have been too many calls to this api endpoint.", typeof(MetaTransientException), 1)]
+    [InlineData(HttpStatusCode.Forbidden, 80000, null, "(#80000) There have been too many calls from this app.", typeof(MetaTransientException), 1)]
+    [InlineData(HttpStatusCode.BadRequest, 368, null, "The action attempted has been deemed abusive.", typeof(MetaTransientException), 1)]
+    [InlineData(HttpStatusCode.Forbidden, 368, null, "The action attempted has been deemed abusive.", typeof(MetaAuthorizationException), 1)]
     // A permission refusal might be over the ids alone, so it is asked again without them;
     // failing that too, it is about the lead itself and is reported as such.
     [InlineData(HttpStatusCode.Forbidden, 200, null, "(#200) Requires leads_retrieval permission", typeof(MetaAuthorizationException), 2)]
@@ -464,6 +469,50 @@ public class MetaGraphClientHttpTests
         Assert.Equal(code, thrown.Code);
         Assert.Equal(subCode, thrown.SubCode);
         Assert.Equal(expectedRequests, handler.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, typeof(MetaTransientException))]
+    [InlineData(HttpStatusCode.Forbidden, typeof(MetaAuthorizationException))]
+    [InlineData(HttpStatusCode.NotFound, typeof(MetaPermanentException))]
+    public async Task ALeadErrorWithoutAGraphCode_IsClassifiedFromItsStatus(HttpStatusCode status, Type expected)
+    {
+        var handler = new FakeHandler(_ => GraphJson(
+            """{ "error": { "message": "Something went wrong", "type": "OAuthException" } }""", status));
+
+        var thrown = await Assert.ThrowsAnyAsync<MetaGraphException>(() =>
+            DirectClient(handler).GetLeadAsync(FloriaLeadgenId, FakeAccessToken, CancellationToken.None));
+
+        Assert.IsType(expected, thrown);
+        Assert.Null(thrown.Code);
+    }
+
+    [Theory]
+    [InlineData("mobile")]
+    [InlineData("mobile_number")]
+    [InlineData("contact_number")]
+    [InlineData("work_phone_number")]
+    [InlineData("Mobile Number")]
+    public void PhoneQuestionNames_MapToPhone(string name)
+    {
+        var mapped = MetaLeadFieldMapper.Map([new MetaFieldAnswer(name, "03001112222")]);
+
+        Assert.Equal("03001112222", mapped.Phone);
+        Assert.True(Assert.Single(mapped.AllAnswers).IsMapped);
+    }
+
+    [Fact]
+    public void WorkEmail_MapsToEmail_AndAnUnknownAnswerIsKept()
+    {
+        var mapped = MetaLeadFieldMapper.Map(
+        [
+            new MetaFieldAnswer("work_email", "ali@example.com"),
+            new MetaFieldAnswer("budget", "5 million")
+        ]);
+
+        Assert.Equal("ali@example.com", mapped.Email);
+        Assert.Contains(mapped.AllAnswers, a => a.Name == "work_email" && a.IsMapped);
+        Assert.Contains(mapped.AllAnswers, a => a.Name == "budget" && a.Value == "5 million" && !a.IsMapped);
     }
 
     internal static MetaGraphClient DirectClient(FakeHandler handler, ILoggerProvider? logs = null) => new(

@@ -51,6 +51,14 @@ export function retryMetaEvent(connectionId: number, eventId: number) {
   );
 }
 
+/** Puts every Failed event of the connection back on the queue. A repeat finds nothing left to retry. */
+export function retryFailedMetaEvents(connectionId: number) {
+  return apiJson<{ requeued: number }>(
+    `${base}/connections/${connectionId}/events/retry-failed`,
+    jsonRequest("POST", {}),
+  );
+}
+
 export function disconnectMetaConnection(connectionId: number) {
   return apiJson<void>(`${base}/connections/${connectionId}/disconnect`, jsonRequest("POST", {}));
 }

@@ -23,6 +23,12 @@ namespace DAMS.Application.Common
             if (digits.Length == 0)
                 return string.Empty;
 
+            // 0092 is the international prefix written without a plus. Strip it before the
+            // country code, or 0092 300… stays 92300… and misses the same subscriber entered
+            // as 0300… or +92 300….
+            if (digits.StartsWith("00", StringComparison.Ordinal))
+                digits = digits[2..];
+
             // 0300xxxxxxx and 92300xxxxxxx are the same subscriber; compare on the national
             // number so a lead entered either way is recognised as a duplicate.
             if (digits.StartsWith(CountryCode, StringComparison.Ordinal) && digits.Length > CountryCode.Length)

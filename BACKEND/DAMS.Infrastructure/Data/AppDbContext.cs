@@ -2622,6 +2622,9 @@ namespace DAMS.Infrastructure.Data
                 // load, and the event list can be filtered by status newest-first. Events are
                 // kept forever by default, so both need this rather than a scan of the history.
                 entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.Status, e.ReceivedAt });
+                // recentFailedCount and lastFailedAt ask for Failed events by when they failed.
+                // Events are kept forever, so that question needs its own key rather than a scan.
+                entity.HasIndex(e => new { e.ExternalIntegrationConnectionId, e.Status, e.ProcessedAt });
                 // The quiet-Page alert asks each enabled Page for its newest webhook; without the
                 // time in the key that is a lookup per event the Page ever received.
                 entity.HasIndex(e => new { e.ExternalIntegrationResourceId, e.ReceivedAt });

@@ -45,6 +45,14 @@ namespace DAMS.Application.Interfaces
         Task<MetaEventDto> RetryEventAsync(
             int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Puts every Failed event of the connection back on the queue in one step. Events whose
+        /// Page is gone or switched off are left as they are. A second call finds nothing Failed
+        /// and requeues nothing.
+        /// </summary>
+        Task<MetaRetryFailedResultDto> RetryFailedEventsAsync(
+            int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default);
+
         Task DisconnectAsync(int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default);
     }
 
