@@ -1,5 +1,8 @@
+using System.Reflection;
 using DAMS.Application.DTOs.LeadDtos;
+using DAMS.Application.Services;
 using DAMS.Domain.Enums;
+using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -196,6 +199,8 @@ public sealed class LeadEditAndTimelineTests
 
         var listed = (await h.Leads.GetLeadsAsync(new LeadFilterDto(), h.Admin)).Items.Single(l => l.Id == leadId);
         Assert.IsNotType<LeadDetailResponseDto>(listed);
+        foreach (var property in typeof(LeadResponseDto).GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            Assert.Equal(property.GetValue(listed), property.GetValue(detail));
 
         var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested");
         await h.Leads.CloseAsync(leadId, dormant: false, new CloseLeadDto { ClosureReasonId = reasonId }, h.Sales);
@@ -250,6 +255,28 @@ public sealed class LeadEditAndTimelineTests
             var text = $"{entry.Summary} {entry.Notes} {entry.PreviousValue} {entry.NewValue}";
             Assert.DoesNotContain(detailed, name => text.Contains(name, StringComparison.Ordinal));
         }
+    }
+
+    [Fact]
+    public void LeadDetailProjectionTranslatesOnSqlServer_AndTheListOmitsThePageHeader()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer("Server=localhost;Database=dams_lead_mapping_shape;Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False")
+            .Options;
+        using var db = new AppDbContext(options);
+
+        var listSql = db.Leads.Select(LeadMapping.ToResponse(db)).ToQueryString();
+        var detailSql = db.Leads.Select(LeadMapping.ToDetail(db)).ToQueryString();
+
+        // Shared lead columns stay on both queries. Closed-by is a detail-only sub-select;
+        // its absence on the list is the check that the shared projection did not pull the
+        // page header onto the list.
+        Assert.Contains("LeadReference", listSql);
+        Assert.Contains("LeadReference", detailSql);
+        Assert.Contains("FirstName", listSql);
+        Assert.Contains("FirstName", detailSql);
+        Assert.DoesNotContain("PerformedByName", listSql);
+        Assert.Contains("PerformedByName", detailSql);
     }
 
     private static UpdateLeadDto Update(string token, string phone = "0300-1234567", string? email = "bilal@example.com") => new()

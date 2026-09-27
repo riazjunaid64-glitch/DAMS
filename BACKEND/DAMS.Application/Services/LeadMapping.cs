@@ -84,78 +84,34 @@ namespace DAMS.Application.Services
             };
 
         /// <summary>
-        /// The single-lead read. Same fields as <see cref="ToResponse"/>, plus the page header.
-        /// The list must keep using <see cref="ToResponse"/> so it does not run these sub-selects.
+        /// The single-lead read. Shared lead fields come from <see cref="ToResponse"/>;
+        /// only the page header is added here. The list must keep using <see cref="ToResponse"/>
+        /// so it does not run these sub-selects.
         /// </summary>
-        public static Expression<Func<Lead, LeadDetailResponseDto>> ToDetail(AppDbContext context) => l =>
+        public static Expression<Func<Lead, LeadDetailResponseDto>> ToDetail(AppDbContext context)
+        {
+            var response = ToResponse(context);
+            if (response.Body is not MemberInitExpression shared)
+                throw new InvalidOperationException("Lead list projection must stay an object initializer.");
+
+            var lead = response.Parameters[0];
+            var header = PageHeader(context);
+            if (new ReplaceParameterVisitor(header.Parameters[0], lead).Visit(header.Body) is not MemberInitExpression headerInit)
+                throw new InvalidOperationException("Lead page header projection must stay an object initializer.");
+
+            return Expression.Lambda<Func<Lead, LeadDetailResponseDto>>(
+                Expression.MemberInit(
+                    Expression.New(typeof(LeadDetailResponseDto)),
+                    shared.Bindings.Concat(headerInit.Bindings)),
+                lead);
+        }
+
+        /// <summary>
+        /// Fields the lead page shows before any tab is opened. Not part of the list row.
+        /// </summary>
+        private static Expression<Func<Lead, LeadDetailResponseDto>> PageHeader(AppDbContext context) => l =>
             new LeadDetailResponseDto
             {
-                Id = l.Id,
-                LeadReference = l.LeadReference,
-                FirstName = l.FirstName,
-                LastName = l.LastName,
-                FullName = l.LastName == null || l.LastName == "" ? l.FirstName : l.FirstName + " " + l.LastName,
-                Phone = l.Phone,
-                WhatsappNumber = l.WhatsappNumber,
-                Email = l.Email,
-                Address = l.Address,
-                City = l.City,
-                PreferredContactMethod = l.PreferredContactMethod,
-                PreferredContactTime = l.PreferredContactTime,
-                LeadSourceId = l.LeadSourceId,
-                SourceCode = l.Source.Code,
-                SourceName = l.Source.Name,
-                SourceDetails = l.SourceDetails,
-                CampaignName = l.CampaignName,
-                CampaignReference = l.CampaignReference,
-                AdReference = l.AdReference,
-                ExternalProvider = l.ExternalProvider,
-                ExternalLeadId = l.ExternalLeadId,
-                ExternalFormReference = l.ExternalFormReference,
-                ExternalSubmittedAt = l.ExternalSubmittedAt,
-                IntegrationStatus = l.IntegrationStatus,
-                IntegrationError = l.IntegrationError,
-                InterestedProjectId = l.InterestedProjectId,
-                InterestedProjectName = l.InterestedProject != null ? l.InterestedProject.ProjectName : null,
-                InterestedUnitId = l.InterestedUnitId,
-                InterestedUnitNumber = l.InterestedUnit != null ? l.InterestedUnit.UnitNumber : null,
-                PropertyType = l.PropertyType,
-                PreferredLocation = l.PreferredLocation,
-                BudgetMin = l.BudgetMin,
-                BudgetMax = l.BudgetMax,
-                PurchaseIntent = l.PurchaseIntent,
-                PaymentPreference = l.PaymentPreference,
-                Notes = l.Notes,
-                AssignedEmployeeId = l.AssignedEmployeeId,
-                AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
-                AssignmentState = l.AssignmentState,
-                AssignedAt = l.AssignedAt,
-                Stage = l.Stage,
-                Qualification = l.Qualification,
-                LastActivityAt = l.LastActivityAt,
-                LastActivitySummary = l.LastActivitySummary,
-                NextActionAt = l.NextActionAt,
-                NextActionSummary = l.NextActionSummary,
-                FirstContactAt = l.FirstContactAt,
-                LastContactAt = l.LastContactAt,
-                ConvertedAt = l.ConvertedAt,
-                ConvertedCustomerId = l.ConvertedCustomerId,
-                ConvertedBookingId = l.ConvertedBookingId,
-                ConvertedBookingReference = l.ConvertedBooking != null ? l.ConvertedBooking.BookingReference : null,
-                ClosureReasonId = l.ClosureReasonId,
-                ClosureReasonName = l.ClosureReason != null ? l.ClosureReason.Name : null,
-                ClosureNotes = l.ClosureNotes,
-                ClosedAt = l.ClosedAt,
-                ReactivateOn = l.ReactivateOn,
-                BookingRequestId = context.BookingRequests
-                    .Where(br => br.LeadId == l.Id)
-                    .Select(br => (int?)br.Id)
-                    .FirstOrDefault(),
-                CreatedAt = l.CreatedAt,
-                UpdatedAt = l.UpdatedAt,
-                ConcurrencyToken = Convert.ToBase64String(l.RowVersion),
-                OpenFollowUpCount = l.FollowUps.Count(f => f.Status == LeadFollowUpStatus.Pending),
-                DocumentCount = l.Documents.Count,
                 Counts = new LeadPageCountsDto
                 {
                     Timeline = l.Activities.Count(a => !LeadTimeline.NotShownOnTimeline.Contains(a.Type)),
@@ -190,6 +146,21 @@ namespace DAMS.Application.Services
                     .Select(a => a.PerformedByName)
                     .FirstOrDefault()
             };
+
+        private sealed class ReplaceParameterVisitor : ExpressionVisitor
+        {
+            private readonly ParameterExpression _from;
+            private readonly ParameterExpression _to;
+
+            public ReplaceParameterVisitor(ParameterExpression from, ParameterExpression to)
+            {
+                _from = from;
+                _to = to;
+            }
+
+            protected override Expression VisitParameter(ParameterExpression node) =>
+                node == _from ? _to : base.VisitParameter(node);
+        }
 
         public static readonly Expression<Func<LeadActivity, LeadActivityDto>> ToActivityDto = a =>
             new LeadActivityDto
