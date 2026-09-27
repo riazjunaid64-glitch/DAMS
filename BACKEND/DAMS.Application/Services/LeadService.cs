@@ -2743,14 +2743,14 @@ namespace DAMS.Application.Services
 
         private async Task<LeadResponseDto?> LoadResponseAsync(int id, CancellationToken cancellationToken)
         {
-            // Read back through the same untracked projection a GET would use, so the
-            // response can never disagree with it. The list keeps the lighter projection.
-            // The change tracker is deliberately left alone: callers such as the website
+            // Writes hand back the same light lead the list uses. The page header — tab
+            // counts, last contact, who converted or closed it — is loaded only by
+            // GET /api/leads/{id}. The tracker is left alone: callers such as the website
             // booking-request flow still hold entities of their own that have not been saved yet.
             return await _context.Leads
                 .AsNoTracking()
                 .Where(l => l.Id == id)
-                .Select(LeadMapping.ToDetail(_context))
+                .Select(LeadMapping.ToResponse(_context))
                 .FirstOrDefaultAsync(cancellationToken);
         }
 

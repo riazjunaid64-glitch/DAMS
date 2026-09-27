@@ -423,7 +423,9 @@ namespace DAMS.Application.Services.Integrations
 
                 var leadCounts = (await _context.LeadExternalSubmissions
                     .AsNoTracking()
-                    .Where(s => s.ExternalFormReference != null && formIds.Contains(s.ExternalFormReference))
+                    .Where(s => s.Provider == IntegrationProviders.Meta
+                                && s.ExternalFormReference != null
+                                && formIds.Contains(s.ExternalFormReference))
                     .GroupBy(s => s.ExternalFormReference!)
                     .Select(g => new { FormId = g.Key, Count = g.Count() })
                     .ToListAsync(cancellationToken))
@@ -454,7 +456,9 @@ namespace DAMS.Application.Services.Integrations
                 var since = DateTime.UtcNow.AddDays(-7);
                 var pageStats = (await _context.LeadExternalSubmissions
                     .AsNoTracking()
-                    .Where(s => s.PageExternalId != null && pageIds.Contains(s.PageExternalId))
+                    .Where(s => s.Provider == IntegrationProviders.Meta
+                                && s.PageExternalId != null
+                                && pageIds.Contains(s.PageExternalId))
                     .GroupBy(s => s.PageExternalId!)
                     .Select(g => new
                     {

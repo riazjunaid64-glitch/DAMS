@@ -25,6 +25,33 @@ namespace DAMS.Application.Services
         public async Task<LeadCommunicationDto> RecordAsync(
             int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
+            // Scheduling the next follow-up writes the communication and the follow-up together.
+            // Production SQL retries transient errors, and EF refuses a transaction opened
+            // outside that strategy. Join a transaction the caller already has rather than
+            // nesting one. The in-memory store is not relational, so it takes the direct path.
+            if (!dto.NextActionAt.HasValue
+                || !_context.Database.IsRelational()
+                || _context.Database.CurrentTransaction != null)
+                return await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
+
+            var attempt = 0;
+            return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                // A retry replays a rolled-back save. Rows from the failed attempt are still
+                // marked stored in the tracker, so they have to be dropped before the replay.
+                if (attempt++ > 0)
+                    _context.ChangeTracker.Clear();
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+                var recorded = await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return recorded;
+            });
+        }
+
+        private async Task<LeadCommunicationDto> RecordCoreAsync(
+            int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
+        {
             var lead = await LeadGate.LoadActiveAsync(_context, leadId, ctx, cancellationToken);
 
             var occurredAt = dto.OccurredAt ?? DateTime.UtcNow;
@@ -123,11 +150,8 @@ namespace DAMS.Application.Services
             if (dto.NextActionAt.HasValue)
             {
                 // The communication is already tracked, so the follow-up service's save writes
-                // both rows. The transaction keeps that pair together with the link below:
-                // a failure after the first save must not leave a communication whose plan
-                // is not a follow-up.
-                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-
+                // both rows. RecordAsync has already joined them in one transaction when the
+                // store supports one, so a failure here does not leave the communication behind.
                 var title = LeadContactNormalizer.Clean(dto.NextAction);
                 var scheduled = await _followUps.CreateAsync(lead.Id, new CreateLeadFollowUpDto
                 {
@@ -142,7 +166,6 @@ namespace DAMS.Application.Services
                 await _context.SaveChangesAsync(cancellationToken);
                 await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
                 await _context.SaveChangesAsync(cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
             }
             else
             {

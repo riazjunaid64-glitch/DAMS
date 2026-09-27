@@ -264,6 +264,16 @@ public class LeadFormMappingTests
             PageExternalId = recent.PageExternalId,
             ReceivedAt = DateTime.UtcNow.AddDays(-8)
         });
+        // Same form and page ids, but not a Meta submission. It must not move these numbers.
+        h.Db.LeadExternalSubmissions.Add(new LeadExternalSubmission
+        {
+            LeadId = recent.LeadId,
+            Provider = "website",
+            ExternalLeadId = "someone-elses-form",
+            ExternalFormReference = recent.ExternalFormReference,
+            PageExternalId = recent.PageExternalId,
+            ReceivedAt = DateTime.UtcNow
+        });
         await h.Db.SaveChangesAsync();
 
         var resources = await h.Integration.GetResourcesAsync(connectionId);

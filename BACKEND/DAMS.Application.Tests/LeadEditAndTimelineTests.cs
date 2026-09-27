@@ -18,6 +18,7 @@ public sealed class LeadEditAndTimelineTests
 
         Assert.Equal("new@example.com", updated.Email);
         Assert.Equal(500_000m, updated.BudgetMin);
+        Assert.IsNotType<LeadDetailResponseDto>(updated);
         var activity = (await h.TimelineAsync(leadId)).Last(a => a.Type == LeadActivityType.DetailsUpdated);
         Assert.Contains("email", activity.NewValue);
     }
