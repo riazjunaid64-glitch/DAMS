@@ -1333,6 +1333,29 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(2, (await h.Leads.GetSummaryAsync(new LeadFilterDto { CreatedFrom = day, CreatedTo = day }, h.Admin)).Total);
     }
 
+    [Fact]
+    public async Task KAN48_TheListSendsSlimRows_WithOnlyWhatTheListShows()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await h.CreateWorkedLeadAsync();
+
+        var row = Assert.Single((await h.Leads.GetLeadsAsync(new LeadFilterDto(), h.Admin)).Items);
+        Assert.IsType<LeadListItemDto>(row);
+
+        // Named as the API writes them (camelCase).
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(row,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        Assert.Equal(
+            new[]
+            {
+                "id", "leadReference", "firstName", "lastName", "fullName", "phone", "city", "propertyType",
+                "paymentPreference", "purchaseIntent", "sourceName", "stage", "stageGroup", "assignedEmployeeId",
+                "assignedEmployeeName", "lastActivityAt", "lastActivitySummary", "nextActionAt", "nextActionSummary",
+                "createdAt"
+            }.Order(),
+            json.EnumerateObject().Select(p => p.Name).Order());
+    }
+
     private static (int Total, int InProgress, int Won, int Lost, int Dormant) Counts(LeadSummaryDto summary) =>
         (summary.Total, summary.InProgress, summary.Won, summary.Lost, summary.Dormant);
 

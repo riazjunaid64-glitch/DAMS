@@ -200,8 +200,8 @@ public sealed class LeadEditAndTimelineTests
         Assert.Null(detail.ConvertedUnitNumber);
 
         var listed = (await h.Leads.GetLeadsAsync(new LeadFilterDto(), h.Admin)).Items.Single(l => l.Id == leadId);
-        Assert.IsNotType<LeadDetailResponseDto>(listed);
-        foreach (var property in typeof(LeadResponseDto).GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        Assert.IsType<LeadListItemDto>(listed);
+        foreach (var property in typeof(LeadListItemDto).GetProperties(BindingFlags.Instance | BindingFlags.Public))
             Assert.Equal(property.GetValue(listed), property.GetValue(detail));
 
         var reasonId = await LeadIntakeAndDuplicateTests.ReasonIdAsync(h, "not_interested");
@@ -328,24 +328,33 @@ public sealed class LeadEditAndTimelineTests
     }
 
     [Fact]
-    public void LeadDetailProjectionTranslatesOnSqlServer_AndTheListOmitsThePageHeader()
+    public void LeadProjectionsTranslateOnSqlServer_AndTheListRowReadsNoSubSelectsOrLongText()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlServer("Server=localhost;Database=dams_lead_mapping_shape;Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False")
             .Options;
         using var db = new AppDbContext(options);
 
-        var listSql = db.Leads.Select(LeadMapping.ToResponse(db)).ToQueryString();
+        var listSql = db.Leads.Select(LeadMapping.ToListItem).ToQueryString();
+        var responseSql = db.Leads.Select(LeadMapping.ToResponse(db)).ToQueryString();
         var detailSql = db.Leads.Select(LeadMapping.ToDetail(db)).ToQueryString();
 
-        // Shared lead columns stay on both queries. Closed-by is a detail-only sub-select;
-        // its absence on the list is the check that the shared projection did not pull the
-        // page header onto the list.
-        Assert.Contains("LeadReference", listSql);
-        Assert.Contains("LeadReference", detailSql);
-        Assert.Contains("FirstName", listSql);
-        Assert.Contains("FirstName", detailSql);
-        Assert.DoesNotContain("PerformedByName", listSql);
+        // Shared lead columns stay on every query.
+        foreach (var sql in new[] { listSql, responseSql, detailSql })
+        {
+            Assert.Contains("LeadReference", sql);
+            Assert.Contains("FirstName", sql);
+        }
+
+        // The whole lead reads its per-row sub-selects and long text; a list row reads none of them.
+        foreach (var part in new[] { "[BookingRequests]", "[LeadFollowUps]", "[LeadDocuments]", "[Notes]", "[ClosureNotes]", "[IntegrationError]" })
+        {
+            Assert.Contains(part, responseSql);
+            Assert.DoesNotContain(part, listSql);
+        }
+
+        // Closed-by is a page-header sub-select, so it is on the lead page only.
+        Assert.DoesNotContain("PerformedByName", responseSql);
         Assert.Contains("PerformedByName", detailSql);
     }
 

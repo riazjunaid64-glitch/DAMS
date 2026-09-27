@@ -1309,7 +1309,7 @@ namespace DAMS.Application.Services
             var items = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(LeadMapping.ToResponse(_context))
+                .Select(LeadMapping.ToListItem)
                 .ToListAsync(cancellationToken);
 
             return new LeadListDto { Items = items, TotalCount = totalCount, Page = page, PageSize = pageSize };

@@ -3,7 +3,11 @@ using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.LeadDtos
 {
-    public class LeadResponseDto
+    /// <summary>
+    /// One row of the leads list: only what the list shows, with no long text. Every lead
+    /// response starts from these fields, so a row and the lead it opens always agree.
+    /// </summary>
+    public class LeadListItemDto
     {
         public int Id { get; set; }
 
@@ -17,13 +21,43 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? Phone { get; set; }
 
+        public string? City { get; set; }
+
+        public string? PropertyType { get; set; }
+
+        public LeadPaymentPreference PaymentPreference { get; set; }
+
+        public LeadPurchaseIntent PurchaseIntent { get; set; }
+
+        public string SourceName { get; set; } = string.Empty;
+
+        public LeadStage Stage { get; set; }
+
+        /// <summary>Stage on the salesperson's four-step pipeline (New, In Progress, Won, Lost).</summary>
+        public LeadStageGroup StageGroup => LeadStageRules.GroupOf(Stage);
+
+        public int? AssignedEmployeeId { get; set; }
+
+        public string? AssignedEmployeeName { get; set; }
+
+        public DateTime? LastActivityAt { get; set; }
+
+        public string? LastActivitySummary { get; set; }
+
+        public DateTime? NextActionAt { get; set; }
+
+        public string? NextActionSummary { get; set; }
+
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class LeadResponseDto : LeadListItemDto
+    {
         public string? WhatsappNumber { get; set; }
 
         public string? Email { get; set; }
 
         public string? Address { get; set; }
-
-        public string? City { get; set; }
 
         public LeadContactMethod PreferredContactMethod { get; set; }
 
@@ -32,8 +66,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int LeadSourceId { get; set; }
 
         public string SourceCode { get; set; } = string.Empty;
-
-        public string SourceName { get; set; } = string.Empty;
 
         public string? SourceDetails { get; set; }
 
@@ -63,42 +95,19 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? InterestedUnitNumber { get; set; }
 
-        public string? PropertyType { get; set; }
-
         public string? PreferredLocation { get; set; }
 
         public decimal? BudgetMin { get; set; }
 
         public decimal? BudgetMax { get; set; }
 
-        public LeadPurchaseIntent PurchaseIntent { get; set; }
-
-        public LeadPaymentPreference PaymentPreference { get; set; }
-
         public string? Notes { get; set; }
-
-        public int? AssignedEmployeeId { get; set; }
-
-        public string? AssignedEmployeeName { get; set; }
 
         public LeadAssignmentState AssignmentState { get; set; }
 
         public DateTime? AssignedAt { get; set; }
 
-        public LeadStage Stage { get; set; }
-
-        /// <summary>Stage on the salesperson's four-step pipeline (New, In Progress, Won, Lost).</summary>
-        public LeadStageGroup StageGroup => LeadStageRules.GroupOf(Stage);
-
         public LeadQualification Qualification { get; set; }
-
-        public DateTime? LastActivityAt { get; set; }
-
-        public string? LastActivitySummary { get; set; }
-
-        public DateTime? NextActionAt { get; set; }
-
-        public string? NextActionSummary { get; set; }
 
         public DateTime? FirstContactAt { get; set; }
 
@@ -124,8 +133,6 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int? BookingRequestId { get; set; }
 
-        public DateTime CreatedAt { get; set; }
-
         public DateTime? UpdatedAt { get; set; }
 
         // Base64 RowVersion. Sent back with an edit so a form opened before a newer change
@@ -139,7 +146,7 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     /// <summary>
     /// A single lead, including the tab counts and header facts the lead page shows
-    /// before any tab is opened. The list stays on <see cref="LeadResponseDto"/>.
+    /// before any tab is opened. The list uses <see cref="LeadListItemDto"/>.
     /// </summary>
     public class LeadDetailResponseDto : LeadResponseDto
     {
@@ -183,7 +190,7 @@ namespace DAMS.Application.DTOs.LeadDtos
 
     public class LeadListDto
     {
-        public List<LeadResponseDto> Items { get; set; } = new();
+        public List<LeadListItemDto> Items { get; set; } = new();
 
         public int TotalCount { get; set; }
 

@@ -12,8 +12,12 @@ namespace DAMS.Application.Services
     /// </summary>
     internal static class LeadMapping
     {
-        public static Expression<Func<Lead, LeadResponseDto>> ToResponse(AppDbContext context) => l =>
-            new LeadResponseDto
+        /// <summary>
+        /// A row of the leads list: what the list shows and nothing else, so no sub-selects and
+        /// none of the long text. <see cref="ToResponse"/> starts from these same fields.
+        /// </summary>
+        public static readonly Expression<Func<Lead, LeadListItemDto>> ToListItem = l =>
+            new LeadListItemDto
             {
                 Id = l.Id,
                 LeadReference = l.LeadReference,
@@ -21,15 +25,32 @@ namespace DAMS.Application.Services
                 LastName = l.LastName,
                 FullName = l.LastName == null || l.LastName == "" ? l.FirstName : l.FirstName + " " + l.LastName,
                 Phone = l.Phone,
+                City = l.City,
+                PropertyType = l.PropertyType,
+                PaymentPreference = l.PaymentPreference,
+                PurchaseIntent = l.PurchaseIntent,
+                SourceName = l.Source.Name,
+                Stage = l.Stage,
+                AssignedEmployeeId = l.AssignedEmployeeId,
+                AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
+                LastActivityAt = l.LastActivityAt,
+                LastActivitySummary = l.LastActivitySummary,
+                NextActionAt = l.NextActionAt,
+                NextActionSummary = l.NextActionSummary,
+                CreatedAt = l.CreatedAt
+            };
+
+        /// <summary>The whole lead: the list row's fields and the rest of the record.</summary>
+        public static Expression<Func<Lead, LeadResponseDto>> ToResponse(AppDbContext context) =>
+            Extend(ToListItem, l => new LeadResponseDto
+            {
                 WhatsappNumber = l.WhatsappNumber,
                 Email = l.Email,
                 Address = l.Address,
-                City = l.City,
                 PreferredContactMethod = l.PreferredContactMethod,
                 PreferredContactTime = l.PreferredContactTime,
                 LeadSourceId = l.LeadSourceId,
                 SourceCode = l.Source.Code,
-                SourceName = l.Source.Name,
                 SourceDetails = l.SourceDetails,
                 CampaignName = l.CampaignName,
                 CampaignReference = l.CampaignReference,
@@ -44,23 +65,13 @@ namespace DAMS.Application.Services
                 InterestedProjectName = l.InterestedProject != null ? l.InterestedProject.ProjectName : null,
                 InterestedUnitId = l.InterestedUnitId,
                 InterestedUnitNumber = l.InterestedUnit != null ? l.InterestedUnit.UnitNumber : null,
-                PropertyType = l.PropertyType,
                 PreferredLocation = l.PreferredLocation,
                 BudgetMin = l.BudgetMin,
                 BudgetMax = l.BudgetMax,
-                PurchaseIntent = l.PurchaseIntent,
-                PaymentPreference = l.PaymentPreference,
                 Notes = l.Notes,
-                AssignedEmployeeId = l.AssignedEmployeeId,
-                AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
                 AssignmentState = l.AssignmentState,
                 AssignedAt = l.AssignedAt,
-                Stage = l.Stage,
                 Qualification = l.Qualification,
-                LastActivityAt = l.LastActivityAt,
-                LastActivitySummary = l.LastActivitySummary,
-                NextActionAt = l.NextActionAt,
-                NextActionSummary = l.NextActionSummary,
                 FirstContactAt = l.FirstContactAt,
                 LastContactAt = l.LastContactAt,
                 ConvertedAt = l.ConvertedAt,
@@ -76,33 +87,38 @@ namespace DAMS.Application.Services
                     .Where(br => br.LeadId == l.Id)
                     .Select(br => (int?)br.Id)
                     .FirstOrDefault(),
-                CreatedAt = l.CreatedAt,
                 UpdatedAt = l.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(l.RowVersion),
                 OpenFollowUpCount = l.FollowUps.Count(f => f.Status == LeadFollowUpStatus.Pending),
                 DocumentCount = l.Documents.Count
-            };
+            });
 
         /// <summary>
-        /// The single-lead read. Shared lead fields come from <see cref="ToResponse"/>;
-        /// only the page header is added here. The list must keep using <see cref="ToResponse"/>
-        /// so it does not run these sub-selects.
+        /// The single-lead read: <see cref="ToResponse"/> plus the page header. The list keeps to
+        /// <see cref="ToListItem"/>, so it runs none of these sub-selects.
         /// </summary>
-        public static Expression<Func<Lead, LeadDetailResponseDto>> ToDetail(AppDbContext context)
+        public static Expression<Func<Lead, LeadDetailResponseDto>> ToDetail(AppDbContext context) =>
+            Extend(ToResponse(context), PageHeader(context));
+
+        /// <summary>
+        /// One projection setting <paramref name="shared"/>'s fields and then
+        /// <paramref name="extra"/>'s. Both have to stay object initializers.
+        /// </summary>
+        private static Expression<Func<Lead, TResult>> Extend<TShared, TResult>(
+            Expression<Func<Lead, TShared>> shared, Expression<Func<Lead, TResult>> extra)
+            where TResult : TShared
         {
-            var response = ToResponse(context);
-            if (response.Body is not MemberInitExpression shared)
-                throw new InvalidOperationException("Lead list projection must stay an object initializer.");
+            if (shared.Body is not MemberInitExpression sharedInit)
+                throw new InvalidOperationException($"The {typeof(TShared).Name} projection must stay an object initializer.");
 
-            var lead = response.Parameters[0];
-            var header = PageHeader(context);
-            if (new ReplaceParameterVisitor(header.Parameters[0], lead).Visit(header.Body) is not MemberInitExpression headerInit)
-                throw new InvalidOperationException("Lead page header projection must stay an object initializer.");
+            var lead = shared.Parameters[0];
+            if (new ReplaceParameterVisitor(extra.Parameters[0], lead).Visit(extra.Body) is not MemberInitExpression extraInit)
+                throw new InvalidOperationException($"The {typeof(TResult).Name} projection must stay an object initializer.");
 
-            return Expression.Lambda<Func<Lead, LeadDetailResponseDto>>(
+            return Expression.Lambda<Func<Lead, TResult>>(
                 Expression.MemberInit(
-                    Expression.New(typeof(LeadDetailResponseDto)),
-                    shared.Bindings.Concat(headerInit.Bindings)),
+                    Expression.New(typeof(TResult)),
+                    sharedInit.Bindings.Concat(extraInit.Bindings)),
                 lead);
         }
 
