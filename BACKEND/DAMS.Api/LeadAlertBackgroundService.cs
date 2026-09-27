@@ -54,10 +54,12 @@ namespace DAMS.Api
                     var alerts = scope.ServiceProvider.GetRequiredService<ILeadAlertService>();
                     var result = await alerts.RunScanAsync(stoppingToken);
 
-                    if (result.NotificationsCreated > 0 || result.FollowUpsMarkedMissed > 0 || result.SiteVisitsMarkedMissed > 0)
+                    if (result.NotificationsCreated > 0 || result.FollowUpsMarkedMissed > 0 || result.SiteVisitsMarkedMissed > 0
+                        || result.DormantLeadsBroughtBack > 0)
                         _logger.LogInformation(
-                            "Lead alert scan: {Notifications} notification(s), {MissedFollowUps} missed follow-up(s), {MissedVisits} missed visit(s), {Escalations} escalation(s).",
-                            result.NotificationsCreated, result.FollowUpsMarkedMissed, result.SiteVisitsMarkedMissed, result.EscalationsRaised);
+                            "Lead alert scan: {Notifications} notification(s), {MissedFollowUps} missed follow-up(s), {MissedVisits} missed visit(s), {Escalations} escalation(s), {BroughtBack} dormant lead(s) brought back.",
+                            result.NotificationsCreated, result.FollowUpsMarkedMissed, result.SiteVisitsMarkedMissed, result.EscalationsRaised,
+                            result.DormantLeadsBroughtBack);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

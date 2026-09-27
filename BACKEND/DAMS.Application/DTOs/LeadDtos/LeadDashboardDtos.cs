@@ -173,6 +173,8 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int SiteVisitsMarkedMissed { get; set; }
 
+        public int DormantLeadsBroughtBack { get; set; }
+
         public int NotificationsCreated { get; set; }
 
         public int EscalationsRaised { get; set; }

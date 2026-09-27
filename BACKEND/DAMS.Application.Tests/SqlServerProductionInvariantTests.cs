@@ -3281,7 +3281,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             await using var db = new AppDbContext(options);
             using var dispatcher = SqlLeadDispatcher(db);
-            var alerts = new LeadAlertService(db, new LeadNotificationService(db, dispatcher),
+            var alerts = new LeadAlertService(db, new LeadNotificationService(db, dispatcher), SqlLeadService(db, dispatcher),
                 Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions { MaxRowsPerScan = 2 }),
                 TimeProvider.System);
             return await alerts.RunScanAsync();
@@ -3421,7 +3421,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             using var dispatcher = SqlLeadDispatcher(db);
-            await new LeadAlertService(db, new LeadNotificationService(db, dispatcher),
+            await new LeadAlertService(db, new LeadNotificationService(db, dispatcher), SqlLeadService(db, dispatcher),
                 Microsoft.Extensions.Options.Options.Create(new LeadAlertOptions()), TimeProvider.System).RunScanAsync();
         }
 
