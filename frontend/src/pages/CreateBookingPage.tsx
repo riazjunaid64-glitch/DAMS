@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -90,7 +91,7 @@ function num(v: string): number | null {
 
 export default function CreateBookingPage({ user }: Props) {
   const navigate = useNavigate();
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);

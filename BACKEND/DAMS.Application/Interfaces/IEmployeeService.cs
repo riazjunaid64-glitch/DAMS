@@ -6,11 +6,11 @@ namespace DAMS.Application.Interfaces
     public interface IEmployeeService
     {
         // Employee CRUD
-        Task<EmployeeResponseDto> CreateEmployeeAsync(CreateEmployeeDto dto);
+        Task<EmployeeResponseDto> CreateEmployeeAsync(CreateEmployeeDto dto, bool actorIsAdmin);
         Task<EmployeeResponseDto?> GetEmployeeByIdAsync(int id);
         Task<List<EmployeeResponseDto>> GetAllEmployeesAsync(string? department = null, string? status = null);
-        Task<EmployeeResponseDto> UpdateEmployeeAsync(int id, UpdateEmployeeDto dto);
-        Task DeleteEmployeeAsync(int id);
+        Task<EmployeeResponseDto> UpdateEmployeeAsync(int id, UpdateEmployeeDto dto, bool actorIsAdmin);
+        Task DeleteEmployeeAsync(int id, bool actorIsAdmin);
 
         // Attendance
         Task<AttendanceResponseDto> RecordAttendanceAsync(int employeeId, RecordAttendanceDto dto);

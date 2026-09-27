@@ -268,7 +268,7 @@ namespace DAMS.Application.Services
 
         private async Task<bool> StaffLoginIsAllowedAsync(int userId, string roleName)
         {
-            if (roleName is not ("Manager" or "Employee"))
+            if (roleName is not ("Manager" or "Employee" or "Accountant"))
                 return true;
 
             return await _context.Employees

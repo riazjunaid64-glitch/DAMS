@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ProjectDtos;
 using DAMS.Application.DTOs.MediaDtos;
 using DAMS.Application.Interfaces;
@@ -24,7 +25,7 @@ namespace DAMS.Api.Controllers
         }
 
         // CREATE PROJECT (Admin only)
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost]
         public async Task<IActionResult> CreateProject(CreateProjectDto dto)
         {
@@ -36,7 +37,7 @@ namespace DAMS.Api.Controllers
         }
 
         // UPDATE PROJECT (Admin only)
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateProject(int id, UpdateProjectDto dto)
         {
@@ -75,7 +76,7 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost("{projectId:int}/media")]
         public async Task<IActionResult> UploadProjectMedia(int projectId, IFormFile file, [FromForm] UploadMediaDto? uploadDto = null)
         {
@@ -89,7 +90,7 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost("{projectId:int}/media/bulk")]
         public async Task<IActionResult> UploadProjectMediaBulk(int projectId, List<IFormFile> files, [FromForm] string? category = null, [FromForm] bool isCover = false, [FromForm] string? altText = null, [FromForm] string? description = null)
         {
@@ -119,7 +120,7 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPut("{projectId:int}/media/{mediaId:int}")]
         public async Task<IActionResult> UpdateProjectMedia(int projectId, int mediaId, UpdateMediaDto updateDto)
         {
@@ -127,7 +128,7 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpDelete("{projectId:int}/media/{mediaId:int}")]
         public async Task<IActionResult> DeleteProjectMedia(int projectId, int mediaId)
         {
@@ -135,7 +136,7 @@ namespace DAMS.Api.Controllers
             return Ok("Project media deleted successfully.");
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost("{projectId:int}/media/reorder")]
         public async Task<IActionResult> ReorderProjectMedia(int projectId, [FromBody] List<int> mediaIds)
         {
@@ -143,7 +144,7 @@ namespace DAMS.Api.Controllers
             return Ok("Project media reordered successfully.");
         }
 
-        [Authorize(Roles = "Admin")]
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost("{projectId:int}/media/{mediaId:int}/set-cover")]
         public async Task<IActionResult> SetProjectCoverMedia(int projectId, int mediaId)
         {

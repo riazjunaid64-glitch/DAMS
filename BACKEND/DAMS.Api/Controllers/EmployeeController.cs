@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -7,7 +8,7 @@ namespace DAMS.Api.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class EmployeeController : ControllerBase
     {
         private readonly IEmployeeService _employeeService;
@@ -24,8 +25,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                var result = await _employeeService.CreateEmployeeAsync(dto);
+                var result = await _employeeService.CreateEmployeeAsync(dto, User.IsInRole(AppRoles.Admin));
                 return Ok(result);
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -55,8 +60,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                var result = await _employeeService.UpdateEmployeeAsync(id, dto);
+                var result = await _employeeService.UpdateEmployeeAsync(id, dto, User.IsInRole(AppRoles.Admin));
                 return Ok(result);
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -69,8 +78,12 @@ namespace DAMS.Api.Controllers
         {
             try
             {
-                await _employeeService.DeleteEmployeeAsync(id);
+                await _employeeService.DeleteEmployeeAsync(id, User.IsInRole(AppRoles.Admin));
                 return Ok(new { message = "Employee deleted successfully." });
+            }
+            catch (LeadAuthorizationException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
             }
             catch (Exception ex)
             {

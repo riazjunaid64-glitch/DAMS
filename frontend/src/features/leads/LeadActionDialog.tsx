@@ -12,6 +12,7 @@ import {
 } from "./CrmUi.tsx";
 import { initialForm } from "./leadActionDefaults.ts";
 import { apiJson, jsonRequest, loadUnits } from "./leadApi.ts";
+import { can } from "../access/permissions.ts";
 import { describeEditConflict, saveLeadEdit, type EditConflict } from "./leadEditMerge.ts";
 import {
   enumLabel,
@@ -88,20 +89,8 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
     (user.role !== "Employee" ||
       member.userId === Number(user.userId) ||
       member.employeeId === lead.assignedEmployeeId));
-  const assignmentStaff = eligibleWorkers.filter((member) =>
-    !value("teamId") || member.teamId === Number(value("teamId")));
-  const setAssignmentTeam = (teamId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(current.employeeId));
-    return {
-      ...current,
-      teamId,
-      employeeId: employee && teamId && employee.teamId !== Number(teamId) ? "" : current.employeeId,
-    };
-  });
-  const setAssignmentEmployee = (employeeId: string) => setForm((current) => {
-    const employee = lookups.staff.find((member) => member.employeeId === Number(employeeId));
-    return { ...current, employeeId, teamId: employee?.teamId?.toString() ?? current.teamId };
-  });
+  const assignmentStaff = eligibleWorkers;
+  const setAssignmentEmployee = (employeeId: string) => set("employeeId", employeeId);
 
   const submit = async () => {
     if (!action) return;
@@ -192,8 +181,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
 
         {action.type === "assign" && (
           <>
-            <Select label="Team" value={value("teamId")} onChange={setAssignmentTeam} allowEmpty emptyLabel="No team" options={lookups.teams.filter((t) => t.isActive).map((t) => ({ value: String(t.id), label: t.name }))} />
-            <Select label="Employee" value={value("employeeId")} onChange={setAssignmentEmployee} allowEmpty emptyLabel="Unassigned" options={assignmentStaff.map((s) => ({ value: String(s.employeeId), label: `${s.fullName}${s.teamName ? ` · ${s.teamName}` : ""}` }))} />
+            <Select label="Employee" value={value("employeeId")} onChange={setAssignmentEmployee} allowEmpty emptyLabel="Unassigned" options={assignmentStaff.map((s) => ({ value: String(s.employeeId), label: s.fullName }))} />
             <TextArea label="Reason for ownership change" required value={value("reason")} onChange={(v) => set("reason", v)} />
           </>
         )}
@@ -303,7 +291,7 @@ export default function LeadActionDialog({ action, lead, lookups, user, onClose,
               <label className="flex items-center gap-3 rounded-xl border border-[var(--border)] px-4 py-3 text-sm"><input type="checkbox" checked={checked("managerReview")} onChange={(e) => set("managerReview", e.target.checked)} />Request manager review</label>
               <label className="flex items-center gap-3 rounded-xl border border-[var(--border)] px-4 py-3 text-sm"><input type="checkbox" checked={checked("decisionRecord")} onChange={(e) => set("decisionRecord", e.target.checked)} />Mark as decision record</label>
             </div>
-            <div><Label>Mention colleague</Label><select multiple className={`${inputClass} min-h-28`} value={value("mentionedUserIds").split(",").filter(Boolean)} onChange={(e) => set("mentionedUserIds", Array.from(e.target.selectedOptions).map((o) => o.value).join(","))}>{lookups.staff.filter((s) => s.userId && s.userId !== Number(user.userId)).map((s) => <option key={s.userId} value={s.userId!}>{s.fullName} · {s.role ? enumLabel(s.role) : "Staff"}</option>)}</select><p className="mt-1 text-xs text-[var(--text-muted)]">Use Ctrl/Cmd to select more than one person.</p></div>
+            <div><Label>Mention colleague</Label><select multiple className={`${inputClass} min-h-28`} value={value("mentionedUserIds").split(",").filter(Boolean)} onChange={(e) => set("mentionedUserIds", Array.from(e.target.selectedOptions).map((o) => o.value).join(","))}>{lookups.staff.filter((s) => s.userId && s.userId !== Number(user.userId) && can(s.role, "crm")).map((s) => <option key={s.userId} value={s.userId!}>{s.fullName} · {s.role ? enumLabel(s.role) : "Staff"}</option>)}</select><p className="mt-1 text-xs text-[var(--text-muted)]">Use Ctrl/Cmd to select more than one person.</p></div>
           </>
         )}
 
@@ -375,7 +363,7 @@ async function performAction(action: Exclude<LeadAction, { type: "edit" }>, lead
   const dateOrNull = (key: string) => s(key) ? new Date(s(key)).toISOString() : null;
   switch (action.type) {
     case "assign":
-      await apiJson(`/api/leads/${lead.id}/assign`, jsonRequest("POST", { employeeId: numberOrNull("employeeId"), teamId: numberOrNull("teamId"), reason: s("reason") })); break;
+      await apiJson(`/api/leads/${lead.id}/assign`, jsonRequest("POST", { employeeId: numberOrNull("employeeId"), reason: s("reason") })); break;
     case "stage":
       if (!s("stage")) throw new Error("Choose a stage.");
       await apiJson(`/api/leads/${lead.id}/stage`, jsonRequest("POST", { stage: s("stage"), notes: s("notes") || null })); break;
@@ -420,7 +408,7 @@ async function performAction(action: Exclude<LeadAction, { type: "edit" }>, lead
       if (!form.confirmed) throw new Error("Confirm the conversion details.");
       if (!numberOrNull("unitId")) throw new Error("Choose the unit for the booking.");
       const result = await apiJson<{ bookingId: number }>(`/api/leads/${lead.id}/convert`, jsonRequest("POST", { unitId: numberOrNull("unitId"), customerId: numberOrNull("customerId"), cnic: s("cnic") || null, fatherName: s("fatherName") || null, agreedSalePrice: numberOrNull("agreedSalePrice"), discountPercent: numberOrNull("discountPercent"), discountReason: s("discountReason") || null, bookingAmountRequired: numberOrNull("bookingAmountRequired"), bookingAmountDueDate: dateOrNull("bookingAmountDueDate"), notes: s("notes") || null }));
-      return userRole === "Admin" ? `/confirmed-bookings/${result.bookingId}` : undefined;
+      return can(userRole, "bookings") ? `/confirmed-bookings/${result.bookingId}` : undefined;
     }
   }
   return undefined;

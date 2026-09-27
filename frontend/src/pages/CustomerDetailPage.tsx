@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -68,7 +69,7 @@ export default function CustomerDetailPage({ user }: Props) {
     notes: "",
   });
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "customers");
 
   const loadDocuments = async () => {
     setDocumentsLoading(true); setDocumentsError(null);

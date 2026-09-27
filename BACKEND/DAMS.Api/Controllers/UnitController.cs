@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using DAMS.Application.Interfaces;
@@ -19,7 +20,7 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost]
     public async Task<IActionResult> Create(CreateUnitDto dto)
     {
@@ -49,7 +50,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPut("{id}")]
     public async Task<IActionResult> Update(int id, UpdateUnitDto dto)
     {
@@ -57,7 +58,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
@@ -74,7 +75,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost("{unitId:int}/media")]
     public async Task<IActionResult> UploadUnitMedia(int unitId, IFormFile file, [FromForm] UploadMediaDto? uploadDto = null)
     {
@@ -84,7 +85,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost("{unitId:int}/media/bulk")]
     public async Task<IActionResult> UploadUnitMediaBulk(int unitId, List<IFormFile> files, [FromForm] string? category = null, [FromForm] bool isCover = false, [FromForm] string? altText = null, [FromForm] string? description = null)
     {
@@ -111,7 +112,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPut("{unitId:int}/media/{mediaId:int}")]
     public async Task<IActionResult> UpdateUnitMedia(int unitId, int mediaId, UpdateMediaDto updateDto)
     {
@@ -119,7 +120,7 @@ namespace DAMS.Api.Controllers
         return Ok(result);
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpDelete("{unitId:int}/media/{mediaId:int}")]
     public async Task<IActionResult> DeleteUnitMedia(int unitId, int mediaId)
     {
@@ -127,7 +128,7 @@ namespace DAMS.Api.Controllers
         return Ok("Unit media deleted successfully.");
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost("{unitId:int}/media/reorder")]
     public async Task<IActionResult> ReorderUnitMedia(int unitId, [FromBody] List<int> mediaIds)
     {
@@ -135,7 +136,7 @@ namespace DAMS.Api.Controllers
         return Ok("Unit media reordered successfully.");
     }
 
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost("{unitId:int}/media/{mediaId:int}/set-cover")]
     public async Task<IActionResult> SetUnitCoverMedia(int unitId, int mediaId)
     {

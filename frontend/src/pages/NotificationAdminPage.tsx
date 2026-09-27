@@ -1,6 +1,7 @@
 import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { User } from "../App.tsx";
+import { can } from "../features/access/permissions.ts";
 import Button from "../lib/Button.tsx";
 import {
   cancelJob,
@@ -59,7 +60,7 @@ export default function NotificationAdminPage({ user }: { user: User | null }) {
     return <Shell><Panel title="Sign in required">Sign in with an administrator account to manage notifications.</Panel></Shell>;
   }
 
-  if (user.role !== "Admin") {
+  if (!can(user.role, "notifications.admin")) {
     return (
       <Shell>
         <Panel title="Administrators only">
@@ -878,7 +879,6 @@ const AUDIENCES: { value: AudienceType; label: string }[] = [
   { value: "AllInternalStaff", label: "All internal staff" },
   { value: "CustomersWithOverdueInstallments", label: "Customers with overdue installments" },
   { value: "CustomersInProject", label: "Customers in a project" },
-  { value: "Team", label: "One team" },
   { value: "SelectedUsers", label: "Selected users" },
 ];
 
@@ -889,7 +889,6 @@ function ComposeTab() {
     actionUrl: "",
     audience: "AllCustomers" as AudienceType,
     projectId: "",
-    teamId: "",
     userIds: "",
     sendEmail: true,
     sendPush: true,
@@ -930,7 +929,6 @@ function ComposeTab() {
           .split(/[\s,]+/)
           .map((value) => Number(value))
           .filter((value) => Number.isFinite(value) && value > 0),
-        teamId: form.teamId.trim() === "" ? null : Number(form.teamId),
         projectId: form.projectId.trim() === "" ? null : Number(form.projectId),
         bookingIds: [],
         leadIds: [],
@@ -1031,11 +1029,6 @@ function ComposeTab() {
             {form.audience === "CustomersInProject" && (
               <Field label="Project id">
                 <input value={form.projectId} onChange={(e) => { setForm({ ...form, projectId: e.target.value }); setPreview(null); }} className={inputClass} inputMode="numeric" />
-              </Field>
-            )}
-            {form.audience === "Team" && (
-              <Field label="Team id">
-                <input value={form.teamId} onChange={(e) => { setForm({ ...form, teamId: e.target.value }); setPreview(null); }} className={inputClass} inputMode="numeric" />
               </Field>
             )}
             {form.audience === "SelectedUsers" && (

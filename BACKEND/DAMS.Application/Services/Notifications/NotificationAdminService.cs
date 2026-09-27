@@ -45,6 +45,7 @@ namespace DAMS.Application.Services.Notifications
         public async Task<AudiencePreviewDto> PreviewAudienceAsync(
             ComposeNotificationDto dto, CancellationToken cancellationToken = default)
         {
+            RejectRetiredAudience(dto.Audience.Type);
             var selection = ToSelection(dto.Audience);
             var targets = await _recipients.ResolveTargetsAsync(dto.Audience.Type, selection, cancellationToken);
             targets = await _eligibility.FilterEligibleTargetsAsync(dto.Type, targets, cancellationToken);
@@ -138,6 +139,7 @@ namespace DAMS.Application.Services.Notifications
             ComposeNotificationDto dto, NotificationUserContext ctx, CancellationToken cancellationToken = default)
         {
             NotificationAccess.EnsureAdmin(ctx);
+            RejectRetiredAudience(dto.Audience.Type);
 
             var title = LeadContactNormalizer.Clean(dto.Title)
                         ?? throw new InvalidOperationException("A title is required.");
@@ -597,10 +599,16 @@ namespace DAMS.Application.Services.Notifications
 
         // ── Helpers ─────────────────────────────────────────────────────────────────
 
+        private static void RejectRetiredAudience(NotificationAudienceType type)
+        {
+            if (type == NotificationAudienceType.Team)
+                throw new InvalidOperationException(
+                    "Sales teams have been removed. Send this to admins and sales managers instead.");
+        }
+
         private static NotificationAudienceSelection ToSelection(NotificationAudienceDto dto) => new()
         {
             UserIds = dto.UserIds.Distinct().Take(5000).ToList(),
-            TeamId = dto.TeamId,
             ProjectId = dto.ProjectId,
             BookingIds = dto.BookingIds.Distinct().Take(5000).ToList(),
             LeadIds = dto.LeadIds.Distinct().Take(5000).ToList()

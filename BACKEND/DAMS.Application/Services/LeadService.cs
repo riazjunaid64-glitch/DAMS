@@ -92,7 +92,6 @@ namespace DAMS.Application.Services
 
             // Assignment writes into the dto, so a retried attempt must start from what was asked.
             var requestedEmployeeId = dto.AssignedEmployeeId;
-            var requestedTeamId = dto.AssignedTeamId;
 
             try
             {
@@ -102,7 +101,6 @@ namespace DAMS.Application.Services
                 return await RunContactWriteAtomicallyAsync(async ct =>
                 {
                     dto.AssignedEmployeeId = requestedEmployeeId;
-                    dto.AssignedTeamId = requestedTeamId;
                     // A retry clears the tracker, and an untracked source would be inserted anew.
                     if (_context.Entry(source).State == EntityState.Detached)
                         _context.LeadSources.Attach(source);
@@ -438,53 +436,26 @@ namespace DAMS.Application.Services
             // A sales employee capturing a walk-in or phone lead must retain access to the
             // record they just created. They cannot choose another owner, so DAMS assigns it
             // to their linked employee record automatically.
-            if (actor?.IsEmployee == true &&
-                dto.AssignedEmployeeId == null &&
-                dto.AssignedTeamId == null)
+            if (actor?.IsEmployee == true && dto.AssignedEmployeeId == null)
             {
                 if (!actor.EmployeeId.HasValue)
                     throw new InvalidOperationException(
                         "Your login is not linked to an employee record. Ask an Admin to complete staff setup.");
 
                 dto.AssignedEmployeeId = actor.EmployeeId;
-                dto.AssignedTeamId = actor.TeamId;
                 employeeAutoAssigned = true;
             }
 
-            if (dto.AssignedEmployeeId == null && dto.AssignedTeamId == null)
+            if (dto.AssignedEmployeeId == null)
                 return;
 
             if (actor == null ||
                 (!actor.IsAdmin && !actor.IsManager &&
-                 !(employeeAutoAssigned && actor.IsEmployee && dto.AssignedEmployeeId == actor.EmployeeId
-                   && (dto.AssignedTeamId == null || dto.AssignedTeamId == actor.TeamId))))
+                 !(employeeAutoAssigned && actor.IsEmployee && dto.AssignedEmployeeId == actor.EmployeeId)))
                 throw new LeadAuthorizationException("Only an admin or manager can assign a lead on creation.");
 
-            if (dto.AssignedEmployeeId.HasValue)
-            {
-                var employee = await LoadAssignableEmployeeAsync(dto.AssignedEmployeeId.Value, actor, cancellationToken);
-                lead.AssignedEmployeeId = employee.Id;
-
-                var teamId = dto.AssignedTeamId ?? employee.TeamId;
-                if (teamId.HasValue)
-                {
-                    var inactiveTeamMessage = employeeAutoAssigned && actor?.IsEmployee == true
-                        ? "Your assigned team is inactive, so you cannot create leads."
-                        : null;
-                    await EnsureTeamAssignableAsync(teamId.Value, actor!, cancellationToken, inactiveTeamMessage);
-                }
-
-                if (dto.AssignedTeamId.HasValue && employee.TeamId != dto.AssignedTeamId.Value)
-                    throw new InvalidOperationException(
-                        $"{employee.FullName} is not a member of that team.");
-
-                lead.AssignedTeamId = teamId;
-            }
-            else
-            {
-                await EnsureTeamAssignableAsync(dto.AssignedTeamId!.Value, actor, cancellationToken);
-                lead.AssignedTeamId = dto.AssignedTeamId;
-            }
+            var employee = await LoadAssignableEmployeeAsync(dto.AssignedEmployeeId.Value, actor, cancellationToken);
+            lead.AssignedEmployeeId = employee.Id;
 
             lead.AssignmentState = LeadAssignmentState.Assigned;
             lead.AssignedAt = DateTime.UtcNow;
@@ -495,7 +466,6 @@ namespace DAMS.Application.Services
             {
                 Lead = lead,
                 AssignedEmployeeId = lead.AssignedEmployeeId,
-                AssignedTeamId = lead.AssignedTeamId,
                 Reason = "Assigned on creation.",
                 AssignedByUserId = actor.UserId,
                 AssignedByName = actor.DisplayName,
@@ -666,8 +636,8 @@ namespace DAMS.Application.Services
 
             if (lead.AssignedEmployeeId == null)
             {
-                // No salesperson owns it yet — unassigned, or parked on a team — so the people
-                // who hand it out hear instead: the admins and sales managers.
+                // No salesperson owns it yet, so the people who hand it out hear instead:
+                // the admins and sales managers.
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadCreated,
                     $"Repeat enquiry: {FullName(lead)}",
                     $"A new enquiry arrived through {source.Name} for a lead no salesperson owns yet.",
@@ -1282,9 +1252,6 @@ namespace DAMS.Application.Services
             if (filter.AssignedEmployeeId.HasValue)
                 query = query.Where(l => l.AssignedEmployeeId == filter.AssignedEmployeeId.Value);
 
-            if (filter.AssignedTeamId.HasValue)
-                query = query.Where(l => l.AssignedTeamId == filter.AssignedTeamId.Value);
-
             if (filter.ProjectId.HasValue)
                 query = query.Where(l => l.InterestedProjectId == filter.ProjectId.Value);
 
@@ -1298,7 +1265,7 @@ namespace DAMS.Application.Services
             }
 
             if (filter.Unassigned == true)
-                query = query.Where(l => l.AssignedEmployeeId == null && l.AssignedTeamId == null);
+                query = query.Where(l => l.AssignedEmployeeId == null);
 
             if (filter.OverdueOnly == true)
             {
@@ -1397,11 +1364,9 @@ namespace DAMS.Application.Services
                     PreviousEmployeeId = h.PreviousEmployeeId,
                     PreviousEmployeeName = _context.Employees
                         .Where(e => e.Id == h.PreviousEmployeeId).Select(e => e.FullName).FirstOrDefault(),
-                    PreviousTeamId = h.PreviousTeamId,
                     AssignedEmployeeId = h.AssignedEmployeeId,
                     AssignedEmployeeName = _context.Employees
                         .Where(e => e.Id == h.AssignedEmployeeId).Select(e => e.FullName).FirstOrDefault(),
-                    AssignedTeamId = h.AssignedTeamId,
                     Reason = h.Reason,
                     AssignedByUserId = h.AssignedByUserId,
                     AssignedByName = h.AssignedByName,
@@ -1705,38 +1670,26 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("A converted lead cannot be reassigned.");
 
             var previousEmployeeId = lead.AssignedEmployeeId;
-            var previousTeamId = lead.AssignedTeamId;
-            var isReassignment = previousEmployeeId != null || previousTeamId != null;
+            var isReassignment = previousEmployeeId != null;
 
-            if (dto.EmployeeId == null && dto.TeamId == null)
+            if (dto.EmployeeId == null)
             {
                 if (!isReassignment)
                     throw new InvalidOperationException("This lead is already unassigned.");
 
                 lead.AssignedEmployeeId = null;
-                lead.AssignedTeamId = null;
                 lead.AssignmentState = LeadAssignmentState.Unassigned;
                 lead.AssignedAt = null;
                 lead.AssignedByUserId = ctx.UserId;
             }
             else
             {
-                Employee? employee = null;
-                if (dto.EmployeeId.HasValue)
-                    employee = await LoadAssignableEmployeeAsync(dto.EmployeeId.Value, ctx, cancellationToken);
+                var employee = await LoadAssignableEmployeeAsync(dto.EmployeeId.Value, ctx, cancellationToken);
 
-                var teamId = dto.TeamId ?? employee?.TeamId;
-                if (teamId.HasValue)
-                    await EnsureTeamAssignableAsync(teamId.Value, ctx, cancellationToken);
-
-                if (employee != null && dto.TeamId.HasValue && employee.TeamId != dto.TeamId.Value)
-                    throw new InvalidOperationException($"{employee.FullName} is not a member of that team.");
-
-                if (employee != null && previousEmployeeId == employee.Id && previousTeamId == teamId)
+                if (previousEmployeeId == employee.Id)
                     throw new InvalidOperationException("This lead is already assigned to that owner.");
 
-                lead.AssignedEmployeeId = employee?.Id;
-                lead.AssignedTeamId = teamId;
+                lead.AssignedEmployeeId = employee.Id;
                 lead.AssignmentState = isReassignment ? LeadAssignmentState.Reassigned : LeadAssignmentState.Assigned;
                 lead.AssignedAt = DateTime.UtcNow;
                 lead.AssignedByUserId = ctx.UserId;
@@ -1761,9 +1714,7 @@ namespace DAMS.Application.Services
             {
                 LeadId = lead.Id,
                 PreviousEmployeeId = previousEmployeeId,
-                PreviousTeamId = previousTeamId,
                 AssignedEmployeeId = lead.AssignedEmployeeId,
-                AssignedTeamId = lead.AssignedTeamId,
                 Reason = LeadContactNormalizer.Clean(dto.Reason),
                 AssignedByUserId = ctx.UserId,
                 AssignedByName = ctx.DisplayName,
@@ -2649,27 +2600,22 @@ namespace DAMS.Application.Services
             // switched off, whose owner cannot sign in to see the work.
             if (employee.UserId.HasValue)
             {
-                var loginUsable = await _context.Users.AnyAsync(
-                    u => u.UserId == employee.UserId.Value
-                        && u.AccountStatus == UserAccountStatus.Active,
-                    cancellationToken);
+                var login = await _context.Users
+                    .Where(u => u.UserId == employee.UserId.Value)
+                    .Select(u => new { u.AccountStatus, u.Role.Role_name })
+                    .FirstOrDefaultAsync(cancellationToken);
 
-                if (!loginUsable)
+                if (login == null || login.AccountStatus != UserAccountStatus.Active)
                     throw new InvalidOperationException(
                         $"{employee.FullName} has not activated their DAMS login yet, so they cannot be given leads.");
+
+                // The owner has to be able to open the lead. An Accountant login has no Lead CRM.
+                if (login.Role_name is not (LeadRoles.Admin or LeadRoles.Manager or LeadRoles.Employee))
+                    throw new InvalidOperationException(
+                        $"{employee.FullName} does not work in the Lead CRM, so they cannot be given leads.");
             }
 
             return employee;
-        }
-
-        private async Task EnsureTeamAssignableAsync(
-            int teamId, LeadUserContext ctx, CancellationToken cancellationToken, string? inactiveMessage = null)
-        {
-            var team = await _context.Teams.AsNoTracking().FirstOrDefaultAsync(t => t.Id == teamId, cancellationToken)
-                ?? throw new InvalidOperationException("Team not found.");
-
-            if (!team.IsActive)
-                throw new InvalidOperationException(inactiveMessage ?? $"Team '{team.Name}' is not active.");
         }
 
         /// <summary>Loads a tracked lead the caller is allowed to act on, or throws.</summary>

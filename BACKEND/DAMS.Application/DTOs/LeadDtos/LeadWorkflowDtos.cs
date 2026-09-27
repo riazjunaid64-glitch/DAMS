@@ -97,8 +97,6 @@ namespace DAMS.Application.DTOs.LeadDtos
     {
         public int? EmployeeId { get; set; }
 
-        public int? TeamId { get; set; }
-
         [StringLength(500)]
         public string? Reason { get; set; }
     }
@@ -111,13 +109,9 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? PreviousEmployeeName { get; set; }
 
-        public int? PreviousTeamId { get; set; }
-
         public int? AssignedEmployeeId { get; set; }
 
         public string? AssignedEmployeeName { get; set; }
-
-        public int? AssignedTeamId { get; set; }
 
         public string? Reason { get; set; }
 

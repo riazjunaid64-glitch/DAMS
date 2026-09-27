@@ -5,11 +5,11 @@ namespace DAMS.Application.Common
 {
     public static class LeadRoles
     {
-        public const string Admin = "Admin";
-        public const string Manager = "Manager";
-        public const string Employee = "Employee";
+        public const string Admin = AppRoles.Admin;
+        public const string Manager = AppRoles.Manager;
+        public const string Employee = AppRoles.Employee;
 
-        /// <summary>Roles allowed anywhere in the lead workspace.</summary>
+        /// <summary>Roles allowed anywhere in the lead workspace. Accountant is not one of them.</summary>
         public const string Staff = Admin + "," + Manager + "," + Employee;
 
         public const string AdminOrManager = Admin + "," + Manager;
@@ -30,11 +30,6 @@ namespace DAMS.Application.Common
 
         /// <summary>The employee record linked to this login, when there is one.</summary>
         public int? EmployeeId { get; init; }
-
-        public int? TeamId { get; init; }
-
-        /// <summary>Teams a manager is responsible for: their own plus any they manage.</summary>
-        public IReadOnlyList<int> ManagedTeamIds { get; init; } = Array.Empty<int>();
 
         public bool IsAdmin => string.Equals(Role, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase);
 
@@ -63,8 +58,8 @@ namespace DAMS.Application.Common
             {
                 var employeeId = ctx.EmployeeId;
                 // Employees see leads they own. Assigned tasks/visits and mentions can notify
-                // them or let them complete that one work item, but they do not silently grant
-                // full lead-record access across teams.
+                // them or let them complete that one work item, but they do not grant access
+                // to anyone else's leads.
                 return query.Where(l => employeeId != null && l.AssignedEmployeeId == employeeId);
             }
 
@@ -155,7 +150,7 @@ namespace DAMS.Application.Common
         }
 
         /// <summary>
-        /// A held enquiry names leads from any team, so deciding it needs a role that can
+        /// A held enquiry names leads from any owner, so deciding it needs a role that can
         /// see them all.
         /// </summary>
         public static void EnsureCanResolveIntakeHolds(LeadUserContext ctx)

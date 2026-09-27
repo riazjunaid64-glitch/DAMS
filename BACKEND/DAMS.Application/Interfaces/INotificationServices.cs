@@ -156,8 +156,6 @@ namespace DAMS.Application.Interfaces
     {
         public IReadOnlyList<int> UserIds { get; init; } = Array.Empty<int>();
 
-        public int? TeamId { get; init; }
-
         public int? ProjectId { get; init; }
 
         public IReadOnlyList<int> BookingIds { get; init; } = Array.Empty<int>();

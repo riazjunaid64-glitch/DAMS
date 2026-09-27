@@ -64,7 +64,6 @@ public sealed class StaffManagementTests
         string name = "Nadia Sales",
         string email = "NADIA@EXAMPLE.COM",
         string role = LeadRoles.Employee,
-        int? teamId = null,
         int? existingUserId = null,
         int? existingEmployeeId = null) => new()
     {
@@ -73,25 +72,23 @@ public sealed class StaffManagementTests
         FullName = name,
         Email = email,
         Role = role,
-        TeamId = teamId,
         JobTitle = "Sales Executive",
         Department = "Sales",
         Phone = "03009998888"
     };
 
     [Fact]
-    public async Task Admin_creates_a_password_less_invited_login_linked_to_employee_and_team()
+    public async Task Admin_creates_a_password_less_invited_login_linked_to_the_employee()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var invitations = new FakeInvitations();
         var service = new StaffManagementService(h.Db, invitations);
 
-        var result = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var result = await service.CreateAsync(h.Admin, NewStaff());
         var created = result.Account;
 
         Assert.Equal("nadia@example.com", created.Email);
         Assert.Equal(LeadRoles.Employee, created.Role);
-        Assert.Equal(h.TeamId, created.TeamId);
         Assert.Equal(StaffAccountAccess.Invited, created.Access);
 
         // The account exists but nobody — Admin included — has chosen a password for it.
@@ -134,12 +131,10 @@ public sealed class StaffManagementTests
         var result = await service.CreateAsync(h.Admin, NewStaff(
             name: "Hira Support",
             email: "hira@example.com",
-            teamId: h.TeamId,
             existingEmployeeId: employee.Id));
 
         Assert.Equal(employee.Id, result.Account.EmployeeId);
         Assert.Equal(employeeCount, await h.Db.Employees.CountAsync());
-        Assert.Equal(h.TeamId, result.Account.TeamId);
         Assert.Equal(StaffAccountAccess.Invited, result.Account.Access);
 
         var user = await h.Db.Users.SingleAsync(u => u.Email == "hira@example.com");
@@ -161,7 +156,6 @@ public sealed class StaffManagementTests
             name: client.FullName,
             email: client.Email,
             role: LeadRoles.Manager,
-            teamId: h.TeamId,
             existingUserId: client.UserId));
 
         Assert.Equal(LeadRoles.Manager, result.Account.Role);
@@ -201,7 +195,6 @@ public sealed class StaffManagementTests
         var result = await service.CreateAsync(h.Admin, NewStaff(
             name: waiting.FullName,
             email: waiting.Email,
-            teamId: h.TeamId,
             existingUserId: waiting.UserId));
 
         Assert.Equal(waiting.UserId, result.Account.UserId);
@@ -255,7 +248,7 @@ public sealed class StaffManagementTests
         var invitations = new FakeInvitations { DeliveryError = "The mail server did not respond." };
         var service = new StaffManagementService(h.Db, invitations);
 
-        var result = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var result = await service.CreateAsync(h.Admin, NewStaff());
 
         // The account is not rolled back and no fallback password is invented — the Admin is
         // simply told delivery failed so they can resend.
@@ -317,7 +310,7 @@ public sealed class StaffManagementTests
         var invitations = new FakeInvitations();
         var service = new StaffManagementService(h.Db, invitations);
 
-        var created = await service.CreateAsync(h.Manager, NewStaff(teamId: h.TeamId));
+        var created = await service.CreateAsync(h.Manager, NewStaff());
         Assert.Equal(LeadRoles.Employee, created.Account.Role);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
@@ -400,7 +393,7 @@ public sealed class StaffManagementTests
         var service = new StaffManagementService(h.Db, invitations);
 
         // A staff member who has been invited but has not activated yet.
-        var created = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var created = await service.CreateAsync(h.Admin, NewStaff());
         invitations.Calls.Clear();
 
         var resent = await service.ResendInvitationAsync(h.Admin, created.Account.EmployeeId);
@@ -483,7 +476,7 @@ public sealed class StaffManagementTests
         disabledUser.AccountStatus = UserAccountStatus.Disabled;
         await h.Db.SaveChangesAsync();
 
-        var invited = await service.CreateAsync(h.Admin, NewStaff(teamId: h.TeamId));
+        var invited = await service.CreateAsync(h.Admin, NewStaff());
         var expiry = DateTime.UtcNow.AddHours(24);
         h.Db.StaffInvitations.Add(new StaffInvitation
         {
@@ -516,7 +509,7 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
-    public async Task Directory_respects_manager_team_employee_team_and_customer_isolation()
+    public async Task Directory_shows_every_colleague_to_sales_staff_and_nothing_to_customers()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var service = new StaffManagementService(h.Db, new FakeInvitations());
@@ -527,13 +520,13 @@ public sealed class StaffManagementTests
 
         var employeeRows = await service.GetDirectoryAsync(h.Sales);
         Assert.Contains(employeeRows, e => e.EmployeeId == h.ManagerEmployeeId);
-        Assert.DoesNotContain(employeeRows, e => e.EmployeeId == h.OtherSalesEmployeeId);
+        Assert.Contains(employeeRows, e => e.EmployeeId == h.OtherSalesEmployeeId);
 
         await Assert.ThrowsAsync<LeadAuthorizationException>(() => service.GetDirectoryAsync(h.Client));
     }
 
     [Fact]
-    public async Task Role_and_team_change_still_revokes_the_refresh_session_and_leaves_the_password_alone()
+    public async Task Role_change_still_revokes_the_refresh_session_and_leaves_the_password_alone()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var service = new StaffManagementService(h.Db, new FakeInvitations());
@@ -545,14 +538,12 @@ public sealed class StaffManagementTests
 
         var updated = await service.UpdateAsync(h.Admin, h.SalesEmployeeId, new UpdateStaffAccountDto
         {
-            Role = LeadRoles.Manager,
-            TeamId = h.TeamId
+            Role = LeadRoles.Manager
         });
 
         h.Db.ChangeTracker.Clear();
         user = await h.Db.Users.SingleAsync(u => u.UserId == h.SalesUserId);
         Assert.Equal(LeadRoles.Manager, updated.Role);
-        Assert.Equal(h.TeamId, updated.TeamId);
 
         // Dropping the Admin password field must not have taken session revocation with it.
         Assert.Null(user.RefreshToken);
@@ -648,34 +639,30 @@ public sealed class StaffManagementTests
 
         Assert.NotNull(created.Lead);
         Assert.Equal(h.SalesEmployeeId, created.Lead!.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, created.Lead.AssignedTeamId);
         Assert.Equal(LeadStage.FirstContactPending, created.Lead.Stage);
         Assert.NotNull(await h.Leads.GetByIdAsync(created.Lead.Id, h.Sales));
     }
 
     [Fact]
-    public async Task Team_manager_must_keep_an_active_manager_or_admin_login_role()
+    public async Task Only_an_admin_can_give_the_accountant_role()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var staff = new StaffManagementService(h.Db, new FakeInvitations());
 
-        var roleError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            staff.UpdateAsync(h.Admin, h.ManagerEmployeeId, new UpdateStaffAccountDto
+        var granted = await staff.UpdateAsync(h.Admin, h.SalesEmployeeId, new UpdateStaffAccountDto
+        {
+            Role = AppRoles.Accountant,
+            Status = EmployeeStatus.Active
+        });
+        Assert.Equal(AppRoles.Accountant, granted.Role);
+
+        var denied = await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            staff.UpdateAsync(h.Manager, h.OtherSalesEmployeeId, new UpdateStaffAccountDto
             {
-                Role = LeadRoles.Employee,
-                TeamId = h.TeamId,
+                Role = AppRoles.Accountant,
                 Status = EmployeeStatus.Active
             }));
-        Assert.Contains("Reassign", roleError.Message);
-
-        var configError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Configuration.UpdateTeamAsync(h.TeamId, new SaveTeamDto
-            {
-                Name = "North Sales",
-                ManagerEmployeeId = h.SalesEmployeeId,
-                IsActive = true
-            }, h.Admin));
-        Assert.Contains("Sales Manager", configError.Message);
+        Assert.Contains("Accountant", denied.Message);
     }
     // ── The whole staff lifecycle, end to end ───────────────────────────────────
 
@@ -706,7 +693,7 @@ public sealed class StaffManagementTests
         var auth = new AuthService(h.Db, new FixedTokenService());
 
         // 1. Admin creates the staff account.
-        var created = (await staff.CreateAsync(h.Admin, NewStaff(email: typedEmail, teamId: h.TeamId))).Account;
+        var created = (await staff.CreateAsync(h.Admin, NewStaff(email: typedEmail))).Account;
 
         // Whatever was typed, the account carries the same comparison key the login uses.
         h.Db.ChangeTracker.Clear();
@@ -748,7 +735,7 @@ public sealed class StaffManagementTests
         await using var h = await LeadTestHarness.CreateAsync();
         var staff = new StaffManagementService(h.Db, new FakeInvitations());
 
-        await staff.CreateAsync(h.Admin, NewStaff(email: "nadia@example.com", teamId: h.TeamId));
+        await staff.CreateAsync(h.Admin, NewStaff(email: "nadia@example.com"));
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             staff.CreateAsync(h.Admin, NewStaff(name: "Nadia Again", email: "NADIA@example.com")));
@@ -901,7 +888,7 @@ public sealed class StaffManagementTests
         Assert.Equal(h.Manager.DisplayName, history[0].PerformedByName);
         Assert.True(history[0].AccessEnabled);
 
-        var invited = await staff.CreateAsync(h.Manager, NewStaff(email: "invitee@example.com", teamId: h.TeamId));
+        var invited = await staff.CreateAsync(h.Manager, NewStaff(email: "invitee@example.com"));
         var stillInvited = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             staff.EnableAccessAsync(h.Manager, invited.Account.EmployeeId));
         Assert.Contains("invited", stillInvited.Message, StringComparison.OrdinalIgnoreCase);
@@ -918,7 +905,7 @@ public sealed class StaffManagementTests
         await using var h = await LeadTestHarness.CreateAsync();
         var invitations = new FakeInvitations();
         var staff = new StaffManagementService(h.Db, invitations);
-        var invited = await staff.CreateAsync(h.Admin, NewStaff(email: "paused@example.com", teamId: h.TeamId));
+        var invited = await staff.CreateAsync(h.Admin, NewStaff(email: "paused@example.com"));
         var employeeId = invited.Account.EmployeeId;
 
         var off = await staff.DisableAccessAsync(h.Admin, employeeId);

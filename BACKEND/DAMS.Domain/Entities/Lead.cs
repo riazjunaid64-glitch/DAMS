@@ -93,8 +93,6 @@ namespace DAMS.Domain.Entities
         // ── Ownership ──
         public int? AssignedEmployeeId { get; set; }
 
-        public int? AssignedTeamId { get; set; }
-
         public LeadAssignmentState AssignmentState { get; set; } = LeadAssignmentState.Unassigned;
 
         public DateTime? AssignedAt { get; set; }
@@ -152,8 +150,6 @@ namespace DAMS.Domain.Entities
         public LeadClosureReason? ClosureReason { get; set; }
 
         public Employee? AssignedEmployee { get; set; }
-
-        public Team? AssignedTeam { get; set; }
 
         public Project? InterestedProject { get; set; }
 

@@ -14,6 +14,9 @@ import {
   IconWallet,
   type NavGroup,
 } from "../components/ui";
+import { can, homePathFor, isSalesRole } from "../features/access/permissions.ts";
+
+export { homePathFor, isSalesRole };
 
 /*
  * The menu for each role, in one place. The sidebar, the phone bottom nav, the breadcrumb and the
@@ -32,18 +35,8 @@ const website: NavGroup = {
   ],
 };
 
-/** Sales managers and sales employees work the Lead CRM; everything else is admin territory. */
-export function isSalesRole(role: string | null | undefined): boolean {
-  return role === "Manager" || role === "Employee";
-}
-
-/** Where a role lands when it opens the app (and where the logo goes). */
-export function homePathFor(role: string | null | undefined): string {
-  return isSalesRole(role) ? "/crm" : "/";
-}
-
 export function navigationFor(role: string | null | undefined): NavGroup[] {
-  if (role === "Admin") {
+  if (can(role, "finance") && can(role, "crm")) {
     return [
       {
         label: "Sales",
@@ -74,6 +67,28 @@ export function navigationFor(role: string | null | undefined): NavGroup[] {
         { to: "/projects", label: "Projects", icon: <IconBuilding size={ICON} /> },
       ],
     }];
+  }
+  if (can(role, "finance")) {
+    return [
+      {
+        label: "Sales",
+        items: [
+          { to: "/projects", label: "Projects", icon: <IconBuilding size={ICON} /> },
+          { to: "/bookings", label: "Requests", icon: <IconInbox size={ICON} /> },
+          { to: "/confirmed-bookings", label: "Bookings", icon: <IconCalendarCheck size={ICON} /> },
+          { to: "/customers", label: "Customers", icon: <IconUsers size={ICON} /> },
+        ],
+      },
+      {
+        label: "Company",
+        items: [
+          { to: "/employees", label: "Employees", icon: <IconBadge size={ICON} /> },
+          { to: "/finance", label: "Finance", icon: <IconWallet size={ICON} /> },
+          { to: "/customer-document-categories", label: "Document setup", icon: <IconFile size={ICON} /> },
+        ],
+      },
+      { ...website, items: website.items.filter((item) => item.to !== "/projects") },
+    ];
   }
   if (role) {
     return [

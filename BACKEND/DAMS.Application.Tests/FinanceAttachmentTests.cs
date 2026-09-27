@@ -1,5 +1,6 @@
 using System.Reflection;
 using DAMS.Api.Controllers;
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ExpenseDtos;
 using DAMS.Application.DTOs.FinanceDtos;
 using DAMS.Application.Interfaces;
@@ -169,11 +170,11 @@ public sealed class FinanceAttachmentTests
     }
 
     [Fact]
-    public void FinanceController_IsRestrictedToAdmins()
+    public void FinanceController_IsRestrictedToAdminsAndAccountants()
     {
         var authorize = typeof(FinanceController).GetCustomAttribute<AuthorizeAttribute>();
         Assert.NotNull(authorize);
-        Assert.Equal("Admin", authorize.Roles);
+        Assert.Equal(AppRoles.AdminOrAccountant, authorize.Roles);
     }
 
     [Fact]

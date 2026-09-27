@@ -6,11 +6,12 @@ describe("CRM settings role checks", () => {
     expect(canOpenCrmSettings("Admin")).toBe(true);
     expect(canOpenCrmSettings("Manager")).toBe(true);
     expect(canOpenCrmSettings("Employee")).toBe(false);
+    expect(canOpenCrmSettings("Accountant")).toBe(false);
     expect(canOpenCrmSettings("Client")).toBe(false);
   });
 
   it("offers the Admin role only to an Admin", () => {
-    expect(grantableRoles("Admin").map(([v]) => v)).toEqual(["Admin", "Manager", "Employee"]);
+    expect(grantableRoles("Admin").map(([v]) => v)).toEqual(["Admin", "Accountant", "Manager", "Employee"]);
     expect(grantableRoles("Manager").map(([v]) => v)).toEqual(["Manager", "Employee"]);
   });
 
@@ -18,6 +19,7 @@ describe("CRM settings role checks", () => {
     expect(canActOnAccount("Manager", "Employee")).toBe(true);
     expect(canActOnAccount("Manager", "Manager")).toBe(true);
     expect(canActOnAccount("Manager", "Admin")).toBe(false);
+    expect(canActOnAccount("Manager", "Accountant")).toBe(false);
     expect(canActOnAccount("Manager", "Client")).toBe(false);
     expect(canActOnAccount("Manager", null)).toBe(false);
     expect(canActOnAccount("Admin", "Admin")).toBe(true);
@@ -26,5 +28,6 @@ describe("CRM settings role checks", () => {
   it("keeps employment status with the Admin", () => {
     expect(canChangeEmploymentStatus("Admin")).toBe(true);
     expect(canChangeEmploymentStatus("Manager")).toBe(false);
+    expect(canChangeEmploymentStatus("Accountant")).toBe(false);
   });
 });

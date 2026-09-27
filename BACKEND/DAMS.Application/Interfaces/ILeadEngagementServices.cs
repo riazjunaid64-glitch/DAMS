@@ -95,12 +95,6 @@ namespace DAMS.Application.Interfaces
         Task<LeadClosureReasonDto> CreateClosureReasonAsync(CreateLeadClosureReasonDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         Task<LeadClosureReasonDto> UpdateClosureReasonAsync(int id, UpdateLeadClosureReasonDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task<List<TeamDto>> GetTeamsAsync(CancellationToken cancellationToken = default);
-
-        Task<TeamDto> CreateTeamAsync(SaveTeamDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
-
-        Task<TeamDto> UpdateTeamAsync(int id, SaveTeamDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
     }
 
     public interface ILeadReportingService

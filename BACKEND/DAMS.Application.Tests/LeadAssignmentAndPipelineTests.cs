@@ -20,7 +20,6 @@ public sealed class LeadAssignmentAndPipelineTests
         var lead = await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
 
         Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
-        Assert.Equal(h.TeamId, lead.AssignedTeamId);
         Assert.Equal(LeadAssignmentState.Assigned, lead.AssignmentState);
         Assert.Equal(LeadStage.FirstContactPending, lead.Stage);
         Assert.NotNull(lead.AssignedAt);
@@ -76,52 +75,21 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task ReassignmentRejectsEmployeeAndTeamFromDifferentTeams()
+    public async Task AnAccountantSeesNoLeads()
     {
         await using var h = await LeadTestHarness.CreateAsync();
-        var otherTeam = new Team { Name = "South Sales", IsActive = true };
-        h.Db.Teams.Add(otherTeam);
-        await h.Db.SaveChangesAsync();
-        var leadId = await h.CreateLeadAsync();
+        await h.CreateLeadAsync();
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.AssignAsync(leadId, new AssignLeadDto
-            {
-                EmployeeId = h.SalesEmployeeId,
-                TeamId = otherTeam.Id
-            }, h.Admin));
+        var accountant = new LeadUserContext
+        {
+            UserId = h.AdminUserId,
+            Role = AppRoles.Accountant,
+            DisplayName = "Books",
+            EmployeeId = h.SalesEmployeeId
+        };
 
-        Assert.Contains("not a member", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task EmployeeOnlyCreationRejectsAnInactiveEmployeeTeam()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
-        team.IsActive = false;
-        await h.Db.SaveChangesAsync();
-
-        var dto = LeadTestHarness.Intake(phone: "0300-5555555", email: "inactive-team@example.com");
-        dto.AssignedEmployeeId = h.SalesEmployeeId;
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.IngestAsync(dto, h.Admin));
-
-        Assert.Contains("not active", error.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task EmployeeCreationOnAnInactiveOwnTeamExplainsTheBlock()
-    {
-        await using var h = await LeadTestHarness.CreateAsync();
-        var team = await h.Db.Teams.FirstAsync(t => t.Id == h.TeamId);
-        team.IsActive = false;
-        await h.Db.SaveChangesAsync();
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Leads.IngestAsync(LeadTestHarness.Intake(phone: "0300-6666666", email: "employee-inactive-team@example.com"), h.Sales));
-
-        Assert.Contains("cannot create leads", error.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() =>
+            h.Leads.GetLeadsAsync(new LeadFilterDto(), accountant));
     }
 
     [Fact]
@@ -437,7 +405,7 @@ public sealed class LeadAssignmentAndPipelineTests
     }
 
     [Fact]
-    public async Task MentioningAColleagueNotifiesButDoesNotShareLeadAcrossTeams()
+    public async Task MentioningAColleagueNotifiesButDoesNotShareTheLead()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
@@ -445,21 +413,15 @@ public sealed class LeadAssignmentAndPipelineTests
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
 
-        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
+        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
         {
             Body = "Omar, can you cover the viewing?",
             MentionedUserIds = { h.OtherSalesUserId }
-        }, h.Sales));
-
-        await h.Communications.AddCommentAsync(leadId, new CreateLeadCommentDto
-        {
-            Body = "Manager, please review.",
-            MentionedUserIds = { h.ManagerUserId }
         }, h.Sales);
 
         Assert.Null(await h.Leads.GetByIdAsync(leadId, h.OtherSales));
         Assert.True(await h.Db.Notifications.AnyAsync(
-            n => n.RecipientUserId == h.ManagerUserId && n.Type == NotificationType.UserMentioned));
+            n => n.RecipientUserId == h.OtherSalesUserId && n.Type == NotificationType.UserMentioned));
     }
 
     [Fact]

@@ -8,6 +8,11 @@ namespace DAMS.Domain.Enums
         AllSalesEmployees = 2,
         AllManagers = 3,
         AllInternalStaff = 4,
+
+        /// <summary>
+        /// Kept so jobs saved before sales teams were removed still load as history. The
+        /// migration cancelled every unfinished one, and resolving it is refused.
+        /// </summary>
         Team = 5,
         CustomersInProject = 6,
         CustomersOfBookings = 7,

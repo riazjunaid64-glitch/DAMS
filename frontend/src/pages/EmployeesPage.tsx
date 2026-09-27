@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
@@ -90,7 +91,7 @@ export default function EmployeesPage({ user }: Props) {
     email: "", address: "", salary: "", joinDate: "", status: 0,
   });
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "employees");
 
   const load = useCallback(async () => {
     if (!isAdmin) return;

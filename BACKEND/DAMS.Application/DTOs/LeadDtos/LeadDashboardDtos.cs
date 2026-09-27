@@ -60,8 +60,6 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string EmployeeName { get; set; } = string.Empty;
 
-        public string? TeamName { get; set; }
-
         public int TotalLeads { get; set; }
 
         public int ActiveLeads { get; set; }
@@ -112,8 +110,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public List<LeadClosureReasonCountDto> LossReasons { get; set; } = new();
 
         public List<EmployeePerformanceDto> ByEmployee { get; set; } = new();
-
-        public List<TeamPerformanceDto> ByTeam { get; set; } = new();
     }
 
     public class LeadSourcePerformanceDto
@@ -159,19 +155,6 @@ namespace DAMS.Application.DTOs.LeadDtos
         public string ReasonName { get; set; } = string.Empty;
 
         public int Count { get; set; }
-    }
-
-    public class TeamPerformanceDto
-    {
-        public int TeamId { get; set; }
-
-        public string TeamName { get; set; } = string.Empty;
-
-        public int TotalLeads { get; set; }
-
-        public int WonLeads { get; set; }
-
-        public double ConversionRatePercent { get; set; }
     }
 
     public class LeadAlertScanResultDto

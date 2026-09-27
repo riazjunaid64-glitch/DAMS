@@ -1,3 +1,4 @@
+import { can } from "../features/access/permissions.ts";
 import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -277,7 +278,7 @@ export default function BookingDetailPage({ user }: Props) {
     possessionDueDate: "",
   });
 
-  const isAdmin = user?.role === "Admin";
+  const isAdmin = can(user?.role, "bookings");
 
   // Declared here, above the handlers, because submitting a form that was already open has to check
   // the same freshness the button that opened it did. A reload can fail while the modal sits there.

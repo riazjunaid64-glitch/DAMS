@@ -12,7 +12,7 @@ namespace DAMS.Api.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class BookingController : ControllerBase
     {
         private readonly IBookingService _bookingService;

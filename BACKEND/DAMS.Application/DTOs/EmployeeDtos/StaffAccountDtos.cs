@@ -25,8 +25,6 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public string FullName { get; set; } = string.Empty;
         public string? Email { get; set; }
         public string? Role { get; set; }
-        public int? TeamId { get; set; }
-        public string? TeamName { get; set; }
         public EmployeeStatus Status { get; set; }
         public bool CanOwnLeads { get; set; }
     }
@@ -37,7 +35,6 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public string Department { get; set; } = string.Empty;
         public string Phone { get; set; } = string.Empty;
         public DateTime JoinDate { get; set; }
-        public bool IsTeamManager { get; set; }
 
         /// <summary>Whether this employee can sign in, and if not, why not.</summary>
         public StaffAccountAccess Access { get; set; }
@@ -107,11 +104,9 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         // the employee chooses their own through the activation link; nobody at the company,
         // Admins included, is able to pick or see another person's password.
 
-        /// <summary>Admin, Manager, or Employee.</summary>
+        /// <summary>Admin, Sales manager, Sales employee, or Accountant.</summary>
         [Required, StringLength(30)]
         public string Role { get; set; } = string.Empty;
-
-        public int? TeamId { get; set; }
 
         // The four HR fields below describe an employment record. They are only read when this
         // request creates one; for an existing employee the service ignores them, and the
@@ -155,12 +150,9 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         [Required, StringLength(30)]
         public string Role { get; set; } = string.Empty;
 
-        /// <summary>Send null to leave unchanged, or -1 to remove team membership.</summary>
-        public int? TeamId { get; set; }
-
         public EmployeeStatus? Status { get; set; }
 
-        // Role, team and employment status are the security-sensitive things an Admin may
+        // Role and employment status are the security-sensitive things an Admin may
         // change here. Resetting someone else's password is not one of them.
     }
 

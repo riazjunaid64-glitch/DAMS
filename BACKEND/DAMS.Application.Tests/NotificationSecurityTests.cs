@@ -512,7 +512,6 @@ public sealed class NotificationSecurityTests
             LeadSourceId = 1,
             Stage = LeadStage.New,
             AssignedEmployeeId = employee.Id,
-            AssignedTeamId = h.TeamId,
             AssignmentState = LeadAssignmentState.Assigned,
             CreatedAt = DateTime.UtcNow
         };

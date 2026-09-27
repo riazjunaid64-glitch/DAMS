@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.WhtDtos;
 using DAMS.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -12,7 +13,7 @@ namespace DAMS.Api.Controllers
     /// </summary>
     [Route("api/finance/expense-categories")]
     [ApiController]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = AppRoles.AdminOrAccountant)]
     public class ExpenseCategoriesController : ControllerBase
     {
         private readonly IExpenseCategoryService _categories;

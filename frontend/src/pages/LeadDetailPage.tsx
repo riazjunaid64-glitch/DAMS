@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { User } from "../App.tsx";
+import { can } from "../features/access/permissions.ts";
 import Button from "../lib/Button.tsx";
 import {
   CrmAccess,
@@ -33,7 +34,6 @@ import {
   type ProjectLookup,
   type SiteVisit,
   type StaffMember,
-  type Team,
   type TimelineItem,
 } from "../features/leads/types.ts";
 
@@ -52,7 +52,6 @@ type DetailData = {
 export type LeadLookups = {
   sources: LeadSource[];
   reasons: ClosureReason[];
-  teams: Team[];
   staff: StaffMember[];
   projects: ProjectLookup[];
 };
@@ -80,7 +79,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
   const leadId = Number(id);
   const [activeTab, setActiveTab] = useState("overview");
   const [data, setData] = useState<DetailData | null>(null);
-  const [lookups, setLookups] = useState<LeadLookups>({ sources: [], reasons: [], teams: [], staff: [], projects: [] });
+  const [lookups, setLookups] = useState<LeadLookups>({ sources: [], reasons: [], staff: [], projects: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [action, setAction] = useState<LeadAction | null>(null);
@@ -114,7 +113,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
   if (!data) return <StatePanel title="Lead unavailable" message={error ?? "The lead was not found or is outside your permitted scope."} action={<Button onClick={() => navigate("/crm")}>Back to leads</Button>} />;
 
   const { lead } = data;
-  const canManage = user.role === "Admin" || user.role === "Manager";
+  const canManage = can(user.role, "crm.manage");
   // Salespeople work a lead by its simple stage (New, In Progress, Won, Lost), last activity and next
   // action. The Hot/Warm/Cold qualification stays on the record but is not part of their workflow.
   const isSalesperson = user.role === "Employee";
@@ -166,7 +165,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
               : <StageBadge stage={lead.stage} />}
           </SummaryCard>
           {!isSalesperson && <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>}
-          <SummaryCard label="Owner"><span>{lead.assignedEmployeeName ?? "Unassigned"}</span><small>{lead.assignedTeamName ?? "No team"}</small></SummaryCard>
+          <SummaryCard label="Owner"><span>{lead.assignedEmployeeName ?? "Unassigned"}</span></SummaryCard>
           <SummaryCard label="Last activity"><span>{lead.lastActivitySummary ?? "No activity recorded"}</span><small>{formatDateTime(lead.lastActivityAt)}</small></SummaryCard>
           <SummaryCard label="Next action" danger={isPastServerTime(lead.nextActionAt) && !closed}><span>{lead.nextActionSummary ?? "Not scheduled"}</span><small>{formatDateTime(lead.nextActionAt)}</small></SummaryCard>
         </section>
@@ -195,7 +194,7 @@ function LeadDetailWorkspace({ user }: { user: User }) {
           {activeTab === "collaboration" && <Comments items={data.comments} closed={closed} onAdd={() => setAction({ type: "comment" })} />}
           {activeTab === "assignments" && <Assignments items={data.assignments} />}
           {activeTab === "integration" && <ExternalSubmissions items={data.submissions} leadId={leadId} role={user.role} />}
-          {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={user.role === "Admin"} onConvert={() => setAction({ type: "convert" })} />}
+          {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={can(user.role, "bookings")} onConvert={() => setAction({ type: "convert" })} />}
         </section>
       </div>
 

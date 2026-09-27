@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { can } from "../features/access/permissions.ts";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
@@ -204,8 +205,8 @@ export default function StaffCashPage({ user }: Props) {
   }, [loadStatement]);
 
   useEffect(() => {
-    if (user && user.role !== "Admin") { navigate("/"); return; }
-    if (user?.role === "Admin") void load();
+    if (user && !can(user.role, "finance")) { navigate("/"); return; }
+    if (can(user?.role, "finance")) void load();
   }, [load, navigate, user]);
 
   const selectHolder = async (holder: Holder) => {
@@ -374,7 +375,7 @@ export default function StaffCashPage({ user }: Props) {
     await load();
   };
 
-  if (!user || user.role !== "Admin") return null;
+  if (!user || !can(user.role, "finance")) return null;
   // The person named on this panel is looked up by the same id every button on it posts to, so the
   // heading and the mutation target cannot disagree — whatever order responses arrived in.
   const selected = overview?.holders.find((h) => h.financeAccountId === selectedId) ?? null;
