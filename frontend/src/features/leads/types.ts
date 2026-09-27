@@ -56,6 +56,8 @@ export interface Lead {
   assignmentState: string;
   assignedAt?: string | null;
   stage: LeadStage;
+  /** The stage on the salesperson's simple pipeline, as the server groups it. */
+  stageGroup: LeadStageGroup;
   qualification: LeadQualification;
   lastActivityAt?: string | null;
   lastActivitySummary?: string | null;
@@ -390,15 +392,10 @@ export const paymentPreferences = ["Unknown", "Installments", "NeedsDetails", "C
 export const isClosedStage = (stage: string) =>
   stage === "Won" || stage === "Lost" || stage === "Dormant";
 
-/** The salesperson's four-step pipeline; mirrors LeadStageGroup and LeadStageRules.StagesIn on the server. */
-export const leadStageGroups = ["New", "InProgress", "Won", "Lost"] as const;
+/** The salesperson's simple pipeline (the server's LeadStageGroup). Which detailed stage falls in which
+ *  step is decided only on the server (LeadStageRules.GroupOf) and arrives on each lead as `stageGroup`. */
+export const leadStageGroups = ["New", "InProgress", "Won", "Lost", "Dormant"] as const;
 export type LeadStageGroup = (typeof leadStageGroups)[number];
-
-export const stageGroupOf = (stage: LeadStage): LeadStageGroup =>
-  stage === "New" || stage === "FirstContactPending" ? "New" :
-  stage === "Won" ? "Won" :
-  stage === "Lost" || stage === "Dormant" ? "Lost" :
-  "InProgress";
 
 /** Minute precision: a CRM timeline is read at a glance, and seconds are noise in every column
  *  that shows one. Locale order and 12/24-hour clock still follow the reader's own settings. */

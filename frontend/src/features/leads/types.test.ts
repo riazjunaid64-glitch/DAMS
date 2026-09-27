@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatDateTime, isPastServerTime, leadStages, stageGroupOf } from "./types.ts";
+import { formatDateTime, isPastServerTime } from "./types.ts";
 
 // The API returns stored UTC times without a zone marker.
 const loggedAt = "2026-09-25T10:15:00";
@@ -24,24 +24,5 @@ describe("lead server timestamps", () => {
   it("keeps the placeholder for a missing or unreadable time", () => {
     expect(formatDateTime(null)).toBe("—");
     expect(formatDateTime("not a date")).toBe("—");
-  });
-});
-
-describe("the salesperson's simple pipeline", () => {
-  it("puts every pipeline stage in exactly one of New, In Progress, Won and Lost", () => {
-    expect(leadStages.map((stage) => [stage, stageGroupOf(stage)])).toEqual([
-      ["New", "New"],
-      ["FirstContactPending", "New"],
-      ["Contacted", "InProgress"],
-      ["Qualified", "InProgress"],
-      ["SiteVisitScheduled", "InProgress"],
-      ["SiteVisitCompleted", "InProgress"],
-      ["Negotiation", "InProgress"],
-      ["DocumentsInProgress", "InProgress"],
-      ["BookingPending", "InProgress"],
-      ["Won", "Won"],
-      ["Lost", "Lost"],
-      ["Dormant", "Lost"],
-    ]);
   });
 });

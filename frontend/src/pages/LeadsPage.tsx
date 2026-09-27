@@ -39,7 +39,6 @@ import {
   leadStageGroups,
   leadStages,
   paymentPreferences,
-  stageGroupOf,
   stageLabel,
   type ClosureReason,
   type Lead,
@@ -91,6 +90,11 @@ function LeadsWorkspace({ user }: { user: User }) {
     setParams(next);
   };
   const updateParam = (key: string, value: string) => updateParams({ [key]: value });
+
+  // Clears every URL filter, including ones with no control on the bar (an old bookmark's
+  // "qualification" or "overdue"). Sorting is not a filter and stays.
+  const hasFilters = FILTER_KEYS.some((key) => params.get(key));
+  const clearFilters = () => updateParams(Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])));
 
   // The bar exposes search, stage, source and project (and payment, for admins and managers). The rest stay honoured because the URL is
   // an input surface of its own: a saved link, a bookmark or a hand-built query keeps filtering
@@ -214,7 +218,7 @@ function LeadsWorkspace({ user }: { user: User }) {
         filters={filters}
         values={Object.fromEntries(filters.map((filter) => [filter.key, params.get(filter.key) ?? ""]))}
         onChange={updateParams}
-        onReset={() => updateParams(Object.fromEntries(FILTER_KEYS.map((key) => [key, ""])))}
+        onReset={clearFilters}
         onAdd={() => setCreateOpen(true)}
         addLabel="New lead"
       />
@@ -225,8 +229,10 @@ function LeadsWorkspace({ user }: { user: User }) {
         <EmptyState
           icon={<IconUsers size={26} />}
           title="No leads found"
-          message="No leads match these filters. Clear the filters or capture a new enquiry."
-          action={<Button variant="outline" onClick={() => setCreateOpen(true)}>New lead</Button>}
+          message={hasFilters ? "No leads match these filters. Clear the filters or capture a new enquiry." : "No leads yet. Capture a new enquiry to start."}
+          action={hasFilters
+            ? <Button variant="outline" onClick={clearFilters}>Clear filters</Button>
+            : <Button variant="outline" onClick={() => setCreateOpen(true)}>New lead</Button>}
         />
       ) : (
         <>
@@ -269,15 +275,15 @@ function LeadsWorkspace({ user }: { user: User }) {
   );
 }
 
-/** Badge colour: Dormant is orange where it is shown as itself; otherwise the stage group decides. */
-function stageTone(stage: Lead["stage"], simple: boolean): StatusTone {
-  if (stage === "Dormant" && !simple) return "orange";
-  const group = stageGroupOf(stage);
-  return group === "Won" ? "green" : group === "Lost" ? "red" : "blue";
+/** Badge colour: Dormant is orange; otherwise the stage group the server sent decides. */
+function stageTone(lead: Lead): StatusTone {
+  if (lead.stage === "Dormant") return "orange";
+  return lead.stageGroup === "Won" ? "green" : lead.stageGroup === "Lost" ? "red" : "blue";
 }
 
-function StageBadge({ stage, simple }: { stage: Lead["stage"]; simple: boolean }) {
-  return <StatusBadge status={stage} tone={stageTone(stage, simple)}>{stageLabel(simple ? stageGroupOf(stage) : stage)}</StatusBadge>;
+/** A salesperson sees the simple stage the server grouped the lead into; others see the detailed stage. */
+function StageBadge({ lead, simple }: { lead: Lead; simple: boolean }) {
+  return <StatusBadge status={lead.stage} tone={stageTone(lead)}>{stageLabel(simple ? lead.stageGroup : lead.stage)}</StatusBadge>;
 }
 
 const QUALIFICATION_TONES: Record<string, StatusTone> = { Hot: "red", Warm: "orange", Cold: "blue" };
@@ -334,7 +340,7 @@ function leadColumns(simple: boolean): DataTableColumn<Lead>[] {
         </>
       ),
     },
-    { key: "stage", header: "Stage", className: "whitespace-nowrap", render: (lead) => <StageBadge stage={lead.stage} simple={simple} /> },
+    { key: "stage", header: "Stage", className: "whitespace-nowrap", render: (lead) => <StageBadge lead={lead} simple={simple} /> },
     !simple && {
       key: "qualification",
       header: "Qualification",
@@ -363,7 +369,7 @@ function LeadCard({ lead, simple }: { lead: Lead; simple: boolean }) {
     <ListCard
       to={`/crm/leads/${lead.id}`}
       reference={simple ? lead.sourceName : lead.leadReference}
-      badge={<StageBadge stage={lead.stage} simple={simple} />}
+      badge={<StageBadge lead={lead} simple={simple} />}
       title={lead.fullName}
       detail={[lead.interestedProjectName ?? lead.preferredLocation ?? "General enquiry", contactOf(lead) ?? "No contact details"].join(" · ")}
       value={<NextAction lead={lead} />}

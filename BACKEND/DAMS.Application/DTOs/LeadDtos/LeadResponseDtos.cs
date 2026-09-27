@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.LeadDtos
@@ -85,6 +86,9 @@ namespace DAMS.Application.DTOs.LeadDtos
         public DateTime? AssignedAt { get; set; }
 
         public LeadStage Stage { get; set; }
+
+        /// <summary>Stage on the salesperson's four-step pipeline (New, In Progress, Won, Lost).</summary>
+        public LeadStageGroup StageGroup => LeadStageRules.GroupOf(Stage);
 
         public LeadQualification Qualification { get; set; }
 
