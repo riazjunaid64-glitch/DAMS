@@ -83,6 +83,114 @@ namespace DAMS.Application.Services
                 DocumentCount = l.Documents.Count
             };
 
+        /// <summary>
+        /// The single-lead read. Same fields as <see cref="ToResponse"/>, plus the page header.
+        /// The list must keep using <see cref="ToResponse"/> so it does not run these sub-selects.
+        /// </summary>
+        public static Expression<Func<Lead, LeadDetailResponseDto>> ToDetail(AppDbContext context) => l =>
+            new LeadDetailResponseDto
+            {
+                Id = l.Id,
+                LeadReference = l.LeadReference,
+                FirstName = l.FirstName,
+                LastName = l.LastName,
+                FullName = l.LastName == null || l.LastName == "" ? l.FirstName : l.FirstName + " " + l.LastName,
+                Phone = l.Phone,
+                WhatsappNumber = l.WhatsappNumber,
+                Email = l.Email,
+                Address = l.Address,
+                City = l.City,
+                PreferredContactMethod = l.PreferredContactMethod,
+                PreferredContactTime = l.PreferredContactTime,
+                LeadSourceId = l.LeadSourceId,
+                SourceCode = l.Source.Code,
+                SourceName = l.Source.Name,
+                SourceDetails = l.SourceDetails,
+                CampaignName = l.CampaignName,
+                CampaignReference = l.CampaignReference,
+                AdReference = l.AdReference,
+                ExternalProvider = l.ExternalProvider,
+                ExternalLeadId = l.ExternalLeadId,
+                ExternalFormReference = l.ExternalFormReference,
+                ExternalSubmittedAt = l.ExternalSubmittedAt,
+                IntegrationStatus = l.IntegrationStatus,
+                IntegrationError = l.IntegrationError,
+                InterestedProjectId = l.InterestedProjectId,
+                InterestedProjectName = l.InterestedProject != null ? l.InterestedProject.ProjectName : null,
+                InterestedUnitId = l.InterestedUnitId,
+                InterestedUnitNumber = l.InterestedUnit != null ? l.InterestedUnit.UnitNumber : null,
+                PropertyType = l.PropertyType,
+                PreferredLocation = l.PreferredLocation,
+                BudgetMin = l.BudgetMin,
+                BudgetMax = l.BudgetMax,
+                PurchaseIntent = l.PurchaseIntent,
+                PaymentPreference = l.PaymentPreference,
+                Notes = l.Notes,
+                AssignedEmployeeId = l.AssignedEmployeeId,
+                AssignedEmployeeName = l.AssignedEmployee != null ? l.AssignedEmployee.FullName : null,
+                AssignmentState = l.AssignmentState,
+                AssignedAt = l.AssignedAt,
+                Stage = l.Stage,
+                Qualification = l.Qualification,
+                LastActivityAt = l.LastActivityAt,
+                LastActivitySummary = l.LastActivitySummary,
+                NextActionAt = l.NextActionAt,
+                NextActionSummary = l.NextActionSummary,
+                FirstContactAt = l.FirstContactAt,
+                LastContactAt = l.LastContactAt,
+                ConvertedAt = l.ConvertedAt,
+                ConvertedCustomerId = l.ConvertedCustomerId,
+                ConvertedBookingId = l.ConvertedBookingId,
+                ConvertedBookingReference = l.ConvertedBooking != null ? l.ConvertedBooking.BookingReference : null,
+                ClosureReasonId = l.ClosureReasonId,
+                ClosureReasonName = l.ClosureReason != null ? l.ClosureReason.Name : null,
+                ClosureNotes = l.ClosureNotes,
+                ClosedAt = l.ClosedAt,
+                ReactivateOn = l.ReactivateOn,
+                BookingRequestId = context.BookingRequests
+                    .Where(br => br.LeadId == l.Id)
+                    .Select(br => (int?)br.Id)
+                    .FirstOrDefault(),
+                CreatedAt = l.CreatedAt,
+                UpdatedAt = l.UpdatedAt,
+                ConcurrencyToken = Convert.ToBase64String(l.RowVersion),
+                OpenFollowUpCount = l.FollowUps.Count(f => f.Status == LeadFollowUpStatus.Pending),
+                DocumentCount = l.Documents.Count,
+                Counts = new LeadPageCountsDto
+                {
+                    Timeline = l.Activities.Count(a => !LeadTimeline.NotShownOnTimeline.Contains(a.Type)),
+                    Communications = l.Communications.Count(),
+                    FollowUps = l.FollowUps.Count(f => f.Status == LeadFollowUpStatus.Pending
+                                                       || f.Status == LeadFollowUpStatus.Missed
+                                                       || f.Status == LeadFollowUpStatus.Completed),
+                    SiteVisits = l.SiteVisits.Count(v => v.Status != LeadSiteVisitStatus.Cancelled)
+                },
+                LastCommunication = l.Communications
+                    .OrderByDescending(c => c.OccurredAt)
+                    .ThenByDescending(c => c.Id)
+                    .Select(c => new LeadLastCommunicationDto
+                    {
+                        Channel = c.Channel,
+                        Direction = c.Direction,
+                        Connected = c.Connected,
+                        Summary = c.Summary,
+                        OccurredAt = c.OccurredAt,
+                        EmployeeName = c.Employee != null ? c.Employee.FullName : null
+                    })
+                    .FirstOrDefault(),
+                ConvertedByName = context.Users
+                    .Where(u => u.UserId == l.ConvertedByUserId)
+                    .Select(u => u.FullName)
+                    .FirstOrDefault(),
+                ConvertedUnitNumber = l.ConvertedBooking != null ? l.ConvertedBooking.Unit.UnitNumber : null,
+                ClosedByName = l.Activities
+                    .Where(a => a.Type == LeadActivityType.LeadLost || a.Type == LeadActivityType.LeadDormant)
+                    .OrderByDescending(a => a.OccurredAt)
+                    .ThenByDescending(a => a.Id)
+                    .Select(a => a.PerformedByName)
+                    .FirstOrDefault()
+            };
+
         public static readonly Expression<Func<LeadActivity, LeadActivityDto>> ToActivityDto = a =>
             new LeadActivityDto
             {
@@ -193,6 +301,7 @@ namespace DAMS.Application.Services
                 CustomerResponse = c.CustomerResponse,
                 NextAction = c.NextAction,
                 NextActionAt = c.NextActionAt,
+                FollowUpId = c.FollowUpId,
                 ExternalProvider = c.ExternalProvider,
                 Connected = c.Connected,
                 CreatedAt = c.CreatedAt,

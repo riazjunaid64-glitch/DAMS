@@ -12,6 +12,17 @@ namespace DAMS.Application.Services
     /// </summary>
     internal static class LeadTimeline
     {
+        /// <summary>
+        /// Kept in the table for reports. The timeline a person reads, and its count, leave
+        /// them out: those screens only speak in In progress, Won, Lost and Dormant.
+        /// </summary>
+        public static readonly LeadActivityType[] NotShownOnTimeline =
+        {
+            LeadActivityType.StageChanged,
+            LeadActivityType.QualificationChanged,
+            LeadActivityType.NegotiationUpdate
+        };
+
         public static LeadActivity Record(
             AppDbContext context,
             Lead lead,

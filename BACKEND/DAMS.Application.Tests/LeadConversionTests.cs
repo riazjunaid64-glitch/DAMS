@@ -59,7 +59,7 @@ public sealed class LeadConversionTests
             MeetingLocation = "Site office"
         }, h.Sales);
 
-        var before = (await h.TimelineAsync(leadId)).Count;
+        var before = (await h.Leads.GetTimelineAsync(leadId, h.Admin)).Count;
         var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
 
         var timeline = await h.Leads.GetTimelineAsync(leadId, h.Admin);

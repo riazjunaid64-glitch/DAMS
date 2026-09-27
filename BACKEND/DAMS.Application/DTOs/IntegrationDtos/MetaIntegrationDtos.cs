@@ -83,6 +83,24 @@ namespace DAMS.Application.DTOs.IntegrationDtos
 
         /// <summary>Lead forms only: the project its leads are linked to.</summary>
         public string? FormMappingProjectName { get; set; }
+
+        /// <summary>Facebook Pages only: when a lead from this Page was last received.</summary>
+        public DateTime? LastLeadAt { get; set; }
+
+        /// <summary>Facebook Pages only: leads received from this Page in the last seven days.</summary>
+        public int LeadsLast7Days { get; set; }
+
+        /// <summary>
+        /// Lead forms only: questions that offer a choice. Null until the form's questions
+        /// have been read from Meta.
+        /// </summary>
+        public int? ChoiceQuestionCount { get; set; }
+
+        /// <summary>Lead forms only: a saved mapping includes at least one answer.</summary>
+        public bool AnswersSetUp { get; set; }
+
+        /// <summary>Lead forms only: submissions that came from this form.</summary>
+        public int LeadCount { get; set; }
     }
 
     public class MetaResourceGroupDto

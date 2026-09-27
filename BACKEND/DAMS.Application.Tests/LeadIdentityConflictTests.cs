@@ -63,7 +63,10 @@ public sealed class LeadIdentityConflictTests
         Assert.Null(result.Lead);
         Assert.Equal(new[] { a, b }.OrderBy(x => x), result.ConflictingMatches.Select(m => m.LeadId!.Value).OrderBy(x => x));
         Assert.Equal("phone", result.ConflictingMatches.Single(m => m.LeadId == a).MatchedOn);
+        Assert.Equal("Person A Khan", result.ConflictingMatches.Single(m => m.LeadId == a).LeadName);
+        Assert.Equal(LeadStageGroup.New, result.ConflictingMatches.Single(m => m.LeadId == a).LeadStageGroup);
         Assert.Equal("email", result.ConflictingMatches.Single(m => m.LeadId == b).MatchedOn);
+        Assert.Equal(LeadStageGroup.New, result.ConflictingMatches.Single(m => m.LeadId == b).LeadStageGroup);
         Assert.Empty(await h.Db.LeadIntakeHolds.ToListAsync());
         await AssertUntouchedAsync(h, a, b);
     }
@@ -198,6 +201,8 @@ public sealed class LeadIdentityConflictTests
         var candidateB = held.Candidates.Single(c => c.LeadId == b);
         Assert.Equal(("phone", "Person A Khan"), (candidateA.MatchedOn, candidateA.LeadName));
         Assert.Equal(("email", "Person B Khan"), (candidateB.MatchedOn, candidateB.LeadName));
+        Assert.Equal(LeadStageGroup.New, candidateA.LeadStageGroup);
+        Assert.Equal(LeadStageGroup.New, candidateB.LeadStageGroup);
         Assert.True(candidateA.IsOpen && candidateB.IsOpen);
     }
 

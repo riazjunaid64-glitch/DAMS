@@ -137,6 +137,50 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int DocumentCount { get; set; }
     }
 
+    /// <summary>
+    /// A single lead, including the tab counts and header facts the lead page shows
+    /// before any tab is opened. The list stays on <see cref="LeadResponseDto"/>.
+    /// </summary>
+    public class LeadDetailResponseDto : LeadResponseDto
+    {
+        public LeadPageCountsDto Counts { get; set; } = new();
+
+        public LeadLastCommunicationDto? LastCommunication { get; set; }
+
+        public string? ConvertedByName { get; set; }
+
+        public string? ConvertedUnitNumber { get; set; }
+
+        /// <summary>Who last marked the lead Lost or Dormant.</summary>
+        public string? ClosedByName { get; set; }
+    }
+
+    public class LeadPageCountsDto
+    {
+        public int Timeline { get; set; }
+
+        public int Communications { get; set; }
+
+        public int FollowUps { get; set; }
+
+        public int SiteVisits { get; set; }
+    }
+
+    public class LeadLastCommunicationDto
+    {
+        public LeadCommunicationChannel Channel { get; set; }
+
+        public LeadCommunicationDirection Direction { get; set; }
+
+        public bool Connected { get; set; }
+
+        public string Summary { get; set; } = string.Empty;
+
+        public DateTime OccurredAt { get; set; }
+
+        public string? EmployeeName { get; set; }
+    }
+
     public class LeadListDto
     {
         public List<LeadResponseDto> Items { get; set; } = new();

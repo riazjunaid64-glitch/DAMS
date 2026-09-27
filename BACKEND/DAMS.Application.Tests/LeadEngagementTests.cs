@@ -35,6 +35,9 @@ public sealed class LeadEngagementTests
         Assert.NotNull(lead.LastContactAt);
         Assert.Equal(LeadStage.Contacted, lead.Stage);
         Assert.Equal("Call tomorrow", lead.NextActionSummary);
+        var scheduled = Assert.Single(await h.Db.LeadFollowUps.Where(f => f.LeadId == leadId).ToListAsync());
+        Assert.Equal(LeadFollowUpType.Whatsapp, scheduled.Type);
+        Assert.Equal(scheduled.Id, communication.FollowUpId);
 
         var activity = (await h.TimelineAsync(leadId)).Single(a => a.Type == LeadActivityType.WhatsappActivity);
         Assert.Equal(LeadCommunicationChannel.Whatsapp, activity.Channel);
@@ -67,12 +70,15 @@ public sealed class LeadEngagementTests
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateLeadAsync();
+        await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
 
         var dto = new RecordLeadCommunicationDto
         {
             Channel = LeadCommunicationChannel.Whatsapp,
             Direction = LeadCommunicationDirection.Inbound,
             Summary = "Is the corner unit available?",
+            NextAction = "Send the plan",
+            NextActionAt = DateTime.UtcNow.AddDays(1),
             ExternalProvider = "whatsapp",
             ExternalMessageId = "wamid.123"
         };
@@ -81,7 +87,9 @@ public sealed class LeadEngagementTests
         var replay = await h.Communications.RecordAsync(leadId, dto, h.Admin);
 
         Assert.Equal(first.Id, replay.Id);
+        Assert.Equal(first.FollowUpId, replay.FollowUpId);
         Assert.Equal(1, await h.Db.LeadCommunications.CountAsync(c => c.LeadId == leadId));
+        Assert.Equal(1, await h.Db.LeadFollowUps.CountAsync(f => f.LeadId == leadId));
     }
 
     [Fact]
@@ -98,6 +106,132 @@ public sealed class LeadEngagementTests
                 Summary = "Tomorrow's call",
                 OccurredAt = DateTime.UtcNow.AddDays(1)
             }, h.Admin));
+    }
+
+    [Fact]
+    public async Task SchedulingTheNextFollowUp_CreatesOneRealFollowUp_AndCompletingItClearsTheLead()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var due = DateTime.UtcNow.AddDays(1);
+
+        var communication = await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Discussed the corner unit.",
+            NextActionAt = due
+        }, h.Sales);
+
+        var followUp = Assert.Single(await h.Db.LeadFollowUps.Where(f => f.LeadId == leadId).ToListAsync());
+        Assert.Equal(followUp.Id, communication.FollowUpId);
+        Assert.Equal(LeadFollowUpType.Call, followUp.Type);
+        Assert.Equal(TaskPriority.Medium, followUp.Priority);
+        Assert.Equal(LeadFollowUpStatus.Pending, followUp.Status);
+        Assert.Equal("Follow up", followUp.Title);
+        Assert.Equal(due, followUp.DueAt);
+        Assert.Equal(h.SalesEmployeeId, followUp.AssignedEmployeeId);
+        Assert.Contains(await h.TimelineAsync(leadId), a => a.Type == LeadActivityType.FollowUpScheduled);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(due, lead.NextActionAt);
+        Assert.Equal("Follow up", lead.NextActionSummary);
+
+        await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto { Outcome = "Spoke again." }, h.Sales);
+
+        lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
+        Assert.Equal(LeadFollowUpStatus.Completed,
+            (await h.Db.LeadFollowUps.SingleAsync(f => f.Id == followUp.Id)).Status);
+    }
+
+    [Theory]
+    [InlineData(LeadCommunicationChannel.Email, LeadFollowUpType.Email)]
+    [InlineData(LeadCommunicationChannel.Meeting, LeadFollowUpType.Call)]
+    [InlineData(LeadCommunicationChannel.Sms, LeadFollowUpType.Call)]
+    public async Task TheScheduledFollowUpTypeFollowsTheChannel(
+        LeadCommunicationChannel channel, LeadFollowUpType expected)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = channel,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "Noted.",
+            NextActionAt = DateTime.UtcNow.AddDays(1)
+        }, h.Sales);
+
+        Assert.Equal(expected, (await h.Db.LeadFollowUps.SingleAsync(f => f.LeadId == leadId)).Type);
+    }
+
+    [Fact]
+    public async Task SchedulingTheNextFollowUp_WithoutAnOwnerOrEmployee_SavesNothing()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateLeadAsync();
+        var before = await h.Db.LeadActivities.CountAsync(a => a.LeadId == leadId);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+            {
+                Channel = LeadCommunicationChannel.Phone,
+                Direction = LeadCommunicationDirection.Outbound,
+                Summary = "Nobody to hand this to.",
+                NextAction = "Call tomorrow",
+                NextActionAt = DateTime.UtcNow.AddDays(1)
+            }, h.Admin));
+
+        Assert.Contains("employee", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(await h.Db.LeadCommunications.AnyAsync(c => c.LeadId == leadId));
+        Assert.False(await h.Db.LeadFollowUps.AnyAsync(f => f.LeadId == leadId));
+        Assert.Equal(before, await h.Db.LeadActivities.CountAsync(a => a.LeadId == leadId));
+        Assert.Equal(LeadStage.New, (await h.LoadLeadAsync(leadId)).Stage);
+    }
+
+    [Fact]
+    public async Task ACommunicationRecordedBeforeFollowUpsWereLinked_StillYieldsToALaterExchange()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var planAt = DateTime.UtcNow.AddDays(2);
+        h.Db.LeadCommunications.Add(new LeadCommunication
+        {
+            LeadId = leadId,
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            OccurredAt = DateTime.UtcNow,
+            Summary = "Old plan.",
+            NextAction = "Send brochure",
+            NextActionAt = planAt,
+            Connected = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        await h.Db.SaveChangesAsync();
+
+        var filler = await h.FollowUps.CreateAsync(leadId, new CreateLeadFollowUpDto
+        {
+            Title = "Ignore",
+            DueAt = DateTime.UtcNow.AddDays(9)
+        }, h.Sales);
+        await h.FollowUps.CancelAsync(filler.Id, null, h.Sales);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(planAt, lead.NextActionAt);
+        Assert.Equal("Send brochure", lead.NextActionSummary);
+
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            Summary = "The plan was carried out."
+        }, h.Sales);
+
+        lead = await h.LoadLeadAsync(leadId);
+        Assert.Null(lead.NextActionAt);
+        Assert.Null(lead.NextActionSummary);
     }
 
     [Fact]
@@ -416,17 +550,18 @@ public sealed class LeadEngagementTests
     }
 
     [Fact]
-    public async Task ALaterCommunication_SupersedesTheEarlierOnesNextAction()
+    public async Task ALaterCommunication_DoesNotCancelTheFollowUpTheEarlierOneScheduled()
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
+        var tomorrow = DateTime.UtcNow.AddDays(1);
         await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
         {
             Channel = LeadCommunicationChannel.Phone,
             Direction = LeadCommunicationDirection.Outbound,
             Summary = "Discussed pricing.",
             NextAction = "Call tomorrow",
-            NextActionAt = DateTime.UtcNow.AddDays(1)
+            NextActionAt = tomorrow
         }, h.Sales);
 
         var rescheduledTo = DateTime.UtcNow.AddDays(5);
@@ -439,17 +574,28 @@ public sealed class LeadEngagementTests
             NextActionAt = rescheduledTo
         }, h.Sales);
 
+        // Both plans are real follow-ups now, so the later one does not erase the earlier.
+        // The lead's next action is whichever is due first.
         var lead = await h.LoadLeadAsync(leadId);
-        Assert.Equal(rescheduledTo, lead.NextActionAt);
-        Assert.Equal("Call next week", lead.NextActionSummary);
+        Assert.Equal(tomorrow, lead.NextActionAt);
+        Assert.Equal("Call tomorrow", lead.NextActionSummary);
+        Assert.Equal(2, await h.Db.LeadFollowUps.CountAsync(
+            f => f.LeadId == leadId && f.Status == LeadFollowUpStatus.Pending));
 
-        // A later exchange with no plan means the earlier plan was carried out.
+        // A later exchange with no plan of its own does not cancel those follow-ups.
         await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
         {
             Channel = LeadCommunicationChannel.Phone,
             Direction = LeadCommunicationDirection.Outbound,
             Summary = "Called back as promised."
         }, h.Sales);
+
+        lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal("Call tomorrow", lead.NextActionSummary);
+
+        foreach (var followUp in (await h.FollowUps.GetForLeadAsync(leadId, h.Sales))
+                     .Where(f => f.Status == LeadFollowUpStatus.Pending))
+            await h.FollowUps.CompleteAsync(followUp.Id, new CompleteLeadFollowUpDto(), h.Sales);
 
         lead = await h.LoadLeadAsync(leadId);
         Assert.Null(lead.NextActionAt);
@@ -495,6 +641,12 @@ public sealed class LeadEngagementTests
             Direction = LeadCommunicationDirection.Outbound,
             Summary = "Sent the floor plans."
         }, h.Sales);
+        // The call's follow-up is still open, so the visit does not become the next action yet.
+        Assert.Equal(callAt, (await h.LoadLeadAsync(leadId)).NextActionAt);
+
+        var scheduledFromTheCall = (await h.FollowUps.GetForLeadAsync(leadId, h.Sales))
+            .Single(f => f.Title == "Share floor plans");
+        await h.FollowUps.CompleteAsync(scheduledFromTheCall.Id, new CompleteLeadFollowUpDto { Outcome = "Sent." }, h.Sales);
         Assert.Equal(visitAt, (await h.LoadLeadAsync(leadId)).NextActionAt);
 
         await h.SiteVisits.CompleteAsync(visit.Id, new CompleteSiteVisitDto
@@ -887,8 +1039,10 @@ public sealed class LeadEngagementTests
         var reopened = await h.Leads.ReopenAsync(owned, new ReopenLeadDto { Stage = LeadStage.FirstContactPending }, h.Sales);
         Assert.Equal(LeadStage.FirstContactPending, reopened.Stage);
         var reopenLine = (await h.TimelineAsync(owned)).Single(a => a.Type == LeadActivityType.LeadReopened);
-        Assert.Contains("New", reopenLine.Summary);
+        Assert.Equal("Lead reopened (was Lost).", reopenLine.Summary);
+        Assert.Equal("In progress", reopenLine.NewValue);
         Assert.DoesNotContain("FirstContactPending", reopenLine.Summary);
+        Assert.DoesNotContain("Contacted", reopenLine.Summary);
         Assert.Null(reopenLine.Notes);
 
         var queue = await h.CreateLeadAsync(LeadTestHarness.Intake(

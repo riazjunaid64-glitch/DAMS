@@ -239,6 +239,64 @@ public class LeadFormMappingTests
         Assert.Equal("Floria Heights", form.FormMappingProjectName);
     }
 
+    [Fact]
+    public async Task Resources_ReportPageAndFormNumbersFromGroupedCounts()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var page = await SetUpFloriaAsync(h);
+        var connectionId = page.ExternalIntegrationConnectionId;
+
+        var before = await h.Integration.GetResourcesAsync(connectionId);
+        var pageBefore = before.Single(g => g.ResourceType == ExternalResourceTypes.FacebookPage).Items.Single();
+        Assert.Null(pageBefore.LastLeadAt);
+        Assert.Equal(0, pageBefore.LeadsLast7Days);
+
+        await IngestAsync(h, page, "lead-1",
+            (InstallmentQuestion, "yes"), (ApartmentQuestion, "studio_apartment"), (BuyingForQuestion, "investment"));
+
+        var recent = await h.Db.LeadExternalSubmissions.SingleAsync();
+        h.Db.LeadExternalSubmissions.Add(new LeadExternalSubmission
+        {
+            LeadId = recent.LeadId,
+            Provider = recent.Provider,
+            ExternalLeadId = "old-lead",
+            ExternalFormReference = recent.ExternalFormReference,
+            PageExternalId = recent.PageExternalId,
+            ReceivedAt = DateTime.UtcNow.AddDays(-8)
+        });
+        await h.Db.SaveChangesAsync();
+
+        var resources = await h.Integration.GetResourcesAsync(connectionId);
+        var pageItem = resources.Single(g => g.ResourceType == ExternalResourceTypes.FacebookPage).Items.Single();
+        Assert.Equal(recent.ReceivedAt, pageItem.LastLeadAt);
+        Assert.Equal(1, pageItem.LeadsLast7Days);
+
+        var form = resources.Single(g => g.ResourceType == ExternalResourceTypes.LeadForm).Items.Single();
+        Assert.Equal(3, form.ChoiceQuestionCount);
+        Assert.True(form.AnswersSetUp);
+        Assert.Equal(2, form.LeadCount);
+        Assert.True(form.HasFormMapping);
+        Assert.Equal("Floria Heights", form.FormMappingProjectName);
+    }
+
+    [Fact]
+    public async Task AFormWhoseQuestionsAreNotReadYet_HasNoChoiceCount()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var page = await SetUpFloriaAsync(h, mapped: false, questionsSynced: false);
+        await h.Integration.SaveLeadFormMappingAsync(FormId,
+            new SaveLeadFormMappingDto { InterestedProjectId = h.Leads.ProjectId }, h.Leads.Admin);
+
+        var form = (await h.Integration.GetResourcesAsync(page.ExternalIntegrationConnectionId))
+            .Single(g => g.ResourceType == ExternalResourceTypes.LeadForm).Items.Single();
+
+        Assert.Null(form.ChoiceQuestionCount);
+        Assert.False(form.AnswersSetUp);
+        Assert.True(form.HasFormMapping);
+        Assert.Equal("Floria Heights", form.FormMappingProjectName);
+        Assert.Equal(0, form.LeadCount);
+    }
+
     [Theory]
     [InlineData("no_such_question", "investment", "Investment")]
     [InlineData(BuyingForQuestion, "villa", "Investment")]
