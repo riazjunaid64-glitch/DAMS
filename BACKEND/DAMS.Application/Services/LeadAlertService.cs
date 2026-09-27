@@ -6,6 +6,8 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace DAMS.Application.Services
@@ -18,21 +20,30 @@ namespace DAMS.Application.Services
     /// </summary>
     public class LeadAlertService : ILeadAlertService
     {
+        /// <summary>A Dormant lead comes back at the start of the working day, Pakistan time.</summary>
+        private static readonly TimeSpan BringBackFrom = TimeSpan.FromHours(9);
+
         private readonly AppDbContext _context;
         private readonly ILeadNotificationService _notifications;
+        private readonly ILeadService _leads;
         private readonly LeadAlertOptions _options;
         private readonly TimeProvider _clock;
+        private readonly ILogger<LeadAlertService> _logger;
 
         public LeadAlertService(
             AppDbContext context,
             ILeadNotificationService notifications,
+            ILeadService leads,
             IOptions<LeadAlertOptions> options,
-            TimeProvider clock)
+            TimeProvider clock,
+            ILogger<LeadAlertService>? logger = null)
         {
             _context = context;
             _notifications = notifications;
+            _leads = leads;
             _options = options.Value;
             _clock = clock;
+            _logger = logger ?? NullLogger<LeadAlertService>.Instance;
         }
 
         public async Task<LeadAlertScanResultDto> RunScanAsync(CancellationToken cancellationToken = default)
@@ -50,7 +61,52 @@ namespace DAMS.Application.Services
 
             await _context.SaveChangesAsync(cancellationToken);
 
+            // Each lead brought back is its own transaction under the contact locks a reopen
+            // takes, so it runs once the alerts above are saved rather than inside their save.
+            await BringBackDormantLeadsAsync(result, now, cancellationToken);
+
             return result;
+        }
+
+        private async Task BringBackDormantLeadsAsync(LeadAlertScanResultDto result, DateTime now, CancellationToken cancellationToken)
+        {
+            // The first scan from 09:00 on the "Bring back on" date picks the lead up. The date is
+            // a calendar date, so it is compared with today's Pakistan date; a lead whose day was
+            // missed (the service was down) comes back at the next scan from 09:00.
+            var local = PakistanTime.ToLocal(now);
+            if (local.TimeOfDay < BringBackFrom)
+                return;
+
+            var dueBefore = local.Date.AddDays(1);
+            var due = await _context.Leads
+                .AsNoTracking()
+                .Where(l => l.Stage == LeadStage.Dormant && l.ReactivateOn != null && l.ReactivateOn < dueBefore)
+                .OrderBy(l => l.ReactivateOn)
+                .ThenBy(l => l.Id)
+                .Select(l => l.Id)
+                .Take(_options.MaxRowsPerScan)
+                .ToListAsync(cancellationToken);
+
+            foreach (var leadId in due)
+            {
+                try
+                {
+                    var outcome = await _leads.BringBackDormantAsync(leadId, now, cancellationToken);
+                    result.NotificationsCreated += outcome.NotificationsCreated;
+                    if (outcome.BroughtBack)
+                        result.DormantLeadsBroughtBack++;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // One lead that keeps failing must not hold back every lead due after it. Its
+                    // transaction has rolled back and its date is untouched, so the next scan retries
+                    // it. What it staged is dropped here, or the next lead's save would write it;
+                    // everything else in this scan was saved before this step began.
+                    _context.ChangeTracker.Clear();
+                    result.DormantLeadsFailed++;
+                    _logger.LogError(ex, "Could not bring Dormant lead {LeadId} back. The next scan will try again.", leadId);
+                }
+            }
         }
 
         private async Task ScanFirstContactAsync(LeadAlertScanResultDto result, DateTime now, CancellationToken cancellationToken)

@@ -90,7 +90,7 @@ internal sealed class LeadTestHarness : IAsyncDisposable
         Documents = new LeadDocumentService(db, DocumentStorage, NullLogger<LeadDocumentService>.Instance);
         Configuration = new LeadConfigurationService(db);
         Reporting = new LeadReportingService(db, alertOptions, Clock);
-        Alerts = new LeadAlertService(db, Notifications, alertOptions, Clock);
+        Alerts = new LeadAlertService(db, Notifications, Leads, alertOptions, Clock);
         BookingRequests = new BookingRequestService(db, Leads);
     }
 

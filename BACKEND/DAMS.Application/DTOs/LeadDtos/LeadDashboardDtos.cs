@@ -173,8 +173,21 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int SiteVisitsMarkedMissed { get; set; }
 
+        public int DormantLeadsBroughtBack { get; set; }
+
+        /// <summary>Dormant leads that failed to come back this scan; each is retried on the next.</summary>
+        public int DormantLeadsFailed { get; set; }
+
         public int NotificationsCreated { get; set; }
 
         public int EscalationsRaised { get; set; }
+    }
+
+    /// <summary>What bringing back one Dormant lead did.</summary>
+    public class DormantBringBackResultDto
+    {
+        public bool BroughtBack { get; set; }
+
+        public int NotificationsCreated { get; set; }
     }
 }

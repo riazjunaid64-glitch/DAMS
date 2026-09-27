@@ -65,6 +65,14 @@ namespace DAMS.Application.Interfaces
 
         Task<LeadResponseDto> ReopenAsync(int id, ReopenLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// Brings a Dormant lead back on its "Bring back on" date, as the system rather than a
+        /// person. Run by the lead alert scan, which decides when a lead is due. Nothing is
+        /// brought back when the lead was already reopened or brought back, or when another open
+        /// lead now holds the same person (who would have been told hears that instead).
+        /// </summary>
+        Task<DormantBringBackResultDto> BringBackDormantAsync(int id, DateTime now, CancellationToken cancellationToken = default);
+
         Task<LeadConversionResultDto> ConvertAsync(int id, ConvertLeadDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default);
 
         /// <summary>

@@ -38,5 +38,9 @@ namespace DAMS.Application.Common
         /// <summary>Example: Sat 27 Sep, 4:00 PM. The instant is stored in UTC.</summary>
         public static string When(DateTime utc) =>
             PakistanTime.ToLocal(utc).ToString("ddd d MMM, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
+
+        /// <summary>Example: Sep 2 — the Pakistan date a UTC instant falls on.</summary>
+        public static string Day(DateTime utc) =>
+            PakistanTime.ToLocal(utc).ToString("MMM d", CultureInfo.GetCultureInfo("en-US"));
     }
 }
