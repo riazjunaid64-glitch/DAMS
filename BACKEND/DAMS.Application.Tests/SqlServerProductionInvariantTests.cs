@@ -6609,11 +6609,28 @@ public sealed class SqlServerProductionInvariantTests
     /// exist while seeding; they are dropped again before migrating forward, which then adds them
     /// for real. A Lead column added by a later migration belongs here too.
     /// </summary>
-    private static Task AddLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString,
-        "ALTER TABLE [Leads] ADD [PaymentPreference] int NOT NULL CONSTRAINT [DF_Test_Leads_PaymentPreference] DEFAULT 0;");
+    // Columns later migrations add to tables the current model writes, so a test can run today's
+    // services against an older schema. Each is dropped again before the real migrations run. The
+    // integration-event columns only apply when that table already exists at the starting point.
+    private static Task AddLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
+        ALTER TABLE [Leads] ADD [PaymentPreference] int NOT NULL CONSTRAINT [DF_Test_Leads_PaymentPreference] DEFAULT 0;
+        IF OBJECT_ID(N'[ExternalIntegrationEvents]') IS NOT NULL
+            AND COL_LENGTH(N'[ExternalIntegrationEvents]', N'RequeueCount') IS NULL
+        BEGIN
+            ALTER TABLE [ExternalIntegrationEvents] ADD
+                [FailureWasTransient] bit NOT NULL CONSTRAINT [DF_Test_Events_FailureWasTransient] DEFAULT 0,
+                [RequeueCount] int NOT NULL CONSTRAINT [DF_Test_Events_RequeueCount] DEFAULT 0;
+        END
+        """);
 
-    private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString,
-        "ALTER TABLE [Leads] DROP CONSTRAINT [DF_Test_Leads_PaymentPreference]; ALTER TABLE [Leads] DROP COLUMN [PaymentPreference];");
+    private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
+        ALTER TABLE [Leads] DROP CONSTRAINT [DF_Test_Leads_PaymentPreference]; ALTER TABLE [Leads] DROP COLUMN [PaymentPreference];
+        IF OBJECT_ID(N'[DF_Test_Events_RequeueCount]') IS NOT NULL
+        BEGIN
+            ALTER TABLE [ExternalIntegrationEvents] DROP CONSTRAINT [DF_Test_Events_FailureWasTransient], [DF_Test_Events_RequeueCount];
+            ALTER TABLE [ExternalIntegrationEvents] DROP COLUMN [FailureWasTransient], [RequeueCount];
+        END
+        """);
 
     private static async Task ExecuteAsync(string connectionString, string sql)
     {
