@@ -22,6 +22,11 @@ namespace DAMS.Api.Controllers
             _configuration = configuration;
         }
 
+        /// <summary>The apartment types a lead form offers. Staff only; parking is not one of them.</summary>
+        [HttpGet("apartment-types")]
+        public Task<IActionResult> GetApartmentTypes(CancellationToken cancellationToken = default) =>
+            RunAsync(_ => Task.FromResult(UnitTypes.LeadApartmentTypes), cancellationToken);
+
         [HttpGet("sources")]
         public Task<IActionResult> GetSources([FromQuery] bool includeInactive = false, CancellationToken cancellationToken = default) =>
             RunAsync(_ => _configuration.GetSourcesAsync(includeInactive, cancellationToken), cancellationToken);

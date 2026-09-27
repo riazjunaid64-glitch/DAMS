@@ -76,6 +76,10 @@ namespace DAMS.Domain.Entities
 
         public int? InterestedUnitId { get; set; }
 
+        /// <summary>
+        /// Canonical apartment type (Studio, 1 Bed, 2 Bed, 3 Bed, or Parking space), or empty.
+        /// A value the migration could not recognise is left unchanged for someone to fix.
+        /// </summary>
         public string? PropertyType { get; set; }
 
         public string? PreferredLocation { get; set; }

@@ -242,7 +242,7 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         [StringLength(300)]
         public string? OptionLabel { get; set; }
 
-        /// <summary>A PurchaseIntent or PaymentPreference name, or the property type text.</summary>
+        /// <summary>A PurchaseIntent or PaymentPreference name, or a canonical apartment type.</summary>
         [Required]
         [StringLength(100)]
         public string Value { get; set; } = string.Empty;

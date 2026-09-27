@@ -192,9 +192,10 @@ namespace DAMS.Application.Services.Integrations
 
             return target switch
             {
-                LeadFormAnswerTarget.PropertyType when trimmed.Length is > 0 and <= 100 => trimmed,
+                LeadFormAnswerTarget.PropertyType when UnitTypes.Canonical(trimmed) is string apartmentType => apartmentType,
                 LeadFormAnswerTarget.PropertyType =>
-                    throw new InvalidOperationException($"Enter a property type of up to 100 characters for \"{optionName}\"."),
+                    throw new InvalidOperationException(
+                        $"Apartment type for \"{optionName}\" must be Studio, 1 Bed, 2 Bed or 3 Bed."),
                 LeadFormAnswerTarget.PurchaseIntent when LeadFormAnswerMapper.TryParseKnown<LeadPurchaseIntent>(trimmed, out var intent) =>
                     intent.ToString(),
                 LeadFormAnswerTarget.PaymentPreference when LeadFormAnswerMapper.TryParseKnown<LeadPaymentPreference>(trimmed, out var preference) =>

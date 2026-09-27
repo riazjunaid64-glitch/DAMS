@@ -23,6 +23,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
         public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
         public DbSet<UnitTypeMigrationNote> UnitTypeMigrationNotes { get; set; }
+        public DbSet<LeadApartmentTypeMigrationNote> LeadApartmentTypeMigrationNotes { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -175,6 +176,15 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(n => n.UnitType).IsRequired().HasMaxLength(100);
                 entity.HasIndex(n => n.UnitType).IsUnique();
+            });
+
+            // No foreign key: the note is the record of a value someone still has to fix, and it
+            // has to remain even if that lead is later removed. One row per lead keeps a re-run
+            // from writing the same note again.
+            modelBuilder.Entity<LeadApartmentTypeMigrationNote>(entity =>
+            {
+                entity.Property(n => n.PropertyType).IsRequired().HasMaxLength(100);
+                entity.HasIndex(n => n.LeadId).IsUnique();
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
