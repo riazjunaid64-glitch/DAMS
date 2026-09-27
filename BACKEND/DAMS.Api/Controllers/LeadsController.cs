@@ -4,6 +4,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace DAMS.Api.Controllers
 {
@@ -141,8 +142,11 @@ namespace DAMS.Api.Controllers
 
         [HttpPost("{id:int}/reopen")]
         [Authorize(Roles = LeadRoles.Staff)]
-        public Task<IActionResult> Reopen(int id, [FromBody] ReopenLeadDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _leads.ReopenAsync(id, dto, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> Reopen(
+            int id,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ReopenLeadDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _leads.ReopenAsync(id, dto ?? new ReopenLeadDto(), ctx, cancellationToken), cancellationToken);
 
         /// <summary>Converts the lead into a customer and booking. Idempotent.</summary>
         [HttpPost("{id:int}/convert")]

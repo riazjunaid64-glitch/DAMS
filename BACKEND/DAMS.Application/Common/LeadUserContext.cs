@@ -93,7 +93,10 @@ namespace DAMS.Application.Common
             if (ctx.IsAdmin || ctx.IsManager)
                 return;
 
-            if (ctx.IsEmployee && lead != null && lead.AssignedEmployeeId == ctx.EmployeeId)
+            if (ctx.IsEmployee
+                && ctx.EmployeeId != null
+                && lead != null
+                && lead.AssignedEmployeeId == ctx.EmployeeId)
                 return;
 
             throw new LeadAuthorizationException(
@@ -111,7 +114,10 @@ namespace DAMS.Application.Common
             if (ctx.IsAdmin || ctx.IsManager)
                 return;
 
-            if (ctx.IsEmployee && lead != null && lead.AssignedEmployeeId == ctx.EmployeeId)
+            if (ctx.IsEmployee
+                && ctx.EmployeeId != null
+                && lead != null
+                && lead.AssignedEmployeeId == ctx.EmployeeId)
                 return;
 
             throw new LeadAuthorizationException(
@@ -156,6 +162,12 @@ namespace DAMS.Application.Common
     public class LeadAuthorizationException : Exception
     {
         public LeadAuthorizationException(string message) : base(message) { }
+    }
+
+    /// <summary>Raised when a staff employee record does not exist. Surfaced as 404.</summary>
+    public class StaffNotFoundException : Exception
+    {
+        public StaffNotFoundException(string message) : base(message) { }
     }
 
     /// <summary>Raised when a lead is missing or outside the caller's scope.</summary>

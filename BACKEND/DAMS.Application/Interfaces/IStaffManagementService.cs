@@ -54,8 +54,13 @@ namespace DAMS.Application.Interfaces
             int employeeId,
             CancellationToken cancellationToken = default);
 
-        /// <summary>Turns a disabled staff login back on.</summary>
+        /// <summary>Turns a disabled staff login back on. An invited login is left invited.</summary>
         Task<StaffAccountDto> EnableAccessAsync(
+            LeadUserContext actor,
+            int employeeId,
+            CancellationToken cancellationToken = default);
+
+        Task<List<StaffAccessAuditDto>> GetAccessHistoryAsync(
             LeadUserContext actor,
             int employeeId,
             CancellationToken cancellationToken = default);

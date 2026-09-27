@@ -213,14 +213,14 @@ namespace DAMS.Application.Services
                 if (ownerUserId.HasValue &&
                     await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.LeadInactive,
                         $"No activity on {name}",
-                        $"Nothing has been recorded since {since:yyyy-MM-dd}.",
+                        $"Nothing has been recorded since {LeadDisplay.When(since)}.",
                         $"LeadInactive:{lead.Id}:{ownerUserId.Value}:{bucket}", cancellationToken: cancellationToken))
                     result.NotificationsCreated++;
 
                 var escalated = await _notifications.QueueForSupervisorsAsync(lead,
                     NotificationType.ManagerAttentionRequired,
                     $"{name} has gone quiet",
-                    $"No activity since {since:yyyy-MM-dd}.",
+                    $"No activity since {LeadDisplay.When(since)}.",
                     $"inactive:{bucket}", isEscalation: true, cancellationToken: cancellationToken);
 
                 result.NotificationsCreated += escalated;

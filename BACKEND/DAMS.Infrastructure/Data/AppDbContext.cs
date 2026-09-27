@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 
@@ -6,9 +8,19 @@ namespace DAMS.Infrastructure.Data
 {
     public class AppDbContext : DbContext
     {
+        private static readonly ProjectListCacheTransactionInterceptor ProjectListCacheInterceptor = new();
+
+        /// <summary>Set when a unit change is saved inside a transaction that has not committed.</summary>
+        internal bool ProjectListCachePending { get; set; }
+
         public AppDbContext(DbContextOptions<AppDbContext> options)
             : base(options)
         {
+        }
+
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            optionsBuilder.AddInterceptors(ProjectListCacheInterceptor);
         }
 
         public DbSet<User> Users { get; set; }
@@ -19,6 +31,7 @@ namespace DAMS.Infrastructure.Data
 
         public DbSet<CustomerAccountLinkAudit> CustomerAccountLinkAudits { get; set; }
         public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
+        public DbSet<UnitTypeMigrationNote> UnitTypeMigrationNotes { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -164,6 +177,12 @@ namespace DAMS.Infrastructure.Data
             modelBuilder.Entity<StaffAccessAudit>(entity =>
             {
                 entity.HasIndex(a => new { a.EmployeeId, a.OccurredAt });
+            });
+
+            modelBuilder.Entity<UnitTypeMigrationNote>(entity =>
+            {
+                entity.Property(n => n.UnitType).IsRequired().HasMaxLength(100);
+                entity.HasIndex(n => n.UnitType).IsUnique();
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>
@@ -1716,8 +1735,11 @@ namespace DAMS.Infrastructure.Data
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
             var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
             var result = base.SaveChanges(acceptAllChangesOnSuccess);
-            if (unitsChanged)
+            if (unitsChanged && !enlisted)
                 ProjectListCache.Bump();
             return result;
         }
@@ -1728,10 +1750,49 @@ namespace DAMS.Infrastructure.Data
             CaptureFinancialCorrections();
             EnforceImmutableHistory();
             var unitsChanged = UnitRowsChanged();
+            var enlisted = Database.CurrentTransaction != null;
+            if (unitsChanged && enlisted)
+                ProjectListCachePending = true;
             var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
-            if (unitsChanged)
+            if (unitsChanged && !enlisted)
                 ProjectListCache.Bump();
             return result;
+        }
+
+        /// <summary>
+        /// Bumps the project-list cache only after the transaction that changed a unit commits.
+        /// In-memory tests have no relational transaction, so SaveChanges bumps immediately.
+        /// </summary>
+        private sealed class ProjectListCacheTransactionInterceptor : DbTransactionInterceptor
+        {
+            public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData)
+            {
+                if (eventData.Context is AppDbContext context && context.ProjectListCachePending)
+                {
+                    context.ProjectListCachePending = false;
+                    ProjectListCache.Bump();
+                }
+            }
+
+            public override Task TransactionCommittedAsync(
+                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+            {
+                TransactionCommitted(transaction, eventData);
+                return Task.CompletedTask;
+            }
+
+            public override void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData)
+            {
+                if (eventData.Context is AppDbContext context)
+                    context.ProjectListCachePending = false;
+            }
+
+            public override Task TransactionRolledBackAsync(
+                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+            {
+                TransactionRolledBack(transaction, eventData);
+                return Task.CompletedTask;
+            }
         }
 
         private bool UnitRowsChanged() =>

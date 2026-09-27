@@ -10,8 +10,6 @@ namespace DAMS.Application.Common
     /// </summary>
     public static class LeadDisplay
     {
-        private static readonly TimeZoneInfo Pakistan = ResolvePakistan();
-
         /// <summary>The four statuses the redesigned screens show.</summary>
         public static string Status(LeadStage stage) => stage switch
         {
@@ -38,24 +36,7 @@ namespace DAMS.Application.Common
         }
 
         /// <summary>Example: Sat 27 Sep, 4:00 PM. The instant is stored in UTC.</summary>
-        public static string When(DateTime utc)
-        {
-            var instant = utc.Kind == DateTimeKind.Unspecified
-                ? DateTime.SpecifyKind(utc, DateTimeKind.Utc)
-                : utc.ToUniversalTime();
-            var local = TimeZoneInfo.ConvertTimeFromUtc(instant, Pakistan);
-            return local.ToString("ddd d MMM, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
-        }
-
-        private static TimeZoneInfo ResolvePakistan()
-        {
-            foreach (var id in new[] { "Asia/Karachi", "Pakistan Standard Time" })
-            {
-                if (TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone))
-                    return zone;
-            }
-
-            return TimeZoneInfo.Utc;
-        }
+        public static string When(DateTime utc) =>
+            PakistanTime.ToLocal(utc).ToString("ddd d MMM, h:mm tt", CultureInfo.GetCultureInfo("en-US"));
     }
 }

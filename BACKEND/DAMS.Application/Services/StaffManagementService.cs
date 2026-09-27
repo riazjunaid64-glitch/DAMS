@@ -423,6 +423,39 @@ namespace DAMS.Application.Services
             LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default) =>
             SetAccessAsync(actor, employeeId, enabled: true, cancellationToken);
 
+        public async Task<List<StaffAccessAuditDto>> GetAccessHistoryAsync(
+            LeadUserContext actor, int employeeId, CancellationToken cancellationToken = default)
+        {
+            EnsureCanManageStaff(actor);
+
+            if (!await _context.Employees.AnyAsync(e => e.Id == employeeId, cancellationToken))
+                throw new StaffNotFoundException("Employee not found.");
+
+            var rows = await _context.StaffAccessAudits
+                .AsNoTracking()
+                .Where(a => a.EmployeeId == employeeId)
+                .OrderByDescending(a => a.OccurredAt)
+                .ThenByDescending(a => a.Id)
+                .ToListAsync(cancellationToken);
+
+            var actorIds = rows.Select(r => r.PerformedByUserId).Distinct().ToArray();
+            var names = await _context.Users
+                .AsNoTracking()
+                .Where(u => actorIds.Contains(u.UserId))
+                .ToDictionaryAsync(u => u.UserId, u => u.FullName, cancellationToken);
+
+            return rows.Select(a => new StaffAccessAuditDto
+            {
+                Id = a.Id,
+                EmployeeId = a.EmployeeId,
+                UserId = a.UserId,
+                PerformedByUserId = a.PerformedByUserId,
+                PerformedByName = names.GetValueOrDefault(a.PerformedByUserId),
+                AccessEnabled = a.AccessEnabled,
+                OccurredAt = a.OccurredAt
+            }).ToList();
+        }
+
         private async Task<StaffAccountDto> SetAccessAsync(
             LeadUserContext actor,
             int employeeId,
@@ -431,55 +464,73 @@ namespace DAMS.Application.Services
         {
             EnsureCanManageStaff(actor);
 
-            var employee = await _context.Employees
-                .Include(e => e.User).ThenInclude(u => u!.Role)
-                .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
-                ?? throw new InvalidOperationException("Employee not found.");
-
-            if (employee.User == null)
-                throw new InvalidOperationException("This employee has no login account. Connect an account first.");
-
-            if (actor.UserId == employee.User.UserId
-                || (actor.EmployeeId.HasValue && actor.EmployeeId.Value == employee.Id))
-                throw new LeadAuthorizationException("You cannot change your own access.");
-
-            EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
-
-            var target = enabled ? UserAccountStatus.Active : UserAccountStatus.Disabled;
-            if (employee.User.AccountStatus == target)
-                return await LoadAccountAsync(employee.Id, cancellationToken);
-
-            if (!enabled
-                && string.Equals(employee.User.Role?.Role_name, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+            // Serializable so two admins cannot each see the other as still active and
+            // turn both of the last admins off.
+            await ExecuteResilientlyAsync(async () =>
             {
-                var otherActiveAdmins = await _context.Users.CountAsync(
-                    u => u.UserId != employee.User.UserId
-                         && u.AccountStatus == UserAccountStatus.Active
-                         && u.Role.Role_name == LeadRoles.Admin,
-                    cancellationToken);
-                if (otherActiveAdmins == 0)
-                    throw new InvalidOperationException("The last active admin cannot be turned off.");
-            }
+                await using var transaction = await BeginProvisioningAsync(cancellationToken);
 
-            employee.User.AccountStatus = target;
-            if (!enabled)
-            {
-                employee.User.RefreshToken = null;
-                employee.User.RefreshTokenExpiresAt = null;
-            }
+                var employee = await _context.Employees
+                    .Include(e => e.User).ThenInclude(u => u!.Role)
+                    .FirstOrDefaultAsync(e => e.Id == employeeId, cancellationToken)
+                    ?? throw new StaffNotFoundException("Employee not found.");
 
-            employee.UpdatedAt = DateTime.UtcNow;
-            _context.StaffAccessAudits.Add(new StaffAccessAudit
-            {
-                EmployeeId = employee.Id,
-                UserId = employee.User.UserId,
-                PerformedByUserId = actor.UserId,
-                AccessEnabled = enabled,
-                OccurredAt = DateTime.UtcNow
+                if (employee.User == null)
+                    throw new InvalidOperationException("This employee has no login account. Connect an account first.");
+
+                if (actor.UserId == employee.User.UserId
+                    || (actor.EmployeeId.HasValue && actor.EmployeeId.Value == employee.Id))
+                    throw new LeadAuthorizationException("You cannot change your own access.");
+
+                EnsureCanManageAccountOf(actor, employee.User.Role?.Role_name);
+
+                if (enabled && employee.User.AccountStatus == UserAccountStatus.Invited)
+                    throw new InvalidOperationException(
+                        "An invited login is turned on when they choose a password. Only a disabled login can be turned back on here.");
+
+                var target = enabled ? UserAccountStatus.Active : UserAccountStatus.Disabled;
+                if (employee.User.AccountStatus == target)
+                {
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                    return;
+                }
+
+                if (!enabled
+                    && string.Equals(employee.User.Role?.Role_name, LeadRoles.Admin, StringComparison.OrdinalIgnoreCase))
+                {
+                    var otherActiveAdmins = await _context.Users.CountAsync(
+                        u => u.UserId != employee.User.UserId
+                             && u.AccountStatus == UserAccountStatus.Active
+                             && u.Role.Role_name == LeadRoles.Admin,
+                        cancellationToken);
+                    if (otherActiveAdmins == 0)
+                        throw new InvalidOperationException("The last active admin cannot be turned off.");
+                }
+
+                employee.User.AccountStatus = target;
+                if (!enabled)
+                {
+                    employee.User.RefreshToken = null;
+                    employee.User.RefreshTokenExpiresAt = null;
+                }
+
+                employee.UpdatedAt = DateTime.UtcNow;
+                _context.StaffAccessAudits.Add(new StaffAccessAudit
+                {
+                    EmployeeId = employee.Id,
+                    UserId = employee.User.UserId,
+                    PerformedByUserId = actor.UserId,
+                    AccessEnabled = enabled,
+                    OccurredAt = DateTime.UtcNow
+                });
+
+                await _context.SaveChangesAsync(cancellationToken);
+                if (transaction != null)
+                    await transaction.CommitAsync(cancellationToken);
             });
 
-            await _context.SaveChangesAsync(cancellationToken);
-            return await LoadAccountAsync(employee.Id, cancellationToken);
+            return await LoadAccountAsync(employeeId, cancellationToken);
         }
 
         /// <summary>

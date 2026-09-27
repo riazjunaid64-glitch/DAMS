@@ -99,7 +99,7 @@ namespace DAMS.Application.Services
         await EnsureUnitNumberIsFree(unit.ProjectId, unitNumber, id);
 
         unit.UnitNumber = unitNumber;
-        unit.UnitType = UnitTypes.Require(dto.UnitType);
+        unit.UnitType = UnitTypes.ResolveForUpdate(dto.UnitType, unit.UnitType);
         unit.FloorNumber = dto.FloorNumber;
         unit.Size = dto.Size;
         unit.Price = dto.Price;

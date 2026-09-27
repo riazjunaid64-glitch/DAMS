@@ -40,9 +40,28 @@ namespace DAMS.Application.Common
         {
             var canonical = Canonical(value);
             if (canonical == null)
-                throw new InvalidOperationException(
-                    $"Unit type must be one of: {string.Join(", ", Allowed)}.");
+                throw Rejected();
             return canonical;
         }
+
+        /// <summary>
+        /// An edit may keep a legacy type that the migration could not map, so the rest of the
+        /// unit can still be saved. A change to anything outside the fixed list is rejected.
+        /// </summary>
+        public static string ResolveForUpdate(string? submitted, string current)
+        {
+            var canonical = Canonical(submitted);
+            if (canonical != null)
+                return canonical;
+
+            if (!string.IsNullOrWhiteSpace(current)
+                && string.Equals(submitted?.Trim(), current.Trim(), StringComparison.OrdinalIgnoreCase))
+                return current;
+
+            throw Rejected();
+        }
+
+        private static InvalidOperationException Rejected() =>
+            new($"Unit type must be one of: {string.Join(", ", Allowed)}.");
     }
 }

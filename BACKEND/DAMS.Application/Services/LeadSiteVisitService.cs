@@ -172,7 +172,7 @@ namespace DAMS.Application.Services
             lead.UpdatedAt = DateTime.UtcNow;
 
             LeadTimeline.Record(_context, lead, LeadActivityType.SiteVisitCompleted,
-                $"Site visit completed — {dto.Outcome}.", ctx,
+                $"Site visit completed — {LeadDisplay.Words(dto.Outcome)}.", ctx,
                 a =>
                 {
                     a.Notes = $"Next: {visit.NextAction}";
@@ -223,7 +223,8 @@ namespace DAMS.Application.Services
             if (status == LeadSiteVisitStatus.Missed)
             {
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.SiteVisitMissed,
-                    $"Site visit missed: {LeadService.FullName(lead)}", visit.CancellationReason,
+                    $"Site visit missed: {LeadService.FullName(lead)}",
+                    visit.CancellationReason ?? "The site visit was marked missed.",
                     $"missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
             }
 

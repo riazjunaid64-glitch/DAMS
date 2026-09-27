@@ -180,4 +180,15 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public string Email { get; set; } = string.Empty;
         public string? CNIC { get; set; }
     }
+
+    public class StaffAccessAuditDto
+    {
+        public int Id { get; set; }
+        public int EmployeeId { get; set; }
+        public int UserId { get; set; }
+        public int PerformedByUserId { get; set; }
+        public string? PerformedByName { get; set; }
+        public bool AccessEnabled { get; set; }
+        public DateTime OccurredAt { get; set; }
+    }
 }

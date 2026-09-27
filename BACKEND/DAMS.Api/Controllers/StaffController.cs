@@ -105,33 +105,33 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        [HttpGet("accounts/{employeeId:int}/access-history")]
+        [Authorize(Roles = LeadRoles.AdminOrManager)]
+        public Task<IActionResult> GetAccessHistory(int employeeId, CancellationToken cancellationToken) =>
+            RunAccountAsync(actor => _staff.GetAccessHistoryAsync(actor, employeeId, cancellationToken), cancellationToken);
+
         [HttpPost("accounts/{employeeId:int}/disable-access")]
         [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public async Task<IActionResult> DisableAccess(int employeeId, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var actor = await _resolver.ResolveAsync(User, cancellationToken);
-                return Ok(await _staff.DisableAccessAsync(actor, employeeId, cancellationToken));
-            }
-            catch (LeadAuthorizationException ex)
-            {
-                return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
-        }
+        public Task<IActionResult> DisableAccess(int employeeId, CancellationToken cancellationToken) =>
+            RunAccountAsync(actor => _staff.DisableAccessAsync(actor, employeeId, cancellationToken), cancellationToken);
 
         [HttpPost("accounts/{employeeId:int}/enable-access")]
         [Authorize(Roles = LeadRoles.AdminOrManager)]
-        public async Task<IActionResult> EnableAccess(int employeeId, CancellationToken cancellationToken)
+        public Task<IActionResult> EnableAccess(int employeeId, CancellationToken cancellationToken) =>
+            RunAccountAsync(actor => _staff.EnableAccessAsync(actor, employeeId, cancellationToken), cancellationToken);
+
+        private async Task<IActionResult> RunAccountAsync<T>(
+            Func<LeadUserContext, Task<T>> action,
+            CancellationToken cancellationToken)
         {
             try
             {
                 var actor = await _resolver.ResolveAsync(User, cancellationToken);
-                return Ok(await _staff.EnableAccessAsync(actor, employeeId, cancellationToken));
+                return Ok(await action(actor));
+            }
+            catch (StaffNotFoundException ex)
+            {
+                return NotFound(new { message = ex.Message });
             }
             catch (LeadAuthorizationException ex)
             {

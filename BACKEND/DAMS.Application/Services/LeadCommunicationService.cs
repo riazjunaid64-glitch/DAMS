@@ -262,9 +262,10 @@ namespace DAMS.Application.Services
         private static string BuildSummary(RecordLeadCommunicationDto dto)
         {
             var direction = dto.Direction == LeadCommunicationDirection.Inbound ? "Inbound" : "Outbound";
+            var channel = LeadDisplay.Words(dto.Channel);
             return dto.Connected
-                ? $"{direction} {dto.Channel} recorded."
-                : $"{direction} {dto.Channel} attempt — no answer.";
+                ? $"{direction} {channel} recorded."
+                : $"{direction} {channel} attempt — no answer.";
         }
 
         private async Task<LeadCommunicationDto> LoadAsync(int id, CancellationToken cancellationToken) =>

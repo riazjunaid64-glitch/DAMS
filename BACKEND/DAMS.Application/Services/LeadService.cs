@@ -1807,7 +1807,7 @@ namespace DAMS.Application.Services
                 await _notifications.QueueForSupervisorsAsync(lead,
                     NotificationType.LeadReassigned,
                     $"Lead ownership changed: {name}",
-                    LeadContactNormalizer.Clean(dto.Reason),
+                    LeadContactNormalizer.Clean(dto.Reason) ?? "Lead ownership was changed.",
                     $"reassign:{DateTime.UtcNow:yyyyMMddHHmmss}",
                     cancellationToken: cancellationToken);
             }
@@ -1868,7 +1868,7 @@ namespace DAMS.Application.Services
             if (dto.Stage is LeadStage.Negotiation or LeadStage.BookingPending or LeadStage.DocumentsInProgress)
             {
                 await _notifications.QueueForSupervisorsAsync(lead, NotificationType.LeadStageChanged,
-                    $"{FullName(lead)} moved to {dto.Stage}",
+                    $"{FullName(lead)} moved to {LeadDisplay.Words(dto.Stage)}",
                     LeadContactNormalizer.Clean(dto.Notes),
                     $"stage:{dto.Stage}", cancellationToken: cancellationToken);
             }
@@ -2015,7 +2015,7 @@ namespace DAMS.Application.Services
 
             var reopenReason = LeadContactNormalizer.Clean(dto.Reason);
             LeadTimeline.Record(_context, lead, LeadActivityType.LeadReopened,
-                $"Lead reopened from {previousStage} into {dto.Stage}.", ctx,
+                $"Lead reopened from {LeadDisplay.Words(previousStage)} into {LeadDisplay.Words(dto.Stage)}.", ctx,
                 a =>
                 {
                     a.Notes = reopenReason;

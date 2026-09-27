@@ -4,6 +4,7 @@ using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
 using DAMS.Domain.Enums;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace DAMS.Api.Controllers
 {
@@ -64,16 +65,22 @@ namespace DAMS.Api.Controllers
             RunAsync(ctx => _followUps.GetForLeadAsync(id, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("follow-ups/{followUpId:int}/complete")]
-        public Task<IActionResult> CompleteFollowUp(int followUpId, [FromBody] CompleteLeadFollowUpDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _followUps.CompleteAsync(followUpId, dto, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> CompleteFollowUp(
+            int followUpId,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CompleteLeadFollowUpDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _followUps.CompleteAsync(followUpId, dto ?? new CompleteLeadFollowUpDto(), ctx, cancellationToken), cancellationToken);
 
         [HttpPost("follow-ups/{followUpId:int}/reschedule")]
         public Task<IActionResult> RescheduleFollowUp(int followUpId, [FromBody] RescheduleLeadFollowUpDto dto, CancellationToken cancellationToken) =>
             RunAsync(ctx => _followUps.RescheduleAsync(followUpId, dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("follow-ups/{followUpId:int}/cancel")]
-        public Task<IActionResult> CancelFollowUp(int followUpId, [FromBody] CloseSiteVisitDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _followUps.CancelAsync(followUpId, dto.Reason, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> CancelFollowUp(
+            int followUpId,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CloseSiteVisitDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _followUps.CancelAsync(followUpId, dto?.Reason, ctx, cancellationToken), cancellationToken);
 
         [HttpGet("my/follow-ups")]
         public Task<IActionResult> GetMyFollowUps([FromQuery] bool overdueOnly, CancellationToken cancellationToken) =>
@@ -98,12 +105,18 @@ namespace DAMS.Api.Controllers
             RunAsync(ctx => _siteVisits.CompleteAsync(visitId, dto, ctx, cancellationToken), cancellationToken);
 
         [HttpPost("site-visits/{visitId:int}/cancel")]
-        public Task<IActionResult> CancelSiteVisit(int visitId, [FromBody] CloseSiteVisitDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _siteVisits.CancelAsync(visitId, dto, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> CancelSiteVisit(
+            int visitId,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CloseSiteVisitDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _siteVisits.CancelAsync(visitId, dto ?? new CloseSiteVisitDto(), ctx, cancellationToken), cancellationToken);
 
         [HttpPost("site-visits/{visitId:int}/missed")]
-        public Task<IActionResult> MarkSiteVisitMissed(int visitId, [FromBody] CloseSiteVisitDto dto, CancellationToken cancellationToken) =>
-            RunAsync(ctx => _siteVisits.MarkMissedAsync(visitId, dto, ctx, cancellationToken), cancellationToken);
+        public Task<IActionResult> MarkSiteVisitMissed(
+            int visitId,
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] CloseSiteVisitDto? dto,
+            CancellationToken cancellationToken) =>
+            RunAsync(ctx => _siteVisits.MarkMissedAsync(visitId, dto ?? new CloseSiteVisitDto(), ctx, cancellationToken), cancellationToken);
 
         [HttpGet("my/site-visits")]
         public Task<IActionResult> GetUpcomingSiteVisits([FromQuery] int days = 7, CancellationToken cancellationToken = default) =>

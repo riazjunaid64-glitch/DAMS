@@ -6,38 +6,34 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace DAMS.Infrastructure.Migrations
 {
     /// <inheritdoc />
-    public partial class AddStaffAccessAudit : Migration
+    public partial class RecordUnmatchedUnitTypes : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
-                name: "StaffAccessAudits",
+                name: "UnitTypeMigrationNotes",
                 columns: table => new
                 {
                     Id = table.Column<int>(type: "int", nullable: false)
                         .Annotation("SqlServer:Identity", "1, 1"),
-                    EmployeeId = table.Column<int>(type: "int", nullable: false),
-                    UserId = table.Column<int>(type: "int", nullable: false),
-                    PerformedByUserId = table.Column<int>(type: "int", nullable: false),
-                    AccessEnabled = table.Column<bool>(type: "bit", nullable: false),
-                    OccurredAt = table.Column<DateTime>(type: "datetime2", nullable: false)
+                    UnitType = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: false),
+                    NotedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_StaffAccessAudits", x => x.Id);
+                    table.PrimaryKey("PK_UnitTypeMigrationNotes", x => x.Id);
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_StaffAccessAudits_EmployeeId_OccurredAt",
-                table: "StaffAccessAudits",
-                columns: new[] { "EmployeeId", "OccurredAt" });
+                name: "IX_UnitTypeMigrationNotes_UnitType",
+                table: "UnitTypeMigrationNotes",
+                column: "UnitType",
+                unique: true);
 
-            // No WHERE: under a case-insensitive collation '1 BED' equals '1 Bed', so a
-            // filter on the canonical spellings would skip the values this rewrite exists
-            // to fix. The CASE keeps anything it does not recognise.
-            // Unmatched values are recorded by the following migration, not PRINT, because
-            // EF does not surface PRINT from database update.
+            // Repeat the rewrite so a database that already applied the earlier
+            // case-insensitive filter still gets 1 BED and studio corrected.
+            // Unmatched types are stored here; EF does not show PRINT from Migrate().
             migrationBuilder.Sql("""
                 UPDATE Units
                 SET UnitType = CASE LOWER(REPLACE(REPLACE(UnitType, ' ', ''), '-', ''))
@@ -55,6 +51,12 @@ namespace DAMS.Infrastructure.Migrations
                     WHEN 'parking' THEN 'Parking space'
                     ELSE UnitType
                 END;
+
+                INSERT INTO UnitTypeMigrationNotes (UnitType, NotedAt)
+                SELECT DISTINCT UnitType, SYSUTCDATETIME()
+                FROM Units
+                WHERE UnitType COLLATE Latin1_General_CS_AS
+                    NOT IN (N'Studio', N'1 Bed', N'2 Bed', N'3 Bed', N'Parking space');
                 """);
         }
 
@@ -62,7 +64,7 @@ namespace DAMS.Infrastructure.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "StaffAccessAudits");
+                name: "UnitTypeMigrationNotes");
         }
     }
 }
