@@ -194,6 +194,23 @@ namespace DAMS.Application.DTOs.LeadDtos
         public int TotalPages => PageSize <= 0 ? 0 : (int)Math.Ceiling((double)TotalCount / PageSize);
     }
 
+    /// <summary>
+    /// The numbers on the leads list's cards. In progress is every lead that is not Won, Lost or
+    /// Dormant, including leads nobody has contacted yet; Lost does not include Dormant.
+    /// </summary>
+    public class LeadSummaryDto
+    {
+        public int Total { get; set; }
+
+        public int InProgress { get; set; }
+
+        public int Won { get; set; }
+
+        public int Lost { get; set; }
+
+        public int Dormant { get; set; }
+    }
+
     public class LeadFilterDto
     {
         public LeadStage? Stage { get; set; }
@@ -225,8 +242,10 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public int? UnitId { get; set; }
 
+        /// <summary>The first Pakistan day included; any time of day on it is ignored.</summary>
         public DateTime? CreatedFrom { get; set; }
 
+        /// <summary>The last Pakistan day included, to its end.</summary>
         public DateTime? CreatedTo { get; set; }
 
         public string? SearchTerm { get; set; }

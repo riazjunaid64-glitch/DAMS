@@ -1,6 +1,8 @@
 using System.Reflection;
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Services;
+using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -255,6 +257,74 @@ public sealed class LeadEditAndTimelineTests
             var text = $"{entry.Summary} {entry.Notes} {entry.PreviousValue} {entry.NewValue}";
             Assert.DoesNotContain(detailed, name => text.Contains(name, StringComparison.Ordinal));
         }
+    }
+
+    [Fact]
+    public async Task KAN48_TheTimelineComesFiftyAtATimeNewestFirst_AndEachOlderPageStartsWhereTheLastEnded()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var start = DateTime.UtcNow.AddDays(-10);
+
+        // Written out of time order and often sharing a time, with some of the detailed-stage
+        // rows the timeline leaves out among them.
+        for (var i = 0; i < 130; i++)
+        {
+            h.Db.LeadActivities.Add(new LeadActivity
+            {
+                LeadId = leadId,
+                Type = i % 10 == 0 ? LeadActivityType.StageChanged : LeadActivityType.InternalNote,
+                Summary = $"Entry {i}",
+                IsSystemGenerated = true,
+                OccurredAt = start.AddMinutes(i * 37 % 60)
+            });
+        }
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+        // Written last, dated when the call took place.
+        await h.Communications.RecordAsync(leadId, new RecordLeadCommunicationDto
+        {
+            Channel = LeadCommunicationChannel.Phone,
+            Direction = LeadCommunicationDirection.Outbound,
+            OccurredAt = start.AddMinutes(30),
+            Summary = "Logged ten days late."
+        }, h.Sales);
+
+        var expected = await h.Db.LeadActivities.AsNoTracking()
+            .Where(a => a.LeadId == leadId && !LeadTimeline.NotShownOnTimeline.Contains(a.Type))
+            .OrderByDescending(a => a.OccurredAt)
+            .ThenByDescending(a => a.Id)
+            .Select(a => a.Id)
+            .ToListAsync();
+        Assert.True(expected.Count > 100);
+
+        var first = await h.Leads.GetTimelineAsync(leadId, h.Admin);
+        Assert.Equal(expected.Take(50), first.Select(a => a.Id));
+        var second = await h.Leads.GetTimelineAsync(leadId, h.Admin, before: first[^1].Id);
+        Assert.Equal(expected.Skip(50).Take(50), second.Select(a => a.Id));
+
+        // Small pages walk the whole timeline without skipping or repeating an entry.
+        var walked = new List<int>();
+        int? before = null;
+        while (true)
+        {
+            var page = await h.Leads.GetTimelineAsync(leadId, h.Admin, take: 7, before: before);
+            Assert.InRange(page.Count, 0, 7);
+            if (page.Count == 0)
+                break;
+            walked.AddRange(page.Select(a => a.Id));
+            before = page[^1].Id;
+        }
+        Assert.Equal(expected, walked);
+
+        Assert.Equal(100, (await h.Leads.GetTimelineAsync(leadId, h.Admin, take: 500)).Count);
+        Assert.Single(await h.Leads.GetTimelineAsync(leadId, h.Admin, take: 0));
+
+        // A position on another lead's timeline, or on none, is refused rather than guessed at.
+        var otherLead = await h.CreateWorkedLeadAsync("0300-7654321");
+        var otherEntry = (await h.Leads.GetTimelineAsync(otherLead, h.Admin))[0].Id;
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Leads.GetTimelineAsync(leadId, h.Admin, before: otherEntry));
+        await Assert.ThrowsAsync<LeadNotFoundException>(() => h.Leads.GetTimelineAsync(leadId, h.Admin, before: int.MaxValue));
     }
 
     [Fact]
