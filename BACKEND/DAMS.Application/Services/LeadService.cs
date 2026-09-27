@@ -2041,6 +2041,7 @@ namespace DAMS.Application.Services
         {
             var lead = await LoadForWriteAsync(id, ctx, cancellationToken);
             LeadAccess.EnsureCanConvert(ctx, lead);
+            LeadAccess.EnsureCanSetConversionTerms(ctx, dto);
 
             // Idempotent: a repeated request returns the first conversion rather than
             // creating a second customer or booking.

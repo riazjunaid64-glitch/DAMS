@@ -211,6 +211,58 @@ public sealed class LeadConversionTests
         Assert.Equal(h.SalesEmployeeId, lead.AssignedEmployeeId);
     }
 
+    public static TheoryData<string> SalespersonConversionTerms => new()
+    {
+        nameof(ConvertLeadDto.AgreedSalePrice),
+        nameof(ConvertLeadDto.DiscountPercent),
+        nameof(ConvertLeadDto.DiscountReason),
+        nameof(ConvertLeadDto.BookingAmountRequired),
+        nameof(ConvertLeadDto.BookingAmountDueDate),
+        nameof(ConvertLeadDto.CustomerId),
+    };
+
+    [Theory]
+    [MemberData(nameof(SalespersonConversionTerms))]
+    public async Task EmployeeCannotSetPriceDiscountBookingAmountOrCustomer(string field)
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+        var customersBefore = await h.Db.Customers.CountAsync();
+        var dto = new ConvertLeadDto { UnitId = h.UnitId };
+        switch (field)
+        {
+            case nameof(ConvertLeadDto.AgreedSalePrice): dto.AgreedSalePrice = 1m; break;
+            case nameof(ConvertLeadDto.DiscountPercent): dto.DiscountPercent = 100m; break;
+            case nameof(ConvertLeadDto.DiscountReason): dto.DiscountReason = "Friend"; break;
+            case nameof(ConvertLeadDto.BookingAmountRequired): dto.BookingAmountRequired = 0m; break;
+            case nameof(ConvertLeadDto.BookingAmountDueDate): dto.BookingAmountDueDate = DateTime.UtcNow.AddYears(5); break;
+            case nameof(ConvertLeadDto.CustomerId): dto.CustomerId = 1; break;
+        }
+
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => h.Leads.ConvertAsync(leadId, dto, h.Sales));
+
+        Assert.Equal(0, await h.Db.Bookings.CountAsync());
+        Assert.Equal(customersBefore, await h.Db.Customers.CountAsync());
+        Assert.NotEqual(LeadStage.Won, (await h.Db.Leads.AsNoTracking().SingleAsync(l => l.Id == leadId)).Stage);
+    }
+
+    [Fact]
+    public async Task ManagerCanStillSetConversionTerms()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateWorkedLeadAsync();
+
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto
+        {
+            UnitId = h.UnitId,
+            DiscountPercent = 5m,
+            DiscountReason = "Early booking"
+        }, h.Manager);
+
+        Assert.True(result.Created);
+        Assert.Equal(1, await h.Db.Bookings.CountAsync());
+    }
+
     [Fact]
     public async Task EmployeeCannotConvertSomeoneElsesLead()
     {

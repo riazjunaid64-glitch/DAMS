@@ -1,3 +1,4 @@
+using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Domain.Entities;
 
 namespace DAMS.Application.Common
@@ -103,6 +104,27 @@ namespace DAMS.Application.Common
                 ctx.IsEmployee
                     ? "You can only convert leads assigned to you."
                     : "Only an admin or manager can convert a lead into a booking.");
+        }
+
+        /// <summary>
+        /// Price, discount, booking amount and the choice of an existing customer are
+        /// admin and manager decisions. A salesperson converting their own lead gets the
+        /// unit's standard terms and a customer matched or created from the lead, so any of
+        /// these sent by an employee is refused rather than quietly applied or dropped.
+        /// </summary>
+        public static void EnsureCanSetConversionTerms(LeadUserContext ctx, ConvertLeadDto dto)
+        {
+            if (!ctx.IsEmployee)
+                return;
+
+            if (dto.CustomerId.HasValue
+                || dto.AgreedSalePrice.HasValue
+                || dto.DiscountPercent.HasValue
+                || !string.IsNullOrWhiteSpace(dto.DiscountReason)
+                || dto.BookingAmountRequired.HasValue
+                || dto.BookingAmountDueDate.HasValue)
+                throw new LeadAuthorizationException(
+                    "Only an admin or manager can set the price, discount, booking amount or customer when converting a lead.");
         }
 
         /// <summary>

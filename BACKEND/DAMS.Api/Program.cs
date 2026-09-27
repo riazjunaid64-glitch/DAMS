@@ -244,7 +244,9 @@ builder.Services.AddDbContextPool<AppDbContext>(options =>
 {
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("DefaultConnection"),
-        sql => sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null));
+        sql => sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null))
+        // Registered here, not in AppDbContext.OnConfiguring: pooling forbids options changes there.
+        .AddInterceptors(ProjectListCacheTransactionInterceptor.Instance);
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();

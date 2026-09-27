@@ -1,6 +1,4 @@
-using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 
@@ -8,19 +6,12 @@ namespace DAMS.Infrastructure.Data
 {
     public class AppDbContext : DbContext
     {
-        private static readonly ProjectListCacheTransactionInterceptor ProjectListCacheInterceptor = new();
-
         /// <summary>Set when a unit change is saved inside a transaction that has not committed.</summary>
         internal bool ProjectListCachePending { get; set; }
 
         public AppDbContext(DbContextOptions<AppDbContext> options)
             : base(options)
         {
-        }
-
-        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-        {
-            optionsBuilder.AddInterceptors(ProjectListCacheInterceptor);
         }
 
         public DbSet<User> Users { get; set; }
@@ -1757,42 +1748,6 @@ namespace DAMS.Infrastructure.Data
             if (unitsChanged && !enlisted)
                 ProjectListCache.Bump();
             return result;
-        }
-
-        /// <summary>
-        /// Bumps the project-list cache only after the transaction that changed a unit commits.
-        /// In-memory tests have no relational transaction, so SaveChanges bumps immediately.
-        /// </summary>
-        private sealed class ProjectListCacheTransactionInterceptor : DbTransactionInterceptor
-        {
-            public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData)
-            {
-                if (eventData.Context is AppDbContext context && context.ProjectListCachePending)
-                {
-                    context.ProjectListCachePending = false;
-                    ProjectListCache.Bump();
-                }
-            }
-
-            public override Task TransactionCommittedAsync(
-                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
-            {
-                TransactionCommitted(transaction, eventData);
-                return Task.CompletedTask;
-            }
-
-            public override void TransactionRolledBack(DbTransaction transaction, TransactionEndEventData eventData)
-            {
-                if (eventData.Context is AppDbContext context)
-                    context.ProjectListCachePending = false;
-            }
-
-            public override Task TransactionRolledBackAsync(
-                DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
-            {
-                TransactionRolledBack(transaction, eventData);
-                return Task.CompletedTask;
-            }
         }
 
         private bool UnitRowsChanged() =>

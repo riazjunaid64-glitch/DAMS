@@ -468,6 +468,11 @@ namespace DAMS.Application.Services
             // turn both of the last admins off.
             await ExecuteResilientlyAsync(async () =>
             {
+                // A retry must re-read from the database: the failed attempt left this user
+                // changed in memory and its audit row pending, so without this the retry would
+                // see the new status already applied, save nothing, and report success.
+                _context.ChangeTracker.Clear();
+
                 await using var transaction = await BeginProvisioningAsync(cancellationToken);
 
                 var employee = await _context.Employees
@@ -488,7 +493,14 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException(
                         "An invited login is turned on when they choose a password. Only a disabled login can be turned back on here.");
 
-                var target = enabled ? UserAccountStatus.Active : UserAccountStatus.Disabled;
+                // A login that never set a password goes back to waiting for its invitation, not
+                // to Active: Active with no password cannot sign in, and invitation redemption and
+                // resend both only accept Invited, so it would be stuck for good.
+                var target = !enabled
+                    ? UserAccountStatus.Disabled
+                    : string.IsNullOrEmpty(employee.User.Password)
+                        ? UserAccountStatus.Invited
+                        : UserAccountStatus.Active;
                 if (employee.User.AccountStatus == target)
                 {
                     if (transaction != null)

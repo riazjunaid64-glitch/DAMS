@@ -912,6 +912,33 @@ public sealed class StaffManagementTests
             staff.DisableAccessAsync(h.Admin, 999_999));
     }
 
+    [Fact]
+    public async Task An_invited_login_turned_off_and_back_on_is_waiting_for_its_invitation_again()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+        var invited = await staff.CreateAsync(h.Admin, NewStaff(email: "paused@example.com", teamId: h.TeamId));
+        var employeeId = invited.Account.EmployeeId;
+
+        var off = await staff.DisableAccessAsync(h.Admin, employeeId);
+        Assert.Equal(StaffAccountAccess.Disabled, off.Access);
+
+        // It never set a password, so "on" must mean invited again, not Active with no way in.
+        var on = await staff.EnableAccessAsync(h.Admin, employeeId);
+        Assert.Equal(StaffAccountAccess.Invited, on.Access);
+        h.Db.ChangeTracker.Clear();
+        var user = await h.Db.Users.SingleAsync(u => u.UserId == invited.Account.UserId);
+        Assert.Equal(UserAccountStatus.Invited, user.AccountStatus);
+        Assert.Null(user.Password);
+
+        // And the invitation can be sent again, which requires Invited.
+        invitations.Calls.Clear();
+        var resent = await staff.ResendInvitationAsync(h.Admin, employeeId);
+        Assert.True(resent.Issued);
+        Assert.Single(invitations.Calls);
+    }
+
     private sealed class FixedTokenService : ITokenService
     {
         public string GenerateAccessToken(User user, string roleName) => "access-token";
