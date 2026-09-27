@@ -55,11 +55,11 @@ namespace DAMS.Api
                     var result = await alerts.RunScanAsync(stoppingToken);
 
                     if (result.NotificationsCreated > 0 || result.FollowUpsMarkedMissed > 0 || result.SiteVisitsMarkedMissed > 0
-                        || result.DormantLeadsBroughtBack > 0)
+                        || result.DormantLeadsBroughtBack > 0 || result.DormantLeadsFailed > 0)
                         _logger.LogInformation(
-                            "Lead alert scan: {Notifications} notification(s), {MissedFollowUps} missed follow-up(s), {MissedVisits} missed visit(s), {Escalations} escalation(s), {BroughtBack} dormant lead(s) brought back.",
+                            "Lead alert scan: {Notifications} notification(s), {MissedFollowUps} missed follow-up(s), {MissedVisits} missed visit(s), {Escalations} escalation(s), {BroughtBack} dormant lead(s) brought back, {BringBackFailed} failed.",
                             result.NotificationsCreated, result.FollowUpsMarkedMissed, result.SiteVisitsMarkedMissed, result.EscalationsRaised,
-                            result.DormantLeadsBroughtBack);
+                            result.DormantLeadsBroughtBack, result.DormantLeadsFailed);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

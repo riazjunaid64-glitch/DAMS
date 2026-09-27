@@ -19,6 +19,35 @@ namespace DAMS.Application.Services
             _notifications = notifications;
         }
 
+        /// <summary>
+        /// The one place a follow-up row is made. Callers acting for a person validate the request
+        /// and record it on the timeline themselves; the system (a Dormant lead brought back on its
+        /// date) passes no creator and writes its own timeline entry.
+        /// </summary>
+        internal static LeadFollowUp Schedule(
+            AppDbContext context, Lead lead, LeadFollowUpType type, int assignedEmployeeId, string title, DateTime dueAt,
+            TaskPriority priority, int? createdByUserId, DateTime createdAt, string? notes = null, DateTime? remindAt = null)
+        {
+            var followUp = new LeadFollowUp
+            {
+                Lead = lead,
+                LeadId = lead.Id,
+                Type = type,
+                AssignedEmployeeId = assignedEmployeeId,
+                Title = title,
+                Notes = notes,
+                DueAt = dueAt,
+                RemindAt = remindAt,
+                Priority = priority,
+                Status = LeadFollowUpStatus.Pending,
+                CreatedByUserId = createdByUserId,
+                CreatedAt = createdAt
+            };
+
+            context.LeadFollowUps.Add(followUp);
+            return followUp;
+        }
+
         public async Task<LeadFollowUpDto> CreateAsync(
             int leadId, CreateLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
         {
@@ -32,23 +61,8 @@ namespace DAMS.Application.Services
 
             var employeeId = await LeadGate.ResolveWorkerAsync(_context, dto.AssignedEmployeeId, lead, ctx, cancellationToken);
 
-            var followUp = new LeadFollowUp
-            {
-                Lead = lead,
-                LeadId = lead.Id,
-                Type = dto.Type,
-                AssignedEmployeeId = employeeId,
-                Title = dto.Title.Trim(),
-                Notes = LeadContactNormalizer.Clean(dto.Notes),
-                DueAt = dto.DueAt,
-                RemindAt = dto.RemindAt,
-                Priority = dto.Priority,
-                Status = LeadFollowUpStatus.Pending,
-                CreatedByUserId = ctx.UserId,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.LeadFollowUps.Add(followUp);
+            var followUp = Schedule(_context, lead, dto.Type, employeeId, dto.Title.Trim(), dto.DueAt, dto.Priority,
+                ctx.UserId, DateTime.UtcNow, LeadContactNormalizer.Clean(dto.Notes), dto.RemindAt);
 
             lead.UpdatedAt = DateTime.UtcNow;
 
@@ -100,20 +114,9 @@ namespace DAMS.Application.Services
                 if (dto.NextFollowUpAt <= DateTime.UtcNow)
                     throw new InvalidOperationException("The next follow-up must be scheduled for a future time.");
 
-                next = new LeadFollowUp
-                {
-                    Lead = lead,
-                    LeadId = lead.Id,
-                    Type = followUp.Type,
-                    AssignedEmployeeId = followUp.AssignedEmployeeId,
-                    Title = LeadContactNormalizer.Clean(dto.NextFollowUpTitle) ?? followUp.Title,
-                    DueAt = dto.NextFollowUpAt.Value,
-                    Priority = followUp.Priority,
-                    Status = LeadFollowUpStatus.Pending,
-                    CreatedByUserId = ctx.UserId,
-                    CreatedAt = DateTime.UtcNow
-                };
-                _context.LeadFollowUps.Add(next);
+                next = Schedule(_context, lead, followUp.Type, followUp.AssignedEmployeeId,
+                    LeadContactNormalizer.Clean(dto.NextFollowUpTitle) ?? followUp.Title, dto.NextFollowUpAt.Value,
+                    followUp.Priority, ctx.UserId, DateTime.UtcNow);
             }
 
             LeadTimeline.Record(_context, lead, LeadActivityType.FollowUpCompleted,

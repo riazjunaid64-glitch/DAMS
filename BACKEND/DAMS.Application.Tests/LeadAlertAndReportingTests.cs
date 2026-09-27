@@ -1,9 +1,14 @@
+using System.Reflection;
 using DAMS.Application.Common;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.DTOs.NotificationDtos;
+using DAMS.Application.Interfaces;
+using DAMS.Application.Services;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
+using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -952,7 +957,9 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal(LeadStage.Dormant, (await h.LoadLeadAsync(leadId)).Stage);
 
         h.Clock.Set(PakistanAt(bringBackOn, 9, 5));
-        Assert.Equal(1, (await h.Alerts.RunScanAsync()).DormantLeadsBroughtBack);
+        var scan = await h.Alerts.RunScanAsync();
+        Assert.Equal(1, scan.DormantLeadsBroughtBack);
+        Assert.Equal(1, scan.NotificationsCreated);
 
         var lead = await h.LoadLeadAsync(leadId);
         Assert.Equal(LeadStage.Contacted, lead.Stage);
@@ -967,6 +974,7 @@ public sealed class LeadAlertAndReportingTests
         Assert.Equal("Call back — brought back from Dormant", followUp.Title);
         Assert.Equal(h.SalesEmployeeId, followUp.AssignedEmployeeId);
         Assert.Equal(PakistanAt(bringBackOn, 10), followUp.DueAt);
+        Assert.Null(followUp.CreatedByUserId);
         Assert.Equal(followUp.DueAt, lead.NextActionAt);
         Assert.Equal(followUp.Title, lead.NextActionSummary);
 
@@ -989,16 +997,19 @@ public sealed class LeadAlertAndReportingTests
         Assert.Single(await BringBackNoticesAsync(h, leadId));
     }
 
-    [Fact]
-    public async Task KAN46_ALeadWhoseDayWasMissedComesBackNextScan_WithTheCallBackAnHourOut()
+    [Theory]
+    [InlineData(9, 30)]
+    [InlineData(11, 30)]
+    public async Task KAN46_ALeadWhoseDayWasMissedComesBackNextScan_WithTheCallBackAnHourOut(int hour, int minute)
     {
         await using var h = await LeadTestHarness.CreateAsync();
         var leadId = await h.CreateWorkedLeadAsync();
         var bringBackOn = PakistanTime.Today.AddDays(1);
         await MarkDormantAsync(h, leadId, bringBackOn);
 
-        // The scanner was off on the day; the next day at 11:30 it has passed 10:00.
-        var now = PakistanAt(bringBackOn.AddDays(1), 11, 30);
+        // The scanner was off on the day. 10:00 on the day it was due has long passed, even
+        // when the next scan runs before 10:00 the following morning.
+        var now = PakistanAt(bringBackOn.AddDays(1), hour, minute);
         h.Clock.Set(now);
         Assert.Equal(1, (await h.Alerts.RunScanAsync()).DormantLeadsBroughtBack);
 
@@ -1075,7 +1086,9 @@ public sealed class LeadAlertAndReportingTests
         Assert.NotEqual(reference, newerReference);
 
         h.Clock.Set(PakistanAt(bringBackOn, 9, 30));
-        Assert.Equal(0, (await h.Alerts.RunScanAsync()).DormantLeadsBroughtBack);
+        var scan = await h.Alerts.RunScanAsync();
+        Assert.Equal(0, scan.DormantLeadsBroughtBack);
+        Assert.True(scan.NotificationsCreated >= 1);
 
         var lead = await h.LoadLeadAsync(leadId);
         Assert.Equal(LeadStage.Dormant, lead.Stage);
@@ -1089,6 +1102,97 @@ public sealed class LeadAlertAndReportingTests
         // Handled once: the next scan leaves it alone.
         await h.Alerts.RunScanAsync();
         Assert.Single(await BringBackNoticesAsync(h, leadId));
+    }
+
+    [Fact]
+    public async Task KAN46_ALeadNobodyContactedComesBackAsContacted_WithTheCallBackThatChasesIt()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var leadId = await h.CreateLeadAsync();
+        await h.Leads.AssignAsync(leadId, new AssignLeadDto { EmployeeId = h.SalesEmployeeId }, h.Admin);
+        Assert.Null((await h.LoadLeadAsync(leadId)).LastContactAt);
+        var bringBackOn = PakistanTime.Today.AddDays(1);
+        await MarkDormantAsync(h, leadId, bringBackOn);
+
+        h.Clock.Set(PakistanAt(bringBackOn, 9, 30));
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).DormantLeadsBroughtBack);
+
+        var lead = await h.LoadLeadAsync(leadId);
+        Assert.Equal(LeadStage.Contacted, lead.Stage);
+        Assert.Equal(LeadStageGroup.InProgress, LeadStageRules.GroupOf(lead.Stage));
+        var followUp = await h.Db.LeadFollowUps.AsNoTracking().SingleAsync(f => f.LeadId == leadId);
+        Assert.Equal(LeadFollowUpStatus.Pending, followUp.Status);
+        Assert.Equal(h.SalesEmployeeId, followUp.AssignedEmployeeId);
+    }
+
+    [Fact]
+    public async Task KAN46_ALeadThatFailsToComeBackDoesNotHoldBackTheLeadsDueAfterIt()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var failing = await h.CreateWorkedLeadAsync("0300-1111111");
+        var healthy = await h.CreateWorkedLeadAsync("0300-2222222");
+        var bringBackOn = PakistanTime.Today.AddDays(1);
+        await MarkDormantAsync(h, failing, bringBackOn);
+        await MarkDormantAsync(h, healthy, bringBackOn);
+        Assert.True(failing < healthy, "The failing lead must be the first one the scan reaches.");
+
+        // The first lead stages a change and then fails, as a lost lock or a database error would.
+        var leads = FailingBringBack.For(h.Leads, h.Db, failing);
+        var alerts = new LeadAlertService(h.Db, h.Notifications, leads, Options.Create(new LeadAlertOptions()), h.Clock);
+
+        h.Clock.Set(PakistanAt(bringBackOn, 9, 30));
+        var scan = await alerts.RunScanAsync();
+
+        Assert.Equal(1, scan.DormantLeadsFailed);
+        Assert.Equal(1, scan.DormantLeadsBroughtBack);
+        Assert.Equal(LeadStage.Contacted, (await h.LoadLeadAsync(healthy)).Stage);
+
+        // Nothing the failed attempt staged was written with the next lead's save, and its date
+        // is still there, so the next scan tries it again.
+        var stuck = await h.LoadLeadAsync(failing);
+        Assert.Equal(LeadStage.Dormant, stuck.Stage);
+        Assert.NotNull(stuck.ReactivateOn);
+
+        Assert.Equal(1, (await h.Alerts.RunScanAsync()).DormantLeadsBroughtBack);
+        Assert.Equal(LeadStage.Contacted, (await h.LoadLeadAsync(failing)).Stage);
+    }
+
+    /// <summary>The real lead service, except that bringing one chosen lead back fails.</summary>
+    public class FailingBringBack : DispatchProxy
+    {
+        private ILeadService _inner = null!;
+        private AppDbContext _db = null!;
+        private int _failFor;
+
+        internal static ILeadService For(ILeadService inner, AppDbContext db, int failFor)
+        {
+            var proxy = Create<ILeadService, FailingBringBack>();
+            var self = (FailingBringBack)(object)proxy;
+            (self._inner, self._db, self._failFor) = (inner, db, failFor);
+            return proxy;
+        }
+
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+        {
+            if (method!.Name == nameof(ILeadService.BringBackDormantAsync) && (int)args![0]! == _failFor)
+                return FailAsync();
+
+            try
+            {
+                return method.Invoke(_inner, args);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException != null)
+            {
+                throw ex.InnerException;
+            }
+        }
+
+        private async Task<DormantBringBackResultDto> FailAsync()
+        {
+            var lead = await _db.Leads.FirstAsync(l => l.Id == _failFor);
+            lead.Stage = LeadStage.Contacted;
+            throw new InvalidOperationException("Simulated failure while bringing the lead back.");
+        }
     }
 
     private static async Task MarkDormantAsync(LeadTestHarness h, int leadId, DateTime bringBackOn)

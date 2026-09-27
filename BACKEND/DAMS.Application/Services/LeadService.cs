@@ -498,12 +498,12 @@ namespace DAMS.Application.Services
                     cancellationToken);
         }
 
-        private async Task NotifyOwnerAsync(
+        private async Task<bool> NotifyOwnerAsync(
             Lead lead, NotificationType type, string title, string? body, string suffix,
             CancellationToken cancellationToken, bool isEscalation = false)
         {
             if (lead.AssignedEmployeeId == null)
-                return;
+                return false;
 
             var ownerUserId = await _context.Employees
                 .AsNoTracking()
@@ -512,10 +512,10 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (ownerUserId == null)
-                return;
+                return false;
 
             var dedupKey = BuildDedupKey(type, lead.Id, ownerUserId.Value, suffix);
-            await _notifications.QueueAsync(lead.Id, ownerUserId.Value, type, title, body,
+            return await _notifications.QueueAsync(lead.Id, ownerUserId.Value, type, title, body,
                 dedupKey, isEscalation, cancellationToken);
         }
 
@@ -2034,20 +2034,22 @@ namespace DAMS.Application.Services
             return await LoadResponseRequiredAsync(lead.Id, cancellationToken);
         }
 
-        public async Task<bool> BringBackDormantAsync(int id, DateTime now, CancellationToken cancellationToken = default)
+        public async Task<DormantBringBackResultDto> BringBackDormantAsync(int id, DateTime now, CancellationToken cancellationToken = default)
         {
             return await RunContactWriteAtomicallyAsync(ct => BringBackDormantUnderLockAsync(id, now, ct), cancellationToken);
         }
 
-        private async Task<bool> BringBackDormantUnderLockAsync(int id, DateTime now, CancellationToken cancellationToken)
+        private async Task<DormantBringBackResultDto> BringBackDormantUnderLockAsync(int id, DateTime now, CancellationToken cancellationToken)
         {
+            var result = new DormantBringBackResultDto();
+
             var contacts = await _context.Leads
                 .AsNoTracking()
                 .Where(l => l.Id == id)
                 .Select(l => new { l.NormalizedPhone, l.NormalizedWhatsapp, l.NormalizedEmail })
                 .FirstOrDefaultAsync(cancellationToken);
             if (contacts == null)
-                return false;
+                return result;
 
             // The contact locks are taken before the lead is read: a reopen by hand takes the same
             // locks, so it has either committed and is seen below, or waits for this to finish.
@@ -2056,7 +2058,13 @@ namespace DAMS.Application.Services
             var today = PakistanTime.ToBusinessDate(now);
             var lead = await _context.Leads.FirstOrDefaultAsync(l => l.Id == id, cancellationToken);
             if (lead is not { Stage: LeadStage.Dormant, ReactivateOn: not null } || lead.ReactivateOn.Value.Date > today)
-                return false;
+                return result;
+
+            // The call back is due at 10:00 on the date the lead was meant to come back. When that
+            // has passed (a scan after 10:00, or a date the scanner missed), it is due an hour out.
+            var dueAt = PakistanTime.StartOfBusinessDateUtc(lead.ReactivateOn.Value.Date).AddHours(10);
+            if (dueAt <= now)
+                dueAt = now.AddHours(1);
 
             var reason = await _context.LeadClosureReasons
                 .Where(r => r.Id == lead.ClosureReasonId)
@@ -2098,23 +2106,22 @@ namespace DAMS.Application.Services
                 LeadTimeline.Record(_context, lead, LeadActivityType.SystemAlert, blocked, null);
 
                 if (ownerActive && owner!.UserId.HasValue)
-                    await NotifyOwnerAsync(lead, NotificationType.LeadAssigned, title,
-                        $"{blocked} Continue with that lead.", dedupSuffix, cancellationToken);
+                    result.NotificationsCreated += await NotifyOwnerAsync(lead, NotificationType.LeadAssigned, title,
+                        $"{blocked} Continue with that lead.", dedupSuffix, cancellationToken) ? 1 : 0;
                 else
-                    await _notifications.QueueForSupervisorsAsync(lead, NotificationType.ManagerAttentionRequired, title,
+                    result.NotificationsCreated += await _notifications.QueueForSupervisorsAsync(lead, NotificationType.ManagerAttentionRequired, title,
                         $"{blocked} Continue with that lead.", dedupSuffix, cancellationToken: cancellationToken);
 
                 await SaveWithConcurrencyGuardAsync(cancellationToken);
-                return false;
+                return result;
             }
 
             var dormantSince = lead.ClosedAt.HasValue ? $"Dormant since {LeadDisplay.Day(lead.ClosedAt.Value)}" : "Dormant";
 
-            // Reopened as ReopenAsync does, into the stage a person would pick: In progress once the
-            // customer has been reached, otherwise back to waiting for first contact.
-            lead.Stage = lead.LastContactAt != null
-                ? LeadStage.Contacted
-                : lead.AssignedEmployeeId != null ? LeadStage.FirstContactPending : LeadStage.New;
+            // Reopened as ReopenAsync does, straight into Contacted so it shows as In progress
+            // (KAN-46). A lead made Dormant before anyone reached the customer lands there too; the
+            // call back below is what chases it, as the first-contact alerts only watch New leads.
+            lead.Stage = LeadStage.Contacted;
             lead.ClosureReasonId = null;
             lead.ClosureNotes = null;
             lead.ClosedAt = null;
@@ -2129,34 +2136,18 @@ namespace DAMS.Application.Services
                     a.NewValue = LeadDisplay.Status(lead.Stage);
                 });
 
-            var dueAt = PakistanTime.StartOfBusinessDateUtc(today).AddHours(10);
-            if (dueAt <= now)
-                dueAt = now.AddHours(1);
-
-            // Without a working owner the call back waits until someone is assigned.
+            // A real follow-up, not just a next-action date, so it is listed, reminded and written
+            // off like any other. Without a working owner it waits until someone is assigned.
             if (ownerActive)
-            {
-                // A real follow-up, not just a next-action date, so it is listed, reminded and
-                // written off like any other.
-                _context.LeadFollowUps.Add(new LeadFollowUp
-                {
-                    Lead = lead,
-                    LeadId = lead.Id,
-                    Type = LeadFollowUpType.Call,
-                    AssignedEmployeeId = lead.AssignedEmployeeId!.Value,
-                    Title = "Call back — brought back from Dormant",
-                    DueAt = dueAt,
-                    Status = LeadFollowUpStatus.Pending,
-                    CreatedAt = now
-                });
-            }
+                LeadFollowUpService.Schedule(_context, lead, LeadFollowUpType.Call, lead.AssignedEmployeeId!.Value,
+                    "Call back — brought back from Dormant", dueAt, TaskPriority.Medium, null, now);
 
             // With no one to tell, the people who assign leads hear about it instead.
             if (ownerActive && owner!.UserId.HasValue)
-                await NotifyOwnerAsync(lead, NotificationType.LeadAssigned, title,
-                    $"The lead is back in your In progress list with a call back due {LeadDisplay.When(dueAt)}.", dedupSuffix, cancellationToken);
+                result.NotificationsCreated += await NotifyOwnerAsync(lead, NotificationType.LeadAssigned, title,
+                    $"The lead is back in your In progress list with a call back due {LeadDisplay.When(dueAt)}.", dedupSuffix, cancellationToken) ? 1 : 0;
             else
-                await _notifications.QueueForSupervisorsAsync(lead, NotificationType.ManagerAttentionRequired, title,
+                result.NotificationsCreated += await _notifications.QueueForSupervisorsAsync(lead, NotificationType.ManagerAttentionRequired, title,
                     owner == null
                         ? "The lead is back In progress but has no owner. Assign it so someone calls back."
                         : ownerActive
@@ -2168,7 +2159,8 @@ namespace DAMS.Application.Services
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await SaveWithConcurrencyGuardAsync(cancellationToken);
 
-            return true;
+            result.BroughtBack = true;
+            return result;
         }
 
         // ── Conversion ──────────────────────────────────────────────────────────────

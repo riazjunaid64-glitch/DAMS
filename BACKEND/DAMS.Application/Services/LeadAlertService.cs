@@ -6,6 +6,8 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace DAMS.Application.Services
@@ -26,19 +28,22 @@ namespace DAMS.Application.Services
         private readonly ILeadService _leads;
         private readonly LeadAlertOptions _options;
         private readonly TimeProvider _clock;
+        private readonly ILogger<LeadAlertService> _logger;
 
         public LeadAlertService(
             AppDbContext context,
             ILeadNotificationService notifications,
             ILeadService leads,
             IOptions<LeadAlertOptions> options,
-            TimeProvider clock)
+            TimeProvider clock,
+            ILogger<LeadAlertService>? logger = null)
         {
             _context = context;
             _notifications = notifications;
             _leads = leads;
             _options = options.Value;
             _clock = clock;
+            _logger = logger ?? NullLogger<LeadAlertService>.Instance;
         }
 
         public async Task<LeadAlertScanResultDto> RunScanAsync(CancellationToken cancellationToken = default)
@@ -84,8 +89,23 @@ namespace DAMS.Application.Services
 
             foreach (var leadId in due)
             {
-                if (await _leads.BringBackDormantAsync(leadId, now, cancellationToken))
-                    result.DormantLeadsBroughtBack++;
+                try
+                {
+                    var outcome = await _leads.BringBackDormantAsync(leadId, now, cancellationToken);
+                    result.NotificationsCreated += outcome.NotificationsCreated;
+                    if (outcome.BroughtBack)
+                        result.DormantLeadsBroughtBack++;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // One lead that keeps failing must not hold back every lead due after it. Its
+                    // transaction has rolled back and its date is untouched, so the next scan retries
+                    // it. What it staged is dropped here, or the next lead's save would write it;
+                    // everything else in this scan was saved before this step began.
+                    _context.ChangeTracker.Clear();
+                    result.DormantLeadsFailed++;
+                    _logger.LogError(ex, "Could not bring Dormant lead {LeadId} back. The next scan will try again.", leadId);
+                }
             }
         }
 
