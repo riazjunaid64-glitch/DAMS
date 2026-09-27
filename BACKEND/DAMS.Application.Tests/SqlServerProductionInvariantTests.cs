@@ -6425,6 +6425,15 @@ public sealed class SqlServerProductionInvariantTests
             Assert.Equal("2 Bedroom Apartment", apartment.Options.Single(o => o.OptionKey == "2_bedroom_apartment").OptionLabel);
             Assert.Equal("Investment", answers.Single(a => a.Target == LeadFormAnswerTarget.PurchaseIntent).Options.Single().Value);
 
+            var formNote = Assert.Single(await db.LeadFormApartmentTypeMigrationNotes.AsNoTracking().ToListAsync());
+            Assert.Equal(mapping.Id, formNote.ExternalLeadFormMappingId);
+            Assert.Equal("meta", formNote.Provider);
+            Assert.Equal("form-apartment", formNote.FormExternalId);
+            Assert.Equal("which_apartment_type_are_you_interested_in?", formNote.QuestionKey);
+            Assert.Equal("penthouse", formNote.OptionKey);
+            Assert.Equal("Penthouse", formNote.Value);
+            Assert.NotEqual(default, formNote.NotedAt);
+
             Assert.Equal("not-json", (await db.ExternalLeadFormMappings.AsNoTracking()
                 .SingleAsync(m => m.FormExternalId == "form-broken")).AnswerMappingsJson);
 
@@ -6438,6 +6447,7 @@ public sealed class SqlServerProductionInvariantTests
         await using (var db = new AppDbContext(options))
         {
             Assert.Equal(unknownId, Assert.Single(await db.LeadApartmentTypeMigrationNotes.AsNoTracking().ToListAsync()).LeadId);
+            Assert.Equal("Penthouse", Assert.Single(await db.LeadFormApartmentTypeMigrationNotes.AsNoTracking().ToListAsync()).Value);
             Assert.Equal("2 Bed", (await db.Leads.AsNoTracking().SingleAsync(l => l.Id == knownId)).PropertyType);
             Assert.Equal("Studio", (await db.Leads.AsNoTracking().SingleAsync(l => l.Id == alreadyId)).PropertyType);
             Assert.Null((await db.Leads.AsNoTracking().SingleAsync(l => l.Id == blankId)).PropertyType);

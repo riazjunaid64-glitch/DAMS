@@ -680,7 +680,33 @@ namespace DAMS.Application.Services
                 ReceivedAt = DateTime.UtcNow
             };
             attribution?.ApplyTo(submission);
+            // Meta already stores every answer on the receipt. A website or other intake
+            // channel does not, so an apartment type we cannot file on the lead would
+            // otherwise disappear. Keep the words the person used.
+            if (string.IsNullOrWhiteSpace(submission.FieldDataJson))
+                submission.FieldDataJson = UnrecognisedApartmentAnswer(dto.PropertyType);
             _context.LeadExternalSubmissions.Add(submission);
+        }
+
+        /// <summary>
+        /// The original apartment answer, when it is not one of the canonical types.
+        /// Null when there is nothing to keep or the value was stored on the lead.
+        /// </summary>
+        private static string? UnrecognisedApartmentAnswer(string? propertyType)
+        {
+            var raw = propertyType?.Trim();
+            if (string.IsNullOrEmpty(raw) || UnitTypes.ForLead(raw, externalEnquiry: true) != null)
+                return null;
+
+            return JsonSerializer.Serialize(new[]
+            {
+                new ExternalFieldAnswerDto
+                {
+                    Name = "property_type",
+                    Value = raw,
+                    IsMapped = false
+                }
+            });
         }
 
         /// <summary>

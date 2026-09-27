@@ -24,6 +24,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<StaffAccessAudit> StaffAccessAudits { get; set; }
         public DbSet<UnitTypeMigrationNote> UnitTypeMigrationNotes { get; set; }
         public DbSet<LeadApartmentTypeMigrationNote> LeadApartmentTypeMigrationNotes { get; set; }
+        public DbSet<LeadFormApartmentTypeMigrationNote> LeadFormApartmentTypeMigrationNotes { get; set; }
         public DbSet<Customer> Customers { get; set; }
         public DbSet<CustomerDocumentCategory> CustomerDocumentCategories { get; set; }
         public DbSet<CustomerDocumentRequirement> CustomerDocumentRequirements { get; set; }
@@ -185,6 +186,18 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(n => n.PropertyType).IsRequired().HasMaxLength(100);
                 entity.HasIndex(n => n.LeadId).IsUnique();
+            });
+
+            // One row per option, so a re-run does not write the same mapping note again.
+            // The value itself is unbounded: a long unrecognised answer must not fail the migration.
+            modelBuilder.Entity<LeadFormApartmentTypeMigrationNote>(entity =>
+            {
+                entity.Property(n => n.Provider).IsRequired().HasMaxLength(50);
+                entity.Property(n => n.FormExternalId).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.QuestionKey).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.OptionKey).IsRequired().HasMaxLength(200);
+                entity.Property(n => n.Value).IsRequired();
+                entity.HasIndex(n => new { n.ExternalLeadFormMappingId, n.QuestionKey, n.OptionKey }).IsUnique();
             });
 
             modelBuilder.Entity<CustomerAccountLinkAudit>(entity =>

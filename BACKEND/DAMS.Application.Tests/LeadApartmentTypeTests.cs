@@ -157,15 +157,20 @@ public sealed class LeadApartmentTypeTests
             ExternalProvider = provider,
             ExternalLeadId = externalId,
             PropertyType = propertyType,
-            IntegrationPayload = propertyType,
             AllowDuplicate = true
         }, actor: null, trustedExternal: true);
 
         Assert.NotNull(result.Lead);
         Assert.Null(result.Lead!.PropertyType);
-        var stored = await h.Db.Leads.AsNoTracking().SingleAsync();
-        Assert.Equal(propertyType, stored.IntegrationPayload);
-        Assert.Equal(1, await h.Db.LeadExternalSubmissions.CountAsync());
+
+        var submission = await h.Db.LeadExternalSubmissions.AsNoTracking().SingleAsync();
+        var shown = await h.Leads.GetExternalSubmissionsAsync(result.Lead.Id, h.Admin);
+        var answer = Assert.Single(Assert.Single(shown).FieldData);
+        Assert.Equal(submission.Id, Assert.Single(shown).Id);
+        Assert.Equal("property_type", answer.Name);
+        Assert.Equal(propertyType, answer.Value);
+        Assert.False(answer.IsMapped);
+        Assert.Contains(propertyType, submission.FieldDataJson);
     }
 
     [Fact]
@@ -194,9 +199,11 @@ public sealed class LeadApartmentTypeTests
         var filled = await h.Leads.IngestAsync(ExternalRepeat("3_bedroom_apartment", "web-fill"), actor: null, trustedExternal: true);
         Assert.Equal(created.Lead!.Id, filled.Lead!.Id);
         Assert.Equal("3 Bed", filled.Lead.PropertyType);
+        Assert.Null((await h.Db.LeadExternalSubmissions.AsNoTracking().SingleAsync(s => s.ExternalLeadId == "web-fill")).FieldDataJson);
 
         var kept = await h.Leads.IngestAsync(ExternalRepeat("sky villa", "web-keep"), actor: null, trustedExternal: true);
         Assert.Equal("3 Bed", kept.Lead!.PropertyType);
+        Assert.Contains("sky villa", (await h.Db.LeadExternalSubmissions.AsNoTracking().SingleAsync(s => s.ExternalLeadId == "web-keep")).FieldDataJson);
     }
 
     [Fact]
