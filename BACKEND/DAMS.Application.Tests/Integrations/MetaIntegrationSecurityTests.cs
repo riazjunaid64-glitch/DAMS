@@ -607,6 +607,8 @@ public class MetaIntegrationSecurityTests
 
         var result = await h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Manager);
         Assert.Equal(2, result.Requeued);
+        Assert.Equal(1, result.Skipped);
+        Assert.Contains("switched off", result.SkippedReason);
 
         var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
         Assert.Equal(2, events.Count(e => e.Status == ExternalIntegrationEventStatus.Pending && e.RetryCount == 1));
@@ -621,6 +623,7 @@ public class MetaIntegrationSecurityTests
 
         var again = await h.Integration.RetryFailedEventsAsync(connection.Id, h.Leads.Admin);
         Assert.Equal(0, again.Requeued);
+        Assert.Equal(1, again.Skipped);
         Assert.Equal(2, await h.Db.ExternalIntegrationEventRetries.CountAsync());
     }
 

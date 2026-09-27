@@ -77,10 +77,20 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public DateTime? LastFailedAt { get; set; }
     }
 
-    /// <summary>How many Failed events one Retry now put back on the queue.</summary>
+    /// <summary>What one Retry now did with the connection's Failed events.</summary>
     public class MetaRetryFailedResultDto
     {
+        /// <summary>Failed events this call put back on the queue.</summary>
         public int Requeued { get; set; }
+
+        /// <summary>
+        /// Failed events left Failed because their Page is switched off, no longer returned by
+        /// Meta, or missing. They still count in recentFailedCount until that changes.
+        /// </summary>
+        public int Skipped { get; set; }
+
+        /// <summary>Why <see cref="Skipped"/> were left. Null when every failed event was requeued.</summary>
+        public string? SkippedReason { get; set; }
     }
 
     public class MetaResourceDto

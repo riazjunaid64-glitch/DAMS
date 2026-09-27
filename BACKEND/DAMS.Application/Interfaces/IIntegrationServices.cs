@@ -46,9 +46,9 @@ namespace DAMS.Application.Interfaces
             int connectionId, int eventId, LeadUserContext actor, CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Puts every Failed event of the connection back on the queue in one step. Events whose
-        /// Page is gone or switched off are left as they are. A second call finds nothing Failed
-        /// and requeues nothing.
+        /// Puts Failed events of the connection back on the queue. Events whose Page is gone or
+        /// switched off are left Failed, and the result says how many and why. A clash on one row
+        /// does not drop the others. A second call requeues nothing new.
         /// </summary>
         Task<MetaRetryFailedResultDto> RetryFailedEventsAsync(
             int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default);

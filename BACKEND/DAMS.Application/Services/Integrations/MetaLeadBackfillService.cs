@@ -117,8 +117,7 @@ namespace DAMS.Application.Services.Integrations
             }
 
             var run = new Run();
-            await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run,
-                requeueTransientFailures: false, cancellationToken);
+            await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run, cancellationToken);
             return run.Result;
         }
 
@@ -135,12 +134,18 @@ namespace DAMS.Application.Services.Integrations
                 return run.Result;
 
             var now = DateTime.UtcNow;
+            // The form scan below only asks Meta for the lookback window (48 hours by default).
+            // A lead that failed on Monday is no longer in that window by Wednesday, so recovery
+            // cannot depend on Meta returning it. The event already stores the lead id; the
+            // processor asks Meta for that id again. Up to three rounds, and only while the lead
+            // is still inside the 90 days Meta keeps it.
+            await RequeueStoredTransientFailuresAsync(connectionId, cancellationToken);
+
             var since = now.AddHours(-_options.ReconciliationLookbackHours);
             foreach (var page in await EnabledPagesAsync(connectionId, cancellationToken))
             {
                 var formIds = await FormIdsAsync(connectionId, [page.ExternalId], cancellationToken);
-                await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run,
-                    requeueTransientFailures: true, cancellationToken);
+                await ImportFormsAsync(connection, page, formIds, since, WindowEnd(now), run, cancellationToken);
             }
 
             await RecordReconciliationAsync(connectionId, run, now, cancellationToken);
@@ -227,7 +232,6 @@ namespace DAMS.Application.Services.Integrations
             DateTime since,
             DateTime until,
             Run run,
-            bool requeueTransientFailures,
             CancellationToken cancellationToken)
         {
             var result = run.Result;
@@ -268,7 +272,7 @@ namespace DAMS.Application.Services.Integrations
                     Outcome outcome;
                     try
                     {
-                        outcome = await RecordAsync(page, formId, lead, requeueTransientFailures, cancellationToken);
+                        outcome = await RecordAsync(page, formId, lead, cancellationToken);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -292,7 +296,6 @@ namespace DAMS.Application.Services.Integrations
                             break;
                         case Outcome.AlreadyInDams: result.AlreadyInDams++; break;
                         case Outcome.PreviouslyFailed: result.PreviouslyFailed++; break;
-                        case Outcome.Requeued: break;
                         default: result.Failed++; break;
                     }
                 }
@@ -350,22 +353,21 @@ namespace DAMS.Application.Services.Integrations
                 entry.State = EntityState.Detached;
         }
 
-        private enum Outcome { Queued, Reopened, AlreadyInDams, PreviouslyFailed, Requeued, Failed }
+        private enum Outcome { Queued, Reopened, AlreadyInDams, PreviouslyFailed, Failed }
 
         /// <summary>
         /// One event per lead, saved on its own so a clash on one never costs the others. An event
         /// the webhook recorded as Ignored — the Page was off when the lead arrived — is exactly
         /// what this exists to recover, so it is reopened rather than counted as already handled,
         /// and becomes a recovery: an old one is then added without a "new lead" alert. A Failed
-        /// event is not in DAMS either. Reconciliation puts a transient one back on the queue,
-        /// up to <see cref="MaxAutomaticRequeues"/> times, while Meta can still return the lead.
-        /// A permanent failure, or one whose extra rounds are used up, stays Failed and is counted
-        /// apart — never as already in DAMS. An import never requeues; that decision is the
-        /// operator's, from the event list.
+        /// event is not in DAMS either, but retrying it is not this scan's job: the form read only
+        /// covers the lookback window, and a lead outside it would be missed. Reconciliation
+        /// requeues transient failures from the events DAMS already stored
+        /// (<see cref="RequeueStoredTransientFailuresAsync"/>). Here a Failed event is counted
+        /// apart, never as already in DAMS, and left as it is.
         /// </summary>
         private async Task<Outcome> RecordAsync(
-            ExternalIntegrationResource page, string formId, MetaLead lead, bool requeueTransientFailures,
-            CancellationToken cancellationToken)
+            ExternalIntegrationResource page, string formId, MetaLead lead, CancellationToken cancellationToken)
         {
             if (lead.LeadgenId.Length > MetaLeadEventProcessor.MaxExternalIdLength)
                 return Outcome.Failed;
@@ -380,15 +382,7 @@ namespace DAMS.Application.Services.Integrations
             if (existing is not null)
             {
                 if (existing.Status == ExternalIntegrationEventStatus.Failed)
-                {
-                    if (requeueTransientFailures && CanRequeue(existing, lead.CreatedTime))
-                    {
-                        Requeue(existing);
-                        return await SaveAsync(existing, Outcome.Requeued, cancellationToken);
-                    }
-
                     return Outcome.PreviouslyFailed;
-                }
                 if (existing.Status != ExternalIntegrationEventStatus.Ignored)
                     return Outcome.AlreadyInDams;
 
@@ -435,6 +429,74 @@ namespace DAMS.Application.Services.Integrations
             };
             _context.ExternalIntegrationEvents.Add(added);
             return await SaveAsync(added, Outcome.Queued, cancellationToken);
+        }
+
+        /// <summary>
+        /// Puts transient failures back on the queue from the rows DAMS already has. One save
+        /// each, so a row someone else changed does not take the rest of the round with it.
+        /// A Page that is off or gone is left Failed: the processor would only ignore it, and
+        /// Retry now is what tells an operator why it is still there.
+        /// </summary>
+        private async Task RequeueStoredTransientFailuresAsync(int connectionId, CancellationToken cancellationToken)
+        {
+            var oldest = DateTime.UtcNow.AddDays(-MetaIntegrationOptions.MaxImportDays);
+            var failed = await _context.ExternalIntegrationEvents
+                .Include(e => e.Resource)
+                .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                            && e.Provider == IntegrationProviders.Meta
+                            && e.Status == ExternalIntegrationEventStatus.Failed
+                            && e.FailureWasTransient
+                            && e.RequeueCount < MaxAutomaticRequeues
+                            && e.ReceivedAt >= oldest)
+                .ToListAsync(cancellationToken);
+
+            foreach (var existing in failed)
+            {
+                if (existing.Resource is not { IsEnabled: true, IsActive: true })
+                    continue;
+                if (!CanRequeue(existing, SubmittedAt(existing)))
+                    continue;
+
+                Requeue(existing);
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Someone else moved this row. Leave it; the next reconciliation reads it again.
+                    _context.Entry(existing).State = EntityState.Detached;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Unix <c>created_time</c> on the stored webhook value, when Meta sent one. That is the
+        /// lead's age. Absent, <see cref="CanRequeue"/> uses when the event arrived.
+        /// </summary>
+        private static DateTime? SubmittedAt(ExternalIntegrationEvent existing)
+        {
+            if (string.IsNullOrWhiteSpace(existing.RawPayloadJson))
+                return null;
+
+            try
+            {
+                using var document = JsonDocument.Parse(existing.RawPayloadJson);
+                if (!document.RootElement.TryGetProperty("created_time", out var value))
+                    return null;
+
+                var unix = value.ValueKind switch
+                {
+                    JsonValueKind.Number when value.TryGetInt64(out var seconds) => seconds,
+                    JsonValueKind.String when long.TryParse(value.GetString(), out var seconds) => seconds,
+                    _ => 0L
+                };
+                return unix > 0 ? DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime : null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

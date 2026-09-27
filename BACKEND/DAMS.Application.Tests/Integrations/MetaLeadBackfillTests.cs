@@ -420,30 +420,51 @@ public class MetaLeadBackfillTests
     }
 
     [Fact]
-    public async Task Reconciliation_StopsAfterThreeExtraRounds_AndSkipsALeadOlderThanNinetyDays()
+    public async Task Reconciliation_RequeuesATransientFailureOutsideTheLookback_AndHonoursTheCaps()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
-        h.Options.ReconciliationLookbackHours = 24 * 120;
+        Assert.Equal(48, h.Options.ReconciliationLookbackHours);
         var (connection, page) = await SetUpAsync(h);
-        var key = MetaWebhookIntakeService.EventKey(connection.Id, page.ExternalId, "lead-capped");
-        var oldKey = MetaWebhookIntakeService.EventKey(connection.Id, page.ExternalId, "lead-old");
-        h.Db.ExternalIntegrationEvents.AddRange(
-            Failed(connection.Id, page.Id, key, "lead-capped", DateTime.UtcNow.AddHours(-3),
-                requeueCount: MetaLeadBackfillService.MaxAutomaticRequeues),
-            Failed(connection.Id, page.Id, oldKey, "lead-old", DateTime.UtcNow.AddDays(-91), requeueCount: 0));
+        var off = new ExternalIntegrationResource
+        {
+            ExternalIntegrationConnectionId = connection.Id,
+            Provider = IntegrationProviders.Meta,
+            ResourceType = ExternalResourceTypes.FacebookPage,
+            ExternalId = "page-off",
+            Name = "Off",
+            IsEnabled = false,
+            IsActive = true
+        };
+        h.Db.ExternalIntegrationResources.Add(off);
         await h.Db.SaveChangesAsync();
-        h.Graph.FormLeads["form-1"] =
-        [
-            Lead("lead-capped", "Ali Khan", DateTime.UtcNow.AddHours(-3)),
-            Lead("lead-old", "Sara Khan", DateTime.UtcNow.AddDays(-91))
-        ];
 
-        var result = await h.Backfill.ReconcileAsync(connection.Id);
+        var outsideLookback = DateTime.UtcNow.AddHours(-72);
+        h.Db.ExternalIntegrationEvents.AddRange(
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-72h", outsideLookback, outsideLookback, requeueCount: 0),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-capped", DateTime.UtcNow.AddHours(-3),
+                DateTime.UtcNow.AddHours(-3), MetaLeadBackfillService.MaxAutomaticRequeues),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-old", DateTime.UtcNow.AddDays(-91),
+                DateTime.UtcNow.AddDays(-91), requeueCount: 0),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-stale", DateTime.UtcNow.AddHours(-1),
+                DateTime.UtcNow.AddDays(-91), requeueCount: 0),
+            Failed(connection.Id, off.Id, off.ExternalId, "lead-off", DateTime.UtcNow.AddHours(-5),
+                DateTime.UtcNow.AddHours(-5), requeueCount: 0));
+        await h.Db.SaveChangesAsync();
 
-        Assert.Equal(2, result.PreviouslyFailed);
-        Assert.Equal(0, result.New);
-        Assert.Equal(2, await h.Db.ExternalIntegrationEvents.CountAsync(
-            e => e.Status == ExternalIntegrationEventStatus.Failed));
+        await h.Backfill.ReconcileAsync(connection.Id);
+
+        var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+        var recovered = Assert.Single(events, e => e.EventKey.EndsWith(":lead-72h"));
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, recovered.Status);
+        Assert.Equal(0, recovered.Attempts);
+        Assert.Equal(1, recovered.RequeueCount);
+
+        Assert.All(events.Where(e => !e.EventKey.EndsWith(":lead-72h")),
+            e => Assert.Equal(ExternalIntegrationEventStatus.Failed, e.Status));
+
+        // The form scan is still the 48-hour window. The 72-hour lead was not in it.
+        var request = Assert.Single(h.Graph.FormLeadRequests);
+        Assert.InRange(request.Since, DateTime.UtcNow.AddHours(-49), DateTime.UtcNow.AddHours(-47));
     }
 
     [Fact]
@@ -465,17 +486,19 @@ public class MetaLeadBackfillTests
     }
 
     private static ExternalIntegrationEvent Failed(
-        int connectionId, int pageId, string eventKey, string leadgenId, DateTime submittedAt, int requeueCount) =>
+        int connectionId, int pageId, string pageExternalId, string leadgenId, DateTime receivedAt,
+        DateTime submittedAt, int requeueCount) =>
         new()
         {
             Provider = IntegrationProviders.Meta,
             ExternalIntegrationConnectionId = connectionId,
             ExternalIntegrationResourceId = pageId,
             EventType = "leadgen",
-            EventKey = eventKey,
-            RawPayloadJson = "{}",
-            ReceivedAt = submittedAt,
-            ProcessedAt = submittedAt,
+            EventKey = MetaWebhookIntakeService.EventKey(connectionId, pageExternalId, leadgenId),
+            RawPayloadJson = "{\"leadgen_id\":\"" + leadgenId + "\",\"created_time\":"
+                + new DateTimeOffset(DateTime.SpecifyKind(submittedAt, DateTimeKind.Utc)).ToUnixTimeSeconds() + "}",
+            ReceivedAt = receivedAt,
+            ProcessedAt = receivedAt,
             Status = ExternalIntegrationEventStatus.Failed,
             FailureWasTransient = true,
             RequeueCount = requeueCount,

@@ -148,13 +148,15 @@ leads that never arrived:
 - **Reconciliation.** Every resource sync (every 6 hours) reads the last
   `MetaIntegration:ReconciliationLookbackHours` (default 48; 0 = off) of every lead form on
   every enabled Page, with the Page's own token. It stops 15 minutes short of now: those leads
-  are the webhook's, and reading them too would drop their webhook as a duplicate. A lead it
-  finds whose event failed for a transient reason (Meta could not be reached, a timeout, a rate
-  limit, or a database error) is put back on the queue, up to three extra rounds, while the lead
-  is still within the 90 days Meta keeps it. A permanent failure — a payload with no lead id, an
-  id DAMS cannot store, or a lead Meta says does not exist — stays failed. Those, and any that
-  have used their automatic rounds, are retried from the event list or with **Retry now** on
-  the connection.
+  are the webhook's, and reading them too would drop their webhook as a duplicate.
+  Separately, reconciliation puts a stored event that failed for a transient reason (Meta could
+  not be reached, a timeout, a rate limit, or a database error) back on the queue from DAMS's
+  own rows — not only when that lead is inside the lookback window. Up to three extra rounds,
+  while the lead is still within the 90 days Meta keeps it, and only for a Page that is still
+  enabled. A permanent failure — a payload with no lead id, an id DAMS cannot store, or a lead
+  Meta says does not exist — stays failed. Those, and any that have used their automatic
+  rounds, are retried from the event list or with **Retry now**. Retry now says when it left
+  an event alone because its Page is switched off or Meta no longer returns it.
 - **Import.** CRM settings → Integrations → Manage resources → **Import leads** on an enabled
   Page reads its synced forms back to a chosen date, at most 90 days ago, and reports how many
   leads were found, new, already in DAMS, previously failed and failed. Run **Sync now** first if
@@ -212,8 +214,9 @@ subscription is not something DAMS can turn on.
 5. **When a lead does not arrive.** On the Integrations page, check the connection status
    and the failed-lead count (events that failed in the last seven days, and when the last
    one was tried). Open the event list for the reason. **Retry now** puts that connection's
-   failed events back on the queue. The API logs record a Meta or database error that did
-   not get as far as an event.
+   failed events back on the queue, and says when it left one alone because its Page is
+   switched off or Meta no longer returns it. The API logs record a Meta or database error
+   that did not get as far as an event.
 
 Not built yet:
 

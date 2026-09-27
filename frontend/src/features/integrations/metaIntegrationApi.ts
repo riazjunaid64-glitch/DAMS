@@ -51,9 +51,9 @@ export function retryMetaEvent(connectionId: number, eventId: number) {
   );
 }
 
-/** Puts every Failed event of the connection back on the queue. A repeat finds nothing left to retry. */
+/** Puts Failed events back on the queue. Skipped ones stay failed; skippedReason says why. */
 export function retryFailedMetaEvents(connectionId: number) {
-  return apiJson<{ requeued: number }>(
+  return apiJson<{ requeued: number; skipped: number; skippedReason?: string | null }>(
     `${base}/connections/${connectionId}/events/retry-failed`,
     jsonRequest("POST", {}),
   );

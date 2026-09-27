@@ -643,45 +643,102 @@ namespace DAMS.Application.Services.Integrations
             if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
                 throw new InvalidOperationException("Reconnect this Meta connection before retrying the event.");
 
-            var failed = await _context.ExternalIntegrationEvents
-                .Include(e => e.Resource)
-                .Where(e => e.ExternalIntegrationConnectionId == connectionId
-                            && e.Provider == IntegrationProviders.Meta
-                            && e.Status == ExternalIntegrationEventStatus.Failed)
-                .ToListAsync(cancellationToken);
+            // One SaveChanges is one transaction. A row-version clash on a single event rolls
+            // the whole batch back, so a conflict reloads whatever is still Failed and tries
+            // those again instead of reporting the others as retried.
+            const int maxPasses = 3;
+            var requeued = 0;
+            var pageOff = 0;
+            var pageGone = 0;
+            var pageMissing = 0;
+            var skipsCounted = false;
 
-            var now = DateTime.UtcNow;
-            var queuedIds = new List<int>();
-            foreach (var integrationEvent in failed)
+            for (var pass = 0; pass < maxPasses; pass++)
             {
-                // The same reasons a single retry refuses: a Page that is gone or switched off
-                // would only be ignored again. The others still go back on the queue.
-                if (integrationEvent.Resource is null || !integrationEvent.Resource.IsActive
-                    || !integrationEvent.Resource.IsEnabled)
-                    continue;
+                var failed = await _context.ExternalIntegrationEvents
+                    .Include(e => e.Resource)
+                    .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                                && e.Provider == IntegrationProviders.Meta
+                                && e.Status == ExternalIntegrationEventStatus.Failed)
+                    .ToListAsync(cancellationToken);
 
-                QueueForOperatorRetry(integrationEvent, actor, now);
-                queuedIds.Add(integrationEvent.Id);
+                var now = DateTime.UtcNow;
+                var queued = 0;
+                foreach (var integrationEvent in failed)
+                {
+                    // The same reasons a single retry refuses. Leaving the event Failed keeps
+                    // the lead visible; the result says why Retry now did not take it.
+                    switch (WhyNotRetried(integrationEvent))
+                    {
+                        case RetrySkip.PageOff:
+                            if (!skipsCounted) pageOff++;
+                            continue;
+                        case RetrySkip.PageGone:
+                            if (!skipsCounted) pageGone++;
+                            continue;
+                        case RetrySkip.PageMissing:
+                            if (!skipsCounted) pageMissing++;
+                            continue;
+                    }
+
+                    QueueForOperatorRetry(integrationEvent, actor, now);
+                    queued++;
+                }
+
+                skipsCounted = true;
+                if (queued == 0)
+                    break;
+
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                    requeued += queued;
+                    break;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    _context.ChangeTracker.Clear();
+                }
             }
 
-            if (queuedIds.Count == 0)
-                return new MetaRetryFailedResultDto();
+            return new MetaRetryFailedResultDto
+            {
+                Requeued = requeued,
+                Skipped = pageOff + pageGone + pageMissing,
+                SkippedReason = DescribeSkips(pageOff, pageGone, pageMissing)
+            };
+        }
 
-            try
-            {
-                await _context.SaveChangesAsync(cancellationToken);
-                return new MetaRetryFailedResultDto { Requeued = queuedIds.Count };
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // Another Admin already moved some of these. What is no longer Failed has the
-                // outcome this call was asking for, whoever saved it.
-                _context.ChangeTracker.Clear();
-                var stillFailed = await _context.ExternalIntegrationEvents
-                    .CountAsync(e => queuedIds.Contains(e.Id)
-                                     && e.Status == ExternalIntegrationEventStatus.Failed, cancellationToken);
-                return new MetaRetryFailedResultDto { Requeued = queuedIds.Count - stillFailed };
-            }
+        private enum RetrySkip { None, PageOff, PageGone, PageMissing }
+
+        /// <summary>Same order as a single retry: a Page Meta no longer returns, then one that is switched off.</summary>
+        private static RetrySkip WhyNotRetried(ExternalIntegrationEvent integrationEvent)
+        {
+            if (integrationEvent.Resource is null)
+                return RetrySkip.PageMissing;
+            if (!integrationEvent.Resource.IsActive)
+                return RetrySkip.PageGone;
+            if (!integrationEvent.Resource.IsEnabled)
+                return RetrySkip.PageOff;
+            return RetrySkip.None;
+        }
+
+        private static string? DescribeSkips(int pageOff, int pageGone, int pageMissing)
+        {
+            var parts = new List<string>();
+            if (pageOff > 0)
+                parts.Add(pageOff == 1
+                    ? "1 failed lead belongs to a Page that is switched off. Enable the Page before retrying."
+                    : $"{pageOff} failed leads belong to a Page that is switched off. Enable the Page before retrying.");
+            if (pageGone > 0)
+                parts.Add(pageGone == 1
+                    ? "1 failed lead belongs to a Page Meta no longer returns. Run Sync now before retrying."
+                    : $"{pageGone} failed leads belong to a Page Meta no longer returns. Run Sync now before retrying.");
+            if (pageMissing > 0)
+                parts.Add(pageMissing == 1
+                    ? "1 failed lead has no Page on file."
+                    : $"{pageMissing} failed leads have no Page on file.");
+            return parts.Count == 0 ? null : string.Join(" ", parts);
         }
 
         /// <summary>

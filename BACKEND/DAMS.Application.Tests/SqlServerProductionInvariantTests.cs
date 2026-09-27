@@ -3780,6 +3780,155 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// A bulk Retry now saves every failed event in one transaction. If another writer moves
+    /// one row's rowversion first, that save rolls back. The call must reload what is still
+    /// Failed and retry those, rather than reporting the untouched rows as requeued.
+    /// </summary>
+    [SqlServerFact]
+    public async Task BulkRetry_AfterOneRowVersionClash_StillRequeuesTheRest()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        int adminUserId, connectionId, racedEventId, otherEventId;
+
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+        {
+            await db.Database.MigrateAsync();
+            var admin = new User
+            {
+                FullName = "Bulk Retry Admin",
+                Email = "bulk-retry-admin@dams.test",
+                Password = "hash",
+                RoleId = 1
+            };
+            db.Users.Add(admin);
+            await db.SaveChangesAsync();
+            adminUserId = admin.UserId;
+
+            var connection = new ExternalIntegrationConnection
+            {
+                Provider = IntegrationProviders.Meta,
+                ExternalAccountId = "bulk-retry-account",
+                DisplayName = "Bulk retry",
+                Status = ExternalIntegrationConnectionStatus.Connected
+            };
+            db.ExternalIntegrationConnections.Add(connection);
+            await db.SaveChangesAsync();
+            connectionId = connection.Id;
+
+            var page = new ExternalIntegrationResource
+            {
+                ExternalIntegrationConnectionId = connectionId,
+                Provider = IntegrationProviders.Meta,
+                ResourceType = ExternalResourceTypes.FacebookPage,
+                ExternalId = "bulk-retry-page",
+                IsEnabled = true,
+                IsActive = true
+            };
+            db.ExternalIntegrationResources.Add(page);
+            await db.SaveChangesAsync();
+
+            var raced = FailedMetaEvent(connectionId, page, "bulk-raced");
+            var other = FailedMetaEvent(connectionId, page, "bulk-other");
+            db.ExternalIntegrationEvents.AddRange(raced, other);
+            await db.SaveChangesAsync();
+            racedEventId = raced.Id;
+            otherEventId = other.Id;
+        }
+
+        var clash = new BumpFailedEventFromAnotherContextInterceptor(database.ConnectionString, racedEventId);
+        var protector = new PlaintextSecretProtector();
+        var graph = new FakeMetaGraphClient();
+        var metaOptions = new MetaIntegrationOptions
+        {
+            AppId = "app", AppSecret = "secret", WebhookVerifyToken = "verify",
+            OAuthCallbackUrl = "https://dams.test/callback"
+        };
+
+        MetaRetryFailedResultDto result;
+        await using (var db = new AppDbContext(Options(database.ConnectionString, clash)))
+        {
+            var sync = new MetaResourceSyncService(
+                db, graph, protector, metaOptions,
+                Integrations.NoBackfill.Instance, NullLogger<MetaResourceSyncService>.Instance);
+            var integration = new MetaIntegrationService(
+                db, graph, protector, sync, metaOptions, NullLogger<MetaIntegrationService>.Instance);
+            result = await integration.RetryFailedEventsAsync(connectionId, new LeadUserContext
+            {
+                UserId = adminUserId,
+                Role = LeadRoles.Admin,
+                DisplayName = "Bulk Retry Admin"
+            });
+        }
+
+        Assert.Equal(2, result.Requeued);
+        Assert.Equal(0, result.Skipped);
+        Assert.Equal(2, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEvents] WHERE [Status] = " + (int)ExternalIntegrationEventStatus.Pending
+            + " AND [Id] IN (" + racedEventId + "," + otherEventId + ")"));
+        Assert.Equal(2, await ScalarAsync(database.ConnectionString,
+            "SELECT COUNT(*) FROM [ExternalIntegrationEventRetries]"));
+        Assert.Equal(1, await ScalarAsync(database.ConnectionString,
+            "SELECT [RetryCount] FROM [ExternalIntegrationEvents] WHERE [Id] = " + otherEventId));
+    }
+
+    private static ExternalIntegrationEvent FailedMetaEvent(
+        int connectionId, ExternalIntegrationResource page, string leadgenId) => new()
+    {
+        Provider = IntegrationProviders.Meta,
+        ExternalIntegrationConnectionId = connectionId,
+        ExternalIntegrationResourceId = page.Id,
+        EventType = "leadgen",
+        EventKey = "bulk-retry:" + leadgenId,
+        ResourceExternalId = page.ExternalId,
+        RawPayloadJson = "{\"leadgen_id\":\"" + leadgenId + "\"}",
+        Status = ExternalIntegrationEventStatus.Failed,
+        LastError = "temporary failure",
+        FailureWasTransient = true,
+        ProcessedAt = DateTime.UtcNow,
+        AvailableAt = DateTime.UtcNow,
+        ReceivedAt = DateTime.UtcNow
+    };
+
+    /// <summary>
+    /// On the first bulk retry save, commits a change to one of the failed rows through a
+    /// second connection so that row's rowversion moves. Runs once, so the retry that follows
+    /// the clash sees the new version and can save.
+    /// </summary>
+    private sealed class BumpFailedEventFromAnotherContextInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _connectionString;
+        private readonly int _eventId;
+        private bool _raced;
+
+        public BumpFailedEventFromAnotherContextInterceptor(string connectionString, int eventId)
+        {
+            _connectionString = connectionString;
+            _eventId = eventId;
+        }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (_raced || eventData.Context is null)
+                return result;
+
+            var retrying = eventData.Context.ChangeTracker.Entries<ExternalIntegrationEvent>()
+                .Count(e => e.State == EntityState.Modified
+                            && e.Entity.Status == ExternalIntegrationEventStatus.Pending);
+            if (retrying < 2)
+                return result;
+
+            _raced = true;
+            await using var other = new AppDbContext(
+                new DbContextOptionsBuilder<AppDbContext>().UseSqlServer(_connectionString).Options);
+            var row = await other.ExternalIntegrationEvents.SingleAsync(e => e.Id == _eventId, cancellationToken);
+            row.LastError = "changed by the other writer";
+            await other.SaveChangesAsync(cancellationToken);
+            return result;
+        }
+    }
+
+    /// <summary>
     /// Event retention deletes old finished events in one set-based statement. Retry history
     /// rows point at their event, so a restricting foreign key made that whole statement fail
     /// once any old event had ever been retried — and since every later run hits the same row,

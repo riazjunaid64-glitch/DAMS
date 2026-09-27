@@ -101,25 +101,29 @@ internal sealed class MetaIntegrationHarness : IAsyncDisposable
     }
 
     /// <summary>The exact body shape Meta posts for a lead-ad submission.</summary>
-    public static string WebhookBody(string pageId, string leadgenId, string formId = "form-1", string? adId = null) => $$"""
-        {
-          "object": "page",
-          "entry": [{
-            "id": "{{pageId}}",
-            "time": 1755331200,
-            "changes": [{
-              "field": "leadgen",
-              "value": {
-                {{(adId is null ? "" : $"\"ad_id\": \"{adId}\",")}}
-                "page_id": "{{pageId}}",
-                "form_id": "{{formId}}",
-                "leadgen_id": "{{leadgenId}}",
-                "created_time": 1755331200
-              }
-            }]
-          }]
-        }
-        """;
+    public static string WebhookBody(string pageId, string leadgenId, string formId = "form-1", string? adId = null)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return $$"""
+            {
+              "object": "page",
+              "entry": [{
+                "id": "{{pageId}}",
+                "time": {{now}},
+                "changes": [{
+                  "field": "leadgen",
+                  "value": {
+                    {{(adId is null ? "" : $"\"ad_id\": \"{adId}\",")}}
+                    "page_id": "{{pageId}}",
+                    "form_id": "{{formId}}",
+                    "leadgen_id": "{{leadgenId}}",
+                    "created_time": {{now}}
+                  }
+                }]
+              }]
+            }
+            """;
+    }
 
     public ValueTask DisposeAsync() => Leads.DisposeAsync();
 }
