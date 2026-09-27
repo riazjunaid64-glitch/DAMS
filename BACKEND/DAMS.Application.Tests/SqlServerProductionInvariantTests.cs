@@ -6314,6 +6314,147 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// The migration immediately before lead apartment types were folded into the unit-type list.
+    /// </summary>
+    private const string BeforeLeadApartmentTypes = "20260927155349_LinkLeadCommunicationToFollowUp";
+
+    /// <summary>
+    /// Existing free-text apartment types and form-answer values that the canonical list
+    /// recognises are rewritten. Anything it does not recognise is left in place and recorded
+    /// with the lead id, and running the migration again does not write a second note.
+    /// </summary>
+    [SqlServerFact]
+    public async Task LeadApartmentTypeMigration_RewritesKnownValues_AndLogsTheRest()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        int knownId, unknownId, alreadyId, blankId;
+        await using (var db = new AppDbContext(options))
+        {
+            await db.GetService<IMigrator>().MigrateAsync(BeforeLeadApartmentTypes);
+
+            Lead Seed(string reference, string? propertyType) => new()
+            {
+                FirstName = reference,
+                LeadReference = reference,
+                LeadSourceId = 2,
+                PropertyType = propertyType,
+                CreatedAt = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc)
+            };
+
+            var known = Seed("LD-APT-KNOWN", "2_bedroom_apartment");
+            var unknown = Seed("LD-APT-UNKNOWN", "Penthouse");
+            var already = Seed("LD-APT-CANON", "Studio");
+            var blank = Seed("LD-APT-BLANK", null);
+            var worded = Seed("LD-APT-WORD", "2 Bedroom Apartment");
+            db.Leads.AddRange(known, unknown, already, blank, worded);
+
+            db.ExternalLeadFormMappings.Add(new ExternalLeadFormMapping
+            {
+                Provider = "meta",
+                FormExternalId = "form-apartment",
+                CreatedAt = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc),
+                AnswerMappingsJson = LeadFormAnswerMapper.Serialize(
+                [
+                    new LeadFormAnswerMappingDto
+                    {
+                        QuestionKey = "which_apartment_type_are_you_interested_in?",
+                        Target = LeadFormAnswerTarget.PropertyType,
+                        Options =
+                        [
+                            new LeadFormOptionMappingDto
+                            {
+                                OptionKey = "2_bedroom_apartment",
+                                OptionLabel = "2 Bedroom Apartment",
+                                Value = "2 Bedroom Apartment"
+                            },
+                            new LeadFormOptionMappingDto
+                            {
+                                OptionKey = "penthouse",
+                                OptionLabel = "Penthouse",
+                                Value = "Penthouse"
+                            }
+                        ]
+                    },
+                    new LeadFormAnswerMappingDto
+                    {
+                        QuestionKey = "are_you_buying_for_?",
+                        Target = LeadFormAnswerTarget.PurchaseIntent,
+                        Options = [new LeadFormOptionMappingDto { OptionKey = "investment", Value = "Investment" }]
+                    }
+                ])
+            });
+            db.ExternalLeadFormMappings.Add(new ExternalLeadFormMapping
+            {
+                Provider = "meta",
+                FormExternalId = "form-broken",
+                CreatedAt = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc),
+                AnswerMappingsJson = "not-json"
+            });
+            await db.SaveChangesAsync();
+            knownId = known.Id;
+            unknownId = unknown.Id;
+            alreadyId = already.Id;
+            blankId = blank.Id;
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var leads = await db.Leads.AsNoTracking().ToDictionaryAsync(l => l.LeadReference);
+            Assert.Equal("2 Bed", leads["LD-APT-KNOWN"].PropertyType);
+            Assert.Equal("2 Bed", leads["LD-APT-WORD"].PropertyType);
+            Assert.Equal("Penthouse", leads["LD-APT-UNKNOWN"].PropertyType);
+            Assert.Equal("Studio", leads["LD-APT-CANON"].PropertyType);
+            Assert.Null(leads["LD-APT-BLANK"].PropertyType);
+
+            var note = Assert.Single(await db.LeadApartmentTypeMigrationNotes.AsNoTracking().ToListAsync());
+            Assert.Equal(unknownId, note.LeadId);
+            Assert.Equal("Penthouse", note.PropertyType);
+            Assert.NotEqual(default, note.NotedAt);
+
+            var mapping = await db.ExternalLeadFormMappings.AsNoTracking()
+                .SingleAsync(m => m.FormExternalId == "form-apartment");
+            var answers = LeadFormAnswerMapper.ReadAnswers(mapping.AnswerMappingsJson);
+            var apartment = answers.Single(a => a.Target == LeadFormAnswerTarget.PropertyType);
+            Assert.Equal("2 Bed", apartment.Options.Single(o => o.OptionKey == "2_bedroom_apartment").Value);
+            Assert.Equal("Penthouse", apartment.Options.Single(o => o.OptionKey == "penthouse").Value);
+            Assert.Equal("2 Bedroom Apartment", apartment.Options.Single(o => o.OptionKey == "2_bedroom_apartment").OptionLabel);
+            Assert.Equal("Investment", answers.Single(a => a.Target == LeadFormAnswerTarget.PurchaseIntent).Options.Single().Value);
+
+            var formNote = Assert.Single(await db.LeadFormApartmentTypeMigrationNotes.AsNoTracking().ToListAsync());
+            Assert.Equal(mapping.Id, formNote.ExternalLeadFormMappingId);
+            Assert.Equal("meta", formNote.Provider);
+            Assert.Equal("form-apartment", formNote.FormExternalId);
+            Assert.Equal("which_apartment_type_are_you_interested_in?", formNote.QuestionKey);
+            Assert.Equal("penthouse", formNote.OptionKey);
+            Assert.Equal("Penthouse", formNote.Value);
+            Assert.NotEqual(default, formNote.NotedAt);
+
+            Assert.Equal("not-json", (await db.ExternalLeadFormMappings.AsNoTracking()
+                .SingleAsync(m => m.FormExternalId == "form-broken")).AnswerMappingsJson);
+
+            Assert.Equal(0, await ScalarAsync(database.ConnectionString,
+                "SELECT COUNT(*) FROM sys.objects WHERE name = 'Dams_CanonicalLeadApartmentType' AND type = 'FN'"));
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            Assert.Equal(unknownId, Assert.Single(await db.LeadApartmentTypeMigrationNotes.AsNoTracking().ToListAsync()).LeadId);
+            Assert.Equal("Penthouse", Assert.Single(await db.LeadFormApartmentTypeMigrationNotes.AsNoTracking().ToListAsync()).Value);
+            Assert.Equal("2 Bed", (await db.Leads.AsNoTracking().SingleAsync(l => l.Id == knownId)).PropertyType);
+            Assert.Equal("Studio", (await db.Leads.AsNoTracking().SingleAsync(l => l.Id == alreadyId)).PropertyType);
+            Assert.Null((await db.Leads.AsNoTracking().SingleAsync(l => l.Id == blankId)).PropertyType);
+        }
+    }
+
+    /// <summary>
     /// Lead columns added by migrations after the point a data-migration test starts from. Those
     /// tests seed leads through today's model, which writes every mapped column, so the columns must
     /// exist while seeding; they are dropped again before migrating forward, which then adds them

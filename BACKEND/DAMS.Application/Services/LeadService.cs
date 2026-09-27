@@ -108,7 +108,7 @@ namespace DAMS.Application.Services
                     await LockContactsAsync(isExternal ? provider : null, isExternal ? externalId : null,
                         normalizedPhone, normalizedWhatsapp, normalizedEmail, ct);
 
-                    return await DecideAndWriteAsync(dto, actor, source, isExternal, provider, externalId,
+                    return await DecideAndWriteAsync(dto, actor, source, isExternal, trustedExternal, provider, externalId,
                         normalizedPhone, normalizedWhatsapp, normalizedEmail, announce, ct);
                 }, cancellationToken);
             }
@@ -148,6 +148,7 @@ namespace DAMS.Application.Services
             LeadUserContext? actor,
             LeadSource source,
             bool isExternal,
+            bool trustedExternal,
             string? provider,
             string? externalId,
             string? normalizedPhone,
@@ -228,7 +229,8 @@ namespace DAMS.Application.Services
                     {
                         await LockLeadAsync(chosen.LeadId!.Value, cancellationToken);
                         var enrichedChoice = await EnrichExistingLeadAsync(
-                            chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken, announce: announce);
+                            chosen.LeadId!.Value, dto, source, actor, isExternal, cancellationToken, announce: announce,
+                            acceptUnknownApartmentType: trustedExternal);
                         return new LeadIntakeResultDto
                         {
                             IsDuplicate = true,
@@ -293,7 +295,8 @@ namespace DAMS.Application.Services
 
                 await LockLeadAsync(match.LeadId.Value, cancellationToken);
                 var enriched = await EnrichExistingLeadAsync(
-                    match.LeadId.Value, dto, source, actor, isExternal, cancellationToken, announce: announce);
+                    match.LeadId.Value, dto, source, actor, isExternal, cancellationToken, announce: announce,
+                    acceptUnknownApartmentType: trustedExternal);
                 return new LeadIntakeResultDto
                 {
                     IsDuplicate = true,
@@ -318,7 +321,7 @@ namespace DAMS.Application.Services
             // The lead, final reference and queued notifications commit together, in the
             // surrounding intake transaction. A replay must never find a lead whose initial
             // notification was rolled back or skipped.
-            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal);
+            var lead = BuildLead(dto, source, normalizedPhone, normalizedWhatsapp, normalizedEmail, actor, isExternal, trustedExternal);
 
             await ApplyInitialAssignmentAsync(lead, dto, actor, cancellationToken);
 
@@ -378,7 +381,8 @@ namespace DAMS.Application.Services
             string? normalizedWhatsapp,
             string? normalizedEmail,
             LeadUserContext? actor,
-            bool isExternal)
+            bool isExternal,
+            bool acceptUnknownApartmentType)
         {
             var externalProvider = isExternal ? LeadContactNormalizer.Clean(dto.ExternalProvider) : null;
 
@@ -414,7 +418,7 @@ namespace DAMS.Application.Services
                     : LeadIntegrationStatus.Processed,
                 InterestedProjectId = dto.InterestedProjectId,
                 InterestedUnitId = dto.InterestedUnitId,
-                PropertyType = LeadContactNormalizer.Clean(dto.PropertyType),
+                PropertyType = UnitTypes.ForLead(dto.PropertyType, acceptUnknownApartmentType),
                 PreferredLocation = LeadContactNormalizer.Clean(dto.PreferredLocation),
                 BudgetMin = dto.BudgetMin,
                 BudgetMax = dto.BudgetMax,
@@ -523,7 +527,8 @@ namespace DAMS.Application.Services
             bool isExternal,
             CancellationToken cancellationToken,
             SubmissionAttribution? attribution = null,
-            bool announce = true)
+            bool announce = true,
+            bool? acceptUnknownApartmentType = null)
         {
             // Repeat enrichment is a write. Recheck scope here rather than trusting the
             // duplicate lookup above: ownership can change between that lookup and this load.
@@ -531,11 +536,16 @@ namespace DAMS.Application.Services
                 ? await _context.Leads.FirstAsync(l => l.Id == leadId, cancellationToken)
                 : await LoadForWriteAsync(leadId, actor, cancellationToken);
 
+            // Resolved before any field is touched, so an unrecognised staff value refuses the
+            // enquiry without writing the rest of it. Facebook, Instagram and website enquiries
+            // are never refused, even when the submission has no provider id yet.
+            var apartmentType = UnitTypes.ForLead(dto.PropertyType, acceptUnknownApartmentType ?? isExternal);
+
             // Only ever fill gaps. The original source, owner and history are untouchable.
             lead.LastName ??= LeadContactNormalizer.Clean(dto.LastName);
             lead.Address ??= LeadContactNormalizer.Clean(dto.Address);
             lead.City ??= LeadContactNormalizer.Clean(dto.City);
-            lead.PropertyType ??= LeadContactNormalizer.Clean(dto.PropertyType);
+            lead.PropertyType ??= apartmentType;
             lead.PreferredLocation ??= LeadContactNormalizer.Clean(dto.PreferredLocation);
             lead.PreferredContactTime ??= LeadContactNormalizer.Clean(dto.PreferredContactTime);
             lead.CampaignName ??= LeadContactNormalizer.Clean(dto.CampaignName);
@@ -670,7 +680,33 @@ namespace DAMS.Application.Services
                 ReceivedAt = DateTime.UtcNow
             };
             attribution?.ApplyTo(submission);
+            // Meta already stores every answer on the receipt. A website or other intake
+            // channel does not, so an apartment type we cannot file on the lead would
+            // otherwise disappear. Keep the words the person used.
+            if (string.IsNullOrWhiteSpace(submission.FieldDataJson))
+                submission.FieldDataJson = UnrecognisedApartmentAnswer(dto.PropertyType);
             _context.LeadExternalSubmissions.Add(submission);
+        }
+
+        /// <summary>
+        /// The original apartment answer, when it is not one of the canonical types.
+        /// Null when there is nothing to keep or the value was stored on the lead.
+        /// </summary>
+        private static string? UnrecognisedApartmentAnswer(string? propertyType)
+        {
+            var raw = propertyType?.Trim();
+            if (string.IsNullOrEmpty(raw) || UnitTypes.ForLead(raw, externalEnquiry: true) != null)
+                return null;
+
+            return JsonSerializer.Serialize(new[]
+            {
+                new ExternalFieldAnswerDto
+                {
+                    Name = "property_type",
+                    Value = raw,
+                    IsMapped = false
+                }
+            });
         }
 
         /// <summary>
@@ -1581,6 +1617,12 @@ namespace DAMS.Application.Services
             if (targetBudgetMin.HasValue && targetBudgetMax.HasValue && targetBudgetMin > targetBudgetMax)
                 throw new InvalidOperationException("The minimum budget cannot be greater than the maximum budget.");
 
+            // Before any field is written, so a refused apartment type leaves the lead untouched.
+            var apartmentTypeProvided = dto.WasProvided(nameof(dto.PropertyType));
+            var apartmentType = apartmentTypeProvided
+                ? UnitTypes.ForLead(dto.PropertyType, externalEnquiry: false)
+                : null;
+
             // Editing a contact field must not achieve what creation refuses: two open leads
             // for the same person. Checked against every channel that changed, not phone alone
             // — matching FindDuplicateAsync's rule that a number collides with either field,
@@ -1649,7 +1691,7 @@ namespace DAMS.Application.Services
             if (dto.WasProvided(nameof(dto.AdReference))) lead.AdReference = LeadContactNormalizer.Clean(dto.AdReference);
             if (dto.WasProvided(nameof(dto.InterestedProjectId))) lead.InterestedProjectId = dto.InterestedProjectId;
             if (dto.WasProvided(nameof(dto.InterestedUnitId))) lead.InterestedUnitId = dto.InterestedUnitId;
-            if (dto.WasProvided(nameof(dto.PropertyType))) lead.PropertyType = LeadContactNormalizer.Clean(dto.PropertyType);
+            if (apartmentTypeProvided) lead.PropertyType = apartmentType;
             if (dto.WasProvided(nameof(dto.PreferredLocation))) lead.PreferredLocation = LeadContactNormalizer.Clean(dto.PreferredLocation);
             if (dto.WasProvided(nameof(dto.BudgetMin))) lead.BudgetMin = dto.BudgetMin;
             if (dto.WasProvided(nameof(dto.BudgetMax))) lead.BudgetMax = dto.BudgetMax;

@@ -62,7 +62,7 @@ public class LeadFormMappingTests
             (BuyingForQuestion, "personal_living"));
 
         Assert.Equal(h.Leads.ProjectId, lead.InterestedProjectId);
-        Assert.Equal("2 Bedroom Apartment", lead.PropertyType);
+        Assert.Equal("2 Bed", lead.PropertyType);
         Assert.Equal(LeadPurchaseIntent.SelfUse, lead.PurchaseIntent);
         Assert.Equal(LeadPaymentPreference.Cash, lead.PaymentPreference);
 
@@ -94,7 +94,7 @@ public class LeadFormMappingTests
             (ApartmentQuestion, "Studio Apartment"),
             (BuyingForQuestion, "Investment"));
 
-        Assert.Equal("Studio Apartment", lead.PropertyType);
+        Assert.Equal("Studio", lead.PropertyType);
         Assert.Equal(LeadPurchaseIntent.Investment, lead.PurchaseIntent);
         Assert.Equal(LeadPaymentPreference.Cash, lead.PaymentPreference);
     }
@@ -346,6 +346,56 @@ public class LeadFormMappingTests
     }
 
     [Fact]
+    public async Task SavingAnApartmentAnswer_StoresTheCanonicalType_AndRefusesFreeText()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        await SetUpFloriaAsync(h, mapped: false);
+
+        var saved = await h.Integration.SaveLeadFormMappingAsync(FormId, FloriaMapping(h.Leads.ProjectId), h.Leads.Admin);
+        var apartment = saved.Answers.Single(a => a.Target == LeadFormAnswerTarget.PropertyType);
+        Assert.Equal(new[] { "Studio", "1 Bed", "2 Bed", "3 Bed" }, apartment.Options.Select(o => o.Value).ToArray());
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Integration.SaveLeadFormMappingAsync(FormId,
+            new SaveLeadFormMappingDto
+            {
+                Answers = [Mapping(ApartmentQuestion, LeadFormAnswerTarget.PropertyType, ("studio_apartment", "Penthouse"))]
+            }, h.Leads.Admin));
+        Assert.Contains("Studio, 1 Bed, 2 Bed or 3 Bed", error.Message);
+
+        var still = await h.Integration.GetLeadFormMappingAsync(FormId);
+        Assert.Equal("2 Bed", still.Answers.Single(a => a.Target == LeadFormAnswerTarget.PropertyType)
+            .Options.Single(o => o.OptionKey == "2_bedroom_apartment").Value);
+    }
+
+    [Fact]
+    public async Task AStoredMappingStillWordedTheOldWay_WritesTheCanonicalApartmentType()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var page = await SetUpFloriaAsync(h, mapped: false);
+        await StoreMappingAsync(h, ("2_bedroom_apartment", "2 Bedroom Apartment"));
+
+        var lead = await IngestAsync(h, page, "lead-1", (ApartmentQuestion, "2_bedroom_apartment"));
+
+        Assert.Equal("2 Bed", lead.PropertyType);
+    }
+
+    [Fact]
+    public async Task AnUnrecognisedStoredApartmentType_DoesNotRejectTheLead_AndKeepsTheAnswer()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        var page = await SetUpFloriaAsync(h, mapped: false);
+        await StoreMappingAsync(h, ("studio_apartment", "Penthouse"));
+
+        var lead = await IngestAsync(h, page, "lead-1", (ApartmentQuestion, "studio_apartment"));
+
+        Assert.Null(lead.PropertyType);
+        var answers = Assert.Single(await h.Leads.Leads.GetExternalSubmissionsAsync(lead.Id, h.Leads.Admin)).FieldData;
+        var apartment = answers.Single(a => a.Name == ApartmentQuestion);
+        Assert.False(apartment.IsMapped);
+        Assert.Equal("studio_apartment", apartment.Value);
+    }
+
+    [Fact]
     public async Task AnswersCannotBeMappedBeforeTheFormsQuestionsAreSynced_ButTheProjectCan()
     {
         await using var h = await MetaIntegrationHarness.CreateAsync();
@@ -503,6 +553,20 @@ public class LeadFormMappingTests
         Type = "CUSTOM",
         Options = options.Select(o => new LeadFormOptionDto { Key = o.Key, Value = o.Value }).ToList()
     };
+
+    private static async Task StoreMappingAsync(MetaIntegrationHarness h, params (string OptionKey, string Value)[] options)
+    {
+        h.Db.ExternalLeadFormMappings.Add(new ExternalLeadFormMapping
+        {
+            Provider = IntegrationProviders.Meta,
+            FormExternalId = FormId,
+            CreatedAt = DateTime.UtcNow,
+            RowVersion = [1],
+            AnswerMappingsJson = LeadFormAnswerMapper.Serialize(
+                [Mapping(ApartmentQuestion, LeadFormAnswerTarget.PropertyType, options)])
+        });
+        await h.Db.SaveChangesAsync();
+    }
 
     private static LeadFormAnswerMappingDto Mapping(
         string questionKey, LeadFormAnswerTarget target, params (string OptionKey, string Value)[] options) => new()

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.IntegrationDtos;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
@@ -105,8 +106,8 @@ namespace DAMS.Application.Services.Integrations
             switch (target)
             {
                 case LeadFormAnswerTarget.PropertyType:
-                    var propertyType = value.Trim();
-                    if (propertyType.Length == 0)
+                    var propertyType = UnitTypes.Canonical(value);
+                    if (propertyType == null)
                         return false;
                     mapped.PropertyType ??= propertyType;
                     return true;

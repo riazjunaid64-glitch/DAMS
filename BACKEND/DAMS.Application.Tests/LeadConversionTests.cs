@@ -384,6 +384,18 @@ public sealed class LeadConversionTests
     [InlineData("1 Bedroom", "1 Bed")]
     [InlineData("PARKING SPACE", "Parking space")]
     [InlineData("studio", "Studio")]
+    [InlineData("studio apartment", "Studio")]
+    [InlineData("studio_apartment", "Studio")]
+    [InlineData("1 bedroom apartment", "1 Bed")]
+    [InlineData("1_bedroom_apartment", "1 Bed")]
+    [InlineData("one bedroom", "1 Bed")]
+    [InlineData("1 bhk", "1 Bed")]
+    [InlineData("1bed", "1 Bed")]
+    [InlineData("2_bedroom_apartment", "2 Bed")]
+    [InlineData("two bedroom", "2 Bed")]
+    [InlineData("3 bedroom apartment", "3 Bed")]
+    [InlineData("three bedroom", "3 Bed")]
+    [InlineData("parking", "Parking space")]
     [InlineData("penthouse", null)]
     public void UnitTypes_MapKnownValuesAndLeaveUnknownOnes(string raw, string? expected)
     {

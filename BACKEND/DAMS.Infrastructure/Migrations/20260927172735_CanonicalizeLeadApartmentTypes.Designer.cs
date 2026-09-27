@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260927172735_CanonicalizeLeadApartmentTypes")]
+    partial class CanonicalizeLeadApartmentTypes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -4814,52 +4817,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("AssignedEmployeeId", "Status", "DueAt");
 
                     b.ToTable("LeadFollowUps");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.LeadFormApartmentTypeMigrationNote", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("ExternalLeadFormMappingId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("FormExternalId")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<DateTime>("NotedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("OptionKey")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("QuestionKey")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("Value")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ExternalLeadFormMappingId", "QuestionKey", "OptionKey")
-                        .IsUnique();
-
-                    b.ToTable("LeadFormApartmentTypeMigrationNotes");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.LeadIntakeHold", b =>
