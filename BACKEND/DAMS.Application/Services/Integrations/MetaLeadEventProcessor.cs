@@ -211,7 +211,8 @@ namespace DAMS.Application.Services.Integrations
 
             var leadgenId = ReadPayloadId(integrationEvent.RawPayloadJson, "leadgen_id");
             if (leadgenId is null)
-                return await FailAsync(integrationEvent, "The webhook payload contained no leadgen id.", cancellationToken);
+                return await FailAsync(integrationEvent, "The webhook payload contained no leadgen id.",
+                    transient: false, cancellationToken);
 
             var token = _protector.TryUnprotect(resource.ResourceTokenProtected)
                         ?? _protector.TryUnprotect(connection.AccessTokenProtected);
@@ -232,7 +233,8 @@ namespace DAMS.Application.Services.Integrations
             // reclaimed at every lease expiry forever.
             if (integrationEvent.Attempts >= _options.MaxAttempts)
                 return await FailAsync(integrationEvent,
-                    $"Processing did not complete in {integrationEvent.Attempts} attempts.", cancellationToken);
+                    $"Processing did not complete in {integrationEvent.Attempts} attempts.",
+                    transient: true, cancellationToken);
 
             // Counted before the lead is fetched, not with the outcome: an attempt whose outcome
             // is never saved — the worker died, or the database failed just then — still counts,
@@ -262,7 +264,7 @@ namespace DAMS.Application.Services.Integrations
             }
             catch (MetaGraphException ex)
             {
-                return await FailAsync(integrationEvent, ex.Message, cancellationToken);
+                return await FailAsync(integrationEvent, ex.Message, transient: false, cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -335,7 +337,8 @@ namespace DAMS.Application.Services.Integrations
             // The provider's id is what makes ingestion idempotent, so it can be neither cut
             // short nor dropped. One too long to store can never succeed; retrying is pointless.
             if (lead.LeadgenId.Length > MaxExternalIdLength)
-                return await FailAsync(integrationEvent, "Meta returned a lead id longer than DAMS can store.", cancellationToken);
+                return await FailAsync(integrationEvent, "Meta returned a lead id longer than DAMS can store.",
+                    transient: false, cancellationToken);
 
             var mapped = MetaLeadFieldMapper.Map(lead.FieldData);
             await ApplyFormMappingAsync(mapped, lead.FormId, cancellationToken);
@@ -406,7 +409,7 @@ namespace DAMS.Application.Services.Integrations
             }
 
             if (result.Lead is null)
-                return await FailAsync(integrationEvent, result.Message, cancellationToken);
+                return await FailAsync(integrationEvent, result.Message, transient: false, cancellationToken);
 
             await StampAttributionAsync(connection, resource, lead, platform, mapped, cancellationToken);
 
@@ -685,11 +688,14 @@ namespace DAMS.Application.Services.Integrations
         }
 
         private async Task<bool> FailAsync(
-            ExternalIntegrationEvent integrationEvent, string reason, CancellationToken cancellationToken)
+            ExternalIntegrationEvent integrationEvent, string reason, bool transient, CancellationToken cancellationToken)
         {
             integrationEvent.Status = ExternalIntegrationEventStatus.Failed;
             integrationEvent.ProcessedAt = DateTime.UtcNow;
             integrationEvent.LastError = MetaCredentialScrubber.ScrubAndLimit(reason, 1000);
+            // Reconciliation reads this later. A permanent failure must not be retried just
+            // because an earlier attempt on the same event was a timeout.
+            integrationEvent.FailureWasTransient = transient;
             ReleaseLease(integrationEvent);
 
             await _context.SaveChangesAsync(cancellationToken);
@@ -734,7 +740,7 @@ namespace DAMS.Application.Services.Integrations
         {
             if (integrationEvent.Attempts >= _options.MaxAttempts)
             {
-                await FailAsync(integrationEvent, reason, cancellationToken);
+                await FailAsync(integrationEvent, reason, transient: true, cancellationToken);
                 return;
             }
 

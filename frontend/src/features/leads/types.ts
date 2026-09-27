@@ -113,7 +113,12 @@ export interface MetaConnection {
   leadFormCount: number;
   enabledResourceCount: number;
   pendingEventCount?: number;
+  /** Every event still Failed, however old. */
   failedEventCount?: number;
+  /** Failed events whose last attempt was in the last seven days. */
+  recentFailedCount?: number;
+  /** When the newest event that is still Failed was last attempted. */
+  lastFailedAt?: string | null;
 }
 
 export interface MetaResource {

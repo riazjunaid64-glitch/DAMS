@@ -27,6 +27,16 @@ namespace DAMS.Application.Services.Integrations
         /// <summary>Graph codes that mean "busy, try later" rather than "wrong".</summary>
         private static readonly HashSet<int> TransientCodes = [1, 2, 4, 17, 32, 341, 613];
 
+        /// <summary>
+        /// Business-Use-Case throttling. Meta returns these on HTTP 400, so they are not covered
+        /// by a 429 or a 5xx, and failing the lead on the first one would drop it during a limit.
+        /// </summary>
+        private const int BusinessUseCaseThrottleMin = 80000;
+        private const int BusinessUseCaseThrottleMax = 80014;
+
+        /// <summary>Invalid parameter, including a lead id Meta says does not exist (subcode 33).</summary>
+        private const int InvalidParameterCode = 100;
+
         /// <summary>Graph codes that mean the authorization itself is no longer usable.</summary>
         private static readonly HashSet<int> AuthorizationCodes = [10, 102, 190, 200, 299, 803];
 
@@ -673,6 +683,13 @@ namespace DAMS.Application.Services.Integrations
         /// Turns an unsuccessful response into the one exception type that tells the caller what
         /// to do. Meta's own error code is more reliable than the HTTP status, so it wins where
         /// both are present.
+        ///
+        /// Authorization is recognised first and is never retried. An invalid parameter (code 100),
+        /// including a lead Meta says does not exist, will not start succeeding, so that stays
+        /// permanent. Everything else — a known
+        /// "try later" code, Business-Use-Case throttling, a 400 with no code, or a code this
+        /// client does not have a permanent meaning for — is transient, so the lead gets the
+        /// normal retries instead of failing on the first unfamiliar error.
         /// </summary>
         private static void EnsureSuccess(HttpResponseMessage response, string body)
         {
@@ -687,19 +704,31 @@ namespace DAMS.Application.Services.Integrations
                 if (AuthorizationCodes.Contains(errorCode) || subCode is >= 458 and <= 467)
                     throw new MetaAuthorizationException(detail, code: code, subCode: subCode);
 
-                if (TransientCodes.Contains(errorCode))
+                if (IsKnownTransient(errorCode))
                     throw new MetaTransientException(detail, code: code, subCode: subCode);
+
+                if (errorCode == InvalidParameterCode)
+                    throw new MetaPermanentException(detail, code: code, subCode: subCode);
+
+                // A code with no permanent meaning. HTTP 401/403 is still the authorization
+                // itself being refused; that is unchanged. Any other status is retried.
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    throw new MetaAuthorizationException(detail, code: code, subCode: subCode);
+
+                throw new MetaTransientException(detail, code: code, subCode: subCode);
             }
 
             throw response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
                     new MetaAuthorizationException(detail, code: code, subCode: subCode),
-                HttpStatusCode.TooManyRequests => new MetaTransientException(detail, code: code, subCode: subCode),
-                >= HttpStatusCode.InternalServerError => new MetaTransientException(detail, code: code, subCode: subCode),
-                _ => (MetaGraphException)new MetaPermanentException(detail, code: code, subCode: subCode)
+                HttpStatusCode.NotFound => new MetaPermanentException(detail, code: code, subCode: subCode),
+                _ => (MetaGraphException)new MetaTransientException(detail, code: code, subCode: subCode)
             };
         }
+
+        private static bool IsKnownTransient(int code) =>
+            TransientCodes.Contains(code) || code is >= BusinessUseCaseThrottleMin and <= BusinessUseCaseThrottleMax;
 
         private static (int? Code, int? SubCode, string? Message) ReadError(string body)
         {

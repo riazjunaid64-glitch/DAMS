@@ -62,7 +62,35 @@ namespace DAMS.Application.DTOs.IntegrationDtos
         public int LeadFormCount { get; set; }
         public int EnabledResourceCount { get; set; }
         public int PendingEventCount { get; set; }
+
+        /// <summary>Every event on this connection that is still Failed, however old.</summary>
         public int FailedEventCount { get; set; }
+
+        /// <summary>
+        /// Events still Failed whose last attempt was in the last seven days. An old test lead
+        /// Meta has since deleted stays in <see cref="FailedEventCount"/> and does not keep a
+        /// warning up on its own.
+        /// </summary>
+        public int RecentFailedCount { get; set; }
+
+        /// <summary>When the newest event that is still Failed was last attempted. Null when none are.</summary>
+        public DateTime? LastFailedAt { get; set; }
+    }
+
+    /// <summary>What one Retry now did with the connection's Failed events.</summary>
+    public class MetaRetryFailedResultDto
+    {
+        /// <summary>Failed events this call put back on the queue.</summary>
+        public int Requeued { get; set; }
+
+        /// <summary>
+        /// Failed events left Failed because their Page is switched off, no longer returned by
+        /// Meta, or missing. They still count in recentFailedCount until that changes.
+        /// </summary>
+        public int Skipped { get; set; }
+
+        /// <summary>Why <see cref="Skipped"/> were left. Null when every failed event was requeued.</summary>
+        public string? SkippedReason { get; set; }
     }
 
     public class MetaResourceDto
@@ -159,7 +187,10 @@ namespace DAMS.Application.DTOs.IntegrationDtos
 
         public int AlreadyInDams { get; set; }
 
-        /// <summary>Delivered before, but their event failed: not in DAMS. Retried from the event list, not here.</summary>
+        /// <summary>
+        /// Delivered before, but their event failed and was left Failed: a permanent failure, an
+        /// automatic round that is already used up, or an import, which never requeues. Not in DAMS.
+        /// </summary>
         public int PreviouslyFailed { get; set; }
 
         /// <summary>Leads that could not be queued, plus forms Meta would not let DAMS read.</summary>

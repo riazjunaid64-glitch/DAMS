@@ -290,8 +290,12 @@ namespace DAMS.Application.Services.Integrations
 
         // ── Reading ─────────────────────────────────────────────────────────────────
 
+        /// <summary>How long a Failed event still counts as "could not be received" on the connections list.</summary>
+        public const int RecentFailedEventDays = 7;
+
         public async Task<List<MetaConnectionDto>> GetConnectionsAsync(CancellationToken cancellationToken = default)
         {
+            var recentFailureSince = DateTime.UtcNow.AddDays(-RecentFailedEventDays);
             var connections = await _context.ExternalIntegrationConnections
                 .AsNoTracking()
                 .Where(c => c.Provider == IntegrationProviders.Meta)
@@ -315,6 +319,14 @@ namespace DAMS.Application.Services.Integrations
                     FailedEventCount = _context.ExternalIntegrationEvents.Count(e =>
                         e.ExternalIntegrationConnectionId == c.Id
                         && e.Status == ExternalIntegrationEventStatus.Failed),
+                    RecentFailedCount = _context.ExternalIntegrationEvents.Count(e =>
+                        e.ExternalIntegrationConnectionId == c.Id
+                        && e.Status == ExternalIntegrationEventStatus.Failed
+                        && e.ProcessedAt >= recentFailureSince),
+                    LastFailedAt = _context.ExternalIntegrationEvents
+                        .Where(e => e.ExternalIntegrationConnectionId == c.Id
+                                    && e.Status == ExternalIntegrationEventStatus.Failed)
+                        .Max(e => (DateTime?)e.ProcessedAt),
                     LastLeadReceivedAt = _context.ExternalIntegrationEvents
                         .Where(e => e.ExternalIntegrationConnectionId == c.Id
                                     && e.EventType != MetaLeadBackfillService.BackfillEventType
@@ -345,7 +357,9 @@ namespace DAMS.Application.Services.Integrations
                 LeadFormCount = row.Resources.Count(r => r.IsActive && r.ResourceType == ExternalResourceTypes.LeadForm),
                 EnabledResourceCount = row.Resources.Count(r => r.IsEnabled),
                 PendingEventCount = row.PendingEventCount,
-                FailedEventCount = row.FailedEventCount
+                FailedEventCount = row.FailedEventCount,
+                RecentFailedCount = row.RecentFailedCount,
+                LastFailedAt = row.LastFailedAt
             }).ToList();
         }
 
@@ -597,22 +611,7 @@ namespace DAMS.Application.Services.Integrations
                     throw new InvalidOperationException(
                         "Enable the Meta Page before retrying this event.");
 
-                integrationEvent.Status = ExternalIntegrationEventStatus.Pending;
-                integrationEvent.Attempts = 0;
-                integrationEvent.AvailableAt = DateTime.UtcNow;
-                integrationEvent.LockedUntil = null;
-                integrationEvent.LockedBy = null;
-                integrationEvent.ProcessedAt = null;
-                integrationEvent.LastError = null;
-                integrationEvent.RetryCount++;
-                integrationEvent.LastRetriedAt = DateTime.UtcNow;
-                integrationEvent.LastRetriedByUserId = actor.UserId;
-                _context.ExternalIntegrationEventRetries.Add(new ExternalIntegrationEventRetry
-                {
-                    ExternalIntegrationEventId = integrationEvent.Id,
-                    RequestedByUserId = actor.UserId,
-                    RequestedAt = integrationEvent.LastRetriedAt.Value
-                });
+                QueueForOperatorRetry(integrationEvent, actor, DateTime.UtcNow);
 
                 try
                 {
@@ -632,6 +631,139 @@ namespace DAMS.Application.Services.Integrations
                 .SingleOrDefaultAsync(cancellationToken);
 
             return result ?? throw new LeadNotFoundException("That Meta event no longer exists.");
+        }
+
+        public async Task<MetaRetryFailedResultDto> RetryFailedEventsAsync(
+            int connectionId, LeadUserContext actor, CancellationToken cancellationToken = default)
+        {
+            if (!actor.IsAdmin && !actor.IsManager)
+                throw new LeadAuthorizationException("Only an Admin or Sales Manager can retry Meta integration events.");
+
+            var connection = await LoadConnectionAsync(connectionId, cancellationToken);
+            if (connection.Status == ExternalIntegrationConnectionStatus.Disconnected)
+                throw new InvalidOperationException("Reconnect this Meta connection before retrying the event.");
+
+            // One SaveChanges is one transaction. A row-version clash on a single event rolls
+            // the whole batch back, so a conflict reloads whatever is still Failed and tries
+            // those again instead of reporting the others as retried.
+            const int maxPasses = 3;
+            var requeued = 0;
+            var pageOff = 0;
+            var pageGone = 0;
+            var pageMissing = 0;
+            var skipsCounted = false;
+
+            for (var pass = 0; pass < maxPasses; pass++)
+            {
+                var failed = await _context.ExternalIntegrationEvents
+                    .Include(e => e.Resource)
+                    .Where(e => e.ExternalIntegrationConnectionId == connectionId
+                                && e.Provider == IntegrationProviders.Meta
+                                && e.Status == ExternalIntegrationEventStatus.Failed)
+                    .ToListAsync(cancellationToken);
+
+                var now = DateTime.UtcNow;
+                var queued = 0;
+                foreach (var integrationEvent in failed)
+                {
+                    // The same reasons a single retry refuses. Leaving the event Failed keeps
+                    // the lead visible; the result says why Retry now did not take it.
+                    switch (WhyNotRetried(integrationEvent))
+                    {
+                        case RetrySkip.PageOff:
+                            if (!skipsCounted) pageOff++;
+                            continue;
+                        case RetrySkip.PageGone:
+                            if (!skipsCounted) pageGone++;
+                            continue;
+                        case RetrySkip.PageMissing:
+                            if (!skipsCounted) pageMissing++;
+                            continue;
+                    }
+
+                    QueueForOperatorRetry(integrationEvent, actor, now);
+                    queued++;
+                }
+
+                skipsCounted = true;
+                if (queued == 0)
+                    break;
+
+                try
+                {
+                    await _context.SaveChangesAsync(cancellationToken);
+                    requeued += queued;
+                    break;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    _context.ChangeTracker.Clear();
+                }
+            }
+
+            return new MetaRetryFailedResultDto
+            {
+                Requeued = requeued,
+                Skipped = pageOff + pageGone + pageMissing,
+                SkippedReason = DescribeSkips(pageOff, pageGone, pageMissing)
+            };
+        }
+
+        private enum RetrySkip { None, PageOff, PageGone, PageMissing }
+
+        /// <summary>Same order as a single retry: a Page Meta no longer returns, then one that is switched off.</summary>
+        private static RetrySkip WhyNotRetried(ExternalIntegrationEvent integrationEvent)
+        {
+            if (integrationEvent.Resource is null)
+                return RetrySkip.PageMissing;
+            if (!integrationEvent.Resource.IsActive)
+                return RetrySkip.PageGone;
+            if (!integrationEvent.Resource.IsEnabled)
+                return RetrySkip.PageOff;
+            return RetrySkip.None;
+        }
+
+        private static string? DescribeSkips(int pageOff, int pageGone, int pageMissing)
+        {
+            var parts = new List<string>();
+            if (pageOff > 0)
+                parts.Add(pageOff == 1
+                    ? "1 failed lead belongs to a Page that is switched off. Enable the Page before retrying."
+                    : $"{pageOff} failed leads belong to a Page that is switched off. Enable the Page before retrying.");
+            if (pageGone > 0)
+                parts.Add(pageGone == 1
+                    ? "1 failed lead belongs to a Page Meta no longer returns. Run Sync now before retrying."
+                    : $"{pageGone} failed leads belong to a Page Meta no longer returns. Run Sync now before retrying.");
+            if (pageMissing > 0)
+                parts.Add(pageMissing == 1
+                    ? "1 failed lead has no Page on file."
+                    : $"{pageMissing} failed leads have no Page on file.");
+            return parts.Count == 0 ? null : string.Join(" ", parts);
+        }
+
+        /// <summary>
+        /// Puts one Failed event back on the queue and records who asked. Does not spend an
+        /// automatic reconciliation round: an operator can always ask again.
+        /// </summary>
+        private void QueueForOperatorRetry(ExternalIntegrationEvent integrationEvent, LeadUserContext actor, DateTime now)
+        {
+            integrationEvent.Status = ExternalIntegrationEventStatus.Pending;
+            integrationEvent.Attempts = 0;
+            integrationEvent.AvailableAt = now;
+            integrationEvent.LockedUntil = null;
+            integrationEvent.LockedBy = null;
+            integrationEvent.ProcessedAt = null;
+            integrationEvent.LastError = null;
+            integrationEvent.FailureWasTransient = false;
+            integrationEvent.RetryCount++;
+            integrationEvent.LastRetriedAt = now;
+            integrationEvent.LastRetriedByUserId = actor.UserId;
+            _context.ExternalIntegrationEventRetries.Add(new ExternalIntegrationEventRetry
+            {
+                ExternalIntegrationEventId = integrationEvent.Id,
+                RequestedByUserId = actor.UserId,
+                RequestedAt = now
+            });
         }
 
         // ── Enabling and disconnecting ──────────────────────────────────────────────

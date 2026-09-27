@@ -346,6 +346,166 @@ public class MetaLeadBackfillTests
             (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
     }
 
+    [Fact]
+    public async Task Reconciliation_RequeuesATransientFailure_AndTheLeadIsThenReceived()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await SetUpAsync(h);
+        var lead = Lead("lead-1", "Ali Khan", DateTime.UtcNow.AddHours(-2));
+        h.Graph.LeadFailures.Enqueue(new MetaTransientException("Meta could not be reached."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        var failed = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, failed.Status);
+        Assert.True(failed.FailureWasTransient);
+        Assert.Equal(0, failed.RequeueCount);
+
+        h.Graph.FormLeads["form-1"] = [lead];
+        h.Graph.Leads["lead-1"] = lead;
+        var result = await h.Backfill.ReconcileAsync(connection.Id);
+
+        Assert.Equal((1, 0, 0), (result.Found, result.New, result.PreviouslyFailed));
+        var requeued = await h.Db.ExternalIntegrationEvents.SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, requeued.Status);
+        Assert.Equal(0, requeued.Attempts);
+        Assert.Equal(1, requeued.RequeueCount);
+        Assert.False(requeued.FailureWasTransient);
+        Assert.Null(requeued.LastError);
+
+        Assert.Equal(1, await h.Processor.ProcessPendingEventsAsync(10));
+        Assert.Equal(ExternalIntegrationEventStatus.Processed,
+            (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(1, await h.Db.Leads.CountAsync());
+    }
+
+    [Fact]
+    public async Task Reconciliation_RequeuesAnUnknownFailureTheSameWay()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await SetUpAsync(h);
+        h.Graph.LeadFailures.Enqueue(new InvalidOperationException("The database is unavailable."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        h.Graph.FormLeads["form-1"] = [Lead("lead-1", "Ali Khan", DateTime.UtcNow.AddHours(-2))];
+        await h.Backfill.ReconcileAsync(connection.Id);
+
+        var requeued = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, requeued.Status);
+        Assert.Equal(1, requeued.RequeueCount);
+        Assert.Equal(0, requeued.RetryCount);
+    }
+
+    [Fact]
+    public async Task Reconciliation_LeavesAPermanentFailureFailed()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await SetUpAsync(h);
+        h.Graph.LeadFailures.Enqueue(new MetaPermanentException("Lead lead-1 does not exist."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        h.Graph.FormLeads["form-1"] = [Lead("lead-1", "Ali Khan", DateTime.UtcNow.AddHours(-2))];
+        var result = await h.Backfill.ReconcileAsync(connection.Id);
+
+        Assert.Equal(1, result.PreviouslyFailed);
+        var stayed = await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync();
+        Assert.Equal(ExternalIntegrationEventStatus.Failed, stayed.Status);
+        Assert.False(stayed.FailureWasTransient);
+        Assert.Equal(0, stayed.RequeueCount);
+    }
+
+    [Fact]
+    public async Task Reconciliation_RequeuesATransientFailureOutsideTheLookback_AndHonoursTheCaps()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        Assert.Equal(48, h.Options.ReconciliationLookbackHours);
+        var (connection, page) = await SetUpAsync(h);
+        var off = new ExternalIntegrationResource
+        {
+            ExternalIntegrationConnectionId = connection.Id,
+            Provider = IntegrationProviders.Meta,
+            ResourceType = ExternalResourceTypes.FacebookPage,
+            ExternalId = "page-off",
+            Name = "Off",
+            IsEnabled = false,
+            IsActive = true
+        };
+        h.Db.ExternalIntegrationResources.Add(off);
+        await h.Db.SaveChangesAsync();
+
+        var outsideLookback = DateTime.UtcNow.AddHours(-72);
+        h.Db.ExternalIntegrationEvents.AddRange(
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-72h", outsideLookback, outsideLookback, requeueCount: 0),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-capped", DateTime.UtcNow.AddHours(-3),
+                DateTime.UtcNow.AddHours(-3), MetaLeadBackfillService.MaxAutomaticRequeues),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-old", DateTime.UtcNow.AddDays(-91),
+                DateTime.UtcNow.AddDays(-91), requeueCount: 0),
+            Failed(connection.Id, page.Id, page.ExternalId, "lead-stale", DateTime.UtcNow.AddHours(-1),
+                DateTime.UtcNow.AddDays(-91), requeueCount: 0),
+            Failed(connection.Id, off.Id, off.ExternalId, "lead-off", DateTime.UtcNow.AddHours(-5),
+                DateTime.UtcNow.AddHours(-5), requeueCount: 0));
+        await h.Db.SaveChangesAsync();
+
+        await h.Backfill.ReconcileAsync(connection.Id);
+
+        var events = await h.Db.ExternalIntegrationEvents.AsNoTracking().ToListAsync();
+        var recovered = Assert.Single(events, e => e.EventKey.EndsWith(":lead-72h"));
+        Assert.Equal(ExternalIntegrationEventStatus.Pending, recovered.Status);
+        Assert.Equal(0, recovered.Attempts);
+        Assert.Equal(1, recovered.RequeueCount);
+
+        Assert.All(events.Where(e => !e.EventKey.EndsWith(":lead-72h")),
+            e => Assert.Equal(ExternalIntegrationEventStatus.Failed, e.Status));
+
+        // The form scan is still the 48-hour window. The 72-hour lead was not in it.
+        var request = Assert.Single(h.Graph.FormLeadRequests);
+        Assert.InRange(request.Since, DateTime.UtcNow.AddHours(-49), DateTime.UtcNow.AddHours(-47));
+    }
+
+    [Fact]
+    public async Task AnImport_DoesNotRequeueATransientFailure()
+    {
+        await using var h = await MetaIntegrationHarness.CreateAsync();
+        h.Options.MaxAttempts = 1;
+        var (connection, page) = await SetUpAsync(h);
+        h.Graph.LeadFailures.Enqueue(new MetaTransientException("The request to Meta timed out."));
+        await h.Intake.RecordAsync(MetaIntegrationHarness.WebhookBody(page.ExternalId, "lead-1"));
+        await h.Processor.ProcessPendingEventsAsync(10);
+
+        h.Graph.FormLeads["form-1"] = [Lead("lead-1", "Ali Khan", DateTime.UtcNow.AddHours(-2))];
+        var result = await h.Backfill.ImportAsync(connection.Id, ForPage(page, 7), h.Leads.Admin);
+
+        Assert.Equal(1, result.PreviouslyFailed);
+        Assert.Equal(ExternalIntegrationEventStatus.Failed,
+            (await h.Db.ExternalIntegrationEvents.AsNoTracking().SingleAsync()).Status);
+    }
+
+    private static ExternalIntegrationEvent Failed(
+        int connectionId, int pageId, string pageExternalId, string leadgenId, DateTime receivedAt,
+        DateTime submittedAt, int requeueCount) =>
+        new()
+        {
+            Provider = IntegrationProviders.Meta,
+            ExternalIntegrationConnectionId = connectionId,
+            ExternalIntegrationResourceId = pageId,
+            EventType = "leadgen",
+            EventKey = MetaWebhookIntakeService.EventKey(connectionId, pageExternalId, leadgenId),
+            RawPayloadJson = "{\"leadgen_id\":\"" + leadgenId + "\",\"created_time\":"
+                + new DateTimeOffset(DateTime.SpecifyKind(submittedAt, DateTimeKind.Utc)).ToUnixTimeSeconds() + "}",
+            ReceivedAt = receivedAt,
+            ProcessedAt = receivedAt,
+            Status = ExternalIntegrationEventStatus.Failed,
+            FailureWasTransient = true,
+            RequeueCount = requeueCount,
+            LastError = "Meta could not be reached.",
+            Attempts = 3
+        };
+
     // ── Windows larger than one read ─────────────────────────────────────────────────
 
     [Fact]

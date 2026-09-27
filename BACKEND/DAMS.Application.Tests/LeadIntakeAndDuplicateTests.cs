@@ -71,9 +71,22 @@ public sealed class LeadIntakeAndDuplicateTests
     }
 
     [Theory]
+    [InlineData("+92 300 1234567")]
+    [InlineData("0092 300 1234567")]
+    [InlineData("923001234567")]
+    [InlineData("03001234567")]
+    [InlineData("3001234567")]
+    public void PakistaniNumbers_ShareOneCanonicalForm(string phone)
+    {
+        Assert.Equal("3001234567", LeadContactNormalizer.NormalizePhone(phone));
+    }
+
+    [Theory]
     [InlineData("0300-1234567", "0300 1234567")]
     [InlineData("0300-1234567", "+92 300 1234567")]
     [InlineData("0300-1234567", "923001234567")]
+    [InlineData("0300-1234567", "0092 300 1234567")]
+    [InlineData("0300-1234567", "3001234567")]
     public async Task DuplicatePhone_IsDetectedAcrossFormats(string first, string second)
     {
         await using var h = await LeadTestHarness.CreateAsync();

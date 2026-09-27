@@ -109,6 +109,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> RetryEvent(int id, int eventId, CancellationToken cancellationToken) =>
             RunAsync(ctx => _integration.RetryEventAsync(id, eventId, ctx, cancellationToken), cancellationToken);
 
+        /// <summary>Puts every Failed event of this connection back on the queue. Admin and Sales Manager.</summary>
+        [HttpPost("connections/{id:int}/events/retry-failed")]
+        public Task<IActionResult> RetryFailed(int id, CancellationToken cancellationToken) =>
+            RunAsync(ctx => _integration.RetryFailedEventsAsync(id, ctx, cancellationToken), cancellationToken);
+
         [HttpPost("connections/{id:int}/disconnect")]
         public Task<IActionResult> Disconnect(int id, CancellationToken cancellationToken) =>
             RunAsync(ctx => _integration.DisconnectAsync(id, ctx, cancellationToken), cancellationToken);

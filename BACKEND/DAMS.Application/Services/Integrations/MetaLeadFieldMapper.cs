@@ -53,9 +53,14 @@ namespace DAMS.Application.Services.Integrations
             ["last_name"] = Target.LastName,
             ["phone_number"] = Target.Phone,
             ["phone"] = Target.Phone,
+            ["mobile"] = Target.Phone,
+            ["mobile_number"] = Target.Phone,
+            ["contact_number"] = Target.Phone,
+            ["work_phone_number"] = Target.Phone,
             ["whatsapp_number"] = Target.Whatsapp,
             ["whatsapp"] = Target.Whatsapp,
             ["email"] = Target.Email,
+            ["work_email"] = Target.Email,
             ["city"] = Target.City,
             ["city_name"] = Target.City
         };

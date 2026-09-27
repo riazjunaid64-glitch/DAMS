@@ -230,6 +230,10 @@ public class MetaWebhookEndpointTests : IClassFixture<MetaWebhookEndpointTests.M
         var sync = await client.PostAsync("/api/integrations/meta/connections/1/sync",
             new StringContent("{}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.Unauthorized, sync.StatusCode);
+
+        var retryFailed = await client.PostAsync("/api/integrations/meta/connections/1/events/retry-failed",
+            new StringContent("{}", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, retryFailed.StatusCode);
     }
 
     public sealed class MetaApiFactory : WebApplicationFactory<Program>
