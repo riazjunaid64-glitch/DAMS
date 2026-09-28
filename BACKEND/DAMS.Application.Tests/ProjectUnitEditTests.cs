@@ -105,6 +105,33 @@ public class ProjectUnitEditTests
     }
 
     [Fact]
+    public async Task AMissingProjectOrUnitIsNotAFormError()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var units = new UnitService(h.Db);
+
+        var missingUnit = await Assert.ThrowsAsync<MissingRecordException>(() =>
+            units.UpdateUnitAsync(h.UnitId + 100_000, Draft("A-101", 10_000_000m)));
+        Assert.Equal("Unit not found", missingUnit.Message);
+
+        var missingProject = await Assert.ThrowsAsync<MissingRecordException>(() => units.CreateUnitAsync(new CreateUnitDto
+        {
+            ProjectId = h.ProjectId + 100_000,
+            UnitNumber = "A-103",
+            UnitType = "2 Bed",
+            FloorNumber = 1,
+            Size = 900m,
+            Price = 1_000_000m
+        }));
+        Assert.Equal("Project not found", missingProject.Message);
+
+        var projects = new ProjectService(h.Db, new DiscardingCache());
+        var missing = await Assert.ThrowsAsync<MissingRecordException>(() =>
+            projects.UpdateProjectAsync(h.ProjectId + 100_000, Project("Floria Heights")));
+        Assert.Equal("Project not found.", missing.Message);
+    }
+
+    [Fact]
     public async Task AProjectCompletionDateCannotBeBeforeTheStartDate()
     {
         await using var h = await LeadTestHarness.CreateAsync();
