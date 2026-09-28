@@ -156,7 +156,7 @@ builder.Services.AddOptions<NotificationOptions>()
 // IOptions wrapper, because they are also constructed directly in tests.
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<NotificationOptions>>().Value);
 
-// ── External integrations (Meta Lead Ads) ────────────────────────────────────────
+// ── External integrations (Meta Lead Ads) ──────────────────────────────────────
 // Validation covers ranges and all-or-nothing credentials only. Missing credentials must
 // not stop the application booting: an unconfigured integration is simply switched off,
 // exactly as an unconfigured LeadIntake:ApiKey is.
@@ -311,7 +311,7 @@ builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
 builder.Services.AddScoped<IMetaIntegrationAlertService, MetaIntegrationAlertService>();
 builder.Services.AddHostedService<IntegrationBackgroundService>();
 
-// ── Notification platform ────────────────────────────────────────────────────────────
+// ── Notification platform ────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
 // Channels are registered as a collection, so adding WhatsApp, SMS or mobile push later is
 // one more INotificationChannelSender and one more enum value — no module changes shape.
