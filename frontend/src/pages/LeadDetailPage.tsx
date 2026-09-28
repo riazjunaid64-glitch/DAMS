@@ -1,440 +1,585 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
-import { useProjects } from "../contexts/projectsContextValue.ts";
+import {
+  ActionsMenu,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  IconCalendar,
+  IconCheck,
+  IconClose,
+  IconMapPin,
+  IconPencil,
+  IconPhone,
+  IconPlus,
+  IconUserPlus,
+  IconUsers,
+  InfoCard,
+  Notice,
+  PageHeader,
+  Tabs,
+  useIsPhone,
+  useToast,
+  type ActionItem,
+} from "../components/ui";
 import { can } from "../features/access/permissions.ts";
-import Button from "../lib/Button.tsx";
-import {
-  CrmAccess,
-  CrmHeader,
-  CrmTabs,
-  ErrorBanner,
-  QualificationBadge,
-  StageBadge,
-  StatePanel,
-} from "../features/leads/CrmUi.tsx";
-import { apiJson, downloadLeadDocument, loadCrmLookups, type CrmLookups } from "../features/leads/leadApi.ts";
-import LeadActionDialog, { type LeadAction } from "../features/leads/LeadActionDialog.tsx";
-import { canViewOriginalProviderData, formatProviderPayload } from "../features/leads/originalProviderData.ts";
-import { isPastServerTime } from "../lib/dates.ts";
-import {
-  enumLabel,
-  formatDateTime,
-  isClosedStage,
-  type AssignmentHistory,
-  type Communication,
-  type ExternalSubmission,
-  type ExternalSubmissionRaw,
-  type FollowUp,
-  type Lead,
-  type LeadComment,
-  type LeadDocument,
-  type ProjectLookup,
-  type SiteVisit,
-  type TimelineItem,
-} from "../features/leads/types.ts";
+import { CommunicationItem } from "../features/leads/CommunicationItem.tsx";
+import { LogCommunicationDialog, MarkDoneDialog, NewFollowUpDialog, RescheduleDialog } from "../features/leads/EngagementDialogs.tsx";
+import { FollowUpItem } from "../features/leads/FollowUpItem.tsx";
+import { lastContactText, leadStatus, type LeadStatus } from "../features/leads/labels.ts";
+import { apiJson, jsonRequest, loadCrmLookups, type CrmLookups } from "../features/leads/leadApi.ts";
+import { AssignLeadDialog, CloseLeadDialog, ConvertLeadDialog, EditLeadDialog } from "../features/leads/LeadDialogs.tsx";
+import { LeadOverview } from "../features/leads/LeadOverview.tsx";
+import { assignChoices, followUpGroups, reopenBody, requirementDetail, visitGroups, workerChoices } from "../features/leads/leadPage.ts";
+import { nextFollowUp } from "../features/leads/leadRow.ts";
+import { ScheduleVisitDialog, VisitDoneDialog } from "../features/leads/SiteVisitDialogs.tsx";
+import { SiteVisitItem } from "../features/leads/SiteVisitItem.tsx";
+import { TimelineList } from "../features/leads/TimelineList.tsx";
+import type { Communication, ExternalSubmission, FollowUp, LeadDetail, SiteVisit, TimelineItem } from "../features/leads/types.ts";
+import { useLeadSave } from "../features/leads/useLeadSave.ts";
+import { formatAppointment, formatDay, formatMonthDay, formatTime, formatWhen } from "../lib/dates.ts";
 
 type Props = { user: User | null };
-type DetailData = {
-  lead: Lead;
-  timeline: TimelineItem[];
+
+const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
+
+/** The sections loaded only when first opened, and kept after. */
+type Part = "timeline" | "communications" | "followUps" | "visits";
+type Parts = {
+  timeline: { items: TimelineItem[]; hasMore: boolean };
   communications: Communication[];
   followUps: FollowUp[];
   visits: SiteVisit[];
-  documents: LeadDocument[];
-  comments: LeadComment[];
-  assignments: AssignmentHistory[];
-  submissions: ExternalSubmission[];
 };
-export type LeadLookups = CrmLookups & { projects: ProjectLookup[] };
+type Tab = "overview" | Part;
+const TABS: readonly Tab[] = ["overview", "timeline", "communications", "followUps", "visits"];
+const TIMELINE_PAGE = 50;
 
-const TABS = [
-  ["overview", "Overview"],
-  ["timeline", "Timeline"],
-  ["communications", "Communications"],
-  ["followups", "Follow-ups & tasks"],
-  ["visits", "Site visits"],
-  ["documents", "Documents"],
-  ["collaboration", "Internal collaboration"],
-  ["assignments", "Assignment history"],
-  ["integration", "Source & integration"],
-  ["conversion", "Conversion"],
-] as const;
+type Dialog =
+  | { type: "communication" }
+  | { type: "followUp" }
+  | { type: "markDone"; item: FollowUp }
+  | { type: "rescheduleFollowUp"; item: FollowUp }
+  | { type: "cancelFollowUp"; item: FollowUp }
+  | { type: "visit" }
+  | { type: "visitDone"; item: SiteVisit }
+  | { type: "rescheduleVisit"; item: SiteVisit }
+  | { type: "missed"; item: SiteVisit }
+  | { type: "cancelVisit"; item: SiteVisit }
+  | { type: "edit" }
+  | { type: "assign" }
+  | { type: "close" }
+  | { type: "convert" }
+  | { type: "reopen" };
 
 export default function LeadDetailPage({ user }: Props) {
-  return <CrmAccess user={user}>{user && <LeadDetailWorkspace user={user} />}</CrmAccess>;
+  const { id } = useParams();
+  if (!user || !can(user.role, "crm")) {
+    return (
+      <div className={PAGE}>
+        <EmptyState
+          icon={<IconUsers size={26} />}
+          title={user ? "The Lead CRM is not part of your role" : "Sign in required"}
+          message={user ? undefined : "Sign in with a staff account to open the Lead CRM."}
+        />
+      </div>
+    );
+  }
+  // A new lead starts from nothing: no tab data, popup or failure carries over from the last one.
+  return <LeadWorkspace key={id} user={user} leadId={Number(id)} />;
 }
 
-function LeadDetailWorkspace({ user }: { user: User }) {
-  const { id } = useParams();
+function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
   const navigate = useNavigate();
-  const leadId = Number(id);
-  const [activeTab, setActiveTab] = useState("overview");
-  const [data, setData] = useState<DetailData | null>(null);
-  const [crmLookups, setCrmLookups] = useState<CrmLookups>({ sources: [], reasons: [], staff: [], apartmentTypes: [] });
-  const { projects } = useProjects();
-  const lookups = useMemo<LeadLookups>(
-    () => ({ ...crmLookups, projects: projects.map((project) => ({ id: project.id, name: project.projectName })) }),
-    [crmLookups, projects],
-  );
-  const account = `${user.userId}:${user.role}`;
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [action, setAction] = useState<LeadAction | null>(null);
+  const toast = useToast();
+  const isPhone = useIsPhone();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab") as Tab | null;
+  const tab: Tab = tabParam && TABS.includes(tabParam) ? tabParam : "overview";
 
-  const load = useCallback(async () => {
-    if (!Number.isFinite(leadId) || leadId <= 0) { setError("Invalid lead reference."); setLoading(false); return; }
-    setLoading(true); setError(null);
+  const [lead, setLead] = useState<LeadDetail | null>(null);
+  const [submissions, setSubmissions] = useState<ExternalSubmission[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [parts, setParts] = useState<Partial<Parts>>({});
+  const [partErrors, setPartErrors] = useState<Partial<Record<Part, string>>>({});
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [lookups, setLookups] = useState<CrmLookups | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+
+  // Opening a lead reads the lead (header, cards, counts) and where it came from (Overview), nothing else.
+  useEffect(() => {
+    if (!Number.isFinite(leadId) || leadId <= 0) return;
+    const controller = new AbortController();
+    Promise.all([
+      apiJson<LeadDetail>(`/api/leads/${leadId}`, { signal: controller.signal }),
+      apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`, { signal: controller.signal }),
+    ])
+      .then(([nextLead, nextSubmissions]) => {
+        setLead(nextLead);
+        setSubmissions(nextSubmissions);
+        setLoadError(null);
+      })
+      .catch((caught) => {
+        if (!controller.signal.aborted) setLoadError(caught instanceof Error ? caught.message : "The lead could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [leadId, attempt]);
+
+  const fetchPart = useCallback(async (part: Part): Promise<Parts[Part]> => {
+    switch (part) {
+      case "timeline": {
+        const items = await apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline?take=${TIMELINE_PAGE}`);
+        return { items, hasMore: items.length === TIMELINE_PAGE };
+      }
+      case "communications": return apiJson<Communication[]>(`/api/leads/${leadId}/communications`);
+      case "followUps": return apiJson<FollowUp[]>(`/api/leads/${leadId}/follow-ups`);
+      case "visits": return apiJson<SiteVisit[]>(`/api/leads/${leadId}/site-visits`);
+    }
+  }, [leadId]);
+
+  const loadPart = useCallback(async (part: Part) => {
     try {
-      const [lead, timeline, communications, followUps, visits, documents, comments, assignments, submissions, refs] = await Promise.all([
-        apiJson<Lead>(`/api/leads/${leadId}`),
-        apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline`),
-        apiJson<Communication[]>(`/api/leads/${leadId}/communications`),
-        apiJson<FollowUp[]>(`/api/leads/${leadId}/follow-ups`),
-        apiJson<SiteVisit[]>(`/api/leads/${leadId}/site-visits`),
-        apiJson<LeadDocument[]>(`/api/leads/${leadId}/documents`),
-        apiJson<LeadComment[]>(`/api/leads/${leadId}/comments`),
-        apiJson<AssignmentHistory[]>(`/api/leads/${leadId}/assignment-history`),
-        apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`),
-        loadCrmLookups(account),
-      ]);
-      setData({ lead, timeline, communications, followUps, visits, documents, comments, assignments, submissions });
-      setCrmLookups(refs);
+      const data = await fetchPart(part);
+      setParts((current) => ({ ...current, [part]: data }));
+      setPartErrors((current) => ({ ...current, [part]: undefined }));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The lead could not be loaded.");
-    } finally { setLoading(false); }
-  }, [leadId, account]);
+      setPartErrors((current) => ({ ...current, [part]: caught instanceof Error ? caught.message : "This could not be loaded." }));
+    }
+  }, [fetchPart]);
 
-  useEffect(() => { void load(); }, [load]);
+  // A section loads the first time it is opened, and is kept.
+  const openPart = tab === "overview" ? null : tab;
+  const openPartLoaded = openPart !== null && parts[openPart] !== undefined;
+  const openPartFailed = openPart !== null && !!partErrors[openPart];
+  useEffect(() => {
+    if (openPart && !openPartLoaded && !openPartFailed && lead) void loadPart(openPart);
+  }, [openPart, openPartLoaded, openPartFailed, lead, loadPart]);
 
-  if (loading && !data) return <StatePanel title="Loading lead" message="Retrieving contact details, activity, follow-ups, and ownership history…" />;
-  if (!data) return <StatePanel title="Lead unavailable" message={error ?? "The lead was not found or is outside your permitted scope."} action={<Button onClick={() => navigate("/crm")}>Back to leads</Button>} />;
-
-  const { lead } = data;
-  const canManage = can(user.role, "crm.manage");
-  // Salespeople work a lead by its simple stage (New, In Progress, Won, Lost), last activity and next
-  // action. The Hot/Warm/Cold qualification stays on the record but is not part of their workflow.
-  const isSalesperson = user.role === "Employee";
-  const closed = isClosedStage(lead.stage);
-  const tabs = TABS.map(([tabId, label]) => ({
-    id: tabId,
-    label,
-    count:
-      tabId === "timeline" ? data.timeline.length :
-      tabId === "communications" ? data.communications.length :
-      tabId === "followups" ? data.followUps.length :
-      tabId === "visits" ? data.visits.length :
-      tabId === "documents" ? data.documents.length :
-      tabId === "collaboration" ? data.comments.length :
-      tabId === "assignments" ? data.assignments.length :
-      tabId === "integration" ? data.submissions.length :
-      undefined,
-  }));
-
-  const completeFollowUp = async (item: FollowUp) => {
-    setAction({ type: "completeFollowUp", item });
+  const showOlder = async () => {
+    const shown = parts.timeline;
+    const oldest = shown?.items[shown.items.length - 1];
+    if (!shown || !oldest) return;
+    setLoadingOlder(true);
+    try {
+      const older = await apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline?take=${TIMELINE_PAGE}&before=${oldest.id}`);
+      setParts((current) => ({ ...current, timeline: { items: [...(current.timeline?.items ?? []), ...older], hasMore: older.length === TIMELINE_PAGE } }));
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Older entries could not be loaded.");
+    } finally {
+      setLoadingOlder(false);
+    }
   };
-  const visitAction = (type: "completeVisit" | "rescheduleVisit" | "closeVisit", item: SiteVisit, visitDisposition?: "cancel" | "missed") =>
-    setAction({ type, item, visitDisposition } as LeadAction);
+
+  /**
+   * After an action: the lead (header, cards, counts) and the section it changed. The section on
+   * screen reloads now with the old copy kept meanwhile; one not on screen is dropped and loads
+   * when next opened. The timeline changes with every action.
+   */
+  const refresh = (changed: Part[]) => {
+    setDialog(null);
+    apiJson<LeadDetail>(`/api/leads/${leadId}`)
+      .then(setLead)
+      .catch((caught) => toast.error(caught instanceof Error ? caught.message : "The lead could not be refreshed."));
+    for (const part of new Set<Part>([...changed, "timeline"])) {
+      if (part === openPart) void loadPart(part);
+      else setParts((current) => ({ ...current, [part]: undefined }));
+    }
+  };
+
+  const account = `${user.userId}:${user.role}`;
+  const open = (next: Dialog) => {
+    setDialog(next);
+    // Staff, reasons and apartment types come from the shared CRM cache, fetched only when a popup needs them.
+    if (!lookups) {
+      loadCrmLookups(account)
+        .then(setLookups)
+        .catch((caught) => toast.error(caught instanceof Error ? caught.message : "The staff list could not be loaded."));
+    }
+  };
+
+  const confirm = useLeadSave(() => {
+    const kind = dialog?.type;
+    refresh(kind === "cancelFollowUp" ? ["followUps"] : kind === "missed" || kind === "cancelVisit" ? ["visits"] : []);
+  });
+
+  if (!lead) {
+    if (loadError || !Number.isFinite(leadId) || leadId <= 0) {
+      return (
+        <div className={PAGE}>
+          <EmptyState
+            icon={<IconUsers size={26} />}
+            title="This lead could not be opened"
+            message={loadError ?? "The lead was not found."}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="outline" onClick={() => navigate("/crm")}>Back to leads</Button>
+                {loadError && <Button onClick={() => { setLoadError(null); setAttempt((n) => n + 1); }}>Try again</Button>}
+              </div>
+            }
+          />
+        </div>
+      );
+    }
+    return (
+      <div className={PAGE} aria-busy="true">
+        <div className="h-16 animate-pulse rounded-card bg-track" />
+        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 md:gap-4">
+          {[0, 1, 2, 3].map((n) => <div key={n} className="h-16 animate-pulse rounded-card bg-track" />)}
+        </div>
+        <div className="h-16 animate-pulse rounded-card bg-track" />
+      </div>
+    );
+  }
+
+  const status = leadStatus(lead);
+  const closed = status !== "InProgress";
+  const canManage = can(user.role, "crm.manage");
+  const me = lookups?.staff.find((member) => member.userId === Number(user.userId)) ?? null;
+  const workers = workerChoices(lookups?.staff ?? [], lead, me, canManage);
+
+  const actions: (ActionItem & { variant?: "outline" | "danger" | "success"; show: boolean })[] = [
+    { label: "Follow-up", icon: <IconCalendar size={18} />, onSelect: () => open({ type: "followUp" }), show: true },
+    { label: "Edit details", icon: <IconPencil size={18} />, onSelect: () => open({ type: "edit" }), show: true },
+    { label: "Assign / reassign", icon: <IconUserPlus size={18} />, onSelect: () => open({ type: "assign" }), show: canManage },
+    { label: "Schedule site visit", icon: <IconMapPin size={18} />, onSelect: () => open({ type: "visit" }), show: true },
+    { label: "Lost / dormant", icon: <IconClose size={18} />, danger: true, variant: "danger", onSelect: () => open({ type: "close" }), show: true },
+    { label: "Convert to booking", icon: <IconCheck size={18} />, variant: "success", onSelect: () => open({ type: "convert" }), show: true },
+  ];
+  const shownActions = actions.filter((action) => action.show);
+  // The phone menu's order: follow-up and visit first, the lead-level changes after.
+  const phoneOrder = ["Follow-up", "Schedule site visit", "Assign / reassign", "Edit details", "Convert to booking", "Lost / dormant"];
+
+  const next = nextFollowUp(lead);
+  const last = lead.lastCommunication;
+
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    { id: "timeline", label: "Timeline", count: lead.counts?.timeline },
+    { id: "communications", label: "Communications", count: lead.counts?.communications },
+    { id: "followUps", label: "Follow-ups", count: lead.counts?.followUps },
+    { id: "visits", label: "Site visits", count: lead.counts?.siteVisits },
+  ];
+
+  const setTab = (next: string) => setSearchParams((current) => {
+    const params = new URLSearchParams(current);
+    if (next === "overview") params.delete("tab");
+    else params.set("tab", next);
+    return params;
+  }, { replace: true });
 
   return (
-    <>
-      <CrmHeader
+    <div className={PAGE}>
+      <PageHeader
+        back={{ to: "/crm", label: "Leads" }}
         title={lead.fullName}
-        subtitle={`${lead.leadReference} · ${lead.sourceName} · Created ${formatDateTime(lead.createdAt)}`}
-        role={user.role}
-        actions={
-          <>
-            <Button variant="outline" onClick={() => navigate("/crm")}>← Leads</Button>
-            {!closed && <Button variant="outline" onClick={() => setAction({ type: "communication" })}>Log activity</Button>}
-            {!closed && <Button variant="outline" onClick={() => setAction({ type: "followUp" })}>Follow-up</Button>}
-            {/* A salesperson's lead moves on its own: a logged conversation takes it to In Progress,
-                site visits advance it, "Lost / dormant" closes it and conversion wins it. The detailed
-                stage picker is for admins and managers. */}
-            {!isSalesperson && !closed && <Button onClick={() => setAction({ type: "stage" })}>Move stage</Button>}
-          </>
-        }
+        status={status}
+        subtitle={lead.leadReference}
+        actions={!isPhone && !closed ? <Button variant="outline" onClick={() => open({ type: "followUp" })}>Follow-up</Button> : undefined}
       />
 
-      <div className="mx-auto w-full max-w-[1500px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-
-        <section className={`grid gap-3 sm:grid-cols-2 ${isSalesperson ? "xl:grid-cols-4" : "xl:grid-cols-5"}`}>
-          <SummaryCard label="Pipeline">
-            {isSalesperson
-              ? <><StageBadge stage={lead.stageGroup} /><small className="mt-1 block text-xs font-normal text-[var(--text-muted)]">{enumLabel(lead.stage)}</small></>
-              : <StageBadge stage={lead.stage} />}
-          </SummaryCard>
-          {!isSalesperson && <SummaryCard label="Qualification"><QualificationBadge value={lead.qualification} /></SummaryCard>}
-          <SummaryCard label="Owner"><span>{lead.assignedEmployeeName ?? "Unassigned"}</span></SummaryCard>
-          <SummaryCard label="Last activity"><span>{lead.lastActivitySummary ?? "No activity recorded"}</span><small>{formatDateTime(lead.lastActivityAt)}</small></SummaryCard>
-          <SummaryCard label="Next action" danger={isPastServerTime(lead.nextActionAt) && !closed}><span>{lead.nextActionSummary ?? "Not scheduled"}</span><small>{formatDateTime(lead.nextActionAt)}</small></SummaryCard>
-        </section>
-
-        <div className="flex flex-wrap gap-2">
-          {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "edit" })}>Edit details</Button>}
-          {!isSalesperson && !closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "qualification" })}>Qualification</Button>}
-          {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "siteVisit" })}>Schedule site visit</Button>}
-          {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "comment" })}>Internal note</Button>}
-          {!closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "document" })}>Add document</Button>}
-          {canManage && !closed && <Button size="sm" variant="outline" onClick={() => setAction({ type: "assign" })}>Assign / reassign</Button>}
-          {canManage && !closed && <Button size="sm" onClick={() => setAction({ type: "convert" })}>Convert</Button>}
-          {!closed && <Button size="sm" variant="danger" onClick={() => setAction({ type: "close" })}>Lost / dormant</Button>}
-          {canManage && (lead.stage === "Lost" || lead.stage === "Dormant") && <Button size="sm" onClick={() => setAction({ type: "reopen" })}>Reopen lead</Button>}
+      {!isPhone && !closed && (
+        <div className="flex flex-wrap items-center gap-2">
+          {shownActions.filter((action) => action.label !== "Follow-up").map((action) => (
+            <Button
+              key={String(action.label)}
+              variant={action.variant ?? "outline"}
+              className={action.danger ? "ml-auto" : undefined}
+              onClick={action.onSelect}
+            >
+              {action.label}
+            </Button>
+          ))}
         </div>
+      )}
 
-        <CrmTabs items={tabs} active={activeTab} onChange={setActiveTab} />
+      {isPhone && (
+        <div className={closed ? "grid grid-cols-1" : "grid grid-cols-2 gap-2"}>
+          <Button variant="outline" size="lg" icon={<IconPhone size={18} />} disabled={!lead.phone} onClick={() => { window.location.href = `tel:${lead.phone}`; }}>
+            Call
+          </Button>
+          {!closed && (
+            <ActionsMenu
+              trigger="button"
+              label="Actions"
+              className="w-full [&>button]:h-12 [&>button]:w-full"
+              items={[...shownActions].sort((a, b) => phoneOrder.indexOf(String(a.label)) - phoneOrder.indexOf(String(b.label)))}
+            />
+          )}
+        </div>
+      )}
 
-        <section className="min-h-[340px] rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6">
-          {activeTab === "overview" && <Overview lead={lead} />}
-          {activeTab === "timeline" && <Timeline items={data.timeline} />}
-          {activeTab === "communications" && <Communications items={data.communications} onAdd={!closed ? () => setAction({ type: "communication" }) : undefined} />}
-          {activeTab === "followups" && <FollowUps items={data.followUps} closed={closed} onAdd={() => setAction({ type: "followUp" })} onComplete={completeFollowUp} onReschedule={(item) => setAction({ type: "rescheduleFollowUp", item })} onCancel={(item) => setAction({ type: "cancelFollowUp", item })} />}
-          {activeTab === "visits" && <Visits items={data.visits} closed={closed} onAdd={() => setAction({ type: "siteVisit" })} onAction={visitAction} />}
-          {activeTab === "documents" && <Documents items={data.documents} closed={closed} onAdd={() => setAction({ type: "document" })} onDownload={(document) => void downloadLeadDocument(document.id, document.fileName).catch((e) => setError(e.message))} />}
-          {activeTab === "collaboration" && <Comments items={data.comments} closed={closed} onAdd={() => setAction({ type: "comment" })} />}
-          {activeTab === "assignments" && <Assignments items={data.assignments} />}
-          {activeTab === "integration" && <ExternalSubmissions items={data.submissions} leadId={leadId} role={user.role} />}
-          {activeTab === "conversion" && <Conversion lead={lead} canManage={canManage} canOpenBooking={can(user.role, "bookings")} onConvert={() => setAction({ type: "convert" })} />}
-        </section>
-      </div>
+      {closed && <ClosedBar lead={lead} status={status} canOpenBooking={can(user.role, "bookings")} onOpenBooking={(id) => navigate(`/confirmed-bookings/${id}`)} onReopen={() => open({ type: "reopen" })} />}
 
-      <LeadActionDialog
-        action={action}
-        lead={lead}
-        lookups={lookups}
-        user={user}
-        onClose={() => setAction(null)}
-        onSaved={async (destination) => {
-          setAction(null);
-          await load();
-          if (destination) navigate(destination);
-        }}
+      <section className="grid grid-cols-2 gap-2.5 md:grid-cols-4 md:gap-4">
+        <InfoCard
+          label="Assigned to"
+          value={lead.assignedEmployeeName ?? <span className="text-danger">Unassigned</span>}
+          detail={lead.assignedEmployeeName && lead.assignedAt ? `since ${formatMonthDay(lead.assignedAt)}, ${formatTime(lead.assignedAt)}` : undefined}
+        />
+        <InfoCard label="Requirement" value={lead.propertyType || "—"} detail={requirementDetail(lead) || undefined} />
+        <InfoCard
+          label="Last contact"
+          value={last ? <Clamp>{lastContactText(last)}</Clamp> : "No contact yet"}
+          detail={last ? formatWhen(last.occurredAt) : undefined}
+        />
+        <InfoCard
+          highlight
+          label="Next follow-up"
+          value={closed ? "—" : <Clamp>{lead.nextActionSummary || "—"}</Clamp>}
+          detail={closed ? "None, lead is closed" : next ? <span className={next.overdue ? "text-danger" : undefined}>{next.text}</span> : "Nothing scheduled"}
+        />
+      </section>
+
+      <Tabs items={tabs} value={tab} onChange={setTab} aria-label="Lead sections" />
+
+      {tab === "overview" && <LeadOverview lead={lead} submissions={submissions} />}
+
+      {tab !== "overview" && (
+        <PartView data={parts[tab]} error={partErrors[tab]} onRetry={() => { setPartErrors((current) => ({ ...current, [tab]: undefined })); }}>
+          {tab === "timeline" && parts.timeline && (
+            <>
+              <SectionHeader title="Timeline" />
+              {parts.timeline.items.length
+                ? <TimelineList items={parts.timeline.items} loadingOlder={loadingOlder} onShowOlder={parts.timeline.hasMore ? () => void showOlder() : undefined} />
+                : <EmptyState title="Nothing has happened on this lead yet" />}
+            </>
+          )}
+
+          {tab === "communications" && parts.communications && (
+            <>
+              <SectionHeader
+                title="Communications"
+                count={parts.communications.length}
+                action={!closed && <Button icon={<IconPlus size={16} />} onClick={() => open({ type: "communication" })}>{isPhone ? "Log" : "Log communication"}</Button>}
+              />
+              {parts.communications.length
+                ? parts.communications.map((item) => <CommunicationItem key={item.id} item={item} />)
+                : <EmptyState title="No communications yet" />}
+            </>
+          )}
+
+          {tab === "followUps" && parts.followUps && (
+            <FollowUpsSection
+              items={parts.followUps}
+              isPhone={isPhone}
+              closed={closed}
+              onNew={() => open({ type: "followUp" })}
+              onDone={(item) => open({ type: "markDone", item })}
+              onReschedule={(item) => open({ type: "rescheduleFollowUp", item })}
+              onCancel={(item) => open({ type: "cancelFollowUp", item })}
+            />
+          )}
+
+          {tab === "visits" && parts.visits && (
+            <VisitsSection
+              items={parts.visits}
+              isPhone={isPhone}
+              closed={closed}
+              onNew={() => open({ type: "visit" })}
+              onAction={(type, item) => open({ type, item })}
+            />
+          )}
+        </PartView>
+      )}
+
+      {dialog?.type === "communication" && (
+        <LogCommunicationDialog lead={lead} onClose={() => setDialog(null)} onSaved={(scheduled) => refresh(scheduled ? ["communications", "followUps"] : ["communications"])} />
+      )}
+      {dialog?.type === "followUp" && (
+        <NewFollowUpDialog lead={lead} workers={workers} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps"])} />
+      )}
+      {dialog?.type === "markDone" && <MarkDoneDialog item={dialog.item} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps"])} />}
+      {dialog?.type === "rescheduleFollowUp" && (
+        <RescheduleDialog target={{ kind: "followUp", item: dialog.item }} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps"])} />
+      )}
+      {dialog?.type === "visit" && (
+        <ScheduleVisitDialog lead={lead} workers={workers} onClose={() => setDialog(null)} onSaved={() => refresh(["visits"])} />
+      )}
+      {dialog?.type === "visitDone" && <VisitDoneDialog item={dialog.item} onClose={() => setDialog(null)} onSaved={() => refresh(["visits"])} />}
+      {dialog?.type === "rescheduleVisit" && (
+        <RescheduleDialog target={{ kind: "visit", item: dialog.item }} onClose={() => setDialog(null)} onSaved={() => refresh(["visits"])} />
+      )}
+      {dialog?.type === "edit" && (
+        <EditLeadDialog lead={lead} apartmentTypes={lookups?.apartmentTypes ?? []} onClose={() => setDialog(null)} onSaved={() => refresh([])} />
+      )}
+      {dialog?.type === "assign" && (
+        <AssignLeadDialog lead={lead} choices={assignChoices(lookups?.staff ?? [], lead, me)} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps", "visits"])} />
+      )}
+      {dialog?.type === "close" && (
+        <CloseLeadDialog lead={lead} reasons={lookups?.reasons ?? null} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps", "visits"])} />
+      )}
+      {dialog?.type === "convert" && <ConvertLeadDialog lead={lead} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps", "visits"])} />}
+
+      <ConfirmDialog
+        open={dialog?.type === "cancelFollowUp"}
+        onClose={() => setDialog(null)}
+        title="Cancel this follow-up?"
+        message={dialog?.type === "cancelFollowUp" ? dialog.item.title : ""}
+        confirmLabel="Yes, cancel it"
+        danger
+        loading={confirm.saving}
+        onConfirm={() => dialog?.type === "cancelFollowUp" && void confirm.run(
+          () => apiJson(`/api/leads/follow-ups/${dialog.item.id}/cancel`, jsonRequest("POST", {})), "Follow-up cancelled")}
       />
+      <ConfirmDialog
+        open={dialog?.type === "missed"}
+        onClose={() => setDialog(null)}
+        title="Did the customer not come?"
+        message={dialog?.type === "missed" ? visitLine(dialog.item) : ""}
+        confirmLabel="Mark as missed"
+        loading={confirm.saving}
+        onConfirm={() => dialog?.type === "missed" && void confirm.run(
+          () => apiJson(`/api/leads/site-visits/${dialog.item.id}/missed`, jsonRequest("POST", {})), "Site visit marked as missed")}
+      />
+      <ConfirmDialog
+        open={dialog?.type === "cancelVisit"}
+        onClose={() => setDialog(null)}
+        title="Cancel this site visit?"
+        message={dialog?.type === "cancelVisit" ? visitLine(dialog.item) : ""}
+        confirmLabel="Yes, cancel it"
+        danger
+        loading={confirm.saving}
+        onConfirm={() => dialog?.type === "cancelVisit" && void confirm.run(
+          () => apiJson(`/api/leads/site-visits/${dialog.item.id}/cancel`, jsonRequest("POST", {})), "Site visit cancelled")}
+      />
+      <ConfirmDialog
+        open={dialog?.type === "reopen"}
+        onClose={() => setDialog(null)}
+        title="Reopen this lead?"
+        message={`${lead.fullName} goes back to In progress${lead.assignedEmployeeName ? ` and stays with ${lead.assignedEmployeeName}` : ""}.`}
+        confirmLabel="Reopen lead"
+        loading={confirm.saving}
+        onConfirm={() => void confirm.run(() => apiJson(`/api/leads/${lead.id}/reopen`, jsonRequest("POST", reopenBody(lead))), "Lead reopened")}
+      />
+    </div>
+  );
+}
+
+const visitLine = (visit: SiteVisit) => `${formatAppointment(visit.scheduledAt)} at ${visit.meetingLocation}`;
+
+/** Long text in a small card: two lines, then an ellipsis. */
+function Clamp({ children }: { children: ReactNode }) {
+  return <span className="line-clamp-2 break-words">{children}</span>;
+}
+
+/** Won, Lost or Dormant: what happened and when, with the one thing left to do. */
+function ClosedBar({ lead, status, canOpenBooking, onOpenBooking, onReopen }: {
+  lead: LeadDetail;
+  status: LeadStatus;
+  canOpenBooking: boolean;
+  onOpenBooking: (bookingId: number) => void;
+  onReopen: () => void;
+}) {
+  if (status === "Won") {
+    const converted = [lead.convertedAt && `converted ${formatMonthDay(lead.convertedAt)}`, lead.convertedByName && `by ${lead.convertedByName}`].filter(Boolean).join(" ");
+    return (
+      <Notice
+        tone="green"
+        title={lead.convertedBookingReference ? `Won · Booking ${lead.convertedBookingReference}` : "Won"}
+        message={[lead.convertedUnitNumber && `Unit ${lead.convertedUnitNumber}`, converted].filter(Boolean).join(" · ") || undefined}
+        action={canOpenBooking && lead.convertedBookingId
+          ? <Button variant="success" onClick={() => onOpenBooking(lead.convertedBookingId!)}>Open booking</Button>
+          : undefined}
+      />
+    );
+  }
+  const dormant = status === "Dormant";
+  const closedLine = [lead.closedAt && `Closed ${formatMonthDay(lead.closedAt)}`, lead.closedByName && `by ${lead.closedByName}`].filter(Boolean).join(" ");
+  return (
+    <Notice
+      tone={dormant ? "orange" : "red"}
+      title={[status, lead.closureReasonName].filter(Boolean).join(" · ")}
+      message={[closedLine, dormant && lead.reactivateOn && `Bring back on ${formatDay(lead.reactivateOn)}`].filter(Boolean).join(" · ") || undefined}
+      action={<Button variant={dormant ? "outline" : "danger"} onClick={onReopen}>Reopen lead</Button>}
+    />
+  );
+}
+
+function SectionHeader({ title, count, action }: { title: string; count?: number; action?: ReactNode }) {
+  return (
+    <div className="flex min-h-11 items-center justify-between gap-3">
+      <h2 className="m-0 text-section font-extrabold text-ink">
+        {title}
+        {count != null && <span className="ml-1.5 text-ink-faint">{count.toLocaleString("en-PK")}</span>}
+      </h2>
+      {action}
+    </div>
+  );
+}
+
+function GroupHeading({ children }: { children: ReactNode }) {
+  return <h3 className="m-0 mt-1 text-caption font-bold uppercase tracking-[0.4px] text-ink-muted">{children}</h3>;
+}
+
+/** A section's content once loaded; grey blocks the first time, and a retry if it failed. */
+function PartView({ data, error, onRetry, children }: { data: unknown; error?: string; onRetry: () => void; children: ReactNode }) {
+  if (data === undefined && error) {
+    return <EmptyState title="This could not be loaded" message={error} action={<Button onClick={onRetry}>Try again</Button>} />;
+  }
+  if (data === undefined) {
+    return (
+      <div className="flex flex-col gap-3" aria-busy="true">
+        {[0, 1, 2].map((n) => <div key={n} className="h-16 animate-pulse rounded-card bg-track" />)}
+      </div>
+    );
+  }
+  return <div className="flex flex-col gap-3">{children}</div>;
+}
+
+function FollowUpsSection({ items, isPhone, closed, onNew, onDone, onReschedule, onCancel }: {
+  items: FollowUp[];
+  isPhone: boolean;
+  closed: boolean;
+  onNew: () => void;
+  onDone: (item: FollowUp) => void;
+  onReschedule: (item: FollowUp) => void;
+  onCancel: (item: FollowUp) => void;
+}) {
+  const { todo, done } = followUpGroups(items);
+  return (
+    <>
+      <SectionHeader title="Follow-ups" action={!closed && <Button icon={<IconPlus size={16} />} onClick={onNew}>{isPhone ? "New" : "New follow-up"}</Button>} />
+      {todo.length + done.length === 0 && <EmptyState title="No follow-ups yet" />}
+      {todo.length > 0 && <GroupHeading>To do · {todo.length}</GroupHeading>}
+      {todo.map((item) => (
+        <FollowUpItem
+          key={item.id}
+          item={item}
+          onDone={closed ? undefined : () => onDone(item)}
+          onReschedule={() => onReschedule(item)}
+          onCancel={() => onCancel(item)}
+        />
+      ))}
+      {done.length > 0 && <GroupHeading>Done · {done.length}</GroupHeading>}
+      {done.map((item) => <FollowUpItem key={item.id} item={item} />)}
     </>
   );
 }
 
-function SummaryCard({ label, children, danger }: { label: string; children: React.ReactNode; danger?: boolean }) {
-  return <div className={`rounded-2xl border p-4 ${danger ? "border-rose-500/30 bg-rose-500/[0.06]" : "border-[var(--border)] bg-[var(--bg-card)]"}`}><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</p><div className={danger ? "text-sm font-semibold text-rose-400" : "text-sm font-semibold text-[var(--text-primary)]"}>{children}</div></div>;
-}
-
-function Overview({ lead }: { lead: Lead }) {
-  return (
-    <div className="grid gap-6 lg:grid-cols-3">
-      <InfoSection title="Contact">
-        <Info label="Phone" value={lead.phone} href={lead.phone ? `tel:${lead.phone}` : undefined} />
-        <Info label="WhatsApp" value={lead.whatsappNumber} />
-        <Info label="Email" value={lead.email} href={lead.email ? `mailto:${lead.email}` : undefined} />
-        <Info label="Location" value={[lead.address, lead.city].filter(Boolean).join(", ")} />
-        <Info label="Preferred contact" value={`${enumLabel(lead.preferredContactMethod)}${lead.preferredContactTime ? ` · ${lead.preferredContactTime}` : ""}`} />
-      </InfoSection>
-      <InfoSection title="Attribution">
-        <Info label="Original source" value={lead.sourceName} />
-        <Info label="Source details" value={lead.sourceDetails} />
-        <Info label="Campaign" value={lead.campaignName} />
-        <Info label="Campaign reference" value={lead.campaignReference} />
-        <Info label="Website request" value={lead.bookingRequestId ? `Request #${lead.bookingRequestId}` : null} />
-      </InfoSection>
-      <InfoSection title="Property interest">
-        <Info label="Project" value={lead.interestedProjectName} />
-        <Info label="Unit" value={lead.interestedUnitNumber} />
-        <Info label="Property type" value={lead.propertyType} />
-        <Info label="Preferred location" value={lead.preferredLocation} />
-        <Info label="Budget" value={lead.budgetMin || lead.budgetMax ? `${lead.budgetMin?.toLocaleString() ?? "—"} – ${lead.budgetMax?.toLocaleString() ?? "—"}` : null} />
-        <Info label="Purchase intent" value={enumLabel(lead.purchaseIntent)} />
-        <Info label="Payment preference" value={enumLabel(lead.paymentPreference)} />
-      </InfoSection>
-      <div className="lg:col-span-3">
-        <InfoSection title="Notes and outcome">
-          <Info label="Notes" value={lead.notes} />
-          <Info label="Closure reason" value={lead.closureReasonName} />
-          <Info label="Closure notes" value={lead.closureNotes} />
-          <Info label="Reactivation" value={formatDateTime(lead.reactivateOn)} />
-        </InfoSection>
-      </div>
-    </div>
-  );
-}
-
-function Timeline({ items }: { items: TimelineItem[] }) {
-  if (!items.length) return <Empty text="No activity has been recorded." />;
-  return <div className="relative space-y-0 before:absolute before:bottom-3 before:left-[7px] before:top-3 before:w-px before:bg-[var(--border)]">{items.map((item) => <article key={item.id} className="relative grid grid-cols-[16px_1fr] gap-4 pb-6"><span className="relative z-10 mt-1.5 h-3.5 w-3.5 rounded-full border-2 border-[var(--bg-card)] bg-[var(--accent)]" /><div><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold text-[var(--text-heading)]">{item.summary}</h3><span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">{enumLabel(item.type)}</span></div><p className="mt-1 text-xs text-[var(--text-muted)]">{item.performedByName ?? (item.isSystemGenerated ? "DAMS" : "Staff")} · {formatDateTime(item.occurredAt)}{item.channel ? ` · ${enumLabel(item.channel)}` : ""}</p>{item.notes && <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{item.notes}</p>}{(item.previousValue || item.newValue) && <p className="mt-2 text-xs text-[var(--text-muted)]">{item.previousValue ?? "—"} → <span className="text-[var(--text-secondary)]">{item.newValue ?? "—"}</span></p>}</div></article>)}</div>;
-}
-
-function Communications({ items, onAdd }: { items: Communication[]; onAdd?: () => void }) {
-  return <SectionList title="Customer communications" action={onAdd && <Button size="sm" onClick={onAdd}>Log communication</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-[var(--text-heading)]">{enumLabel(item.channel)} · {item.direction}</p><time className="text-xs text-[var(--text-muted)]">{formatDateTime(item.occurredAt)}</time></div><p className="mt-2 text-sm text-[var(--text-secondary)]">{item.summary}</p>{item.customerResponse && <p className="mt-2 text-sm"><span className="text-[var(--text-muted)]">Customer response:</span> {item.customerResponse}</p>}{item.nextAction && <p className="mt-2 text-xs text-[var(--accent)]">Next: {item.nextAction} · {formatDateTime(item.nextActionAt)}</p>}</article>) : <Empty text="No customer communication recorded." />}</SectionList>;
-}
-
-function FollowUps({ items, closed, onAdd, onComplete, onReschedule, onCancel }: { items: FollowUp[]; closed: boolean; onAdd: () => void; onComplete: (item: FollowUp) => void; onReschedule: (item: FollowUp) => void; onCancel: (item: FollowUp) => void }) {
-  return <SectionList title="Follow-ups and tasks" action={!closed && <Button size="sm" onClick={onAdd}>New follow-up</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-[var(--text-heading)]">{item.title}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{enumLabel(item.type)} · {item.assignedEmployeeName} · {item.priority}</p></div><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${item.status === "Pending" && isPastServerTime(item.dueAt) ? "bg-rose-500/10 text-rose-400" : "bg-[var(--surface-glass)] text-[var(--text-muted)]"}`}>{item.status}</span></div><p className="mt-3 text-sm text-[var(--text-secondary)]">{item.notes ?? "No notes"}</p><div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]"><span>Due {formatDateTime(item.dueAt)}</span>{item.status === "Pending" && !closed && <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => onComplete(item)}>Complete</Button><Button size="sm" variant="outline" onClick={() => onReschedule(item)}>Reschedule</Button><Button size="sm" variant="danger" onClick={() => onCancel(item)}>Cancel</Button></div>}</div>{item.outcome && <p className="mt-3 rounded-lg bg-[var(--surface-glass)] p-3 text-sm text-[var(--text-secondary)]">Outcome: {item.outcome}</p>}</article>) : <Empty text="No follow-ups or tasks yet." />}</SectionList>;
-}
-
-function Visits({ items, closed, onAdd, onAction }: { items: SiteVisit[]; closed: boolean; onAdd: () => void; onAction: (type: "completeVisit" | "rescheduleVisit" | "closeVisit", item: SiteVisit, disposition?: "cancel" | "missed") => void }) {
-  return <SectionList title="Site visits" action={!closed && <Button size="sm" onClick={onAdd}>Schedule visit</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-semibold text-[var(--text-heading)]">{item.projectName ?? "Property visit"}{item.unitNumber ? ` · Unit ${item.unitNumber}` : ""}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{item.meetingLocation} · {item.assignedEmployeeName}</p></div><span className="rounded-full bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-400">{item.status}</span></div><p className="mt-3 text-sm text-[var(--text-secondary)]">{formatDateTime(item.scheduledAt)}{item.notes ? ` · ${item.notes}` : ""}</p>{["Scheduled", "Rescheduled"].includes(item.status) && !closed && <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" onClick={() => onAction("completeVisit", item)}>Complete</Button><Button size="sm" variant="outline" onClick={() => onAction("rescheduleVisit", item)}>Reschedule</Button><Button size="sm" variant="outline" onClick={() => onAction("closeVisit", item, "missed")}>Missed</Button><Button size="sm" variant="danger" onClick={() => onAction("closeVisit", item, "cancel")}>Cancel</Button></div>}{item.outcome && <p className="mt-3 rounded-lg bg-[var(--surface-glass)] p-3 text-sm">Outcome: {enumLabel(item.outcome)} · {item.nextAction}</p>}</article>) : <Empty text="No site visits scheduled." />}</SectionList>;
-}
-
-function Documents({ items, closed, onAdd, onDownload }: { items: LeadDocument[]; closed: boolean; onAdd: () => void; onDownload: (item: LeadDocument) => void }) {
-  return (
-    <SectionList title="Secure lead documents" action={!closed && <Button size="sm" onClick={onAdd}>Upload document</Button>}>
-      {items.length ? (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[650px] text-left text-sm">
-            <thead className="text-xs uppercase text-[var(--text-muted)]"><tr><th className="pb-3">Document</th><th className="pb-3">Type</th><th className="pb-3">Access</th><th className="pb-3">Added by</th><th className="pb-3">Added</th><th /></tr></thead>
-            <tbody>{items.map((item) => (
-              <tr key={item.id} className="border-t border-[var(--border)]">
-                <td className="py-3 font-medium text-[var(--text-heading)]">{item.fileName}<p className="text-xs text-[var(--text-muted)]">{item.description}</p></td>
-                <td>{enumLabel(item.category)}</td>
-                <td><span className="rounded-md bg-slate-500/10 px-2 py-1 text-xs text-slate-400">Internal staff</span></td>
-                <td>{item.uploadedByName ?? "Staff"}</td>
-                <td>{formatDateTime(item.uploadedAt)}</td>
-                <td className="text-right"><Button size="sm" variant="outline" onClick={() => onDownload(item)}>Download</Button></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      ) : <Empty text="No documents uploaded." />}
-    </SectionList>
-  );
-}
-
-function Comments({ items, closed, onAdd }: { items: LeadComment[]; closed: boolean; onAdd: () => void }) {
-  return <SectionList title="Internal collaboration" action={!closed && <Button size="sm" onClick={onAdd}>Add internal note</Button>}>{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-[var(--text-heading)]">{item.authorName ?? "Staff"}</p>{item.isManagerReviewRequest && <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">Manager review</span>}{item.isDecisionRecord && <span className="rounded bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">Decision</span>}<time className="ml-auto text-xs text-[var(--text-muted)]">{formatDateTime(item.createdAt)}</time></div><p className="mt-3 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{item.body}</p>{item.mentions.length > 0 && <p className="mt-2 text-xs text-[var(--accent)]">Mentioned: {item.mentions.map((m) => m.name ?? `User ${m.userId}`).join(", ")}</p>}</article>) : <Empty text="No internal comments or guidance." />}</SectionList>;
-}
-
-function Assignments({ items }: { items: AssignmentHistory[] }) {
-  return <SectionList title="Ownership history">{items.length ? items.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] p-4"><p className="text-sm text-[var(--text-secondary)]"><span className="font-semibold text-[var(--text-heading)]">{item.previousEmployeeName ?? "Unassigned"}</span> → <span className="font-semibold text-[var(--accent)]">{item.assignedEmployeeName ?? "Unassigned"}</span></p><p className="mt-2 text-xs text-[var(--text-muted)]">{item.assignedByName ?? "System"} · {formatDateTime(item.assignedAt)}</p>{item.reason && <p className="mt-2 text-sm text-[var(--text-secondary)]">{item.reason}</p>}</article>) : <Empty text="No ownership changes recorded." />}</SectionList>;
-}
-
-/**
- * The provider enquiries behind this lead.
- *
- * Every answer is shown, including ones DAMS has no field for — those are the reason the
- * raw answers are kept at all, and hiding them would defeat the point.
- */
-function ExternalSubmissions({ items, leadId, role }: { items: ExternalSubmission[]; leadId: number; role: string }) {
-  if (items.length === 0)
-    return <SectionList title="Source & integration"><Empty text="This lead did not arrive through a connected integration." /></SectionList>;
-
-  return (
-    <SectionList title="Source & integration">
-      {items.map((item) => (
-        <article key={item.id} className="rounded-xl border border-[var(--border)] p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-[var(--border)] px-2.5 py-0.5 text-xs text-[var(--text-secondary)]">
-              {platformLabel(item)}
-            </span>
-            <p className="text-xs text-[var(--text-muted)]">
-              Submitted {formatDateTime(item.externalSubmittedAt ?? item.receivedAt)} · Reference {item.externalLeadId}
-            </p>
-          </div>
-
-          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
-            <Attribution label="Page" value={item.pageName} />
-            <Attribution label="Form" value={item.externalFormName ?? item.externalFormReference} />
-            <Attribution label="Campaign" value={item.campaignName} />
-            <Attribution label="Ad set" value={item.adSetName} />
-            <Attribution label="Ad" value={item.adName} />
-            <Attribution label="Account" value={item.connectionDisplayName} />
-          </dl>
-
-          {item.fieldData.length > 0 && (
-            <div className="mt-4 border-t border-[var(--border)] pt-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Form answers</p>
-              <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
-                {item.fieldData.map((answer, index) => (
-                  <div key={`${answer.name}-${index}`}>
-                    <dt className="text-xs text-[var(--text-muted)]">
-                      {answer.label ?? answer.name}
-                      {!answer.isMapped && <span className="ml-1.5 opacity-70">· not mapped</span>}
-                    </dt>
-                    <dd className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{answer.valueLabel || answer.value || "—"}</dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          )}
-
-          {canViewOriginalProviderData(role, item.provider) && <OriginalProviderData leadId={leadId} submissionId={item.id} />}
-        </article>
-      ))}
-    </SectionList>
-  );
-}
-
-/**
- * What the provider actually sent — its complete response and the webhook event that delivered
- * it — fetched only when asked for, since it is kept apart from the lead's own fields on purpose.
- */
-function OriginalProviderData({ leadId, submissionId }: { leadId: number; submissionId: number }) {
-  const [open, setOpen] = useState(false);
-  const [state, setState] = useState<{ raw: ExternalSubmissionRaw } | { error: string } | null>(null);
-
-  const toggle = async () => {
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (state && "raw" in state) return;
-    setState(null);
-    try {
-      setState({ raw: await apiJson<ExternalSubmissionRaw>(`/api/leads/${leadId}/external-submissions/${submissionId}/raw`) });
-    } catch (e) {
-      setState({ error: e instanceof Error ? e.message : "The original data could not be loaded." });
-    }
+function VisitsSection({ items, isPhone, closed, onNew, onAction }: {
+  items: SiteVisit[];
+  isPhone: boolean;
+  closed: boolean;
+  onNew: () => void;
+  onAction: (type: "visitDone" | "rescheduleVisit" | "missed" | "cancelVisit", item: SiteVisit) => void;
+}) {
+  const { upcoming, past } = visitGroups(items);
+  const actionsFor = (item: SiteVisit) => closed ? undefined : {
+    onDone: () => onAction("visitDone", item),
+    onReschedule: () => onAction("rescheduleVisit", item),
+    onMissed: () => onAction("missed", item),
+    onCancel: () => onAction("cancelVisit", item),
   };
-
   return (
-    <div className="mt-4 border-t border-[var(--border)] pt-3">
-      <Button size="sm" variant="outline" onClick={() => void toggle()}>{open ? "Hide original data" : "View original data"}</Button>
-      {open && (
-        state === null ? <p className="mt-3 text-sm text-[var(--text-muted)]">Loading…</p>
-        : "error" in state ? <div className="mt-3"><ErrorBanner message={state.error} /></div>
-        : (
-          <div className="mt-3 space-y-4">
-            <RawPayload title="Provider response" json={state.raw.rawPayloadJson} emptyText="No provider response was stored for this submission." />
-            {state.raw.event
-              ? <RawPayload
-                  title={`Webhook event #${state.raw.event.id} · ${state.raw.event.status} · received ${formatDateTime(state.raw.event.receivedAt)}`}
-                  json={state.raw.event.rawPayloadJson}
-                  emptyText="The webhook event carried no payload." />
-              : <p className="text-sm text-[var(--text-muted)]">No webhook event is linked to this submission.</p>}
-          </div>
-        )
-      )}
-    </div>
+    <>
+      <SectionHeader title="Site visits" action={!closed && <Button icon={<IconPlus size={16} />} onClick={onNew}>{isPhone ? "Schedule" : "Schedule site visit"}</Button>} />
+      {upcoming.length + past.length === 0 && <EmptyState title="No site visits yet" />}
+      {upcoming.length > 0 && <GroupHeading>Upcoming</GroupHeading>}
+      {upcoming.map((item) => <SiteVisitItem key={item.id} item={item} actions={actionsFor(item)} />)}
+      {past.length > 0 && <GroupHeading>Past</GroupHeading>}
+      {past.map((item) => <SiteVisitItem key={item.id} item={item} actions={actionsFor(item)} />)}
+    </>
   );
 }
-
-function RawPayload({ title, json, emptyText }: { title: string; json?: string | null; emptyText: string }) {
-  const formatted = formatProviderPayload(json);
-  return (
-    <div>
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{title}</p>
-      {formatted
-        ? <pre className="max-h-96 overflow-auto rounded-lg bg-[var(--surface-glass)] p-3 text-xs text-[var(--text-secondary)]">{formatted}</pre>
-        : <p className="text-sm text-[var(--text-muted)]">{emptyText}</p>}
-    </div>
-  );
-}
-
-function Attribution({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null;
-  return <div><dt className="text-xs text-[var(--text-muted)]">{label}</dt><dd className="mt-0.5 text-sm text-[var(--text-secondary)]">{value}</dd></div>;
-}
-
-// Never guesses. An enquiry Meta did not attribute to a surface is shown as "Meta", not as
-// Facebook, because a lead-ad webhook always arrives through a Page either way.
-function platformLabel(item: ExternalSubmission) {
-  if (item.platform === "instagram") return "Instagram";
-  if (item.platform === "facebook") return "Facebook";
-  return item.provider === "meta" ? "Meta" : item.provider;
-}
-
-function Conversion({ lead, canManage, canOpenBooking, onConvert }: { lead: Lead; canManage: boolean; canOpenBooking: boolean; onConvert: () => void }) {
-  if (lead.stage === "Won") return <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] p-6"><h2 className="text-lg font-semibold text-emerald-400">Successfully converted</h2><p className="mt-2 text-sm text-[var(--text-secondary)]">The lead remains available as a historical CRM record. Customer #{lead.convertedCustomerId} · Booking {lead.convertedBookingReference ?? `#${lead.convertedBookingId}`}</p>{canOpenBooking && <div className="mt-4 flex flex-wrap gap-2">{lead.convertedCustomerId && <Link to={`/customers/${lead.convertedCustomerId}`}><Button variant="outline">Open customer</Button></Link>}{lead.convertedBookingId && <Link to={`/confirmed-bookings/${lead.convertedBookingId}`}><Button>Open booking {lead.convertedBookingReference}</Button></Link>}</div>}</div>;
-  return <div className="max-w-2xl"><h2 className="text-lg font-semibold text-[var(--text-heading)]">Lead conversion</h2><p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">Conversion resolves an existing or new customer and creates the booking in one backend transaction. A unit is never reserved by an inquiry, and Won is set only after this succeeds.</p>{canManage ? <Button className="mt-5" onClick={onConvert}>Start safe conversion</Button> : <p className="mt-4 rounded-xl bg-[var(--surface-glass)] p-4 text-sm text-[var(--text-secondary)]">Ask a Sales Manager or Admin to complete conversion.</p>}</div>;
-}
-
-function InfoSection({ title, children }: { title: string; children: React.ReactNode }) { return <section><h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{title}</h2><dl className="space-y-3">{children}</dl></section>; }
-function Info({ label, value, href }: { label: string; value?: string | null; href?: string }) { const content = value || "—"; return <div><dt className="text-xs text-[var(--text-muted)]">{label}</dt><dd className="mt-0.5 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{href && value ? <a className="text-[var(--accent)] hover:underline" href={href}>{content}</a> : content}</dd></div>; }
-function Empty({ text }: { text: string }) { return <div className="rounded-xl border border-dashed border-[var(--border)] px-4 py-12 text-center text-sm text-[var(--text-muted)]">{text}</div>; }
-function SectionList({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) { return <div><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-[var(--text-heading)]">{title}</h2>{action}</div><div className="space-y-3">{children}</div></div>; }

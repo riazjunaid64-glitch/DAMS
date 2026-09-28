@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useId, useState } from "react";
 import {
   Button,
   Checkbox,
@@ -13,7 +13,8 @@ import {
   useToast,
 } from "../../components/ui";
 import { describeConflict, describeDuplicate, type DuplicateMatch, type DuplicateWarning } from "./duplicateResolution.ts";
-import { paymentPreferenceLabel, purchaseIntentLabel } from "./labels.ts";
+import { FormSection as Section } from "./LeadDialogParts.tsx";
+import { BUYING_FOR_CHOICES, contactErrors, hasErrors, PAYMENT_CHOICES, type ContactErrors } from "./leadForm.ts";
 import { apiJson, jsonRequest, type CrmLookups } from "./leadApi.ts";
 import type { Lead } from "./types.ts";
 
@@ -50,21 +51,13 @@ const EMPTY = {
   notes: "",
 };
 
-const PAYMENT_CHOICES = ["Installments", "NeedsDetails", "Cash"].map((value) => ({ value, label: paymentPreferenceLabel(value)!.label }));
-const BUYING_FOR_CHOICES = ["SelfUse", "Investment"].map((value) => ({ value, label: purchaseIntentLabel(value)! }));
-
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/** Digits in a phone number: the API needs at least seven to match or reach anyone. */
-const digits = (value: string) => value.replace(/\D/g, "").length;
-
 /** New lead: a popup on desktop, a full-screen form on phone. Opens the lead once it is saved. */
 export function NewLeadDialog({ onClose, lookups, canAssign, onOpenLead }: Props) {
   const toast = useToast();
   const formId = useId();
   const [form, setForm] = useState(EMPTY);
   const [sameWhatsapp, setSameWhatsapp] = useState(true);
-  const [errors, setErrors] = useState<Partial<Record<"firstName" | "phone" | "email", string>>>({});
+  const [errors, setErrors] = useState<ContactErrors>({});
   const [saving, setSaving] = useState(false);
   // The open lead(s) these contact details already belong to, from the last submit.
   const [warning, setWarning] = useState<DuplicateWarning | null>(null);
@@ -83,13 +76,9 @@ export function NewLeadDialog({ onClose, lookups, canAssign, onOpenLead }: Props
   // With addToLeadId the enquiry may only be added to that lead; the API writes nothing if the
   // details no longer match it, rather than adding to another lead or creating a new one.
   const submit = async (addToLeadId?: number) => {
-    const found = {
-      firstName: form.firstName.trim().length < 2 ? "Enter at least 2 letters." : undefined,
-      phone: digits(form.phone) < 7 ? "Enter the full phone number." : undefined,
-      email: form.email.trim() && !EMAIL.test(form.email.trim()) ? "Enter a valid email address." : undefined,
-    };
+    const found = contactErrors(form);
     setErrors(found);
-    if (found.firstName || found.phone || found.email) return;
+    if (hasErrors(found)) return;
 
     const phone = form.phone.trim();
     const optional = (value: string) => value.trim() || null;
@@ -204,14 +193,5 @@ export function NewLeadDialog({ onClose, lookups, canAssign, onOpenLead }: Props
         <TextArea label="Notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
       </form>
     </Modal>
-  );
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-4">
-      <h3 className="m-0 border-b border-line-soft pb-2 text-small font-extrabold text-ink">{title}</h3>
-      <div className="grid gap-4 sm:grid-cols-2">{children}</div>
-    </section>
   );
 }

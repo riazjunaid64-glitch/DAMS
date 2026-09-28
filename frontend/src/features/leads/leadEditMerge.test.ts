@@ -1,17 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { initialForm } from "./leadActionDefaults.ts";
 import { LeadConflictError } from "./leadApi.ts";
-import { describeEditConflict, EDIT_LABELS, mergeLeadEdit, saveLeadEdit, type EditForm } from "./leadEditMerge.ts";
+import { describeEditConflict, EDIT_LABELS, editChanges, editForm, mergeLeadEdit, saveLeadEdit, type EditForm } from "./leadEditMerge.ts";
 import type { Lead } from "./types.ts";
 
 const opened = {
   id: 7, firstName: "Ayesha", lastName: "Khan", phone: "03001234567", email: "ayesha@example.com",
   city: null, preferredContactMethod: "Phone", purchaseIntent: "Unknown", paymentPreference: "Unknown", sourceDetails: "Walk-in",
-  interestedProjectId: 1, interestedProjectName: "Skyline", interestedUnitId: 10, interestedUnitNumber: "A-10",
-  budgetMax: null, notes: "Prefers evenings", concurrencyToken: "v1",
+  propertyType: "2 Bed", budgetMax: null, notes: "Prefers evenings", concurrencyToken: "v1",
 } as Lead;
 
-const openForm = () => initialForm({ type: "edit" }, opened);
+const openForm = () => editForm(opened);
 
 // A repeat enquiry appends on a new line, exactly as LeadService.Append does.
 const metaNote = "Meta lead form: wants a 3-bed corner unit near the park, budget flexible, call after 6pm";
@@ -25,8 +23,6 @@ describe("merging an edit form after the lead changed underneath it", () => {
     const { form, conflicts, detailsChanged } = mergeLeadEdit(opened, enriched, { ...openForm(), phone: "03009998888" });
 
     expect(form.city).toBe("Islamabad");
-    expect(form.budgetMax).toBe("12000000");
-    expect(form.sourceDetails).toBe("Walk-in\nMeta: Spring form");
     expect(form.notes).toBe(`Prefers evenings\n${metaNote}`);
     expect(form.phone).toBe("03009998888");
     expect(conflicts).toEqual([]);
@@ -45,7 +41,7 @@ describe("merging an edit form after the lead changed underneath it", () => {
   it("appends an enquiry's note to a note the person started on a lead that had none", () => {
     const blank = { ...opened, notes: null } as Lead;
     const latest = { ...blank, notes: metaNote, concurrencyToken: "v2" } as Lead;
-    const mine = { ...initialForm({ type: "edit" }, blank), notes: "Called back" };
+    const mine = { ...editForm(blank), notes: "Called back" };
 
     expect(mergeLeadEdit(blank, latest, mine).form.notes).toBe(`Called back\n${metaNote}`);
   });
@@ -86,24 +82,17 @@ describe("merging an edit form after the lead changed underneath it", () => {
     expect(conflicts).toEqual([]);
   });
 
-  it("treats project and unit as one choice, so a newer project is never paired with this form's unit", () => {
-    const theirs = { ...opened, interestedProjectId: 2, interestedProjectName: "Harbour", interestedUnitId: null, interestedUnitNumber: null, concurrencyToken: "v2" } as Lead;
-    const mine = { ...openForm(), interestedUnitId: "11" };
-
-    const { form, conflicts } = mergeLeadEdit(opened, theirs, mine);
-
-    expect(form.interestedProjectId).toBe("1");
-    expect(form.interestedUnitId).toBe("11");
-    expect(conflicts).toEqual([
-      { label: "Interested project", theirs: "Harbour" },
-      { label: "Interested unit", theirs: "" },
-    ]);
-  });
-
   it("says nothing on the form changed when only the lead's activity moved its version", () => {
     const activityOnly = { ...opened, lastActivitySummary: "Follow-up missed", concurrencyToken: "v2" } as Lead;
 
     expect(mergeLeadEdit(opened, activityOnly, openForm()).detailsChanged).toBe(false);
+  });
+
+  it("names a requirement choice in words when both sides changed it", () => {
+    const theirs = { ...opened, paymentPreference: "Cash", concurrencyToken: "v2" } as Lead;
+    const { conflicts } = mergeLeadEdit(opened, theirs, { ...openForm(), paymentPreference: "Installments" });
+
+    expect(conflicts).toEqual([{ label: "5-year installment plan", theirs: "Cash" }]);
   });
 
   it("has a label for every field on the edit form", () => {
@@ -114,6 +103,18 @@ describe("merging an edit form after the lead changed underneath it", () => {
     expect(describeEditConflict([])).toContain("None of them clash");
     expect(describeEditConflict([{ label: "Email", theirs: "x" }])).toContain("Saving again replaces the newer values with yours.");
     expect(describeEditConflict([])).not.toContain("Someone else");
+  });
+});
+
+describe("what an edit sends", () => {
+  it("sends only the fields the form changed, so nothing else on the lead is overwritten", () => {
+    expect(editChanges(opened, openForm())).toEqual({});
+    expect(editChanges(opened, { ...openForm(), city: " Lahore ", email: "", paymentPreference: "Cash" }))
+      .toEqual({ city: "Lahore", email: null, paymentPreference: "Cash" });
+  });
+
+  it("does not count added spaces as a change", () => {
+    expect(editChanges(opened, { ...openForm(), firstName: "Ayesha " })).toEqual({});
   });
 });
 

@@ -61,15 +61,19 @@ export async function loadProjects(): Promise<ProjectLookup[]> {
   return normalizeProjects(await apiJson<unknown>("/api/Project"));
 }
 
-export async function loadUnits(projectId: number): Promise<UnitLookup[]> {
-  const raw = await apiJson<unknown>(`/api/Unit/project/${projectId}`);
+/** Every unit of a project, with what the convert popup needs to pick one. */
+export async function loadUnits(projectId: number, signal?: AbortSignal): Promise<UnitLookup[]> {
+  const raw = await apiJson<unknown>(`/api/Unit/project/${projectId}`, { signal });
   const rows = Array.isArray(raw) ? raw : [];
   return rows.map((value) => {
     const row = value as Record<string, unknown>;
     return {
       id: Number(row.id),
-      number: String(row.unitNumber ?? row.number ?? `Unit ${row.id}`),
       projectId: Number(row.projectId ?? projectId),
+      number: String(row.unitNumber ?? row.id),
+      type: String(row.unitType ?? ""),
+      floor: Number(row.floorNumber ?? 0),
+      status: String(row.status ?? ""),
     };
   }).filter((row) => Number.isFinite(row.id));
 }
@@ -95,15 +99,4 @@ function normalizeProjects(raw: unknown): ProjectLookup[] {
 
 export function jsonRequest(method: string, body: unknown): RequestInit {
   return { method, body: JSON.stringify(body) };
-}
-
-export async function downloadLeadDocument(documentId: number, fileName: string) {
-  const response = await api(`/api/leads/documents/${documentId}/download?download=true`);
-  if (!response.ok) throw new Error("The document could not be downloaded.");
-  const url = URL.createObjectURL(await response.blob());
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }

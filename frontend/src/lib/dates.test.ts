@@ -1,5 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatDay, formatMonthDay, formatTime, formatWhen, isPastServerTime, parseServerDateTime } from "./dates.ts";
+import {
+  daysFromToday,
+  formatAppointment,
+  formatDateInput,
+  formatDay,
+  formatDayHeading,
+  formatMonthDay,
+  formatTime,
+  formatWhen,
+  fromKarachiInputs,
+  isPastServerTime,
+  karachiDateInput,
+  parseServerDateTime,
+  toKarachiInputs,
+} from "./dates.ts";
 
 // 11:45 AM on Sep 27, 2026 in Karachi. Server values below carry no zone marker, so they are UTC.
 const now = new Date("2026-09-27T06:45:00Z");
@@ -64,5 +78,54 @@ describe("Karachi display formats", () => {
       expect(formatMonthDay(value, now)).toBe("—");
       expect(formatTime(value)).toBe("—");
     }
+  });
+});
+
+describe("Karachi day headings and appointments", () => {
+  beforeEach(() => { vi.stubEnv("TZ", "America/Los_Angeles"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("names today and yesterday, and gives other days their weekday", () => {
+    expect(formatDayHeading("2026-09-27T01:00:00", now)).toBe("Today");
+    expect(formatDayHeading("2026-09-26T12:00:00", now)).toBe("Yesterday");
+    expect(formatDayHeading("2026-09-25T12:00:00", now)).toBe("Fri, Sep 25");
+    expect(formatDayHeading("2025-09-25T12:00:00", now)).toBe("Thu, Sep 25, 2025");
+    expect(formatDayHeading(null, now)).toBe("—");
+  });
+
+  it("writes an appointment with its weekday and time", () => {
+    expect(formatAppointment("2026-10-03T06:00:00", now)).toBe("Sat, Oct 3 · 11:00 AM");
+    expect(formatAppointment("2027-01-02T06:00:00", now)).toBe("Sat, Jan 2, 2027 · 11:00 AM");
+    expect(formatAppointment(undefined, now)).toBe("—");
+  });
+});
+
+describe("Karachi date and time inputs", () => {
+  // The inputs hold Karachi wall-clock values wherever the browser is.
+  beforeEach(() => { vi.stubEnv("TZ", "America/Los_Angeles"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("turns an instant into the Karachi date and time", () => {
+    expect(toKarachiInputs(now)).toEqual({ date: "2026-09-27", time: "11:45" });
+    expect(toKarachiInputs("2026-09-27T19:30:00")).toEqual({ date: "2026-09-28", time: "00:30" });
+    expect(toKarachiInputs("not a date")).toEqual({ date: "", time: "" });
+  });
+
+  it("turns a Karachi date and time back into the same instant", () => {
+    expect(fromKarachiInputs("2026-09-28", "16:00")).toBe("2026-09-28T11:00:00.000Z");
+    expect(fromKarachiInputs("2026-09-28", "00:30")).toBe("2026-09-27T19:30:00.000Z");
+    expect(fromKarachiInputs("2026-09-28", "")).toBeNull();
+    expect(fromKarachiInputs("", "16:00")).toBeNull();
+  });
+
+  it("counts days on the Karachi calendar", () => {
+    expect(karachiDateInput(0, now)).toBe("2026-09-27");
+    expect(karachiDateInput(1, now)).toBe("2026-09-28");
+    // 20:00 UTC is already the next day in Karachi.
+    expect(karachiDateInput(0, new Date("2026-09-27T20:00:00Z"))).toBe("2026-09-28");
+    expect(daysFromToday("2026-10-04", now)).toBe(7);
+    expect(daysFromToday("2026-09-27", now)).toBe(0);
+    expect(formatDateInput("2026-10-03")).toBe("Sat, Oct 3");
+    expect(formatDateInput("")).toBe("");
   });
 });
