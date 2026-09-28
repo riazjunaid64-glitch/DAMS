@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { api } from "../api/api.ts";
+import { readError } from "../api/readError.ts";
 import {
   Button,
   DateField,
@@ -26,21 +27,6 @@ type Props = { user: User | null };
 const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
 const CATEGORIES = ["Residential", "Commercial", "Mixed use"];
 const STATUSES = ["Planning", "Ongoing", "Completed", "Cancelled", "Archived"];
-
-async function readError(response: Response, fallback: string): Promise<string> {
-  const text = await response.text();
-  if (!text) return fallback;
-  try {
-    const body = JSON.parse(text) as { message?: string; title?: string; errors?: Record<string, string[]> };
-    if (body.message) return body.message;
-    const first = body.errors && Object.values(body.errors).flat()[0];
-    if (first) return first;
-    if (body.title) return body.title;
-  } catch {
-    // The server sent plain text.
-  }
-  return text.length < 300 ? text : fallback;
-}
 
 export default function ProjectsPage({ user }: Props) {
   const toast = useToast();

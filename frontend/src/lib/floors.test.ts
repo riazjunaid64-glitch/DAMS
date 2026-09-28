@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { floorChoices, floorLabel } from "./floors.ts";
+import { floorChoices, floorLabel, floorName } from "./floors.ts";
 
 describe("floorLabel", () => {
   it("writes basements, the ground floor, and ordinals", () => {
@@ -23,5 +23,22 @@ describe("floorLabel", () => {
     expect(choices.find((choice) => choice.value === "0")?.label).toBe("Ground floor");
     expect(choices.at(-1)).toEqual({ value: "30", label: "30th floor" });
     expect(floorChoices(40).some((choice) => choice.value === "40")).toBe(true);
+  });
+
+  it("offers the project's own floors when it has a list, keeping a current floor that is not on it", () => {
+    const floors = [{ number: 1, name: "1st floor" }, { number: -1, name: "Parking" }, { number: 19, name: "Rooftop" }];
+    expect(floorChoices(null, floors)).toEqual([
+      { value: "-1", label: "Parking" },
+      { value: "1", label: "1st floor" },
+      { value: "19", label: "Rooftop" },
+    ]);
+    expect(floorChoices(5, floors).map((choice) => choice.label)).toEqual(["Parking", "1st floor", "5th floor", "Rooftop"]);
+    expect(floorChoices(null, [])).toHaveLength(33);
+  });
+
+  it("shows the API's floor name, and the standard label only when it is missing", () => {
+    expect(floorName("Parking", -1)).toBe("Parking");
+    expect(floorName("", -1)).toBe("Basement 1");
+    expect(floorName(undefined, 0)).toBe("Ground floor");
   });
 });

@@ -124,6 +124,11 @@ describe("converting", () => {
     ]);
   });
 
+  it("names the floor as the project does", () => {
+    const parking = { ...unit(5, "P-01", "Parking space", -1), floorName: "Parking" };
+    expect(unitChoices([parking])).toEqual([{ value: "5", label: "Unit P-01 — Parking space · Parking" }]);
+  });
+
   it("writes floors in words", () => {
     expect([1, 2, 3, 4, 11, 12, 13, 21, 22].map(floorLabel)).toEqual([
       "1st floor", "2nd floor", "3rd floor", "4th floor", "11th floor", "12th floor", "13th floor", "21st floor", "22nd floor",

@@ -139,6 +139,32 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    // KAN-57: a project's floor list is edited with the same permission as the project itself —
+    // Admin or Accountant. The sales roles only ever see floor names.
+    [Theory]
+    [InlineData("Manager")]
+    [InlineData("Employee")]
+    [InlineData("Client")]
+    public async Task ReplacingAProjectsFloors_IsRejectedWith403ForEveryoneButAdminAndAccountant(string role)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer(role);
+        var response = await client.PutAsync("/api/Project/1/floors", new StringContent("[]", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("Admin")]
+    [InlineData("Accountant")]
+    public async Task ReplacingAProjectsFloors_IsAllowedForAdminAndAccountant(string role)
+    {
+        var client = _factory.CreateClient(NoRedirect);
+        client.DefaultRequestHeaders.Authorization = Bearer(role);
+        var response = await client.PutAsync("/api/Project/424242/floors", new StringContent("[]", Encoding.UTF8, "application/json"));
+        // Past the role gate: the project does not exist, which is a 404 rather than a 401/403.
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     // Private-file download surfaces: a leak here would expose identity documents / financial evidence.
     public static IEnumerable<object[]> AdminOnlyDownloads() => new[]
     {

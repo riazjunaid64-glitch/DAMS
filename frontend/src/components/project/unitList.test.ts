@@ -6,6 +6,7 @@ const unit = (overrides: Partial<UnitRow>): UnitRow => ({
   unitNumber: "101",
   unitType: "1 Bed",
   floorNumber: 1,
+  floorName: "",
   size: 800,
   price: 100,
   status: "Available",
@@ -46,5 +47,14 @@ describe("unit list", () => {
 
   it("lists the floors that have a unit, lowest first", () => {
     expect(floorsInUse(rows).map((floor) => floor.label)).toEqual(["Basement 1", "Ground floor", "1st floor", "8th floor"]);
+  });
+
+  it("names those floors as the project does", () => {
+    const named = [
+      unit({ id: 5, floorNumber: -1, floorName: "Parking" }),
+      unit({ id: 6, floorNumber: 1, floorName: "1st floor" }),
+      unit({ id: 7, floorNumber: -1, floorName: "Parking" }),
+    ];
+    expect(floorsInUse(named)).toEqual([{ value: "-1", label: "Parking" }, { value: "1", label: "1st floor" }]);
   });
 });

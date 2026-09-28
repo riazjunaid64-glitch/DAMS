@@ -39,6 +39,8 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public int UnitFloorNumber { get; set; }
 
+        public string FloorName { get; set; } = string.Empty;
+
         public decimal UnitSize { get; set; }
 
         public int ProjectId { get; set; }

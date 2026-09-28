@@ -1,5 +1,5 @@
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
-import { formatFloor } from "../lib/floors.ts";
+import { floorName } from "../lib/floors.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
 import { ReceiptBrandHeader } from "./BrandLogos.tsx";
 
@@ -19,6 +19,7 @@ export interface PaymentReceiptData {
   unitNumber: string;
   block?: string | null;
   floorNumber: number;
+  floorName?: string | null;
   unitSize: number;
   type: string; // "BookingAmount" | "Installment"
   paymentMethod: string; // "Cash" | "BankTransfer" | "Cheque" | "Online"
@@ -159,7 +160,7 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
 
         <div style={{ display: "flex", gap: "30px" }}>
           <FillField label="Apartment Number:" value={data.unitNumber} />
-          <FillField label="Floor:" value={formatFloor(data.floorNumber)} />
+          <FillField label="Floor:" value={floorName(data.floorName, data.floorNumber)} />
           <FillField label="Size:" value={data.unitSize ? formatMoney(data.unitSize) : ""} />
           <FillField label="Block:" value={data.block} />
         </div>

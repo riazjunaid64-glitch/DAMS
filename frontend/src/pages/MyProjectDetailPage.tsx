@@ -5,7 +5,7 @@ import type { User } from "../App.tsx";
 import Container from "../lib/Container.tsx";
 import Button from "../lib/Button.tsx";
 import TabLayout from "../lib/TabLayout.tsx";
-import { formatFloor } from "../lib/floors.ts";
+import { floorName } from "../lib/floors.ts";
 import { homePathFor } from "../features/access/permissions.ts";
 
 type Props = { user: User | null };
@@ -24,6 +24,7 @@ interface BookingFull {
   unitNumber: string;
   unitType: string;
   unitFloorNumber: number;
+  floorName?: string;
   unitSize: number;
   status: string;
   agreedSalePrice: number;
@@ -230,7 +231,7 @@ export default function MyProjectDetailPage({ user }: Props) {
                   {[
                     ["Project", booking.projectName],
                     ["Unit", `${booking.unitType} (${booking.unitNumber})`],
-                    ["Floor", formatFloor(booking.unitFloorNumber)],
+                    ["Floor", floorName(booking.floorName, booking.unitFloorNumber)],
                     ["Size", `${formatMoney(booking.unitSize)} sq ft`],
                     ["Category", booking.apartmentCategory ?? "—"],
                     ["Tower / Block", booking.tower ?? "—"],

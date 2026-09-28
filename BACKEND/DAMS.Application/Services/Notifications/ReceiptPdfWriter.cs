@@ -102,7 +102,7 @@ namespace DAMS.Application.Services.Notifications
             Row("Unit", receipt.UnitNumber);
             Row("Type", receipt.UnitType);
             Row("Block", receipt.Block);
-            Row("Floor", receipt.FloorNumber > 0 ? receipt.FloorNumber.ToString(CultureInfo.InvariantCulture) : null);
+            Row("Floor", receipt.FloorName);
             Row("Size", receipt.UnitSize > 0 ? $"{receipt.UnitSize.ToString("N2", CultureInfo.InvariantCulture)} sq ft" : null);
 
             y -= 6f;

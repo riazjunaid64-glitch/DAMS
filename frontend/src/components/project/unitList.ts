@@ -1,4 +1,4 @@
-import { floorLabel } from "../../lib/floors.ts";
+import { floorName } from "../../lib/floors.ts";
 import { unitStatus } from "../../features/leads/labels.ts";
 
 export const UNIT_TYPES = ["Studio", "1 Bed", "2 Bed", "3 Bed", "Parking space"] as const;
@@ -10,6 +10,7 @@ export type UnitRow = {
   unitNumber: string;
   unitType: string;
   floorNumber: number;
+  floorName: string;
   size: number;
   price: number;
   status: string;
@@ -52,10 +53,13 @@ export function availableByType(units: readonly { unitType: string; status: stri
   }));
 }
 
-/** Floors that actually have a unit, lowest first. */
-export function floorsInUse(units: readonly { floorNumber: number }[]): { value: string; label: string }[] {
-  const floors = [...new Set(units.map((unit) => unit.floorNumber))].sort((a, b) => a - b);
-  return floors.map((floor) => ({ value: String(floor), label: floorLabel(floor) }));
+/** Floors that actually have a unit, lowest first, by the name the project gives them. */
+export function floorsInUse(units: readonly { floorNumber: number; floorName: string }[]): { value: string; label: string }[] {
+  const names = new Map<number, string>();
+  for (const unit of units) if (!names.has(unit.floorNumber)) names.set(unit.floorNumber, floorName(unit.floorName, unit.floorNumber));
+  return [...names.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([floor, label]) => ({ value: String(floor), label }));
 }
 
 export function formatSqFt(size: number): string {

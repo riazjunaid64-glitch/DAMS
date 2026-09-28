@@ -1,5 +1,7 @@
 /** Normalizes project JSON from the API (camelCase or PascalCase). */
 
+import type { Floor } from "../lib/floors.ts";
+
 const STATUS_FROM_NAME: Record<string, number> = {
   Planning: 1,
   Ongoing: 2,
@@ -23,6 +25,10 @@ export interface ProjectFromApi {
   availableUnits: number;
   bookedUnits: number;
   soldUnits: number;
+  /** 0 while the project has no floor list. */
+  floorCount: number;
+  /** The floor list bottom to top; only the project detail sends it. */
+  floors?: Floor[];
 }
 
 function pickId(o: Record<string, unknown>): number | null {
@@ -52,6 +58,19 @@ function strOrNull(v: unknown): string | null {
 function count(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function parseFloors(v: unknown): Floor[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const floors: Floor[] = [];
+  for (const row of v) {
+    if (!row || typeof row !== "object") continue;
+    const o = row as Record<string, unknown>;
+    const number = Number(o.number ?? o.Number);
+    const name = str(o.name ?? o.Name);
+    if (Number.isInteger(number) && name) floors.push({ number, name });
+  }
+  return floors.sort((a, b) => a.number - b.number);
 }
 
 function dateStr(v: unknown): string {
@@ -97,6 +116,8 @@ export function parseProjectRow(raw: unknown): ProjectFromApi | null {
     availableUnits: count(o.availableUnits ?? o.AvailableUnits),
     bookedUnits: count(o.bookedUnits ?? o.BookedUnits),
     soldUnits: count(o.soldUnits ?? o.SoldUnits),
+    floorCount: count(o.floorCount ?? o.FloorCount),
+    floors: parseFloors(o.floors ?? o.Floors),
   };
 }
 
