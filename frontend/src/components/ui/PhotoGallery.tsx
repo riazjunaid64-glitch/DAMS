@@ -68,7 +68,7 @@ export function PhotoGallery({ photos, canManage = false, onSetCover, onDelete, 
           )}
         >
           <IconUpload size={16} />
-          {uploading ? "Uploading…" : "Upload"}
+          {uploading ? "Uploading…" : "Upload photos"}
           <input
             type="file"
             accept="image/*"
@@ -102,7 +102,7 @@ export function PhotoGallery({ photos, canManage = false, onSetCover, onDelete, 
         open={deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={() => { if (deleting) onDelete?.(deleting); setDeleting(null); }}
-        title="Delete photo?"
+        title="Delete this photo?"
         message="This photo will be removed. This cannot be undone."
         confirmLabel="Delete photo"
         danger

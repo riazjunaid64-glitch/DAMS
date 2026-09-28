@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { api } from "../api/api.ts";
 import {
@@ -17,7 +18,8 @@ import {
 import { ProjectCard } from "../components/project/ProjectCard.tsx";
 import { useProjects } from "../contexts/projectsContextValue.ts";
 import { can } from "../features/access/permissions.ts";
-import { projectStatusName, type ProjectFromApi } from "../utils/parseProject.ts";
+import { completionDateError, fieldForServerMessage, projectDraftChanged, projectDraftReady, type ProjectDraft } from "../components/project/editRules.ts";
+import { parseProjectRow, projectStatusName, type ProjectFromApi } from "../utils/parseProject.ts";
 
 type Props = { user: User | null };
 
@@ -42,6 +44,7 @@ async function readError(response: Response, fallback: string): Promise<string> 
 
 export default function ProjectsPage({ user }: Props) {
   const toast = useToast();
+  const navigate = useNavigate();
   const { projects, loading, error, reload } = useProjects();
   const canWrite = can(user?.role, "projects.write");
   const [creating, setCreating] = useState(false);
@@ -66,10 +69,11 @@ export default function ProjectsPage({ user }: Props) {
       {creating && (
         <ProjectDialog
           onClose={() => setCreating(false)}
-          onSaved={async () => {
+          onSaved={async (saved) => {
             setCreating(false);
             toast.success("Project created");
             await reload();
+            if (saved?.id) navigate(`/projects/${saved.id}`);
           }}
         />
       )}
@@ -77,23 +81,40 @@ export default function ProjectsPage({ user }: Props) {
   );
 }
 
+function projectBaseline(project: ProjectFromApi): ProjectDraft {
+  return {
+    name: project.projectName,
+    location: project.location,
+    category: project.category === "Mixed Use" ? "Mixed use" : project.category ?? "",
+    start: project.startingDate?.slice(0, 10) ?? "",
+    completion: project.expectedCompletionDate?.slice(0, 10) ?? "",
+    about: project.description ?? "",
+    status: projectStatusName(project.status) || "Planning",
+  };
+}
+
 export function ProjectDialog({ project, onClose, onSaved }: {
   project?: ProjectFromApi | null;
   onClose: () => void;
-  onSaved: () => void | Promise<void>;
+  onSaved: (saved?: { id: number }) => void | Promise<void>;
 }) {
   const toast = useToast();
   const editing = project ?? null;
-  const [name, setName] = useState(editing?.projectName ?? "");
-  const [location, setLocation] = useState(editing?.location ?? "");
-  const [category, setCategory] = useState(editing?.category === "Mixed Use" ? "Mixed use" : editing?.category ?? "");
-  const [start, setStart] = useState(editing?.startingDate?.slice(0, 10) ?? "");
-  const [completion, setCompletion] = useState(editing?.expectedCompletionDate?.slice(0, 10) ?? "");
-  const [about, setAbout] = useState(editing?.description ?? "");
-  const [status, setStatus] = useState(projectStatusName(editing?.status) || "Planning");
+  const baseline = editing ? projectBaseline(editing) : null;
+  const [name, setName] = useState(baseline?.name ?? "");
+  const [location, setLocation] = useState(baseline?.location ?? "");
+  const [category, setCategory] = useState(baseline?.category ?? "");
+  const [start, setStart] = useState(baseline?.start ?? "");
+  const [completion, setCompletion] = useState(baseline?.completion ?? "");
+  const [about, setAbout] = useState(baseline?.about ?? "");
+  const [status, setStatus] = useState(baseline?.status ?? "Planning");
+  const [nameError, setNameError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
-  const dateError = start && completion && completion < start ? "Completion date can't be before the start date." : undefined;
-  const ready = name.trim().length > 0 && location.trim().length > 0 && !dateError;
+  const draft: ProjectDraft = { name, location, category, start, completion, about, status };
+  const dateError = completionDateError(draft.start, draft.completion);
+  const ready = projectDraftReady(draft);
+  const changed = baseline ? projectDraftChanged(draft, baseline) : true;
+  const canSave = ready && changed && !saving;
 
   const save = async () => {
     setSaving(true);
@@ -112,11 +133,21 @@ export function ProjectDialog({ project, onClose, onSaved }: {
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
-        toast.error(await readError(response, "The project could not be saved."));
+        const message = await readError(response, "The project could not be saved.");
+        if (fieldForServerMessage(message) === "projectName") setNameError(message);
+        toast.error(message);
         setSaving(false);
         return;
       }
-      await onSaved();
+      let createdId: number | undefined;
+      if (!editing) {
+        try {
+          createdId = parseProjectRow(await response.json())?.id;
+        } catch {
+          createdId = undefined;
+        }
+      }
+      await onSaved(createdId ? { id: createdId } : undefined);
     } catch {
       toast.error("The project could not be saved.");
       setSaving(false);
@@ -131,10 +162,10 @@ export function ProjectDialog({ project, onClose, onSaved }: {
       size="md"
       phoneLayout="fullscreen"
       busy={saving}
-      primaryAction={{ label: editing ? "Save changes" : "Create project", onClick: () => void save(), disabled: !ready, loading: saving }}
+      primaryAction={{ label: editing ? "Save changes" : "Create project", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="flex flex-col gap-4">
-        <TextField label="Project name" required value={name} onChange={(event) => setName(event.target.value)} />
+        <TextField label="Project name" required value={name} error={nameError} onChange={(event) => { setName(event.target.value); setNameError(undefined); }} />
         <TextField label="Location" required value={location} onChange={(event) => setLocation(event.target.value)} />
         <Dropdown label="Category" value={category} onChange={setCategory} placeholder="Select" options={CATEGORIES.map((value) => ({ value, label: value }))} />
         <DateField label="Start date" value={start} onChange={(event) => setStart(event.target.value)} />
