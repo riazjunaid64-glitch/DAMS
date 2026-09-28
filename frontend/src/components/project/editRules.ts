@@ -26,19 +26,28 @@ export type ProjectDraft = {
   status: string;
 };
 
+/** A chosen floor, including ground ("0") and basements. Blank is not ground: Number("") is 0. */
+function selectedFloor(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
 export function unitDraftReady(draft: UnitDraft): boolean {
   return draft.unitNumber.trim().length > 0
     && draft.unitType.length > 0
+    && selectedFloor(draft.floorNumber) !== null
     && Number(draft.size) > 0
-    && Number(draft.price) > 0
-    && Number.isFinite(Number(draft.floorNumber));
+    && Number(draft.price) > 0;
 }
 
 /** True when a field the form is allowed to change differs from the unit on screen. Status is not one of them. */
 export function unitDraftChanged(draft: UnitDraft, unit: UnitBaseline): boolean {
+  const floor = selectedFloor(draft.floorNumber);
   return draft.unitNumber.trim() !== unit.unitNumber.trim()
     || draft.unitType !== unit.unitType
-    || Number(draft.floorNumber) !== unit.floorNumber
+    || floor === null
+    || floor !== unit.floorNumber
     || Number(draft.size) !== unit.size
     || Number(draft.price) !== unit.price;
 }
@@ -78,4 +87,21 @@ export function unitSavedMessage(unitNumber: string, created: boolean): string {
 
 export function photosUploadedMessage(count: number): string {
   return count === 1 ? "1 photo uploaded" : `${count} photos uploaded`;
+}
+
+/**
+ * Bulk upload keeps the files that succeeded and skips the ones that failed.
+ * The toast must count what was stored, and say so when some of the selection did not go up.
+ */
+export function photoUploadNotice(selected: number, uploaded: number): { success?: string; error?: string } {
+  if (uploaded <= 0) {
+    return { error: selected === 1 ? "The photo could not be uploaded." : "The photos could not be uploaded." };
+  }
+  const failed = Math.max(0, selected - uploaded);
+  return {
+    success: photosUploadedMessage(uploaded),
+    ...(failed > 0
+      ? { error: failed === 1 ? "1 photo could not be uploaded." : `${failed} photos could not be uploaded.` }
+      : {}),
+  };
 }
