@@ -51,6 +51,9 @@ namespace DAMS.Application.Services
             if (project == null)
                 throw new Exception("Project not found.");
 
+            if (await _context.Projects.AnyAsync(p => p.Id != id && p.ProjectName == dto.ProjectName))
+                throw new Exception("Project name already exists.");
+
             project.ProjectName = dto.ProjectName;
             project.Location = dto.Location;
             project.Category = dto.Category;

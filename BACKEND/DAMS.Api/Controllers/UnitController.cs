@@ -20,13 +20,25 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
+        // Business rules (duplicate unit number, a status the booking owns) are thrown as
+        // exceptions. Return the message as 400 so the form can show it; production would
+        // otherwise replace it with a generic 500.
+        private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return new BadRequestObjectResult(new { message = ex.Message });
+            }
+        }
+
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost]
-    public async Task<IActionResult> Create(CreateUnitDto dto)
-    {
-        var result = await _unitService.CreateUnitAsync(dto);
-        return Ok(result);
-    }
+    public Task<IActionResult> Create(CreateUnitDto dto) =>
+        Write(async () => Ok(await _unitService.CreateUnitAsync(dto)));
 
     [AllowAnonymous]
     [HttpGet("types")]
@@ -52,11 +64,8 @@ namespace DAMS.Api.Controllers
 
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPut("{id}")]
-    public async Task<IActionResult> Update(int id, UpdateUnitDto dto)
-    {
-        var result = await _unitService.UpdateUnitAsync(id, dto);
-        return Ok(result);
-    }
+    public Task<IActionResult> Update(int id, UpdateUnitDto dto) =>
+        Write(async () => Ok(await _unitService.UpdateUnitAsync(id, dto)));
 
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpDelete("{id}")]

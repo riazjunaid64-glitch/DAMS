@@ -24,27 +24,34 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
+        // Business rules (a project name already in use) are thrown as exceptions. Return the
+        // message as 400 so the form can show it under the field.
+        private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return new BadRequestObjectResult(new { message = ex.Message });
+            }
+        }
+
         // CREATE PROJECT (Admin only)
         [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost]
-        public async Task<IActionResult> CreateProject(CreateProjectDto dto)
+        public Task<IActionResult> CreateProject(CreateProjectDto dto)
         {
             var adminId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-
-            var result = await _projectService.CreateProjectAsync(dto, adminId);
-
-            return Ok(result);
+            return Write(async () => Ok(await _projectService.CreateProjectAsync(dto, adminId)));
         }
 
         // UPDATE PROJECT (Admin only)
         [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateProject(int id, UpdateProjectDto dto)
-        {
-            var result = await _projectService.UpdateProjectAsync(id, dto);
-
-            return Ok(result);
-        }
+        public Task<IActionResult> UpdateProject(int id, UpdateProjectDto dto) =>
+            Write(async () => Ok(await _projectService.UpdateProjectAsync(id, dto)));
 
         // GET ALL PROJECTS (Public)
         [AllowAnonymous]
