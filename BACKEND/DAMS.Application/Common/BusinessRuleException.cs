@@ -12,3 +12,15 @@ public sealed class BusinessRuleException : Exception
     {
     }
 }
+
+/// <summary>
+/// The project or unit the request named does not exist. Controllers turn only this into
+/// HTTP 404. It is not a form error, and it is not a fault for ExceptionMiddleware to log
+/// as a 500.
+/// </summary>
+public sealed class MissingRecordException : Exception
+{
+    public MissingRecordException(string message) : base(message)
+    {
+    }
+}
