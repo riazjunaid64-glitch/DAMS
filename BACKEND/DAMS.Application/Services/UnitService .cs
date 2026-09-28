@@ -27,7 +27,7 @@ namespace DAMS.Application.Services
             .AnyAsync(p => p.Id == dto.ProjectId);
 
         if (!projectExists)
-            throw new Exception("Project not found");
+            throw new MissingRecordException("Project not found");
 
         RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
@@ -94,7 +94,7 @@ namespace DAMS.Application.Services
         var unit = await _context.Units.FindAsync(id);
 
         if (unit == null)
-            throw new Exception("Unit not found");
+            throw new MissingRecordException("Unit not found");
 
         RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
