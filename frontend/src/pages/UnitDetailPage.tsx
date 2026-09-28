@@ -18,8 +18,10 @@ import {
   useToast,
   type Photo,
 } from "../components/ui";
+import { useProjects } from "../contexts/projectsContextValue.ts";
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
+import { fieldForServerMessage, photosUploadedMessage, unitDraftChanged, unitDraftReady, unitSavedMessage } from "../components/project/editRules.ts";
 import { floorChoices, floorLabel } from "../lib/floors.ts";
 import { formatPkr } from "../utils/currency.ts";
 import { parseProjectRow } from "../utils/parseProject.ts";
@@ -59,6 +61,7 @@ export default function UnitDetailPage({ user }: Props) {
   const unitId = Number(id);
   const toast = useToast();
   const canWrite = can(user?.role, "projects.write");
+  const { reload: reloadProjects } = useProjects();
   const [unit, setUnit] = useState<UnitFromApi | null>(null);
   const [projectName, setProjectName] = useState("");
   const [media, setMedia] = useState<UnitMedia[]>([]);
@@ -136,7 +139,7 @@ export default function UnitDetailPage({ user }: Props) {
         <InfoCard label="Floor" value={floorLabel(unit.floorNumber)} />
         <InfoCard label="Price" value={formatPkr(unit.price)} />
       </div>
-      <Card title={`Photos (${photos.length})`}>
+      <Card title={`Photos (${photos.length})}>
         {photos.length === 0 && <p className="m-0 mb-3 text-sm text-ink-muted">No photos for this unit yet</p>}
         <PhotoGallery
           photos={photos}
@@ -145,7 +148,7 @@ export default function UnitDetailPage({ user }: Props) {
           onUpload={(files) => {
             setUploading(true);
             void uploadUnitMediaBulk(unit.id, files)
-              .then(async () => { toast.success("Photos uploaded"); await reloadMedia(); })
+              .then(async () => { toast.success(photosUploadedMessage(files.length)); await reloadMedia(); })
               .catch((caught: unknown) => toast.error(caught instanceof Error ? caught.message : "Photos could not be uploaded."))
               .finally(() => setUploading(false));
           }}
@@ -166,11 +169,10 @@ export default function UnitDetailPage({ user }: Props) {
           projectId={unit.projectId}
           unit={unit}
           onClose={() => setEditing(false)}
-          onSaved={async () => {
+          onSaved={async (saved) => {
             setEditing(false);
-            toast.success("Unit saved");
-            setLoading(true);
-            await load();
+            toast.success(unitSavedMessage(saved.unitNumber, false));
+            await Promise.all([load(), reloadProjects()]);
           }}
         />
       )}
@@ -182,7 +184,7 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
   projectId: number;
   unit?: UnitFromApi | null;
   onClose: () => void;
-  onSaved: () => void | Promise<void>;
+  onSaved: (saved: { unitNumber: string }) => void | Promise<void>;
 }) {
   const toast = useToast();
   const editing = unit ?? null;
@@ -192,8 +194,12 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
   const [floor, setFloor] = useState(String(editing?.floorNumber ?? 0));
   const [size, setSize] = useState(editing ? String(editing.size) : "");
   const [price, setPrice] = useState(editing ? String(editing.price) : "");
+  const [numberError, setNumberError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
-  const ready = number.trim().length > 0 && type.length > 0 && size.trim().length > 0 && Number(size) > 0 && price.trim().length > 0 && Number(price) > 0;
+  const draft = { unitNumber: number, unitType: type, floorNumber: floor, size, price };
+  const ready = unitDraftReady(draft);
+  const changed = editing ? unitDraftChanged(draft, editing) : true;
+  const canSave = ready && changed && !saving;
 
   useEffect(() => {
     let current = true;
@@ -227,11 +233,13 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
-        toast.error(await readError(response, "The unit could not be saved."));
+        const message = await readError(response, "The unit could not be saved.");
+        if (fieldForServerMessage(message) === "unitNumber") setNumberError(message);
+        toast.error(message);
         setSaving(false);
         return;
       }
-      await onSaved();
+      await onSaved({ unitNumber: shared.unitNumber });
     } catch {
       toast.error("The unit could not be saved.");
       setSaving(false);
@@ -244,14 +252,14 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
     <Modal
       open
       onClose={onClose}
-      title={editing ? "Edit unit" : "Add unit"}
+      title={editing ? `Edit unit ${editing.unitNumber}` : "Add unit"}
       size="md"
       phoneLayout="fullscreen"
       busy={saving}
-      primaryAction={{ label: editing ? "Save changes" : "Add unit", onClick: () => void save(), disabled: !ready, loading: saving }}
+      primaryAction={{ label: editing ? "Save changes" : "Add unit", onClick: () => void save(), disabled: !canSave, loading: saving }}
     >
       <div className="flex flex-col gap-4">
-        <TextField label="Unit number" required value={number} onChange={(event) => setNumber(event.target.value)} />
+        <TextField label="Unit number" required value={number} error={numberError} onChange={(event) => { setNumber(event.target.value); setNumberError(undefined); }} />
         <Dropdown label="Type" required value={type} onChange={setType} options={typeOptions} />
         <Dropdown label="Floor" required value={floor} onChange={setFloor} options={floorChoices(editing?.floorNumber)} />
         <NumberField label="Size" required decimals={0} suffix="sq ft" value={size} onChange={setSize} />
