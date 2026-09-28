@@ -1,8 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using DAMS.Api.Filters;
-using DAMS.Application.Interfaces;
-using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -137,10 +135,8 @@ public sealed class FinanceFormBindingTests : IClassFixture<FinanceFormBindingTe
 
     private AuthenticationHeaderValue Bearer(string role)
     {
-        using var scope = _factory.Services.CreateScope();
-        var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
-        var token = tokens.GenerateAccessToken(
-            new User { UserId = 7, Email = "form-binding@dams.test", FullName = "Form Binding Actor" }, role);
+        var token = TestAccessSessions.Issue(
+            _factory.Services, 7, role, "form-binding@dams.test", "Form Binding Actor");
         return new AuthenticationHeaderValue("Bearer", token);
     }
 

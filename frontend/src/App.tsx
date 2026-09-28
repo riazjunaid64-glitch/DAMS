@@ -1,11 +1,11 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import ErrorBoundary from "./lib/ErrorBoundary.tsx";
-import { api, refreshAccessToken, setAccessToken } from "./api/api";
+import { ACCESS_CHANGED_EVENT, api, refreshAccessToken, setAccessToken } from "./api/api";
 import AuthModal from "./components/AuthModal.tsx";
 import { ProjectsProvider } from "./contexts/ProjectsContext.tsx";
 import { detachPushOnLogout } from "./features/notifications/push.ts";
-import { ToastProvider } from "./components/ui";
+import { ToastProvider, useToast } from "./components/ui";
 import AppLayout from "./layouts/AppLayout.tsx";
 import { can } from "./features/access/permissions.ts";
 import { homePathFor, navigationFor } from "./layouts/navigation.tsx";
@@ -54,6 +54,19 @@ export interface User {
 }
 
 const AUTH_SESSION_EVENT = "dams-auth-session";
+
+function AccessChangedNotice({ onRevoked }: { onRevoked: () => void }) {
+  const toast = useToast();
+  useEffect(() => {
+    const onChanged = () => {
+      onRevoked();
+      toast.error("Your access has changed, please sign in again");
+    };
+    window.addEventListener(ACCESS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onChanged);
+  }, [onRevoked, toast]);
+  return null;
+}
 
 function publishAuthSession(type: "login" | "logout") {
   try {
@@ -127,6 +140,11 @@ function App() {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  const signOutLocally = useCallback(() => {
+    setAccessToken(null);
+    setUser(null);
+  }, []);
+
   const logout = async () => {
     // Detach this browser's push subscription first, while the session is still valid.
     // On a shared computer that is what stops the next person from receiving the previous
@@ -141,6 +159,7 @@ function App() {
   return (
     <ProjectsProvider>
       <ToastProvider>
+      <AccessChangedNotice onRevoked={signOutLocally} />
       {/* Keyed on the path so navigating to another screen clears a caught error. */}
       <ErrorBoundary resetKey={location.pathname}>
       <Suspense fallback={<div className="flex min-h-screen items-center justify-center text-sm text-[var(--app-text-muted)]">Loading…</div>}>

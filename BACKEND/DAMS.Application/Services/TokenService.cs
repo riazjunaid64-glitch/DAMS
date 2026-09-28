@@ -25,6 +25,9 @@ namespace DAMS.Application.Services
         /// </summary>
         public const string EmailVerifiedClaimType = "email_verified";
 
+        /// <summary>The <see cref="User.TokenVersion"/> this access token was minted with.</summary>
+        public const string TokenVersionClaimType = "tv";
+
         public string GenerateAccessToken(User user, string roleName)
         {
             // NameIdentifier is the authenticated subject and the only thing an ownership
@@ -35,7 +38,8 @@ namespace DAMS.Application.Services
                 new(ClaimTypes.NameIdentifier, user.UserId.ToString()),
                 new(ClaimTypes.Email, user.Email),
                 new(ClaimTypes.Name, user.FullName),
-                new(ClaimTypes.Role, roleName)
+                new(ClaimTypes.Role, roleName),
+                new(TokenVersionClaimType, user.TokenVersion.ToString())
             };
 
             // Proof, carried in the token, that this account's mailbox was verified. Client portal

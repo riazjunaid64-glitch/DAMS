@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using DAMS.Api.Filters;
-using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
@@ -230,11 +229,8 @@ public sealed class IdempotentMoneyOperationTests : IClassFixture<IdempotentMone
     private HttpClient Admin()
     {
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-        using var scope = _factory.Services.CreateScope();
-        var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
-            tokens.GenerateAccessToken(
-                new User { UserId = 42, Email = "actor@dams.test", FullName = "Idempotency Admin" }, "Admin"));
+            TestAccessSessions.Issue(_factory.Services, 42, "Admin", "actor@dams.test", "Idempotency Admin"));
         return client;
     }
 
