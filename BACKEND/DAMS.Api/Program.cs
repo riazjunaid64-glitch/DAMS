@@ -246,7 +246,9 @@ builder.Services.AddDbContextPool<AppDbContext>(options =>
         builder.Configuration.GetConnectionString("DefaultConnection"),
         sql => sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null))
         // Registered here, not in AppDbContext.OnConfiguring: pooling forbids options changes there.
-        .AddInterceptors(ProjectListCacheTransactionInterceptor.Instance);
+        .AddInterceptors(
+            ProjectListCacheTransactionInterceptor.Instance,
+            ProjectListCacheMediaInterceptor.Instance);
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -309,7 +311,7 @@ builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
 builder.Services.AddScoped<IMetaIntegrationAlertService, MetaIntegrationAlertService>();
 builder.Services.AddHostedService<IntegrationBackgroundService>();
 
-// ── Notification platform ────────────────────────────────────────────────────────
+// ── Notification platform ────────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
 // Channels are registered as a collection, so adding WhatsApp, SMS or mobile push later is
 // one more INotificationChannelSender and one more enum value — no module changes shape.
