@@ -26,6 +26,7 @@ import {
 } from "../components/ui";
 import { ProjectDialog } from "./ProjectsPage.tsx";
 import { useProjects } from "../contexts/projectsContextValue.ts";
+import { photosUploadedMessage, unitSavedMessage } from "../components/project/editRules.ts";
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
 import { formatDay } from "../lib/dates.ts";
@@ -175,7 +176,7 @@ export default function ProjectDetailPage({ user }: Props) {
           onClose={() => setEditing(false)}
           onSaved={async () => {
             setEditing(false);
-            toast.success("Project saved");
+            toast.success("Project updated");
             await refresh();
           }}
         />
@@ -184,9 +185,9 @@ export default function ProjectDetailPage({ user }: Props) {
         <UnitDialog
           projectId={project.id}
           onClose={() => setAdding(false)}
-          onSaved={async () => {
+          onSaved={async (saved) => {
             setAdding(false);
-            toast.success("Unit added");
+            toast.success(unitSavedMessage(saved.unitNumber, true));
             await refresh();
           }}
         />
@@ -385,7 +386,7 @@ function MediaTab({ projectId, media, canWrite, onChange }: {
         uploading={uploading}
         onUpload={(files) => {
           setUploading(true);
-          void run("Photos uploaded", () => uploadProjectMediaBulk(projectId, files)).finally(() => setUploading(false));
+          void run(photosUploadedMessage(files.length), () => uploadProjectMediaBulk(projectId, files)).finally(() => setUploading(false));
         }}
         onSetCover={(photo) => void run("Cover photo updated", () => setProjectCoverMedia(projectId, Number(photo.id)))}
         onDelete={(photo) => void run("Photo deleted", () => deleteProjectMedia(projectId, Number(photo.id)))}
