@@ -21,7 +21,8 @@ namespace DAMS.Api.Controllers
         }
 
         // Only a rule the form can show (duplicate number, size, price, a status the booking
-        // owns) is a 400. A SQL failure or any other exception must reach ExceptionMiddleware.
+        // owns) is a 400. A missing project or unit is a 404. A SQL failure or any other
+        // exception must reach ExceptionMiddleware.
         private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
         {
             try
@@ -31,6 +32,10 @@ namespace DAMS.Api.Controllers
             catch (BusinessRuleException ex)
             {
                 return new BadRequestObjectResult(new { message = ex.Message });
+            }
+            catch (MissingRecordException ex)
+            {
+                return new NotFoundObjectResult(new { message = ex.Message });
             }
         }
 
