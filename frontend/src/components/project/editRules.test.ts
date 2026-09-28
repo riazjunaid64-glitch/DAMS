@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   completionDateError,
   fieldForServerMessage,
+  photoUploadNotice,
   photosUploadedMessage,
   projectDraftChanged,
   projectDraftReady,
@@ -39,6 +40,9 @@ describe("unit edit rules", () => {
     expect(unitDraftReady({ ...unit, price: "0" })).toBe(false);
     expect(unitDraftReady({ ...unit, size: "" })).toBe(false);
     expect(unitDraftReady({ ...unit, unitNumber: "  " })).toBe(false);
+    expect(unitDraftReady({ ...unit, unitType: "" })).toBe(false);
+    expect(unitDraftReady({ ...unit, floorNumber: "" })).toBe(false);
+    expect(unitDraftReady({ ...unit, floorNumber: "0" })).toBe(true);
     expect(unitDraftChanged({ ...unit, price: "15000000" }, saved)).toBe(true);
     expect(unitDraftChanged({ ...unit, unitNumber: " 811 " }, saved)).toBe(true);
   });
@@ -76,8 +80,12 @@ describe("project edit rules", () => {
 });
 
 describe("photo upload toast", () => {
-  it("counts the photos", () => {
+  it("counts the photos that were stored, and says when some failed", () => {
     expect(photosUploadedMessage(1)).toBe("1 photo uploaded");
     expect(photosUploadedMessage(3)).toBe("3 photos uploaded");
+    expect(photoUploadNotice(3, 3)).toEqual({ success: "3 photos uploaded" });
+    expect(photoUploadNotice(3, 2)).toEqual({ success: "2 photos uploaded", error: "1 photo could not be uploaded." });
+    expect(photoUploadNotice(3, 0)).toEqual({ error: "The photos could not be uploaded." });
+    expect(photoUploadNotice(1, 0)).toEqual({ error: "The photo could not be uploaded." });
   });
 });
