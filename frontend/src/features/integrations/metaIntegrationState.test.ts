@@ -1,19 +1,26 @@
 import { describe, expect, it } from "vitest";
 import type { MetaConnection, MetaResource } from "../leads/types.ts";
 import {
+  activeConnections,
   canSync,
   connectionStatusLabel,
   createLatestRequestGuard,
   emptyEventsMessage,
+  formDetailLine,
+  formSetupState,
   eventListLimit,
   eventListLimitNote,
   deliverySummary,
   isAwaitingFirstSync,
   earliestImportDate,
   importDate,
+  importOutcomeLine,
   importSummary,
+  instagramForPage,
   isToggleable,
   lastLeadSummary,
+  pageChannelLine,
+  pageLeadLine,
   readCallbackResult,
   resourceTypeLabel,
   signInExpiry,
@@ -78,7 +85,7 @@ describe("readCallbackResult", () => {
 
 describe("connection presentation", () => {
   it("labels a connection needing reauthorization in words an admin can act on", () => {
-    expect(connectionStatusLabel("NeedsReauthorization")).toBe("Needs reconnection");
+    expect(connectionStatusLabel("NeedsReauthorization")).toBe("Needs reconnect");
   });
 
   it("allows syncing only when the connection could actually talk to Meta", () => {
@@ -233,5 +240,49 @@ describe("lead import", () => {
     expect(importSummary({ ...empty, found: 3, new: 3, addedWithoutAlert: 2 }))
       .toBe("3 found · 3 new · 0 already in DAMS. New leads appear within a minute. " +
         "2 older leads are added without a new-lead alert; assign them from the Leads queue.");
+  });
+
+  it("says how many leads were found, added, and already in DAMS", () => {
+    expect(importOutcomeLine({ ...empty, found: 12, new: 3, alreadyInDams: 9 }))
+      .toBe("12 leads found · 3 added · 9 were already in DAMS");
+    expect(importOutcomeLine({ ...empty, found: 1, new: 1, alreadyInDams: 0 }))
+      .toBe("1 lead found · 1 added · 0 were already in DAMS");
+  });
+});
+
+describe("pages and lead forms", () => {
+  it("treats a disconnected account as not connected", () => {
+    const rows = [connection({ status: "Disconnected" }), connection({ id: 2, status: "Connected" })];
+    expect(activeConnections(rows).map((row) => row.id)).toEqual([2]);
+  });
+
+  it("names the Instagram account that belongs to a Page", () => {
+    const page = resource({ externalId: "page-1", name: "Floria Heights" });
+    const instagram = resource({ id: 2, resourceType: "instagram_account", externalId: "ig-1", parentExternalId: "page-1", name: "floriaheights" });
+    const other = resource({ id: 3, resourceType: "instagram_account", externalId: "ig-2", parentExternalId: "page-2", name: "other" });
+    expect(instagramForPage([page, instagram, other], page)?.name).toBe("floriaheights");
+    expect(pageChannelLine(page, instagram)).toBe("Facebook Page · Instagram @floriaheights");
+    expect(pageChannelLine(page, resource({ name: "@floriaheights" }))).toBe("Facebook Page · Instagram @floriaheights");
+    expect(pageChannelLine(page, null)).toBe("Facebook Page · no Instagram linked");
+  });
+
+  it("describes the last lead on the Karachi clock", () => {
+    const now = new Date("2026-09-28T08:00:00Z");
+    const page = resource({ lastLeadAt: "2026-09-28T06:40:00Z", leadsLast7Days: 11 });
+    expect(pageLeadLine(page, now)).toBe("Last lead today, 11:40 AM · 11 this week");
+    expect(pageLeadLine(resource(), now)).toBeNull();
+  });
+
+  it("reads a form's answer status from the counts the API sends", () => {
+    expect(formSetupState(resource({ resourceType: "lead_form" }))).toBe("unread");
+    expect(formSetupState(resource({ resourceType: "lead_form", choiceQuestionCount: 0 }))).toBe("empty");
+    expect(formSetupState(resource({ resourceType: "lead_form", choiceQuestionCount: 3, answersSetUp: false }))).toBe("missing");
+    expect(formSetupState(resource({ resourceType: "lead_form", choiceQuestionCount: 3, answersSetUp: true }))).toBe("ready");
+    expect(formDetailLine(resource({ resourceType: "lead_form", choiceQuestionCount: 3, leadCount: 11 }), "Floria Heights"))
+      .toBe("Floria Heights · 3 choice questions · 11 leads");
+    expect(formDetailLine(resource({ resourceType: "lead_form", choiceQuestionCount: 0 }), "The Property Planners"))
+      .toBe("The Property Planners · no choice questions");
+    expect(formDetailLine(resource({ resourceType: "lead_form" }), "Floria Heights"))
+      .toBe("Floria Heights · Refresh forms first");
   });
 });
