@@ -18,7 +18,9 @@ public class PooledDbContextTests
         var services = new ServiceCollection();
         services.AddDbContextPool<AppDbContext>(options => options
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .AddInterceptors(ProjectListCacheTransactionInterceptor.Instance));
+            .AddInterceptors(
+                ProjectListCacheTransactionInterceptor.Instance,
+                ProjectListCacheMediaInterceptor.Instance));
         await using var provider = services.BuildServiceProvider();
 
         for (var lease = 0; lease < 2; lease++)
