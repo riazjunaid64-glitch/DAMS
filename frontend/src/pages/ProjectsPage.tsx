@@ -1,431 +1,147 @@
-import { can } from "../features/access/permissions.ts";
-import AppSelect from "../lib/AppSelect.tsx";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { api } from "../api/api.ts";
-import { uploadProjectMedia } from "../api/media.ts";
-import CoverImageField from "../components/CoverImageField.tsx";
-import ProjectCard from "../components/ProjectCard.tsx";
-import { useProjects } from "../contexts/projectsContextValue";
-import type { ProjectFromApi } from "../utils/parseProject.ts";
+import { useState } from "react";
 import type { User } from "../App.tsx";
-import Field from "../lib/Field.tsx";
-import Pagination from "../lib/Pagination.tsx";
+import { api } from "../api/api.ts";
+import {
+  Button,
+  DateField,
+  Dropdown,
+  EmptyState,
+  IconBuilding,
+  IconPlus,
+  Modal,
+  PageHeader,
+  TextArea,
+  TextField,
+  useToast,
+} from "../components/ui";
+import { ProjectCard } from "../components/project/ProjectCard.tsx";
+import { useProjects } from "../contexts/projectsContextValue.ts";
+import { can } from "../features/access/permissions.ts";
+import { projectStatusName, type ProjectFromApi } from "../utils/parseProject.ts";
 
-type Props = {
-  user: User | null;
-};
+type Props = { user: User | null };
 
-const PROJECT_CATEGORIES = ["Residential", "Commercial", "Mixed Use"] as const;
+const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
+const CATEGORIES = ["Residential", "Commercial", "Mixed use"];
+const STATUSES = ["Planning", "Ongoing", "Completed", "Cancelled", "Archived"];
 
-const statusLabels: Record<number, string> = {
-  1: "Planning",
-  2: "Ongoing",
-  3: "Completed",
-  4: "Cancelled",
-  5: "Archived",
-};
-
-const emptyForm = () => ({
-  projectName: "",
-  location: "",
-  category: "Residential",
-  description: "",
-  startingDate: "",
-  expectedCompletionDate: "",
-  status: 1,
-});
+async function readError(response: Response, fallback: string): Promise<string> {
+  const text = await response.text();
+  if (!text) return fallback;
+  try {
+    const body = JSON.parse(text) as { message?: string; title?: string; errors?: Record<string, string[]> };
+    if (body.message) return body.message;
+    const first = body.errors && Object.values(body.errors).flat()[0];
+    if (first) return first;
+    if (body.title) return body.title;
+  } catch {
+    // The server sent plain text.
+  }
+  return text.length < 300 ? text : fallback;
+}
 
 export default function ProjectsPage({ user }: Props) {
-  const PROJECTS_PER_PAGE = 12;
-  const { projects, loading: projectsLoading, error: projectsError, reload } = useProjects();
-  const [currentPage, setCurrentPage] = useState(1);
-  const [modalError, setModalError] = useState<string | null>(null);
+  const toast = useToast();
+  const { projects, loading, error, reload } = useProjects();
+  const canWrite = can(user?.role, "projects.write");
+  const [creating, setCreating] = useState(false);
+
+  return (
+    <div className={PAGE}>
+      <PageHeader
+        title="Projects"
+        actions={canWrite ? <Button icon={<IconPlus size={16} />} onClick={() => setCreating(true)}>New project</Button> : undefined}
+      />
+      {loading && projects.length === 0 ? (
+        <div className="grid gap-4 md:grid-cols-3">{Array.from({ length: 3 }, (_, index) => <div key={index} className="h-64 animate-pulse rounded-card bg-track" />)}</div>
+      ) : error && projects.length === 0 ? (
+        <EmptyState icon={<IconBuilding size={26} />} title="Projects could not be loaded" action={<Button variant="outline" onClick={() => void reload()}>Try again</Button>} />
+      ) : projects.length === 0 ? (
+        <EmptyState icon={<IconBuilding size={26} />} title="No projects yet" />
+      ) : (
+        <div className="grid gap-4 md:grid-cols-3">
+          {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
+        </div>
+      )}
+      {creating && (
+        <ProjectDialog
+          onClose={() => setCreating(false)}
+          onSaved={async () => {
+            setCreating(false);
+            toast.success("Project created");
+            await reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+export function ProjectDialog({ project, onClose, onSaved }: {
+  project?: ProjectFromApi | null;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const toast = useToast();
+  const editing = project ?? null;
+  const [name, setName] = useState(editing?.projectName ?? "");
+  const [location, setLocation] = useState(editing?.location ?? "");
+  const [category, setCategory] = useState(editing?.category === "Mixed Use" ? "Mixed use" : editing?.category ?? "");
+  const [start, setStart] = useState(editing?.startingDate?.slice(0, 10) ?? "");
+  const [completion, setCompletion] = useState(editing?.expectedCompletionDate?.slice(0, 10) ?? "");
+  const [about, setAbout] = useState(editing?.description ?? "");
+  const [status, setStatus] = useState(projectStatusName(editing?.status) || "Planning");
   const [saving, setSaving] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [showProjectModal, setShowProjectModal] = useState(false);
-  const [coverFile, setCoverFile] = useState<File | null>(null);
-  const [existingCoverUrl, setExistingCoverUrl] = useState<string | null>(null);
-  const [projectForm, setProjectForm] = useState(emptyForm);
-  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const dateError = start && completion && completion < start ? "Completion date can't be before the start date." : undefined;
+  const ready = name.trim().length > 0 && location.trim().length > 0 && !dateError;
 
-  const isAdmin = can(user?.role, "projects.write");
-
-  // Per-field validation. A field is "invalid" only if the rule returns a message.
-  const fieldErrors = useMemo(() => {
-    const errors: Record<string, string> = {};
-    if (!projectForm.projectName.trim()) errors.projectName = "Project name is required.";
-    if (!projectForm.location.trim()) errors.location = "Location is required.";
-    if (
-      projectForm.expectedCompletionDate &&
-      projectForm.startingDate &&
-      projectForm.expectedCompletionDate < projectForm.startingDate
-    ) {
-      errors.expectedCompletionDate = "Completion date can't be before the starting date.";
-    }
-    return errors;
-  }, [projectForm]);
-
-  const isFormValid = Object.keys(fieldErrors).length === 0;
-  // Show a field's error once the user has touched it (so it doesn't scream on a fresh form).
-  const showError = (name: string) => (touched[name] ? fieldErrors[name] : undefined);
-  const markTouched = (name: string) => setTouched((prev) => ({ ...prev, [name]: true }));
-
-  const toInputDate = (value?: string | null) => {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    return date.toISOString().slice(0, 10);
-  };
-
-  useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages);
-    }
-  }, [currentPage, projects.length]);
-
-  const resetProjectForm = () => {
-    setProjectForm(emptyForm());
-    setCoverFile(null);
-    setExistingCoverUrl(null);
-    setModalError(null);
-    setEditingId(null);
-    setTouched({});
-    setShowProjectModal(false);
-  };
-
-  const openCreateModal = () => {
-    setEditingId(null);
-    setProjectForm(emptyForm());
-    setCoverFile(null);
-    setExistingCoverUrl(null);
-    setModalError(null);
-    setTouched({});
-    setShowProjectModal(true);
-  };
-
-  const startEditProject = (project: ProjectFromApi) => {
-    setEditingId(project.id);
-    setShowProjectModal(true);
-    setCoverFile(null);
-    setExistingCoverUrl(project.coverImageUrl ?? null);
-    setProjectForm({
-      projectName: project.projectName,
-      location: project.location,
-      category: project.category || "Residential",
-      description: project.description ?? "",
-      startingDate: toInputDate(project.startingDate),
-      expectedCompletionDate: toInputDate(project.expectedCompletionDate),
-      status: typeof project.status === "number" ? project.status : 1,
-    });
-  };
-
-  const submitProject = async (event: FormEvent) => {
-    event.preventDefault();
-    setModalError(null);
-
-    if (!isFormValid) {
-      // Reveal every field's error and keep focus in the form.
-      setTouched({
-        projectName: true,
-        location: true,
-        expectedCompletionDate: true,
-      });
-      return;
-    }
-
-    const payload = {
-      projectName: projectForm.projectName,
-      location: projectForm.location,
-      category: projectForm.category || null,
-      description: projectForm.description || null,
-      startingDate: projectForm.startingDate ? new Date(projectForm.startingDate).toISOString() : null,
-      expectedCompletionDate: projectForm.expectedCompletionDate
-        ? new Date(projectForm.expectedCompletionDate).toISOString()
-        : null,
-      ...(editingId ? { status: projectForm.status } : {}),
-    };
-
+  const save = async () => {
     setSaving(true);
+    const payload = {
+      projectName: name.trim(),
+      location: location.trim(),
+      category: category || null,
+      description: about.trim() || null,
+      startingDate: start || null,
+      expectedCompletionDate: completion || null,
+      ...(editing ? { status } : {}),
+    };
     try {
-      const res = await api(editingId ? `/api/Project/${editingId}` : "/api/Project", {
-        method: editingId ? "PUT" : "POST",
+      const response = await api(editing ? `/api/Project/${editing.id}` : "/api/Project", {
+        method: editing ? "PUT" : "POST",
         body: JSON.stringify(payload),
       });
-
-      if (!res.ok) {
-        const text = await res.text();
-        setModalError(text || "Unable to save project.");
+      if (!response.ok) {
+        toast.error(await readError(response, "The project could not be saved."));
+        setSaving(false);
         return;
       }
-
-      let projectId = editingId;
-      if (!projectId) {
-        const created = (await res.json()) as { id?: number; Id?: number };
-        projectId = created.id ?? created.Id ?? null;
-      }
-
-      if (coverFile && projectId) {
-        try {
-          await uploadProjectMedia(projectId, coverFile, {
-            category: 2,
-            isCover: true,
-            altText: `${projectForm.projectName} cover`,
-          });
-        } catch {
-          resetProjectForm();
-          await reload();
-          return;
-        }
-      }
-
-      resetProjectForm();
-      await reload();
+      await onSaved();
     } catch {
-      setModalError("Unable to save project right now.");
-    } finally {
+      toast.error("The project could not be saved.");
       setSaving(false);
     }
   };
 
-  const totalPages = Math.max(1, Math.ceil(projects.length / PROJECTS_PER_PAGE));
-  const paginatedProjects = useMemo(
-    () =>
-      projects.slice(
-        (currentPage - 1) * PROJECTS_PER_PAGE,
-        currentPage * PROJECTS_PER_PAGE
-      ),
-    [currentPage, projects]
-  );
-
   return (
-    <div className="dash-home dash-page">
-      <div className="proj-header">
-        <div className="proj-count-badge" aria-label={`${projects.length} projects`}>
-          <span className="proj-count-badge__num">{projects.length}</span>
-          <span className="proj-count-badge__label">project{projects.length !== 1 ? "s" : ""}</span>
-        </div>
-        {isAdmin && (
-          <button type="button" className="dash-btn-gold proj-header__action" onClick={openCreateModal}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            New Project
-          </button>
-        )}
+    <Modal
+      open
+      onClose={onClose}
+      title={editing ? "Edit project" : "New project"}
+      size="md"
+      phoneLayout="fullscreen"
+      busy={saving}
+      primaryAction={{ label: editing ? "Save changes" : "Create project", onClick: () => void save(), disabled: !ready, loading: saving }}
+    >
+      <div className="flex flex-col gap-4">
+        <TextField label="Project name" required value={name} onChange={(event) => setName(event.target.value)} />
+        <TextField label="Location" required value={location} onChange={(event) => setLocation(event.target.value)} />
+        <Dropdown label="Category" value={category} onChange={setCategory} placeholder="Select" options={CATEGORIES.map((value) => ({ value, label: value }))} />
+        <DateField label="Start date" value={start} onChange={(event) => setStart(event.target.value)} />
+        <DateField label="Expected completion" value={completion} error={dateError} onChange={(event) => setCompletion(event.target.value)} />
+        <TextArea label="About" value={about} onChange={(event) => setAbout(event.target.value)} />
+        {editing && <Dropdown label="Status" value={status} onChange={setStatus} options={STATUSES.map((value) => ({ value, label: value }))} />}
       </div>
-
-      <div className="projects-page projects-page--dark">
-        <div>
-          {projectsLoading && (
-            <div className="projects-grid">
-              {[...Array(6)].map((_, i) => (
-                <div key={i} className="op-card op-card--skeleton">
-                  <div className="skeleton op-skeleton-thumb" />
-                  <div className="op-body">
-                    <div className="skeleton mb-3 h-5 w-2/3" />
-                    <div className="skeleton h-4 w-full" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {projectsError && (
-            <div className="rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] px-5 py-4 text-sm text-rose-300 flex items-center gap-3">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-              </svg>
-              {projectsError}
-            </div>
-          )}
-
-          {!projectsLoading && projects.length === 0 && !projectsError && (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--surface-glass)] border border-[var(--border)]">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-[var(--text-muted)]" strokeLinecap="round">
-                  <rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-[var(--text-heading)]">No projects yet</h3>
-              <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
-                Create your first project to get started with tracking and management.
-              </p>
-            </div>
-          )}
-
-          {!projectsLoading && projects.length > 0 && (
-            <>
-              <div className="projects-grid">
-                {paginatedProjects.map((project) => (
-                  <ProjectCard
-                    key={project.id}
-                    project={project}
-                    showAdminActions={isAdmin}
-                    onEdit={startEditProject}
-                  />
-                ))}
-              </div>
-
-              <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
-            </>
-          )}
-        </div>
-      </div>
-
-      {isAdmin && showProjectModal && (
-        <div className="project-modal">
-          <div className="project-modal__backdrop" onClick={resetProjectForm} />
-          <div className="project-modal__panel" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
-            <div className="project-modal__header">
-              <div>
-                <h3 id="project-modal-title" className="project-modal__title">
-                  {editingId ? "Update Project" : "Create Project"}
-                </h3>
-                <p className="project-modal__subtitle">
-                  {editingId ? "Edit the project details below" : "Fill in the details to create a new project"}
-                </p>
-              </div>
-              <button type="button" onClick={resetProjectForm} className="project-modal__close" aria-label="Close">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-
-            <form onSubmit={submitProject} className="project-modal__form">
-              {modalError && (
-                <div className="project-modal__error" role="alert">
-                  {modalError}
-                </div>
-              )}
-              <div className="project-modal__fields">
-                <Field
-                  label="Project Name"
-                  required
-                  value={projectForm.projectName}
-                  onChange={(e) =>
-                    setProjectForm((prev) => ({ ...prev, projectName: e.target.value }))
-                  }
-                  onBlur={() => markTouched("projectName")}
-                  error={showError("projectName")}
-                  placeholder="e.g. Phase 2 Commercial Tower"
-                />
-
-                <Field
-                  label="Location"
-                  required
-                  value={projectForm.location}
-                  onChange={(e) => setProjectForm((prev) => ({ ...prev, location: e.target.value }))}
-                  onBlur={() => markTouched("location")}
-                  error={showError("location")}
-                  placeholder="City, Country"
-                />
-
-                <label className="project-modal__select-label">
-                  <span>Category</span>
-                  <AppSelect
-                    className="project-modal__select"
-                    value={projectForm.category}
-                    onChange={(e) =>
-                      setProjectForm((prev) => ({ ...prev, category: e.target.value }))
-                    }
-                  >
-                    {PROJECT_CATEGORIES.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </AppSelect>
-                </label>
-
-                <Field
-                  label="Description"
-                  as="textarea"
-                  value={projectForm.description}
-                  onChange={(e) =>
-                    setProjectForm((prev) => ({ ...prev, description: e.target.value }))
-                  }
-                  placeholder="Brief description of the project..."
-                  hint="Optional"
-                />
-
-                <CoverImageField
-                  file={coverFile}
-                  onChange={setCoverFile}
-                  existingPreviewUrl={existingCoverUrl}
-                />
-
-                <div className="project-modal__dates">
-                  <Field
-                    label="Starting Date"
-                    type="date"
-                    hint="Optional"
-                    value={projectForm.startingDate}
-                    onChange={(e) =>
-                      setProjectForm((prev) => ({
-                        ...prev,
-                        startingDate: e.target.value,
-                      }))
-                    }
-                    onBlur={() => markTouched("startingDate")}
-                    error={showError("startingDate")}
-                  />
-                  <Field
-                    label="Expected Completion"
-                    type="date"
-                    value={projectForm.expectedCompletionDate}
-                    onChange={(e) =>
-                      setProjectForm((prev) => ({
-                        ...prev,
-                        expectedCompletionDate: e.target.value,
-                      }))
-                    }
-                    onBlur={() => markTouched("expectedCompletionDate")}
-                    error={showError("expectedCompletionDate")}
-                    hint="Optional"
-                  />
-                </div>
-
-                {editingId && (
-                  <label className="project-modal__select-label">
-                    <span>Status</span>
-                    <AppSelect
-                      className="project-modal__select"
-                      value={projectForm.status}
-                      onChange={(e) =>
-                        setProjectForm((prev) => ({
-                          ...prev,
-                          status: Number(e.target.value),
-                        }))
-                      }
-                    >
-                      {Object.entries(statusLabels).map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </AppSelect>
-                  </label>
-                )}
-              </div>
-
-              <div className="project-modal__footer">
-                <button type="button" className="project-modal__cancel" onClick={resetProjectForm}>
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="project-modal__submit"
-                  disabled={saving || !isFormValid}
-                >
-                  {saving ? "Saving…" : editingId ? "Update Project" : "Create Project"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
+    </Modal>
   );
 }

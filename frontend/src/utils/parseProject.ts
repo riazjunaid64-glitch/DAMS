@@ -19,6 +19,10 @@ export interface ProjectFromApi {
   expectedCompletionDate?: string | null;
   status: number | string;
   createdAt: string;
+  totalUnits: number;
+  availableUnits: number;
+  bookedUnits: number;
+  soldUnits: number;
 }
 
 function pickId(o: Record<string, unknown>): number | null {
@@ -43,6 +47,11 @@ function str(v: unknown): string {
 function strOrNull(v: unknown): string | null {
   if (v == null || v === "") return null;
   return String(v);
+}
+
+function count(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function dateStr(v: unknown): string {
@@ -84,7 +93,20 @@ export function parseProjectRow(raw: unknown): ProjectFromApi | null {
       expected == null || expected === "" ? null : dateStr(expected),
     status: normStatus(o.status ?? o.Status),
     createdAt: dateStr(o.createdAt ?? o.CreatedAt),
+    totalUnits: count(o.totalUnits ?? o.TotalUnits),
+    availableUnits: count(o.availableUnits ?? o.AvailableUnits),
+    bookedUnits: count(o.bookedUnits ?? o.BookedUnits),
+    soldUnits: count(o.soldUnits ?? o.SoldUnits),
   };
+}
+
+const STATUS_NAMES = ["", "Planning", "Ongoing", "Completed", "Cancelled", "Archived"];
+
+/** The status name the badge shows. The list parser stores the enum number; the API may also send the name. */
+export function projectStatusName(status: number | string | null | undefined): string {
+  if (typeof status === "string" && STATUS_FROM_NAME[status] === undefined && Number.isNaN(Number(status))) return status;
+  const n = typeof status === "number" ? status : STATUS_FROM_NAME[String(status)] ?? Number(status);
+  return STATUS_NAMES[n] ?? String(status ?? "");
 }
 
 /** Parse GET /api/Project body — must be a JSON array. */
