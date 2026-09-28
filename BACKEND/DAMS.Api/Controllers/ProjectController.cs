@@ -25,8 +25,8 @@ namespace DAMS.Api.Controllers
         }
 
         // Only a rule the form can show (duplicate name, dates, a blank required field) is a 400.
-        // A SQL failure or any other exception must reach ExceptionMiddleware, which logs it
-        // and answers with a safe 500 in production.
+        // A missing project is a 404. A SQL failure or any other exception must reach
+        // ExceptionMiddleware, which logs it and answers with a safe 500 in production.
         private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
         {
             try
@@ -36,6 +36,10 @@ namespace DAMS.Api.Controllers
             catch (BusinessRuleException ex)
             {
                 return new BadRequestObjectResult(new { message = ex.Message });
+            }
+            catch (MissingRecordException ex)
+            {
+                return new NotFoundObjectResult(new { message = ex.Message });
             }
         }
 
