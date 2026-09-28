@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   channelLabel,
+  contactVerb,
   directionLabel,
   followUpTypeLabel,
+  lastContactText,
   leadStatus,
   matchedOnLabel,
   paymentPreferenceLabel,
   priorityTone,
   purchaseIntentLabel,
+  reachBadge,
+  reachQuestion,
   statusOfGroup,
   statusText,
   unitStatus,
@@ -85,5 +89,39 @@ describe("lead details", () => {
     expect(matchedOnLabel("whatsapp")).toBe("Same WhatsApp");
     expect(matchedOnLabel("name")).toBe("Same details");
     expect(matchedOnLabel(undefined)).toBe("Same details");
+  });
+});
+
+describe("communication wording", () => {
+  it("says who reached whom", () => {
+    expect(contactVerb("Phone", "Outbound")).toBe("We called");
+    expect(contactVerb("Phone", "Inbound")).toBe("They called");
+    expect(contactVerb("Whatsapp", "Outbound")).toBe("We messaged");
+    expect(contactVerb("Email", "Inbound")).toBe("They emailed us");
+    expect(contactVerb("Other", "Inbound")).toBe("They contacted us");
+  });
+
+  it("asks whether they answered only for calls and messages we sent", () => {
+    expect(reachQuestion("Phone", "Outbound")).toBe("answer");
+    expect(reachQuestion("Whatsapp", "Outbound")).toBe("reply");
+    expect(reachQuestion("Email", "Outbound")).toBe("reply");
+    expect(reachQuestion("Phone", "Inbound")).toBeNull();
+    expect(reachQuestion("OfficeVisit", "Outbound")).toBeNull();
+    expect(reachQuestion("Other", "Outbound")).toBeNull();
+  });
+
+  it("badges a missed attempt red and an answered call green", () => {
+    expect(reachBadge({ channel: "Phone", direction: "Outbound", connected: false })).toEqual({ label: "No answer", tone: "red" });
+    expect(reachBadge({ channel: "Whatsapp", direction: "Outbound", connected: false })).toEqual({ label: "No reply", tone: "red" });
+    expect(reachBadge({ channel: "Phone", direction: "Outbound", connected: true })).toEqual({ label: "Answered", tone: "green" });
+    expect(reachBadge({ channel: "Whatsapp", direction: "Outbound", connected: true })).toBeNull();
+    expect(reachBadge({ channel: "Phone", direction: "Inbound", connected: true })).toBeNull();
+  });
+
+  it("sums up the last contact", () => {
+    expect(lastContactText({ channel: "Phone", direction: "Outbound", connected: true, summary: "sent price list" })).toBe("Call — sent price list");
+    expect(lastContactText({ channel: "Phone", direction: "Outbound", connected: false, summary: "Tried" })).toBe("Call — no answer");
+    expect(lastContactText({ channel: "Email", direction: "Outbound", connected: false, summary: "Sent" })).toBe("Email — no reply");
+    expect(lastContactText({ channel: "Whatsapp", direction: "Inbound", connected: true, summary: "Asked for plans" })).toBe("WhatsApp — Asked for plans");
   });
 });

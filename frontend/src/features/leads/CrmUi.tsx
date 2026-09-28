@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { User } from "../../App.tsx";
 import Button from "../../lib/Button.tsx";
-import { stageLabel } from "./types.ts";
 
 const CRM_ROLES = ["Admin", "Manager", "Employee"];
 
@@ -85,26 +84,6 @@ export function CrmTabs({
       ))}
     </div>
   );
-}
-
-export function StageBadge({ stage }: { stage: string }) {
-  const tone =
-    stage === "Won" ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400" :
-    stage === "Lost" ? "border-rose-500/25 bg-rose-500/10 text-rose-400" :
-    stage === "Dormant" ? "border-slate-500/25 bg-slate-500/10 text-slate-400" :
-    stage.includes("SiteVisit") ? "border-violet-500/25 bg-violet-500/10 text-violet-400" :
-    stage === "Negotiation" || stage === "BookingPending" || stage === "InProgress" ? "border-amber-500/25 bg-amber-500/10 text-amber-400" :
-    "border-indigo-500/25 bg-indigo-500/10 text-indigo-400";
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tone}`}>{stageLabel(stage)}</span>;
-}
-
-export function QualificationBadge({ value }: { value: string }) {
-  const tone =
-    value === "Hot" ? "bg-rose-500/10 text-rose-400" :
-    value === "Warm" ? "bg-amber-500/10 text-amber-400" :
-    value === "Cold" ? "bg-sky-500/10 text-sky-400" :
-    "bg-slate-500/10 text-slate-400";
-  return <span className={`rounded-md px-2 py-1 text-[11px] font-semibold ${tone}`}>{value}</span>;
 }
 
 export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {

@@ -1,4 +1,3 @@
-import type { MetaEventStatus } from "../integrations/types.ts";
 import { parseServerDateTime } from "../../lib/dates.ts";
 
 export const leadStages = [
@@ -86,6 +85,25 @@ export interface Lead extends LeadListItem {
   concurrencyToken: string;
   openFollowUpCount: number;
   documentCount: number;
+}
+
+/** `GET /api/leads/{id}`: the lead plus what the lead page's header shows before any tab opens. */
+export interface LeadDetail extends Lead {
+  counts: { timeline: number; communications: number; followUps: number; siteVisits: number };
+  lastCommunication?: LastCommunication | null;
+  convertedByName?: string | null;
+  convertedUnitNumber?: string | null;
+  /** Who last marked the lead Lost or Dormant. */
+  closedByName?: string | null;
+}
+
+export interface LastCommunication {
+  channel: string;
+  direction: string;
+  connected: boolean;
+  summary: string;
+  occurredAt: string;
+  employeeName?: string | null;
 }
 
 export type MetaConnectionStatus =
@@ -183,24 +201,6 @@ export interface ExternalSubmission {
   externalSubmittedAt?: string | null;
   receivedAt: string;
   fieldData: ExternalFieldAnswer[];
-}
-
-/** What the provider actually sent for one submission. Admins and managers only. */
-export interface ExternalSubmissionRaw {
-  submissionId: number;
-  provider: string;
-  externalLeadId: string;
-  rawPayloadJson?: string | null;
-  event?: IntegrationEventRaw | null;
-}
-
-export interface IntegrationEventRaw {
-  id: number;
-  eventType: string;
-  status: MetaEventStatus;
-  receivedAt: string;
-  processedAt?: string | null;
-  rawPayloadJson: string;
 }
 
 export interface LeadList {
@@ -304,10 +304,14 @@ export interface ProjectLookup {
   name: string;
 }
 
+/** A unit as the convert popup offers it. */
 export interface UnitLookup {
   id: number;
+  projectId: number;
   number: string;
-  projectId?: number;
+  type: string;
+  floor: number;
+  status: string;
 }
 
 export interface TimelineItem {
@@ -335,6 +339,9 @@ export interface Communication {
   customerResponse?: string | null;
   nextAction?: string | null;
   nextActionAt?: string | null;
+  /** False when a call we made went unanswered, or a message we sent got no reply. */
+  connected: boolean;
+  followUpId?: number | null;
 }
 
 export interface FollowUp {
@@ -346,7 +353,7 @@ export interface FollowUp {
   notes?: string | null;
   dueAt: string;
   priority: string;
-  status: string;
+  status: "Pending" | "Completed" | "Cancelled" | "Missed";
   completedAt?: string | null;
   outcome?: string | null;
 }
@@ -357,11 +364,12 @@ export interface SiteVisit {
   projectName?: string | null;
   unitId?: number | null;
   unitNumber?: string | null;
+  assignedEmployeeId: number;
   assignedEmployeeName?: string | null;
   scheduledAt: string;
   remindAt?: string | null;
   meetingLocation: string;
-  status: string;
+  status: "Scheduled" | "Rescheduled" | "Completed" | "Cancelled" | "Missed";
   notes?: string | null;
   outcome?: string | null;
   outcomeNotes?: string | null;
@@ -370,46 +378,10 @@ export interface SiteVisit {
   cancellationReason?: string | null;
 }
 
-export interface LeadDocument {
-  id: number;
-  category: string;
-  fileName: string;
-  contentType: string;
-  fileSize: number;
-  description?: string | null;
-  uploadedByName?: string | null;
-  uploadedAt: string;
-}
-
-export interface LeadComment {
-  id: number;
-  body: string;
-  isManagerReviewRequest: boolean;
-  isDecisionRecord: boolean;
-  authorName?: string | null;
-  createdAt: string;
-  mentions: { userId: number; name?: string | null }[];
-}
-
-export interface AssignmentHistory {
-  id: number;
-  previousEmployeeName?: string | null;
-  assignedEmployeeName?: string | null;
-  reason?: string | null;
-  assignedByName?: string | null;
-  assignedAt: string;
-}
-
 export const stageLabel = (stage: string) =>
   stage.replace(/([a-z])([A-Z])/g, "$1 $2");
 
 export const enumLabel = stageLabel;
-
-/** Lead.PaymentPreference, in the order the server defines it. */
-export const paymentPreferences = ["Unknown", "Installments", "NeedsDetails", "Cash"] as const;
-
-export const isClosedStage = (stage: string) =>
-  stage === "Won" || stage === "Lost" || stage === "Dormant";
 
 /** The salesperson's simple pipeline (the server's LeadStageGroup). Which detailed stage falls in which
  *  step is decided only on the server (LeadStageRules.GroupOf) and arrives on each lead as `stageGroup`. */
@@ -422,6 +394,3 @@ export const formatDateTime = (value?: string | null) =>
   parseServerDateTime(value)?.toLocaleString(undefined, {
     year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit",
   }) ?? "—";
-
-export const formatShortDate = (value?: string | null) =>
-  parseServerDateTime(value)?.toLocaleDateString() ?? "—";

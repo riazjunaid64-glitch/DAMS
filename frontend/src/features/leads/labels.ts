@@ -61,6 +61,45 @@ export const channelLabel = (value: string) => CHANNELS[value] ?? words(value);
 export const directionLabel = (value: string) =>
   value === "Inbound" ? "They contacted us" : value === "Outbound" ? "We contacted them" : words(value);
 
+/** "We called" · "They messaged us": who reached whom, and how. */
+export function contactVerb(channel: string, direction: string): string {
+  const inbound = direction === "Inbound";
+  switch (channel) {
+    case "Phone": return inbound ? "They called" : "We called";
+    case "Whatsapp":
+    case "Sms": return inbound ? "They messaged us" : "We messaged";
+    case "Email": return inbound ? "They emailed us" : "We emailed";
+    case "OfficeVisit": return inbound ? "They came to the office" : "We met at the office";
+    case "Meeting":
+    case "SiteVisit": return "We met";
+    default: return directionLabel(direction);
+  }
+}
+
+/**
+ * What an attempt to reach the customer asks: whether they answered a call we made, or replied to
+ * a WhatsApp or email we sent. Null when the contact could not have gone unanswered.
+ */
+export function reachQuestion(channel: string, direction: string): "answer" | "reply" | null {
+  if (direction !== "Outbound") return null;
+  if (channel === "Phone") return "answer";
+  return channel === "Whatsapp" || channel === "Email" ? "reply" : null;
+}
+
+/** "No answer" / "No reply" when an attempt did not reach them; "Answered" for a call that did. */
+export function reachBadge(contact: { channel: string; direction: string; connected: boolean }): ToneLabel | null {
+  const question = reachQuestion(contact.channel, contact.direction);
+  if (!contact.connected) return { label: question === "reply" ? "No reply" : "No answer", tone: "red" };
+  return question === "answer" ? { label: "Answered", tone: "green" } : null;
+}
+
+/** "Call — sent price list"; "Call — no answer" when it did not reach them. */
+export function lastContactText(contact: { channel: string; direction: string; connected: boolean; summary: string }): string {
+  const how = contact.channel === "Phone" ? "Call" : channelLabel(contact.channel);
+  const what = contact.connected ? contact.summary : reachQuestion(contact.channel, contact.direction) === "reply" ? "no reply" : "no answer";
+  return `${how} — ${what}`;
+}
+
 const FOLLOW_UP_TYPES: Record<string, string> = {
   Call: "Call",
   FollowUp: "Follow-up",

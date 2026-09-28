@@ -1,43 +1,59 @@
-import { initialForm } from "./leadActionDefaults.ts";
 import { LeadConflictError } from "./leadApi.ts";
+import { paymentPreferenceLabel, purchaseIntentLabel } from "./labels.ts";
 import type { Lead } from "./types.ts";
 
-export type EditForm = Record<string, string | boolean>;
+export type EditForm = Record<string, string>;
 
 export type EditConflict = { label: string; theirs: string };
 
+/** The fields the Edit details popup changes, with the names its labels use. */
 export const EDIT_LABELS: Record<string, string> = {
   firstName: "First name",
   lastName: "Last name",
   phone: "Phone",
   whatsappNumber: "WhatsApp",
-  email: "Email",
-  address: "Address",
   city: "City",
-  preferredContactMethod: "Preferred contact",
-  preferredContactTime: "Preferred contact time",
-  sourceDetails: "Source details",
-  campaignName: "Campaign",
-  campaignReference: "Campaign reference",
-  adReference: "Ad reference",
-  interestedProjectId: "Interested project",
-  interestedUnitId: "Interested unit",
-  propertyType: "Property type",
-  preferredLocation: "Preferred location",
-  budgetMin: "Minimum budget",
-  budgetMax: "Maximum budget",
-  purchaseIntent: "Purchase intent",
-  paymentPreference: "Payment preference",
+  email: "Email",
+  propertyType: "Apartment type",
+  paymentPreference: "5-year installment plan",
+  purchaseIntent: "Buying for",
   notes: "Notes",
 };
 
-// A unit only means something within its project, so the two are merged as one choice:
-// taking a newer project while keeping this form's unit could pair a unit with the wrong project.
-const PAIRED = ["interestedProjectId", "interestedUnitId"];
+/** A lead's editable details as the form holds them: text, with "" for nothing. */
+export function editForm(lead: Lead): EditForm {
+  return {
+    firstName: lead.firstName,
+    lastName: lead.lastName ?? "",
+    phone: lead.phone ?? "",
+    whatsappNumber: lead.whatsappNumber ?? "",
+    city: lead.city ?? "",
+    email: lead.email ?? "",
+    propertyType: lead.propertyType ?? "",
+    paymentPreference: lead.paymentPreference,
+    purchaseIntent: lead.purchaseIntent,
+    notes: lead.notes ?? "",
+  };
+}
+
+/**
+ * Only the fields the form changed from `base`, as the API takes them. The API leaves every
+ * field it is not sent alone, so an edit can never overwrite anything the person did not touch.
+ */
+export function editChanges(base: Lead, form: EditForm): Record<string, string | null> {
+  const was = editForm(base);
+  const changes: Record<string, string | null> = {};
+  for (const field of Object.keys(was)) {
+    const value = form[field] ?? "";
+    if (value.trim() === was[field].trim()) continue;
+    changes[field] = field === "firstName" || field === "paymentPreference" || field === "purchaseIntent" ? value.trim() : value.trim() || null;
+  }
+  return changes;
+}
 
 // Fields a repeat enquiry appends to (LeadService.Append joins with a newline) rather than
 // replaces, with their UpdateLeadDto length limits.
-const APPENDED: Record<string, number> = { notes: 2000, sourceDetails: 500 };
+const APPENDED: Record<string, number> = { notes: 2000 };
 
 /**
  * Merges an edit form whose save was refused because the lead changed after the form opened.
@@ -50,27 +66,22 @@ const APPENDED: Record<string, number> = { notes: 2000, sourceDetails: 500 };
  * is reported, so replacing the other change is a decision made with it in view.
  */
 export function mergeLeadEdit(base: Lead, latest: Lead, mine: EditForm) {
-  const was = initialForm({ type: "edit" }, base);
-  const now = initialForm({ type: "edit" }, latest);
+  const was = editForm(base);
+  const now = editForm(latest);
   const form: EditForm = { ...mine };
   const conflicts: EditConflict[] = [];
 
   // Every field the edit form has, so a field added to the form later is merged too.
-  const groups = [PAIRED, ...Object.keys(was).filter((field) => !PAIRED.includes(field)).map((field) => [field])];
-  for (const group of groups) {
-    const differs = (a: EditForm, b: EditForm) => group.some((field) => a[field] !== b[field]);
-    if (!differs(mine, was)) {
-      for (const field of group) form[field] = now[field];
+  for (const field of Object.keys(was)) {
+    if (mine[field] === was[field]) {
+      form[field] = now[field];
       continue;
     }
-    if (!differs(now, was) || !differs(now, mine)) continue;
+    if (now[field] === was[field] || now[field] === mine[field]) continue;
 
-    const [field] = group;
-    const rebased = group.length === 1 && field in APPENDED
-      ? reapplyAppended(String(was[field]), String(now[field]), String(mine[field]), APPENDED[field])
-      : null;
+    const rebased = field in APPENDED ? reapplyAppended(was[field], now[field], mine[field], APPENDED[field]) : null;
     if (rebased !== null) form[field] = rebased;
-    else for (const f of group) conflicts.push({ label: EDIT_LABELS[f] ?? f, theirs: shown(f, latest, now) });
+    else conflicts.push({ label: EDIT_LABELS[field] ?? field, theirs: shown(field, now[field]) });
   }
 
   return { form, conflicts, detailsChanged: Object.keys(was).some((field) => was[field] !== now[field]) };
@@ -86,19 +97,18 @@ function reapplyAppended(was: string, now: string, mine: string, max: number): s
   return result.length <= max ? result : null;
 }
 
-// The form holds ids for the project and unit; the person needs the names.
-function shown(field: string, latest: Lead, now: EditForm) {
-  if (field === "interestedProjectId") return latest.interestedProjectName ?? "";
-  if (field === "interestedUnitId") return latest.interestedUnitNumber ?? "";
-  return String(now[field]);
+// The form holds enum values for the requirement choices; the person needs the words.
+function shown(field: string, value: string) {
+  if (field === "paymentPreference") return paymentPreferenceLabel(value)?.label ?? "";
+  if (field === "purchaseIntent") return purchaseIntentLabel(value) ?? "";
+  return value;
 }
 
 /** What the person sees after the merge, before deciding whether to save again. */
 export function describeEditConflict(conflicts: EditConflict[]): string {
-  const intro = "This lead changed while you were editing, and the newer details have been loaded into the form";
   if (conflicts.length === 0)
-    return `${intro}. None of them clash with your changes. Review the form and save again.`;
-  return `${intro}. The fields below were also changed and still show your values. Saving again replaces the newer values with yours.`;
+    return "This lead changed while you were editing. The newer details are now in the form. None of them clash with your changes, so check the form and save again.";
+  return "This lead changed while you were editing. These fields were also changed and still show your values. Saving again replaces the newer values with yours.";
 }
 
 export type EditSaveOutcome =
