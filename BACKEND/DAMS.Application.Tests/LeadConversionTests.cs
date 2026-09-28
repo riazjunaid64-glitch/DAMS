@@ -408,7 +408,7 @@ public sealed class LeadConversionTests
         await using var h = await LeadTestHarness.CreateAsync();
         var units = new UnitService(h.Db);
 
-        var rejected = await Assert.ThrowsAsync<InvalidOperationException>(() => units.CreateUnitAsync(new CreateUnitDto
+        var rejected = await Assert.ThrowsAsync<BusinessRuleException>(() => units.CreateUnitAsync(new CreateUnitDto
         {
             ProjectId = h.ProjectId,
             UnitNumber = "B-201",
@@ -447,7 +447,7 @@ public sealed class LeadConversionTests
         Assert.Equal("Apartment", kept.UnitType);
         Assert.Equal(11_000_000m, kept.Price);
 
-        var changed = await Assert.ThrowsAsync<InvalidOperationException>(() => units.UpdateUnitAsync(h.UnitId, new UpdateUnitDto
+        var changed = await Assert.ThrowsAsync<BusinessRuleException>(() => units.UpdateUnitAsync(h.UnitId, new UpdateUnitDto
         {
             UnitNumber = "A-101",
             UnitType = "Villa",
