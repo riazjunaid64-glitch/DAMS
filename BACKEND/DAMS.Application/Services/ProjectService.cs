@@ -54,7 +54,7 @@ namespace DAMS.Application.Services
             var project = await _context.Projects.FindAsync(id);
 
             if (project == null)
-                throw new Exception("Project not found.");
+                throw new MissingRecordException("Project not found.");
 
             var name = RequireText(dto.ProjectName, "Project name is required.");
             var location = RequireText(dto.Location, "Location is required.");
