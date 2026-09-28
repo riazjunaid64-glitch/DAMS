@@ -20,16 +20,15 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
-        // Business rules (duplicate unit number, a status the booking owns) are thrown as
-        // exceptions. Return the message as 400 so the form can show it; production would
-        // otherwise replace it with a generic 500.
+        // Only a rule the form can show (duplicate number, size, price, a status the booking
+        // owns) is a 400. A SQL failure or any other exception must reach ExceptionMiddleware.
         private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
         {
             try
             {
                 return await action();
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (BusinessRuleException ex)
             {
                 return new BadRequestObjectResult(new { message = ex.Message });
             }
