@@ -320,8 +320,9 @@ namespace DAMS.Application.Services
             // actually accept.
             var (creditsByBooking, _) = await LoadCreditsAsync(
                 entities.Select(b => b.Id).ToList(), includeInstallments: false);
+            var floorNames = await LoadFloorNamesAsync(entities);
             var items = entities
-                .Select(b => MapProjection(b, creditsByBooking.GetValueOrDefault(b.Id)))
+                .Select(b => MapProjection(b, floorNames, creditsByBooking.GetValueOrDefault(b.Id)))
                 .ToList();
 
             return new BookingListDto
@@ -770,6 +771,10 @@ namespace DAMS.Application.Services
                     .FirstOrDefaultAsync();
             }
 
+            var floorName = unit == null
+                ? string.Empty
+                : (await ProjectFloorNames.LoadAsync(_context, [unit.ProjectId])).For(unit.ProjectId, unit.FloorNumber);
+
             var unitNumber = unit?.UnitNumber ?? string.Empty;
             string? block = null;
             var dashIndex = unitNumber.IndexOf('-');
@@ -795,6 +800,7 @@ namespace DAMS.Application.Services
                 UnitNumber = unitNumber,
                 Block = string.IsNullOrWhiteSpace(block) ? null : block,
                 FloorNumber = unit?.FloorNumber ?? 0,
+                FloorName = floorName,
                 UnitSize = unit?.Size ?? 0m,
 
                 Type = payment.Type,
@@ -850,8 +856,14 @@ namespace DAMS.Application.Services
                 .FirstAsync(b => b.Id == id, cancellationToken);
 
             var (byBooking, byInstallment) = await LoadCreditsAsync([id], includeInstallments: true, cancellationToken);
-            return MapProjection(booking, byBooking.GetValueOrDefault(id), byInstallment);
+            var floorNames = await LoadFloorNamesAsync([booking], cancellationToken);
+            return MapProjection(booking, floorNames, byBooking.GetValueOrDefault(id), byInstallment);
         }
+
+        private Task<ProjectFloorNames> LoadFloorNamesAsync(IEnumerable<Booking> bookings,
+            CancellationToken cancellationToken = default) =>
+            ProjectFloorNames.LoadAsync(_context,
+                bookings.Where(b => b.Unit != null).Select(b => b.Unit.ProjectId), cancellationToken);
 
         /// <summary>
         /// Every non-cash credit figure a projection needs, for a whole page of bookings at once:
@@ -871,6 +883,7 @@ namespace DAMS.Application.Services
             return (byBooking, byInstallment);
         }
 
+        /// <param name="floorNames">The unit's floor is shown by the project's floor name (<see cref="ProjectFloorNames"/>).</param>
         /// <param name="rebateCredits">
         /// Required, with no default: a projection that quietly defaulted its credits to zero is the
         /// defect this parameter exists to remove — it would report a balance the customer no longer
@@ -880,7 +893,7 @@ namespace DAMS.Application.Services
         /// Optional, because the list query does not load installments at all and the per-installment
         /// figures are then not computed from anything.
         /// </param>
-        private static BookingResponseDto MapProjection(Booking b,
+        private static BookingResponseDto MapProjection(Booking b, ProjectFloorNames floorNames,
             decimal rebateCredits, IReadOnlyDictionary<int, decimal>? installmentCredits = null)
         {
             var installmentTotals = ComputeInstallmentTotals(b,
@@ -905,6 +918,7 @@ namespace DAMS.Application.Services
                 UnitNumber = b.Unit != null ? b.Unit.UnitNumber : string.Empty,
                 UnitType = b.Unit != null ? b.Unit.UnitType : string.Empty,
                 UnitFloorNumber = b.Unit != null ? b.Unit.FloorNumber : 0,
+                FloorName = b.Unit != null ? floorNames.For(b.Unit.ProjectId, b.Unit.FloorNumber) : string.Empty,
                 UnitSize = b.Unit != null ? b.Unit.Size : 0m,
                 ProjectId = b.Unit != null ? b.Unit.ProjectId : 0,
                 ProjectName = b.Unit != null && b.Unit.Project != null ? b.Unit.Project.ProjectName : string.Empty,
@@ -1026,8 +1040,9 @@ namespace DAMS.Application.Services
 
             var ids = entities.Select(b => b.Id).ToList();
             var (byBooking, byInstallment) = await LoadCreditsAsync(ids, includeInstallments: true);
+            var floorNames = await LoadFloorNamesAsync(entities);
             return entities
-                .Select(b => SanitizeForClient(MapProjection(b, byBooking.GetValueOrDefault(b.Id), byInstallment)))
+                .Select(b => SanitizeForClient(MapProjection(b, floorNames, byBooking.GetValueOrDefault(b.Id), byInstallment)))
                 .ToList();
         }
 

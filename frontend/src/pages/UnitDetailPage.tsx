@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { api, resolveMediaUrl } from "../api/api.ts";
+import { readError } from "../api/readError.ts";
 import { deleteUnitMedia, getUnitMedia, setUnitCoverMedia, uploadUnitMediaBulk } from "../api/media.ts";
 import {
   Button,
@@ -22,7 +23,7 @@ import { useProjects } from "../contexts/projectsContextValue.ts";
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
 import { fieldForServerMessage, photoUploadNotice, unitDraftChanged, unitDraftReady, unitSavedMessage } from "../components/project/editRules.ts";
-import { floorChoices, floorLabel } from "../lib/floors.ts";
+import { floorChoices, floorName, type Floor } from "../lib/floors.ts";
 import { formatPkr } from "../utils/currency.ts";
 import { parseProjectRow } from "../utils/parseProject.ts";
 import { parseUnitRow, type UnitFromApi } from "../utils/parseUnit.ts";
@@ -31,21 +32,6 @@ import type { UnitMedia } from "../types/media.ts";
 
 type Props = { user: User | null };
 const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
-
-async function readError(response: Response, fallback: string): Promise<string> {
-  const text = await response.text();
-  if (!text) return fallback;
-  try {
-    const body = JSON.parse(text) as { message?: string; title?: string; errors?: Record<string, string[]> };
-    if (body.message) return body.message;
-    const first = body.errors && Object.values(body.errors).flat()[0];
-    if (first) return first;
-    if (body.title) return body.title;
-  } catch {
-    // Plain text from the server.
-  }
-  return text.length < 300 ? text : fallback;
-}
 
 function toPhotos(items: UnitMedia[]): Photo[] {
   return items.map((item) => ({
@@ -64,6 +50,7 @@ export default function UnitDetailPage({ user }: Props) {
   const { reload: reloadProjects } = useProjects();
   const [unit, setUnit] = useState<UnitFromApi | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [projectFloors, setProjectFloors] = useState<Floor[] | undefined>();
   const [media, setMedia] = useState<UnitMedia[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,6 +85,7 @@ export default function UnitDetailPage({ user }: Props) {
       if (projectResponse?.ok) {
         const project = parseProjectRow(await projectResponse.json());
         setProjectName(project?.projectName ?? "");
+        setProjectFloors(project?.floors);
       }
       setMedia(photos);
     } catch {
@@ -136,7 +124,7 @@ export default function UnitDetailPage({ user }: Props) {
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
         <InfoCard label="Type" value={unit.unitType || "—"} highlight />
         <InfoCard label="Size" value={formatSqFt(unit.size)} />
-        <InfoCard label="Floor" value={floorLabel(unit.floorNumber)} />
+        <InfoCard label="Floor" value={floorName(unit.floorName, unit.floorNumber)} />
         <InfoCard label="Price" value={formatPkr(unit.price)} />
       </div>
       <Card title={`Photos (${photos.length})`}>
@@ -172,6 +160,7 @@ export default function UnitDetailPage({ user }: Props) {
       {editing && (
         <UnitDialog
           projectId={unit.projectId}
+          floors={projectFloors}
           unit={unit}
           onClose={() => setEditing(false)}
           onSaved={async (saved) => {
@@ -185,8 +174,10 @@ export default function UnitDetailPage({ user }: Props) {
   );
 }
 
-export function UnitDialog({ projectId, unit, onClose, onSaved }: {
+export function UnitDialog({ projectId, floors, unit, onClose, onSaved }: {
   projectId: number;
+  /** The project's floor list; without one the form offers the standard floors. */
+  floors?: readonly Floor[];
   unit?: UnitFromApi | null;
   onClose: () => void;
   onSaved: (saved: { unitNumber: string }) => void | Promise<void>;
@@ -266,7 +257,7 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
       <div className="flex flex-col gap-4">
         <TextField label="Unit number" required value={number} error={numberError} onChange={(event) => { setNumber(event.target.value); setNumberError(undefined); }} />
         <Dropdown label="Type" required placeholder="Select" value={type} onChange={setType} options={typeOptions} />
-        <Dropdown label="Floor" required placeholder="Select" value={floor} onChange={setFloor} options={floorChoices(editing?.floorNumber)} />
+        <Dropdown label="Floor" required placeholder="Select" value={floor} onChange={setFloor} options={floorChoices(editing?.floorNumber, floors)} />
         <NumberField label="Size" required decimals={0} suffix="sq ft" value={size} onChange={setSize} />
         <NumberField label="Price" required decimals={0} prefix="Rs" value={price} onChange={setPrice} />
       </div>

@@ -31,5 +31,6 @@ namespace DAMS.Domain.Entities
         // Navigation Property
         public ICollection<Unit> Units { get; set; } = new List<Unit>();
         public ICollection<ProjectMedia> MediaFiles { get; set; } = new List<ProjectMedia>();
+        public ICollection<ProjectFloor> Floors { get; set; } = new List<ProjectFloor>();
     }
 }

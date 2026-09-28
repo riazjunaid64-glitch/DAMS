@@ -32,6 +32,7 @@ namespace DAMS.Application.Services
         RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
         await EnsureUnitNumberIsFree(dto.ProjectId, unitNumber, null);
+        var floorName = await RequireProjectFloor(dto.ProjectId, dto.FloorNumber, null);
 
         var unit = new Unit
         {
@@ -46,12 +47,12 @@ namespace DAMS.Application.Services
         _context.Units.Add(unit);
         await _context.SaveChangesAsync();
 
-        return Map(unit);
+        return Map(unit, floorName);
     }
 
     public async Task<UnitResponseDto?> GetUnitByIdAsync(int id)
     {
-        return await _context.Units
+        var unit = await _context.Units
             .AsNoTracking()
             .Where(u => u.Id == id)
             .Select(u => new UnitResponseDto
@@ -66,11 +67,16 @@ namespace DAMS.Application.Services
                 Status = u.Status.ToString()
             })
             .FirstOrDefaultAsync();
+
+        if (unit != null)
+            await NameFloors(unit.ProjectId, [unit]);
+
+        return unit;
     }
 
     public async Task<List<UnitResponseDto>> GetUnitsByProjectIdAsync(int projectId)
     {
-        return await _context.Units
+        var units = await _context.Units
             .AsNoTracking()
             .Where(u => u.ProjectId == projectId)
             .OrderBy(u => u.FloorNumber)
@@ -87,6 +93,9 @@ namespace DAMS.Application.Services
                 Status = u.Status.ToString()
             })
             .ToListAsync();
+
+        await NameFloors(projectId, units);
+        return units;
     }
 
     public async Task<UnitResponseDto> UpdateUnitAsync(int id, UpdateUnitDto dto)
@@ -99,6 +108,7 @@ namespace DAMS.Application.Services
         RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
         await EnsureUnitNumberIsFree(unit.ProjectId, unitNumber, id);
+        var floorName = await RequireProjectFloor(unit.ProjectId, dto.FloorNumber, unit.FloorNumber);
 
         unit.UnitNumber = unitNumber;
         unit.UnitType = UnitTypes.ResolveForUpdate(dto.UnitType, unit.UnitType);
@@ -126,7 +136,7 @@ namespace DAMS.Application.Services
 
         await _context.SaveChangesAsync();
 
-        return Map(unit);
+        return Map(unit, floorName);
     }
 
     public async Task<bool> DeleteUnitAsync(int id)
@@ -182,7 +192,39 @@ namespace DAMS.Application.Services
             throw new BusinessRuleException($"Unit number \"{unitNumber}\" already exists in this project.");
     }
 
-    private static UnitResponseDto Map(Unit unit)
+    // Once a project has a floor list, a unit must sit on one of its floors. With no list, any
+    // number is accepted as before. On an edit the unit's current floor is always accepted, so a
+    // unit on a floor that is not on the list (older data) can still have its other fields saved.
+    // Returns the name the floor is shown under.
+    private async Task<string> RequireProjectFloor(int projectId, int floorNumber, int? currentFloorNumber)
+    {
+        var floors = await _context.ProjectFloors
+            .AsNoTracking()
+            .Where(f => f.ProjectId == projectId)
+            .Select(f => new { f.Number, f.Name })
+            .ToListAsync();
+
+        var floor = floors.FirstOrDefault(f => f.Number == floorNumber);
+        if (floor != null)
+            return floor.Name;
+
+        if (floors.Count > 0 && floorNumber != currentFloorNumber)
+            throw new BusinessRuleException("Pick a floor from this project's floor list.");
+
+        return ProjectFloorNames.Standard(floorNumber);
+    }
+
+    private async Task NameFloors(int projectId, IReadOnlyCollection<UnitResponseDto> units)
+    {
+        if (units.Count == 0)
+            return;
+
+        var names = await ProjectFloorNames.LoadAsync(_context, [projectId]);
+        foreach (var unit in units)
+            unit.FloorName = names.For(unit.ProjectId, unit.FloorNumber);
+    }
+
+    private static UnitResponseDto Map(Unit unit, string floorName)
     {
         return new UnitResponseDto
         {
@@ -191,6 +233,7 @@ namespace DAMS.Application.Services
             UnitNumber = unit.UnitNumber,
             UnitType = unit.UnitType,
             FloorNumber = unit.FloorNumber,
+            FloorName = floorName,
             Size = unit.Size,
             Price = unit.Price,
             Status = unit.Status.ToString()

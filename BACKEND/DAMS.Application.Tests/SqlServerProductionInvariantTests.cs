@@ -1027,6 +1027,57 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     /// <summary>
+    /// KAN-57: the floor list is replaced by deleting the old rows and inserting the new ones in one
+    /// save. The unique (ProjectId, Number) and (ProjectId, Name) indexes are only real here — the
+    /// in-memory provider ignores them — so a name or number moving to another floor has to be proven
+    /// against SQL Server, and so does the unit-count subquery GET floors runs.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ReplacingAFloorList_MovesNamesAndNumbersBetweenFloorsInOneSave()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using var context = new AppDbContext(options);
+        var project = new Project { ProjectName = "Floors", Location = "Karachi", CreatedById = 1 };
+        var unit = new Unit
+        {
+            Project = project, UnitNumber = "FL-01", UnitType = "Apartment", FloorNumber = 1,
+            Size = 900m, Price = 1_000_000m, Status = UnitStatus.Available
+        };
+        context.AddRange(project, unit);
+        await context.SaveChangesAsync();
+
+        var projects = new ProjectService(context, new Microsoft.Extensions.Caching.Memory.MemoryCache(
+            new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
+        await projects.ReplaceFloorsAsync(project.Id,
+        [
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 0, Name = "Ground floor" },
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 1, Name = "1st floor" },
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 2, Name = "Rooftop" },
+        ]);
+        context.ChangeTracker.Clear();
+
+        // "Rooftop" moves up a floor and number 2 takes a name number 1 used to have.
+        var saved = await projects.ReplaceFloorsAsync(project.Id,
+        [
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 1, Name = "Podium" },
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 2, Name = "1st floor" },
+            new DTOs.ProjectDtos.ProjectFloorDto { Number = 3, Name = "Rooftop" },
+        ]);
+
+        Assert.Equal([(1, "Podium", 1), (2, "1st floor", 0), (3, "Rooftop", 0)],
+            saved.Select(f => (f.Number, f.Name, f.UnitCount)));
+        Assert.Equal(3, await context.ProjectFloors.CountAsync(f => f.ProjectId == project.Id));
+
+        context.ChangeTracker.Clear();
+        Assert.Equal("Podium", (await new UnitService(context).GetUnitByIdAsync(unit.Id))!.FloorName);
+        Assert.Equal(3, (await projects.GetProjectByIdAsync(project.Id))!.FloorCount);
+    }
+
+    /// <summary>
     /// Creating and editing a commission or a rebate decides something from the booking — is it
     /// still active, does this partner already hold one, what is it worth — and then writes money
     /// against that reading. Every other money-moving method on this service already runs

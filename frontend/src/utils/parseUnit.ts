@@ -6,6 +6,8 @@ export interface UnitFromApi {
   unitNumber: string;
   unitType: string;
   floorNumber: number;
+  /** The project's name for this floor ("Parking"); the API falls back to the standard label. */
+  floorName: string;
   size: number;
   price: number;
   status: string;
@@ -44,6 +46,7 @@ export function parseUnitRow(raw: unknown): UnitFromApi | null {
     unitNumber: String(o.unitNumber ?? o.UnitNumber ?? ""),
     unitType: String(o.unitType ?? o.UnitType ?? ""),
     floorNumber: num(o.floorNumber ?? o.FloorNumber),
+    floorName: String(o.floorName ?? o.FloorName ?? ""),
     size: num(o.size ?? o.Size),
     price: num(o.price ?? o.Price),
     status: String(o.status ?? o.Status ?? ""),

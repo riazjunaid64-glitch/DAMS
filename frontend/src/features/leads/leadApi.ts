@@ -73,6 +73,7 @@ export async function loadUnits(projectId: number, signal?: AbortSignal): Promis
       number: String(row.unitNumber ?? row.id),
       type: String(row.unitType ?? ""),
       floor: Number(row.floorNumber ?? 0),
+      floorName: typeof row.floorName === "string" ? row.floorName : undefined,
       status: String(row.status ?? ""),
     };
   }).filter((row) => Number.isFinite(row.id));

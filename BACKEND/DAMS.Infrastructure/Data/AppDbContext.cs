@@ -32,6 +32,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<CustomerDocumentAuditEntry> CustomerDocumentAuditEntries { get; set; }
         public DbSet<Project> Projects { get; set; }
         public DbSet<Unit> Units { get; set; }
+        public DbSet<ProjectFloor> ProjectFloors { get; set; }
         public DbSet<ProjectMedia> ProjectMedias { get; set; }
         public DbSet<UnitMedia> UnitMedias { get; set; }
         public DbSet<Booking> Bookings { get; set; }
@@ -306,6 +307,29 @@ namespace DAMS.Infrastructure.Data
 });
 
 
+
+            // A unit's floor is the project floor with the same Number, so a number may appear once
+            // per project. Names are unique too: two floors both called "Parking" could not be told
+            // apart in the unit Floor dropdown.
+            modelBuilder.Entity<ProjectFloor>(entity =>
+            {
+                entity.HasIndex(f => new { f.ProjectId, f.Number })
+                      .IsUnique()
+                      .HasDatabaseName("UX_ProjectFloors_ProjectId_Number");
+
+                entity.HasIndex(f => new { f.ProjectId, f.Name })
+                      .IsUnique()
+                      .HasDatabaseName("UX_ProjectFloors_ProjectId_Name");
+
+                entity.Property(f => f.Name)
+                      .IsRequired()
+                      .HasMaxLength(40);
+
+                entity.HasOne(f => f.Project)
+                      .WithMany(p => p.Floors)
+                      .HasForeignKey(f => f.ProjectId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
 
             modelBuilder.Entity<ProjectMedia>(entity =>
             {

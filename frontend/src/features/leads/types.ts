@@ -321,6 +321,8 @@ export interface UnitLookup {
   number: string;
   type: string;
   floor: number;
+  /** The project's name for the floor ("Parking"). */
+  floorName?: string;
   status: string;
 }
 

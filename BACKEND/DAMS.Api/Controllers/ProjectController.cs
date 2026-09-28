@@ -80,6 +80,24 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        // FLOORS (read like the other project reads; only Admin/Accountant change them)
+        [AllowAnonymous]
+        [HttpGet("{projectId:int}/floors")]
+        public async Task<IActionResult> GetFloors(int projectId)
+        {
+            var result = await _projectService.GetFloorsAsync(projectId);
+
+            if (result == null)
+                return NotFound();
+
+            return Ok(result);
+        }
+
+        [Authorize(Roles = AppRoles.AdminOrAccountant)]
+        [HttpPut("{projectId:int}/floors")]
+        public Task<IActionResult> ReplaceFloors(int projectId, List<ProjectFloorDto> floors) =>
+            Write(async () => Ok(await _projectService.ReplaceFloorsAsync(projectId, floors)));
+
         [AllowAnonymous]
         [HttpGet("{projectId:int}/media")]
         public async Task<IActionResult> GetProjectMedia(int projectId)

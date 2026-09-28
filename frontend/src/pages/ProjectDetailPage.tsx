@@ -30,7 +30,7 @@ import { photoUploadNotice, unitSavedMessage } from "../components/project/editR
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
 import { formatDay } from "../lib/dates.ts";
-import { floorLabel } from "../lib/floors.ts";
+import { floorName } from "../lib/floors.ts";
 import { formatPkr } from "../utils/currency.ts";
 import { parseProjectRow, projectStatusName, type ProjectFromApi } from "../utils/parseProject.ts";
 import { parseUnitsPayload, type UnitFromApi } from "../utils/parseUnit.ts";
@@ -45,6 +45,8 @@ import {
   type UnitSort,
 } from "../components/project/unitList.ts";
 import { UnitDialog } from "./UnitDetailPage.tsx";
+import { ManageFloorsDialog } from "../components/project/ManageFloorsDialog.tsx";
+import { floorSummary } from "../components/project/floorRules.ts";
 
 type Props = { user: User | null };
 const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
@@ -85,6 +87,7 @@ export default function ProjectDetailPage({ user }: Props) {
   const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [managingFloors, setManagingFloors] = useState(false);
 
   const load = useCallback(async () => {
     if (!projectId || Number.isNaN(projectId)) {
@@ -162,7 +165,14 @@ export default function ProjectDetailPage({ user }: Props) {
         ]}
       />
       {tab === "overview" && (
-        <Overview project={project} units={units} photos={photos} isPhone={isPhone} onSeeUnits={() => setTab("units")} />
+        <Overview
+          project={project}
+          units={units}
+          photos={photos}
+          isPhone={isPhone}
+          onSeeUnits={() => setTab("units")}
+          onManageFloors={canWrite ? () => setManagingFloors(true) : undefined}
+        />
       )}
       {tab === "units" && (
         <UnitsTab units={units} canWrite={canWrite} isPhone={isPhone} onAdd={() => setAdding(true)} />
@@ -184,6 +194,7 @@ export default function ProjectDetailPage({ user }: Props) {
       {adding && (
         <UnitDialog
           projectId={project.id}
+          floors={project.floors}
           onClose={() => setAdding(false)}
           onSaved={async (saved) => {
             setAdding(false);
@@ -192,16 +203,29 @@ export default function ProjectDetailPage({ user }: Props) {
           }}
         />
       )}
+      {managingFloors && (
+        <ManageFloorsDialog
+          projectId={project.id}
+          projectName={project.projectName}
+          onClose={() => setManagingFloors(false)}
+          onSaved={async () => {
+            setManagingFloors(false);
+            await refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function Overview({ project, units, photos, isPhone, onSeeUnits }: {
+function Overview({ project, units, photos, isPhone, onSeeUnits, onManageFloors }: {
   project: ProjectFromApi;
   units: UnitFromApi[];
   photos: Photo[];
   isPhone: boolean;
   onSeeUnits: () => void;
+  /** Admin / Accountant only. */
+  onManageFloors?: () => void;
 }) {
   const types = availableByType(units);
   const counts = (
@@ -230,12 +254,13 @@ function Overview({ project, units, photos, isPhone, onSeeUnits }: {
     </div>
   );
   const details = (
-    <Card title="Details">
+    <Card title="Details" action={onManageFloors ? { label: "Manage floors", onClick: onManageFloors } : undefined}>
       <KeyValueGrid items={[
         { label: "Category", value: project.category },
         { label: "Status", value: projectStatusName(project.status) },
         { label: "Start date", value: project.startingDate ? formatDay(project.startingDate) : undefined },
         { label: "Expected completion", value: project.expectedCompletionDate ? formatDay(project.expectedCompletionDate) : undefined },
+        { label: "Floors", value: floorSummary(project.floors) },
       ]} />
     </Card>
   );
@@ -340,7 +365,7 @@ function UnitsTab({ units, canWrite, isPhone, onAdd }: {
                   reference={`Unit ${unit.unitNumber}`}
                   status={shownStatus}
                   title={unit.unitType || "—"}
-                  detail={`${floorLabel(unit.floorNumber)} · ${formatSqFt(unit.size)}`}
+                  detail={`${floorName(unit.floorName, unit.floorNumber)} · ${formatSqFt(unit.size)}`}
                   value={formatPkr(unit.price)}
                 />
               );

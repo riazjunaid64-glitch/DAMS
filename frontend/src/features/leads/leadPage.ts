@@ -85,14 +85,14 @@ export function floorLabel(floor: number): string {
   return `${floor}${suffix} floor`;
 }
 
-/** Units that can still be booked, the lead's apartment type first: "Unit 504 — 2 Bed · 5th floor". */
+/** Units that can still be booked, the lead's apartment type first: "Unit 504 — 2 Bed · 5th floor", by the project's floor name. */
 export function unitChoices(units: UnitLookup[], propertyType?: string | null) {
   const wanted = propertyType?.trim().toLowerCase();
   const rank = (unit: UnitLookup) => (wanted && unit.type.trim().toLowerCase() === wanted ? 0 : 1);
   return units
     .filter((unit) => unit.status === "Available")
     .sort((a, b) => rank(a) - rank(b) || a.number.localeCompare(b.number, undefined, { numeric: true }))
-    .map((unit) => ({ value: String(unit.id), label: `Unit ${unit.number} — ${[unit.type, floorLabel(unit.floor)].filter(Boolean).join(" · ")}` }));
+    .map((unit) => ({ value: String(unit.id), label: `Unit ${unit.number} — ${[unit.type, unit.floorName || floorLabel(unit.floor)].filter(Boolean).join(" · ")}` }));
 }
 
 /** Tomorrow / In 3 days / Next week: quick days for a follow-up. */

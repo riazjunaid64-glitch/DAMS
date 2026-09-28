@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.ProjectDtos
@@ -31,5 +32,12 @@ namespace DAMS.Application.DTOs.ProjectDtos
         public int BookedUnits { get; set; }
 
         public int SoldUnits { get; set; }
+
+        /// <summary>0 while the project has no floor list.</summary>
+        public int FloorCount { get; set; }
+
+        /// <summary>The floor list, bottom to top. Only the project detail fills it; the list leaves it out.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<ProjectFloorDto>? Floors { get; set; }
     }
 }
