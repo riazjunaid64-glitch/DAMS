@@ -1,15 +1,13 @@
 import { useEffect, useState } from "react";
-import AppSelect from "../../lib/AppSelect.tsx";
-import Button from "../../lib/Button.tsx";
-import { CrmModal, ErrorBanner, inputClass, Label } from "../leads/CrmUi.tsx";
+import { Button, Dropdown, IconChevronRight, Modal, useToast } from "../../components/ui";
 import { loadProjects } from "../leads/leadApi.ts";
-import { enumLabel, type ProjectLookup } from "../leads/types.ts";
-import { getLeadFormMapping, saveLeadFormMapping } from "./metaIntegrationApi.ts";
+import type { ProjectLookup } from "../leads/types.ts";
+import { getLeadFormMapping, saveLeadFormMapping, syncMetaConnection } from "./metaIntegrationApi.ts";
 import {
   answerTargetLabels,
   answerTargetValues,
   buildFormMappingRequest,
-  draftFromMapping,
+  initialFormDraft,
   mappableQuestions,
   questionText,
   withOptionValue,
@@ -18,149 +16,162 @@ import {
 } from "./metaIntegrationState.ts";
 import type { LeadFormAnswerTarget, LeadFormMapping, LeadFormQuestion, MetaResource } from "./types.ts";
 
+const TARGETS = [
+  { value: "", label: "Don't save" },
+  ...(Object.keys(answerTargetLabels) as LeadFormAnswerTarget[]).map((value) => ({ value, label: answerTargetLabels[value] })),
+];
+
 /**
- * Links a Meta lead form to a project and maps its multiple-choice answers to lead fields.
- * Saved per form, not per connection, and applied only to leads that arrive afterwards.
+ * Sets how a Facebook form's multiple-choice answers are saved on new leads.
+ * A saved mapping is kept; obvious answers are pre-selected when nothing is saved yet.
  */
-export default function LeadFormMappingDialog({ form, onClose, onSaved }: {
+export default function LeadFormMappingDialog({ form, connectionId, onClose, onSaved }: {
   form: MetaResource;
+  connectionId: number;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const toast = useToast();
   const [mapping, setMapping] = useState<LeadFormMapping | null>(null);
   const [projects, setProjects] = useState<ProjectLookup[]>([]);
   const [draft, setDraft] = useState<FormMappingDraft>({ projectId: "", questions: {} });
-  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const apply = (loaded: LeadFormMapping, projectList: ProjectLookup[]) => {
+    setMapping(loaded);
+    setProjects(projectList);
+    setDraft(initialFormDraft(loaded, projectList));
+  };
 
   useEffect(() => {
     let current = true;
+    setLoadError(null);
     Promise.all([getLeadFormMapping(form.externalId), loadProjects()])
-      .then(([loaded, projectList]) => {
-        if (!current) return;
-        setMapping(loaded);
-        setDraft(draftFromMapping(loaded));
-        setProjects(projectList);
-      })
+      .then(([loaded, projectList]) => { if (current) apply(loaded, projectList); })
       .catch((caught: unknown) => {
-        if (current) setError(caught instanceof Error ? caught.message : "This form's mapping could not be loaded.");
+        if (!current) return;
+        const message = caught instanceof Error ? caught.message : "This form's answers could not be loaded.";
+        setLoadError(message);
+        toast.error(message);
       });
-    return () => {
-      current = false;
-    };
-  }, [form.externalId]);
+    return () => { current = false; };
+  }, [form.externalId, toast]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const result = await syncMetaConnection(connectionId);
+      const loaded = await getLeadFormMapping(form.externalId);
+      apply(loaded, projects);
+      if (result.warning) toast.error(result.warning);
+      else toast.success("Forms refreshed");
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Forms could not be refreshed.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const save = async () => {
     if (!mapping) return;
     setSaving(true);
-    setError(null);
     try {
       await saveLeadFormMapping(form.externalId, buildFormMappingRequest(mapping, draft));
+      toast.success("Answers saved");
       onSaved();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The mapping could not be saved.");
-    } finally {
+      const message = caught instanceof Error ? caught.message : "The answers could not be saved.";
+      toast.error(message);
+      if (/reload/i.test(message)) {
+        try {
+          const loaded = await getLeadFormMapping(form.externalId);
+          apply(loaded, projects);
+        } catch {
+          // The toast already says to reload; closing is still available.
+        }
+      }
       setSaving(false);
     }
   };
 
   const questions = mapping ? mappableQuestions(mapping) : [];
+  const unread = mapping !== null && mapping.questions.length === 0;
+  const subtitle = `${form.name ?? "Lead form"} · applies to new leads`;
 
   return (
-    <CrmModal
+    <Modal
       open
-      wide
-      title={`Map lead form: ${form.name ?? form.externalId}`}
-      subtitle="Applies to leads that arrive from now on. Leads already received are not changed."
       onClose={onClose}
-      footer={
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button disabled={!mapping || saving} onClick={() => void save()}>{saving ? "Saving…" : "Save mapping"}</Button>
-        </div>
-      }
+      size="lg"
+      phoneLayout="fullscreen"
+      busy={saving}
+      title={<span className="block">Set up answers<span className="mt-1 block truncate text-small font-bold text-ink-muted">{subtitle}</span></span>}
+      primaryAction={{ label: "Save", onClick: () => void save(), disabled: !mapping || unread, loading: saving }}
     >
-      {error && <ErrorBanner message={error} />}
       {!mapping ? (
-        !error && <p className="text-sm text-[var(--text-muted)]">Loading the form…</p>
+        loadError
+          ? <p className="m-0 text-sm font-bold text-danger">{loadError}</p>
+          : <div className="h-16 animate-pulse rounded-card bg-track" />
+      ) : unread ? (
+        <div className="flex flex-col items-start gap-3">
+          <p className="m-0 text-sm font-bold text-ink">Refresh forms first</p>
+          <Button variant="outline" loading={refreshing} onClick={() => void refresh()}>Refresh</Button>
+        </div>
       ) : (
-        <div className="space-y-5">
-          <div>
-            <Label>Project</Label>
-            <AppSelect aria-label="Project" className={inputClass} value={draft.projectId} onChange={(event) => setDraft({ ...draft, projectId: event.target.value })}>
-              <option value="">No project</option>
-              {projects.map((project) => <option key={project.id} value={String(project.id)}>{project.name}</option>)}
-            </AppSelect>
-          </div>
-
-          {questions.length === 0 ? (
-            <p className="text-sm text-[var(--text-muted)]">
-              {mapping.questions.length === 0
-                ? "DAMS has not read this form's questions yet. Run Sync now on its Meta connection, then come back to map its answers."
-                : "This form has no multiple-choice questions to map."}
-            </p>
-          ) : questions.map((question) => (
-            <QuestionMapping
+        <div className="flex flex-col gap-4">
+          <Dropdown
+            label="Project"
+            value={draft.projectId}
+            onChange={(value) => setDraft({ ...draft, projectId: value })}
+            options={projects.map((project) => ({ value: String(project.id), label: project.name }))}
+            placeholder="Select a project"
+          />
+          {questions.map((question) => (
+            <QuestionCard
               key={question.key}
               question={question}
               target={draft.questions[question.key]?.target ?? ""}
               values={draft.questions[question.key]?.values ?? {}}
-              onTarget={(target) => setDraft(withQuestionTarget(draft, question.key, target))}
+              onTarget={(target) => setDraft(withQuestionTarget(draft, question.key, target, question.options))}
               onValue={(optionKey, value) => setDraft(withOptionValue(draft, question.key, optionKey, value))}
             />
           ))}
         </div>
       )}
-    </CrmModal>
+    </Modal>
   );
 }
 
-function QuestionMapping({ question, target, values, onTarget, onValue }: {
+function QuestionCard({ question, target, values, onTarget, onValue }: {
   question: LeadFormQuestion;
   target: LeadFormAnswerTarget | "";
   values: Record<string, string>;
   onTarget: (target: LeadFormAnswerTarget | "") => void;
   onValue: (optionKey: string, value: string) => void;
 }) {
+  const name = questionText(question);
   return (
-    <div className="rounded-xl border border-[var(--border)] p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-[var(--text-primary)]">{questionText(question)}</p>
-          <p className="truncate text-xs text-[var(--text-muted)]">{question.key}</p>
-        </div>
-        <div className="sm:w-56">
-          <AppSelect aria-label={`Lead field for ${questionText(question)}`} className={inputClass} value={target} onChange={(event) => onTarget(event.target.value as LeadFormAnswerTarget | "")}>
-            <option value="">Keep as an answer only</option>
-            {(Object.keys(answerTargetLabels) as LeadFormAnswerTarget[]).map((value) => (
-              <option key={value} value={value}>{answerTargetLabels[value]}</option>
-            ))}
-          </AppSelect>
-        </div>
+    <div className="rounded-card border border-line p-4">
+      <p className="m-0 text-body font-extrabold text-ink">{name}</p>
+      <div className="mt-3 max-w-sm">
+        <Dropdown label="Save answer as" value={target} onChange={(value) => onTarget(value as LeadFormAnswerTarget | "")} options={TARGETS} />
       </div>
-
       {target && (
-        <div className="mt-3 grid gap-2">
+        <div className="mt-3 flex flex-col gap-2">
           {question.options.map((option) => {
             const optionName = option.value || option.key;
             return (
-              <div key={option.key} className="grid items-center gap-2 sm:grid-cols-2">
-                <p className="text-sm text-[var(--text-secondary)]">{optionName}</p>
-                {target === "PropertyType" ? (
-                  <input
-                    aria-label={`Property type for ${optionName}`}
-                    className={inputClass}
-                    maxLength={100}
-                    placeholder="Leave empty to keep unmapped"
-                    value={values[option.key] ?? ""}
-                    onChange={(event) => onValue(option.key, event.target.value)}
-                  />
-                ) : (
-                  <AppSelect aria-label={`${answerTargetLabels[target]} for ${optionName}`} className={inputClass} value={values[option.key] ?? ""} onChange={(event) => onValue(option.key, event.target.value)}>
-                    <option value="">Leave unmapped</option>
-                    {answerTargetValues[target].map((value) => <option key={value} value={value}>{enumLabel(value)}</option>)}
-                  </AppSelect>
-                )}
+              <div key={option.key} className="grid grid-cols-[minmax(0,1fr)_auto_minmax(8rem,1fr)] items-center gap-2">
+                <p className="m-0 text-sm font-bold text-ink">{optionName}</p>
+                <IconChevronRight size={16} className="text-ink-faint" />
+                <Dropdown
+                  aria-label={`${answerTargetLabels[target]} for ${optionName}`}
+                  value={values[option.key] ?? ""}
+                  onChange={(value) => onValue(option.key, value)}
+                  options={[{ value: "", label: "Don't save" }, ...answerTargetValues[target]]}
+                />
               </div>
             );
           })}

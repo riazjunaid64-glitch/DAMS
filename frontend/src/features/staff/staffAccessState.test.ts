@@ -6,6 +6,7 @@ import type {
 } from "../leads/types.ts";
 import {
   accessLabel,
+  accountsWithLogin,
   applyLoginSelection,
   buildProvisionPayload,
   buildUpdatePayload,
@@ -16,10 +17,13 @@ import {
   describeResendOutcome,
   invitationState,
   invitationSummary,
+  inviteReady,
+  isOwnAccount,
   loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
   provisionableEmployees,
+  roleFilterOptions,
   usesExistingEmployee,
 } from "./staffAccessState.ts";
 
@@ -55,9 +59,9 @@ const resend = (overrides: Partial<StaffInvitationResult> = {}): StaffInvitation
 describe("access presentation", () => {
   it("says an employee has no account rather than showing an empty state", () => {
     expect(accessLabel("None")).toBe("No account");
-    expect(accessLabel("Invited")).toBe("Invited");
+    expect(accessLabel("Invited")).toBe("Invite sent");
     expect(accessLabel("Active")).toBe("Active");
-    expect(accessLabel("Disabled")).toBe("Disabled");
+    expect(accessLabel("Disabled")).toBe("No access");
   });
 
   it("keeps employment status and DAMS access as separate facts", () => {
@@ -65,7 +69,7 @@ describe("access presentation", () => {
     // activated a login yet.
     const waiting = account({ status: "Active", access: "Invited" });
     expect(waiting.status).toBe("Active");
-    expect(accessLabel(waiting.access)).toBe("Invited");
+    expect(accessLabel(waiting.access)).toBe("Invite sent");
   });
 });
 
@@ -241,9 +245,10 @@ describe("request payloads", () => {
     expect(payload.existingUserId).toBeNull();
   });
 
-  it("sends only role and employment status on update, with no password", () => {
+  it("sends only the role on update, with no employment status and no password", () => {
     const payload = buildUpdatePayload(newManageForm(account({ role: "Manager", status: "OnLeave" })));
-    expect(payload).toEqual({ role: "Manager", status: "OnLeave" });
+    expect(payload).toEqual({ role: "Manager" });
+    expect(payload).not.toHaveProperty("status");
     expect(JSON.stringify(payload).toLowerCase()).not.toContain("password");
   });
 });
@@ -346,5 +351,54 @@ describe("HR data belongs to the Employees module", () => {
     const employee = account({ access: "None" });
     const payload = buildProvisionPayload(newProvisionForm(employee), employee);
     expect(JSON.stringify(payload).toLowerCase()).not.toContain("password");
+  });
+});
+
+describe("who appears on the staff accounts tab", () => {
+  const rows = [
+    account({ employeeId: 1, access: "None", role: "Employee", userId: null }),
+    account({ employeeId: 2, access: "Active", role: "Admin" }),
+    account({ employeeId: 3, access: "Invited", role: "Accountant" }),
+    account({ employeeId: 4, access: "Disabled", role: "Manager" }),
+  ];
+
+  it("lists only people who already have a login", () => {
+    expect(accountsWithLogin(rows).map((row) => row.employeeId)).toEqual([2, 3, 4]);
+  });
+
+  it("counts each role from the rows on screen", () => {
+    const logins = accountsWithLogin(rows);
+    expect(roleFilterOptions(logins).map((option) => option.label)).toEqual([
+      "Everyone (3)",
+      "Admin (1)",
+      "Sales manager (1)",
+      "Sales employee (0)",
+      "Accountant (1)",
+    ]);
+  });
+
+  it("recognises the signed-in person's own login", () => {
+    expect(isOwnAccount("7", account({ userId: 7 }))).toBe(true);
+    expect(isOwnAccount(7, account({ userId: 7 }))).toBe(true);
+    expect(isOwnAccount("8", account({ userId: 7 }))).toBe(false);
+    expect(isOwnAccount("7", account({ userId: null }))).toBe(false);
+  });
+});
+
+describe("inviteReady", () => {
+  const ready = { employeeId: "4", fullName: "Sana Sales", email: "sana@dams.test", phone: "", role: "Employee" };
+
+  it("is ready for an existing employee once name, email and role are set", () => {
+    expect(inviteReady(ready)).toBe(true);
+  });
+
+  it("asks for a phone only when the employee record is being created here", () => {
+    expect(inviteReady({ ...ready, employeeId: "new", phone: "123456" })).toBe(false);
+    expect(inviteReady({ ...ready, employeeId: "new", phone: "03001234567" })).toBe(true);
+  });
+
+  it("stays closed until an employee is chosen and the email is a real address", () => {
+    expect(inviteReady({ ...ready, employeeId: "" })).toBe(false);
+    expect(inviteReady({ ...ready, email: "not-an-email" })).toBe(false);
   });
 });

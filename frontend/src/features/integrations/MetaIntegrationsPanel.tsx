@@ -1,564 +1,445 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import Button from "../../lib/Button.tsx";
-import { CrmModal, ErrorBanner, inputClass, Label } from "../leads/CrmUi.tsx";
-import { formatDateTime } from "../leads/types.ts";
-import LeadFormMappingDialog from "./LeadFormMappingDialog.tsx";
-import type { MetaConnection, MetaEvent, MetaLeadImportResult, MetaResource, MetaResourceGroup } from "./types.ts";
+import { useCallback, useEffect, useState } from "react";
 import {
-  canSync,
+  Button,
+  Card,
+  ConfirmDialog,
+  DateField,
+  EmptyState,
+  IconLink,
+  Modal,
+  Notice,
+  StatusBadge,
+  Toggle,
+  useToast,
+} from "../../components/ui";
+import { formatMonthDay, formatWhen, karachiDateInput } from "../../lib/dates.ts";
+import LeadFormMappingDialog from "./LeadFormMappingDialog.tsx";
+import {
+  activeConnections,
   connectionStatusLabel,
-  connectionStatusTone,
-  createLatestRequestGuard,
-  emptyEventsMessage,
-  eventListLimit,
-  eventListLimitNote,
-  type MetaEventFilter,
-  deliverySummary,
-  earliestImportDate,
-  importDate,
-  importSummary,
+  formDetailLine,
+  formSetupState,
+  importOutcomeLine,
+  instagramForPage,
   isAwaitingFirstSync,
   MAX_IMPORT_DAYS,
-  formMappingSummary,
-  isToggleable,
-  isMappableForm,
-  lastLeadSummary,
+  pageChannelLine,
+  pageLeadLine,
   readCallbackResult,
-  signInExpiry,
-  summarizeCounts,
-  syncRejectionWarning,
 } from "./metaIntegrationState.ts";
 import {
   disconnectMetaConnection,
   importMetaLeads,
-  listMetaEvents,
   listMetaConnections,
   listMetaResources,
-  retryMetaEvent,
+  retryFailedMetaEvents,
   setMetaResourceEnabled,
   startMetaConnect,
   syncMetaConnection,
 } from "./metaIntegrationApi.ts";
+import type { MetaConnection, MetaLeadImportResult, MetaResource } from "./types.ts";
+
+const STEPS = [
+  { title: "Click Connect with Facebook", text: "A Facebook window opens." },
+  { title: "Log in and approve", text: "Use the Facebook account that manages the Floria Heights Page. You never type a password into DAMS." },
+  { title: "Turn on your Page", text: "Pick the Page here. New leads start arriving within a minute." },
+];
 
 /**
- * Connect and manage Meta accounts.
- *
- * Loads its own data rather than joining the settings page's shared load, so a server with
- * no Meta configuration cannot break the rest of CRM settings.
+ * Facebook and Instagram lead ads. Loads on its own, so a Meta problem cannot take the
+ * staff accounts tab down with it.
  */
 export default function MetaIntegrationsPanel() {
+  const toast = useToast();
   const [connections, setConnections] = useState<MetaConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       setConnections(await listMetaConnections());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Meta connections could not be loaded.");
+      setError(caught instanceof Error ? caught.message : "Facebook could not be loaded.");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
-  // Read the outcome Meta redirected back with, then strip it from the URL so a refresh
-  // does not re-announce a connection that happened minutes ago.
   useEffect(() => {
     const result = readCallbackResult(window.location.search);
     if (result.kind === "none") return;
-
-    if (result.kind === "connected") setNotice("Meta account connected. Discovering Pages and forms…");
-    else setError(result.message);
-
+    if (result.kind === "connected") toast.success("Facebook connected. Discovering Pages and forms…");
+    else toast.error(result.message);
     const url = new URL(window.location.href);
     url.searchParams.delete("meta");
     url.searchParams.delete("reason");
     window.history.replaceState({}, "", url.toString());
-  }, []);
+  }, [toast]);
 
   const connect = async () => {
     setConnecting(true);
-    setError(null);
     try {
       const { authorizationUrl } = await startMetaConnect(`${window.location.pathname}?tab=integrations`);
-      // A full navigation, not a fetch: consent happens on Meta's own origin.
       window.location.assign(authorizationUrl);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The Meta connection could not be started.");
+      toast.error(caught instanceof Error ? caught.message : "Facebook could not be opened.");
       setConnecting(false);
     }
   };
 
+  if (loading) {
+    return <div className="flex flex-col gap-2.5">{Array.from({ length: 3 }, (_, index) => <div key={index} className="h-16 animate-pulse rounded-card bg-track" />)}</div>;
+  }
+  if (error && connections.length === 0) {
+    return <EmptyState icon={<IconLink size={26} />} title="Facebook could not be loaded" action={<Button variant="outline" onClick={() => { setLoading(true); void load(); }}>Try again</Button>} />;
+  }
+
+  const active = activeConnections(connections);
+  if (active.length === 0) return <DisconnectedCard connecting={connecting} onConnect={() => void connect()} />;
+
   return (
-    <div>
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-[var(--text-heading)]">Integrations</h2>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Connect Meta so Facebook and Instagram lead ads arrive in the normal lead workflow. Leads are
-            only received from Pages you enable.
-          </p>
-        </div>
-        <Button size="sm" disabled={connecting} onClick={() => void connect()}>
-          {connecting ? "Opening Meta…" : "+ Connect Meta"}
-        </Button>
-      </div>
-
-      {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-      {notice && (
-        <p className="mb-4 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-4 py-3 text-sm text-emerald-200">
-          {notice}
-        </p>
-      )}
-
-      {loading ? (
-        <p className="py-16 text-center text-sm text-[var(--text-muted)]">Loading Meta connections…</p>
-      ) : connections.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--border)] py-16 text-center text-sm text-[var(--text-muted)]">
-          No Meta account is connected yet.
-        </p>
-      ) : (
-        <div className="space-y-4">
-          {connections.map((connection) => (
-            <ConnectionCard key={connection.id} connection={connection} onChanged={() => void load()} />
-          ))}
-        </div>
-      )}
+    <div className="flex flex-col gap-4">
+      {active.map((connection) => (
+        <ConnectedAccount key={connection.id} connection={connection} connecting={connecting} onConnect={() => void connect()} onChanged={() => void load()} />
+      ))}
     </div>
   );
 }
 
-function ConnectionCard({ connection, onChanged }: { connection: MetaConnection; onChanged: () => void }) {
-  const [groups, setGroups] = useState<MetaResourceGroup[]>([]);
-  // Tagged with the filter they were loaded for, so a list is never shown under the wrong one.
-  const [events, setEvents] = useState<{ filter: MetaEventFilter; items: MetaEvent[] | "failed" } | null>(null);
-  const [eventFilter, setEventFilter] = useState<MetaEventFilter>("All");
-  const loadGuard = useRef(createLatestRequestGuard());
-  const [expanded, setExpanded] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+function DisconnectedCard({ connecting, onConnect }: { connecting: boolean; onConnect: () => void }) {
+  return (
+    <Card>
+      <div className="flex items-start gap-3">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-field bg-page text-ink-2"><IconLink size={18} /></span>
+        <div>
+          <h2 className="m-0 text-body font-extrabold text-ink">Facebook & Instagram lead ads</h2>
+          <p className="m-0 mt-1 text-small text-ink-2">Leads from your ad forms arrive in DAMS automatically, with their answers filled in.</p>
+        </div>
+      </div>
+      <ol className="mt-4 flex flex-col gap-3 rounded-card bg-page p-4">
+        {STEPS.map((step, index) => (
+          <li key={step.title} className="flex gap-3">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-label font-bold text-white">{index + 1}</span>
+            <span>
+              <span className="block text-sm font-extrabold text-ink">{step.title}</span>
+              <span className="block text-small text-ink-2">{step.text}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      <Button className="mt-4" loading={connecting} onClick={onConnect}>Connect with Facebook</Button>
+    </Card>
+  );
+}
+
+function ConnectedAccount({ connection, connecting, onConnect, onChanged }: {
+  connection: MetaConnection;
+  connecting: boolean;
+  onConnect: () => void;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [resources, setResources] = useState<MetaResource[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [syncWarning, setSyncWarning] = useState<string | null>(null);
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
-  const expiry = signInExpiry(connection);
-  const rejection = syncRejectionWarning(connection);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmOff, setConfirmOff] = useState(false);
+  const [importing, setImporting] = useState<MetaResource | null>(null);
+  const [mapping, setMapping] = useState<MetaResource | null>(null);
 
   const loadResources = useCallback(async () => {
     setError(null);
-    const isCurrent = loadGuard.current.begin();
-    const filter = eventFilter;
-    const [resourcesResult, eventsResult] = await Promise.allSettled([
-      listMetaResources(connection.id),
-      listMetaEvents(connection.id, eventListLimit(filter), filter === "All" ? undefined : filter),
-    ]);
-    // A newer load (another filter, or a refresh after an action) has started since; its
-    // answer is the one to show, even if this older one arrived after it.
-    if (!isCurrent()) return;
-    const failures: string[] = [];
-    if (resourcesResult.status === "fulfilled") setGroups(resourcesResult.value);
-    else failures.push("Resources could not be loaded.");
-    if (eventsResult.status === "fulfilled") setEvents({ filter, items: eventsResult.value });
-    else {
-      setEvents({ filter, items: "failed" });
-      failures.push("Lead events could not be loaded.");
+    try {
+      const groups = await listMetaResources(connection.id);
+      setResources(groups.flatMap((group) => group.items).filter((item) => item.isActive));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Pages could not be loaded.");
+    } finally {
+      setLoading(false);
     }
-    if (failures.length > 0) setError(failures.join(" "));
-  }, [connection.id, eventFilter]);
+  }, [connection.id]);
 
-  useEffect(() => {
-    if (expanded) void loadResources();
-  }, [expanded, loadResources]);
+  useEffect(() => { void loadResources(); }, [loadResources]);
 
   const run = async (label: string, action: () => Promise<unknown>) => {
     setBusy(label);
-    setError(null);
-    setSyncWarning(null);
     try {
       await action();
       await loadResources();
       onChanged();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : `${label} failed.`);
+      toast.error(caught instanceof Error ? caught.message : `${label} failed.`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pages = resources.filter((item) => item.resourceType === "facebook_page");
+  const forms = resources.filter((item) => item.resourceType === "lead_form");
+  const expired = connection.status === "NeedsReauthorization";
+  const failed = connection.recentFailedCount ?? 0;
+  const pageName = (form: MetaResource) => pages.find((page) => page.externalId === form.parentExternalId)?.name;
+
+  const retry = async () => {
+    setBusy("Retry");
+    try {
+      const result = await retryFailedMetaEvents(connection.id);
+      if (result.requeued === 0) toast.error(result.skippedReason ?? "No leads were sent again.");
+      else toast.success(`${result.requeued} ${result.requeued === 1 ? "lead" : "leads"} sent again`);
+      await loadResources();
+      onChanged();
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Leads could not be sent again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refresh = async () => {
+    setBusy("Refresh");
+    try {
+      const result = await syncMetaConnection(connection.id);
+      if (result.warning) toast.error(result.warning);
+      else toast.success("Forms refreshed");
+      await loadResources();
+      onChanged();
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Forms could not be refreshed.");
     } finally {
       setBusy(null);
     }
   };
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-semibold text-[var(--text-heading)]">{connection.displayName}</p>
-            <span className={`rounded-full border px-2.5 py-0.5 text-xs ${connectionStatusTone(connection.status)}`}>
-              {connectionStatusLabel(connection.status)}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">
-            Connected {formatDateTime(connection.connectedAt)}
-            {connection.connectedByName ? ` by ${connection.connectedByName}` : ""} · Last sync{" "}
-            {isAwaitingFirstSync(connection) ? "pending" : formatDateTime(connection.lastSyncedAt)}
-          </p>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">{summarizeCounts(connection)}</p>
-          <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{deliverySummary(connection)}</p>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            {lastLeadSummary(connection, formatDateTime)}
-            {expiry ? (
-              <>
-                {" · "}
-                <span className={expiry.tone === "expired" ? "text-red-300" : expiry.tone === "warning" ? "text-amber-200" : undefined}>
-                  {expiry.text}
-                </span>
-              </>
-            ) : null}
-          </p>
-          {(connection.failedEventCount || connection.pendingEventCount) ? (
-            <div className="mt-2 flex flex-wrap gap-2 text-xs">
-              {connection.failedEventCount ? <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-red-300">{connection.failedEventCount} failed event{connection.failedEventCount === 1 ? "" : "s"}</span> : null}
-              {connection.pendingEventCount ? <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-amber-200">{connection.pendingEventCount} pending event{connection.pendingEventCount === 1 ? "" : "s"}</span> : null}
+    <div className="flex flex-col gap-4">
+      <Card>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-field bg-page text-ink-2"><IconLink size={18} /></span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="m-0 text-body font-extrabold text-ink">Facebook & Instagram</h2>
+                <StatusBadge status={connectionStatusLabel(connection.status)} tone={expired ? "orange" : "green"} />
+              </div>
+              <p className="m-0 mt-1 text-small text-ink-muted">{connectedLine(connection)}</p>
             </div>
-          ) : null}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1 md:flex-none" loading={connecting} onClick={onConnect}>Reconnect</Button>
+            <Button variant="danger" className="flex-1 md:flex-none" disabled={busy !== null} onClick={() => setConfirmOff(true)}>Disconnect</Button>
+          </div>
         </div>
+      </Card>
 
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? "Hide resources" : "Manage resources"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy !== null || !canSync(connection)}
-            onClick={() => void run("Sync", async () => {
-              // A sync can finish yet skip part of the account; say so rather than look complete.
-              const result = await syncMetaConnection(connection.id);
-              setSyncWarning(result.warning ?? null);
-            })}
-          >
-            {busy === "Sync" ? "Syncing…" : "Sync now"}
-          </Button>
-          {connection.status !== "Disconnected" && (
-            <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirmDisconnect(true)}>
-              Disconnect
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {connection.status === "NeedsReauthorization" && (
-        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-200">
-          This account needs to be reconnected before leads can be received. Use Connect Meta above and approve
-          all requested permissions.
-          {connection.lastError ? <span className="mt-1 block text-xs opacity-80">{connection.lastError}</span> : null}
-        </p>
-      )}
-
-      {rejection && (
-        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-200">
-          {rejection}
-          <span className="mt-1 block text-xs opacity-80">
-            Since {formatDateTime(connection.syncRejectedAt)}{connection.lastError ? `: ${connection.lastError}` : ""}
-          </span>
-        </p>
-      )}
-
-      {syncWarning && (
-        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-xs text-amber-200">
-          {syncWarning}
-        </p>
-      )}
-
-      {connection.status !== "NeedsReauthorization" && !rejection && connection.lastError && (
-        <p className="mt-3 text-xs text-[var(--text-muted)]">
-          Last error {formatDateTime(connection.lastErrorAt)}: {connection.lastError}
-        </p>
-      )}
-
-      {error && (
-        <div className="mt-3">
-          <ErrorBanner message={error} />
+      {expired ? (
+        <Notice
+          tone="red"
+          title="Facebook sign-in expired — Reconnect to keep receiving leads"
+          action={<Button variant="outline" size="sm" onClick={onConnect}>Reconnect</Button>}
+        />
+      ) : failed > 0 ? (
+        <Notice
+          tone="red"
+          title={`${failed} ${failed === 1 ? "lead" : "leads"} could not be received`}
+          message={connection.lastFailedAt ? `Last try ${lowerWhen(connection.lastFailedAt)}` : undefined}
+          action={<Button variant="outline" size="sm" loading={busy === "Retry"} onClick={() => void retry()}>Retry now</Button>}
+        />
+      ) : (
+        <div className="flex items-center gap-2 rounded-card border border-line bg-card px-4 py-3.5 text-sm text-ink">
+          <span className="size-2 shrink-0 rounded-full bg-success" />
+          All leads delivered — no problems in the last 7 days
         </div>
       )}
 
-      {expanded && (
-        <div className="mt-4 space-y-4 border-t border-[var(--border)] pt-4">
-          {isAwaitingFirstSync(connection) && groups.length === 0 ? (
-            <p className="text-sm text-[var(--text-muted)]">
-              Discovering Pages and forms from Meta. This runs in the background and usually takes under a minute.
-            </p>
-          ) : groups.length === 0 ? (
-            <p className="text-sm text-[var(--text-muted)]">Nothing has been discovered yet. Try Sync now.</p>
-          ) : groups.map((group) => (
-            <ResourceGroup
-              key={group.resourceType}
-              connectionId={connection.id}
-              group={group}
-              busy={busy}
-              onToggle={(resource, isEnabled) =>
-                void run(`Resource ${resource.id}`, () =>
-                  setMetaResourceEnabled(connection.id, resource.id, isEnabled),
-                )
-              }
-              onMapped={() => void loadResources()}
-            />
-          ))}
-          <EventList
-            events={events?.filter === eventFilter ? events.items : "loading"}
-            busy={busy}
-            filter={eventFilter}
-            onFilterChange={setEventFilter}
-            onRetry={(eventId) => void run(`Event ${eventId}`, () => retryMetaEvent(connection.id, eventId))}
+      <section className="flex flex-col gap-3">
+        <h3 className="m-0 text-caption font-bold uppercase tracking-[0.4px] text-ink-muted">Your pages</h3>
+        {loading ? <div className="h-16 animate-pulse rounded-card bg-track" /> : error ? (
+          <EmptyState title="Pages could not be loaded" action={<Button variant="outline" onClick={() => { setLoading(true); void loadResources(); }}>Try again</Button>} />
+        ) : pages.length === 0 ? (
+          <p className="m-0 text-small text-ink-muted">{isAwaitingFirstSync(connection) ? "Discovering Pages and forms. This usually takes under a minute." : "No Pages yet."}</p>
+        ) : pages.map((page) => (
+          <PageCard
+            key={page.id}
+            page={page}
+            instagram={instagramForPage(resources, page)}
+            busy={busy === `page-${page.id}`}
+            onToggle={(enabled) => void run(`page-${page.id}`, () => setMetaResourceEnabled(connection.id, page.id, enabled))}
+            onImport={() => setImporting(page)}
           />
-        </div>
-      )}
-
-      {confirmDisconnect && (
-        <CrmModal
-          open
-          title="Disconnect this Meta account?"
-          subtitle="Lead delivery stops immediately. Leads already captured, and the record of where they came from, are kept."
-          onClose={() => setConfirmDisconnect(false)}
-          footer={
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setConfirmDisconnect(false)}>
-                Cancel
-              </Button>
-              <Button
-                disabled={busy !== null}
-                onClick={() => {
-                  setConfirmDisconnect(false);
-                  void run("Disconnect", () => disconnectMetaConnection(connection.id));
-                }}
-              >
-                Disconnect
-              </Button>
-            </div>
-          }
-        >
-          <p className="text-sm text-[var(--text-secondary)]">
-            DAMS will stop receiving new leads from every Page on this account and will delete its stored
-            credentials. You can reconnect the same account later.
-          </p>
-        </CrmModal>
-      )}
-    </div>
-  );
-}
-
-function ResourceGroup({
-  connectionId,
-  group,
-  busy,
-  onToggle,
-  onMapped,
-}: {
-  connectionId: number;
-  group: MetaResourceGroup;
-  busy: string | null;
-  onToggle: (resource: MetaResource, isEnabled: boolean) => void;
-  onMapped: () => void;
-}) {
-  const [mappingForm, setMappingForm] = useState<MetaResource | null>(null);
-  const [importPage, setImportPage] = useState<MetaResource | null>(null);
-
-  return (
-    <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{group.label}</h3>
-      <div className="space-y-2">
-        {group.items.map((resource) => (
-          <div
-            key={resource.id}
-            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] px-4 py-3"
-          >
-            <div className="min-w-0">
-              <p className="truncate text-sm text-[var(--text-primary)]">{resource.name ?? resource.externalId}</p>
-              <p className="text-xs text-[var(--text-muted)]">
-                {resource.externalId}
-                {resource.externalStatus ? ` · ${resource.externalStatus}` : ""}
-                {!resource.isActive ? " · no longer returned by Meta" : ""}
-              </p>
-            </div>
-
-            {isToggleable(resource) ? (
-              <div className="flex shrink-0 items-center gap-3">
-                {resource.isEnabled && resource.isActive && (
-                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setImportPage(resource)}>
-                    Import leads
-                  </Button>
-                )}
-                <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-                  <input
-                    type="checkbox"
-                    checked={resource.isEnabled}
-                    disabled={busy !== null || (!resource.isActive && !resource.isEnabled)}
-                    onChange={(e) => onToggle(resource, e.target.checked)}
-                  />
-                  {resource.isEnabled ? "Receiving leads" : "Enable"}
-                </label>
-              </div>
-            ) : isMappableForm(resource) ? (
-              <div className="flex shrink-0 items-center gap-3">
-                <span className="text-xs text-[var(--text-muted)]">{formMappingSummary(resource)}</span>
-                <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setMappingForm(resource)}>
-                  Map answers
-                </Button>
-              </div>
-            ) : (
-              <span className="shrink-0 text-xs text-[var(--text-muted)]">Discovered for attribution</span>
-            )}
-          </div>
         ))}
-      </div>
-      {importPage && (
-        <ImportLeadsDialog connectionId={connectionId} page={importPage} onClose={() => setImportPage(null)} />
+      </section>
+
+      <Card
+        title="Lead forms"
+        action={{ label: busy === "Refresh" ? "Refreshing…" : "Refresh forms", onClick: () => void refresh() }}
+      >
+        {forms.length === 0 ? (
+          <p className="m-0 text-small text-ink-muted">No lead forms yet.</p>
+        ) : (
+          <div>
+            {forms.map((form) => (
+              <FormRow key={form.id} form={form} pageName={pageName(form)} onSetup={() => setMapping(form)} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <ConfirmDialog
+        open={confirmOff}
+        danger
+        loading={busy === "Disconnect"}
+        title="Disconnect Facebook?"
+        message="New leads stop arriving until you connect again."
+        confirmLabel="Disconnect"
+        onClose={() => setConfirmOff(false)}
+        onConfirm={() => {
+          setConfirmOff(false);
+          void run("Disconnect", async () => {
+            await disconnectMetaConnection(connection.id);
+            toast.success("Facebook disconnected");
+          });
+        }}
+      />
+      {importing && (
+        <ImportLeadsDialog
+          connectionId={connection.id}
+          page={importing}
+          onClose={() => setImporting(null)}
+          onDone={() => { setImporting(null); void loadResources(); }}
+        />
       )}
-      {mappingForm && (
+      {mapping && (
         <LeadFormMappingDialog
-          form={mappingForm}
-          onClose={() => setMappingForm(null)}
-          onSaved={() => {
-            setMappingForm(null);
-            onMapped();
-          }}
+          form={mapping}
+          connectionId={connection.id}
+          onClose={() => setMapping(null)}
+          onSaved={() => { setMapping(null); void loadResources(); }}
         />
       )}
     </div>
   );
 }
 
-function EventList({ events, busy, filter, onFilterChange, onRetry }: {
-  events: MetaEvent[] | "loading" | "failed";
-  busy: string | null;
-  filter: MetaEventFilter;
-  onFilterChange: (filter: MetaEventFilter) => void;
-  onRetry: (eventId: number) => void;
+function connectedLine(connection: MetaConnection): string {
+  const who = connection.connectedByName ? ` by ${connection.connectedByName}` : "";
+  const renews = connection.tokenExpiresAt ? ` · sign-in renews by ${formatMonthDay(connection.tokenExpiresAt)}` : "";
+  return `Connected${who} on ${formatMonthDay(connection.connectedAt)}${renews}`;
+}
+
+function lowerWhen(iso: string): string {
+  return formatWhen(iso).replace(/^(Today|Tomorrow|Yesterday)/, (word) => word.toLowerCase());
+}
+
+function PageCard({ page, instagram, busy, onToggle, onImport }: {
+  page: MetaResource;
+  instagram?: MetaResource;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  onImport: () => void;
 }) {
+  const leadLine = pageLeadLine(page);
   return (
-    <div>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Lead events</h3>
-        <select
-          aria-label="Filter lead events"
-          value={filter}
-          onChange={(event) => onFilterChange(event.target.value as MetaEventFilter)}
-          className="rounded-lg border border-[var(--border)] bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--text-secondary)]"
-        >
-          <option value="All">Recent</option>
-          <option value="Failed">Failed</option>
-          <option value="Pending">Pending</option>
-          <option value="Retry">Retrying</option>
-          <option value="Processing">Processing</option>
-        </select>
+    <div className="rounded-card border border-line bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="m-0 text-body font-extrabold text-ink">{page.name ?? "Facebook Page"}</p>
+          <p className="m-0 mt-0.5 text-small text-ink-muted">{pageChannelLine(page, instagram)}</p>
+        </div>
+        <Toggle checked={page.isEnabled} disabled={busy} onChange={onToggle} label={<span className="sr-only">{page.isEnabled ? `Stop receiving leads from ${page.name}` : `Receive leads from ${page.name}`}</span>} />
       </div>
-      {events === "loading" ? (
-        <p className="text-sm text-[var(--text-muted)]">Loading events…</p>
-      ) : events === "failed" ? (
-        <p className="text-sm text-[var(--text-muted)]">Events could not be loaded.</p>
-      ) : events.length === 0 ? (
-        <p className="text-sm text-[var(--text-muted)]">{emptyEventsMessage(filter)}</p>
-      ) : (
-        <div className="space-y-2">
-          {events.map((event) => (
-            <div key={event.id} className="rounded-xl border border-[var(--border)] px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm text-[var(--text-primary)]">{event.eventType} · #{event.id}</p>
-                  <p className="text-xs text-[var(--text-muted)]">
-                    Received {formatDateTime(event.receivedAt)} · Attempts {event.attempts}
-                    {event.retryCount > 0 ? ` · Requeued ${event.retryCount} time${event.retryCount === 1 ? "" : "s"}` : ""}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={`rounded-full border px-2.5 py-0.5 text-xs ${event.status === "Failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : event.status === "Pending" || event.status === "Retry" ? "border-amber-500/30 bg-amber-500/10 text-amber-200" : "border-[var(--border)] text-[var(--text-muted)]"}`}>
-                    {event.status}
-                  </span>
-                  {event.status === "Failed" && (
-                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => onRetry(event.id)}>
-                      {busy === `Event ${event.id}` ? "Retrying…" : "Retry"}
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {event.lastError && <p className="mt-2 text-xs text-red-300">{event.lastError}</p>}
-              {event.lastRetriedAt && <p className="mt-1 text-xs text-[var(--text-muted)]">Last retry {formatDateTime(event.lastRetriedAt)}{event.lastRetriedByName ? ` by ${event.lastRetriedByName}` : ""}</p>}
-            </div>
-          ))}
-          {eventListLimitNote(filter, events.length) && (
-            <p className="text-xs text-[var(--text-muted)]">{eventListLimitNote(filter, events.length)}</p>
-          )}
+      {page.isEnabled && (
+        <div className="mt-3 flex flex-col gap-3 border-t border-line-soft pt-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge status="Receiving leads" tone="green" />
+            {leadLine && <span className="text-small text-ink-2">{leadLine}</span>}
+          </div>
+          <Button variant="outline" size="sm" onClick={onImport}>Import old leads</Button>
         </div>
       )}
     </div>
   );
 }
 
-/**
- * Recovers a Page's leads the webhook never delivered — for example those sent before the Page
- * was enabled here. Every lead form synced for the Page is read back to the chosen date.
- */
-function ImportLeadsDialog({ connectionId, page, onClose }: {
+function FormRow({ form, pageName, onSetup }: { form: MetaResource; pageName?: string | null; onSetup: () => void }) {
+  const state = formSetupState(form);
+  const badge = state === "ready"
+    ? { label: "Answers set up", tone: "green" as const }
+    : state === "missing"
+      ? { label: "Not set up", tone: "orange" as const }
+      : state === "empty"
+        ? { label: "Nothing to set up", tone: "grey" as const }
+        : { label: "Refresh forms first", tone: "grey" as const };
+  return (
+    <div className="flex flex-col gap-3 border-t border-line-soft py-3 first:border-t-0 first:pt-0 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <p className="m-0 text-sm font-extrabold text-ink">{form.name ?? "Lead form"}</p>
+        <p className="m-0 mt-0.5 text-small text-ink-muted">{formDetailLine(form, pageName)}</p>
+      </div>
+      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+        <StatusBadge status={badge.label} tone={badge.tone} />
+        {state === "ready" && <Button variant="outline" size="sm" onClick={onSetup}>Edit answers</Button>}
+        {state === "missing" && <Button size="sm" onClick={onSetup}>Set up answers</Button>}
+      </div>
+    </div>
+  );
+}
+
+function ImportLeadsDialog({ connectionId, page, onClose, onDone }: {
   connectionId: number;
   page: MetaResource;
   onClose: () => void;
+  onDone: () => void;
 }) {
-  const [since, setSince] = useState(() => importDate(7));
-  const [running, setRunning] = useState(false);
+  const toast = useToast();
+  const today = karachiDateInput();
+  const earliest = karachiDateInput(-(MAX_IMPORT_DAYS - 1));
+  const [since, setSince] = useState(() => karachiDateInput(-7));
+  const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<MetaLeadImportResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const outOfRange = since < earliest || since > today || since === "";
 
-  const start = async () => {
-    setRunning(true);
-    setError(null);
+  const save = async () => {
+    setSaving(true);
     setResult(null);
     try {
-      setResult(await importMetaLeads(connectionId, { resourceId: page.id, since }));
+      const imported = await importMetaLeads(connectionId, { resourceId: page.id, since });
+      setResult(imported);
+      toast.success(importOutcomeLine(imported));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The import could not be run.");
+      toast.error(caught instanceof Error ? caught.message : "Leads could not be imported.");
     } finally {
-      setRunning(false);
+      setSaving(false);
     }
   };
 
   return (
-    <CrmModal
+    <Modal
       open
-      title={`Import leads from ${page.name ?? page.externalId}`}
-      subtitle={`Meta keeps leads for ${MAX_IMPORT_DAYS} days. Leads already in DAMS are counted, never added twice; ` +
-        "those from the last 15 minutes are left to the webhook."}
-      onClose={onClose}
-      footer={
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Close</Button>
-          <Button disabled={running || !since} onClick={() => void start()}>
-            {running ? "Importing…" : "Import"}
-          </Button>
-        </div>
-      }
+      onClose={result ? onDone : onClose}
+      title={`Import leads from ${page.name ?? "this Page"}`}
+      size="sm"
+      phoneLayout="popup"
+      busy={saving}
+      primaryAction={result
+        ? { label: "Done", onClick: onDone }
+        : { label: "Import", onClick: () => void save(), disabled: outOfRange, loading: saving }}
+      cancelLabel={result ? null : "Cancel"}
     >
-      <Label>Leads submitted since</Label>
-      <input
-        type="date"
-        className={inputClass}
-        value={since}
-        min={earliestImportDate()}
-        max={importDate(0)}
-        onChange={(e) => setSince(e.target.value)}
-      />
-      {error && <div className="mt-3"><ErrorBanner message={error} /></div>}
-      {result && (
-        <div className="mt-3 space-y-2 text-sm">
-          <p className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.08] px-4 py-3 text-emerald-200">
-            {importSummary(result)}
-          </p>
-          {result.warning && <p className="text-xs text-amber-200">{result.warning}</p>}
-        </div>
-      )}
-    </CrmModal>
+      <div className="flex flex-col gap-3">
+        <DateField
+          label="Leads submitted since"
+          required
+          value={since}
+          min={earliest}
+          max={today}
+          onChange={(event) => { setSince(event.target.value); setResult(null); }}
+        />
+        {result && <p className="m-0 text-sm font-bold text-ink">{importOutcomeLine(result)}</p>}
+      </div>
+    </Modal>
   );
 }

@@ -4,7 +4,8 @@ import type {
   StaffAccountProvisionResult,
   StaffInvitationResult,
 } from "../leads/types.ts";
-import { parseServerDateTime } from "../../lib/dates.ts";
+import { roleLabel } from "../access/permissions.ts";
+import { karachiDateInput, parseServerDateTime } from "../../lib/dates.ts";
 
 /**
  * The presentation logic behind the Admin staff-accounts screen, kept as pure functions.
@@ -32,26 +33,19 @@ export function accessLabel(access: StaffAccountAccess): string {
     case "None":
       return "No account";
     case "Invited":
-      return "Invited";
+      return "Invite sent";
     case "Disabled":
-      return "Disabled";
+      return "No access";
     default:
       return "Active";
   }
 }
 
-/** Tailwind classes per access state, so a login nobody can use is visible at a glance. */
-export function accessTone(access: StaffAccountAccess): string {
-  switch (access) {
-    case "Active":
-      return "border-emerald-500/25 bg-emerald-500/10 text-emerald-400";
-    case "Invited":
-      return "border-amber-500/25 bg-amber-500/10 text-amber-400";
-    case "Disabled":
-      return "border-rose-500/25 bg-rose-500/10 text-rose-400";
-    default:
-      return "border-slate-500/25 bg-slate-500/10 text-slate-400";
-  }
+/** The access badge colour. StatusBadge draws it; this only names the tone. */
+export function accessBadgeTone(access: StaffAccountAccess): "green" | "orange" | "grey" {
+  if (access === "Active") return "green";
+  if (access === "Invited") return "orange";
+  return "grey";
 }
 
 // ── What a row may offer ──────────────────────────────────────────────────────
@@ -81,6 +75,40 @@ export function canResendInvitation(access: StaffAccountAccess): boolean {
 /** The employees a brand-new login can be provisioned for: the ones without one. */
 export function provisionableEmployees(staff: StaffAccount[]): StaffAccount[] {
   return staff.filter((member) => canProvisionAccess(member.access));
+}
+
+/** People who already have a DAMS login. Employees without one stay in the Give access list. */
+export function accountsWithLogin(staff: StaffAccount[]): StaffAccount[] {
+  return staff.filter((member) => canManageAccount(member.access));
+}
+
+const ROLE_FILTERS = ["Admin", "Manager", "Employee", "Accountant"] as const;
+
+/** Role filter labels, with a count of the logins currently on screen. */
+export function roleFilterOptions(accounts: StaffAccount[]): { value: string; label: string }[] {
+  const count = (role?: string) => accounts.filter((account) => !role || account.role === role).length;
+  return [
+    { value: "", label: `Everyone (${count()})` },
+    ...ROLE_FILTERS.map((role) => ({ value: role, label: `${roleLabel(role)} (${count(role)})` })),
+  ];
+}
+
+/** The signed-in person cannot turn their own access off. */
+export function isOwnAccount(actorUserId: string | number | null | undefined, account: StaffAccount): boolean {
+  return actorUserId != null && account.userId != null && String(account.userId) === String(actorUserId);
+}
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Whether Send invite has everything the API will accept. `employeeId` is an existing employee,
+ * or `"new"` when this request also creates the employment record.
+ */
+export function inviteReady(input: { employeeId: string; fullName: string; email: string; phone: string; role: string }): boolean {
+  if (!input.role || !EMAIL.test(input.email.trim()) || input.fullName.trim().length < 2) return false;
+  if (!input.employeeId) return false;
+  if (input.employeeId === "new") return input.phone.trim().length >= 7;
+  return true;
 }
 
 // ── Invitation expiry, for display only ───────────────────────────────────────
@@ -212,7 +240,7 @@ export function newProvisionForm(employee: StaffAccount | null): StaffAccountFor
     jobTitle: employee?.jobTitle ?? "Sales Executive",
     department: employee?.department ?? "Sales",
     phone: employee?.phone ?? "",
-    joinDate: employee?.joinDate?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
+    joinDate: employee?.joinDate?.slice(0, 10) ?? karachiDateInput(),
     status: employee?.status ?? "Active",
   };
 }
@@ -308,12 +336,9 @@ export function buildProvisionPayload(form: StaffAccountForm, locked: StaffAccou
   };
 }
 
-/** Role and employment status are the only things this endpoint changes. */
+/** Role is the only thing this screen changes. Employment status stays with Employees. */
 export function buildUpdatePayload(form: StaffAccountForm) {
-  return {
-    role: form.role,
-    status: form.status,
-  };
+  return { role: form.role };
 }
 
 function toId(value: string): number | null {

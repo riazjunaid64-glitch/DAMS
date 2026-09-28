@@ -1,8 +1,9 @@
 import type { MetaConnection, MetaConnectionStatus, MetaResource } from "../leads/types.ts";
-import { parseServerDateTime } from "../../lib/dates.ts";
+import { formatWhen, parseServerDateTime } from "../../lib/dates.ts";
 import type {
   LeadFormAnswerTarget,
   LeadFormMapping,
+  LeadFormOption,
   LeadFormQuestion,
   MetaEventStatus,
   MetaLeadImportResult,
@@ -53,25 +54,11 @@ export function connectionStatusLabel(status: MetaConnectionStatus): string {
     case "Connected":
       return "Connected";
     case "NeedsReauthorization":
-      return "Needs reconnection";
+      return "Needs reconnect";
     case "Disconnected":
       return "Disconnected";
     default:
       return "Error";
-  }
-}
-
-/** Tailwind classes per status. Anything not healthy is visually distinct at a glance. */
-export function connectionStatusTone(status: MetaConnectionStatus): string {
-  switch (status) {
-    case "Connected":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
-    case "NeedsReauthorization":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
-    case "Disconnected":
-      return "border-[var(--border)] bg-[var(--bg-muted)] text-[var(--text-muted)]";
-    default:
-      return "border-red-500/30 bg-red-500/10 text-red-300";
   }
 }
 
@@ -284,15 +271,28 @@ export function createLatestRequestGuard() {
 }
 
 export const answerTargetLabels: Record<LeadFormAnswerTarget, string> = {
-  PropertyType: "Property type",
-  PurchaseIntent: "Purchase intent",
-  PaymentPreference: "Payment preference",
+  PropertyType: "Apartment type",
+  PurchaseIntent: "Buying for",
+  PaymentPreference: "Installment plan",
 };
 
-/** The values a choice field accepts. Property type is free text, so it has none. */
-export const answerTargetValues: Record<Exclude<LeadFormAnswerTarget, "PropertyType">, string[]> = {
-  PurchaseIntent: ["SelfUse", "Investment", "Rental", "Resale"],
-  PaymentPreference: ["Installments", "NeedsDetails", "Cash"],
+/** The fixed values a choice can be saved as. Apartment type is no longer free text. */
+export const answerTargetValues: Record<LeadFormAnswerTarget, { value: string; label: string }[]> = {
+  PropertyType: [
+    { value: "Studio", label: "Studio" },
+    { value: "1 Bed", label: "1 Bed" },
+    { value: "2 Bed", label: "2 Bed" },
+    { value: "3 Bed", label: "3 Bed" },
+  ],
+  PaymentPreference: [
+    { value: "Installments", label: "Installments" },
+    { value: "NeedsDetails", label: "Needs details" },
+    { value: "Cash", label: "Cash" },
+  ],
+  PurchaseIntent: [
+    { value: "SelfUse", label: "Personal living" },
+    { value: "Investment", label: "Investment" },
+  ],
 };
 
 export type QuestionMappingDraft = { target: LeadFormAnswerTarget | ""; values: Record<string, string> };
@@ -318,13 +318,20 @@ export function draftFromMapping(mapping: LeadFormMapping): FormMappingDraft {
   return { projectId: mapping.interestedProjectId ? String(mapping.interestedProjectId) : "", questions };
 }
 
-/** A new field means different values, so choosing one starts that question's values afresh. */
+/**
+ * A new field means different values. Passing the question's options pre-selects the ones whose
+ * text clearly matches; without them the values start empty.
+ */
 export function withQuestionTarget(
   draft: FormMappingDraft,
   questionKey: string,
   target: LeadFormAnswerTarget | "",
+  options: LeadFormOption[] = [],
 ): FormMappingDraft {
-  return { ...draft, questions: { ...draft.questions, [questionKey]: { target, values: {} } } };
+  return {
+    ...draft,
+    questions: { ...draft.questions, [questionKey]: { target, values: target ? suggestOptionValues(target, options) : {} } },
+  };
 }
 
 export function withOptionValue(
@@ -349,13 +356,12 @@ export function buildFormMappingRequest(mapping: LeadFormMapping, draft: FormMap
     const chosen = draft.questions[question.key];
     if (!chosen?.target) return [];
     const target = chosen.target;
-    return [{
-      questionKey: question.key,
-      target,
-      options: question.options
-        .filter((option) => chosen.values[option.key]?.trim())
-        .map((option) => ({ optionKey: option.key, optionLabel: option.value ?? null, value: chosen.values[option.key].trim() })),
-    }];
+    const options = question.options
+      .filter((option) => chosen.values[option.key]?.trim())
+      .map((option) => ({ optionKey: option.key, optionLabel: option.value ?? null, value: chosen.values[option.key].trim() }));
+    // A field with no values is "Don't save": the server refuses an answer that maps nothing.
+    if (options.length === 0) return [];
+    return [{ questionKey: question.key, target, options }];
   });
 
   return {
@@ -363,4 +369,119 @@ export function buildFormMappingRequest(mapping: LeadFormMapping, draft: FormMap
     answers,
     version: mapping.version ?? null,
   };
+}
+
+/** A connection that can still receive or reconnect. A disconnected row is the "not connected" card. */
+export function activeConnections(connections: MetaConnection[]): MetaConnection[] {
+  return connections.filter((connection) => connection.status === "Connected" || connection.status === "NeedsReauthorization");
+}
+
+/** Instagram account linked under a Facebook Page, matched by the Page's external id. */
+export function instagramForPage(resources: MetaResource[], page: MetaResource): MetaResource | undefined {
+  return resources.find((resource) => resource.resourceType === "instagram_account" && resource.parentExternalId === page.externalId && resource.isActive);
+}
+
+export function pageChannelLine(_page: MetaResource, instagram?: MetaResource | null): string {
+  const handle = instagram?.name?.trim().replace(/^@/, "");
+  return handle ? `Facebook Page · Instagram @${handle}` : "Facebook Page · no Instagram linked";
+}
+
+/** "Last lead today, 11:40 AM · 11 this week". Null until a lead has arrived. */
+export function pageLeadLine(page: MetaResource, now: Date = new Date()): string | null {
+  if (!page.lastLeadAt) return null;
+  const when = formatWhen(page.lastLeadAt, now).replace(/^(Today|Tomorrow|Yesterday)/, (word) => word.toLowerCase());
+  const count = page.leadsLast7Days ?? 0;
+  return `Last lead ${when} · ${count} this week`;
+}
+
+export type FormSetupState = "ready" | "missing" | "empty" | "unread";
+
+/** How a lead form's answer row should read. Null question count means the form has not been read yet. */
+export function formSetupState(form: MetaResource): FormSetupState {
+  if (form.choiceQuestionCount == null) return "unread";
+  if (form.choiceQuestionCount === 0) return "empty";
+  return form.answersSetUp ? "ready" : "missing";
+}
+
+export function formDetailLine(form: MetaResource, pageName?: string | null): string {
+  const page = pageName?.trim() || "Facebook Page";
+  const state = formSetupState(form);
+  if (state === "unread") return `${page} · Refresh forms first`;
+  if (state === "empty") return `${page} · no choice questions`;
+  const questions = form.choiceQuestionCount ?? 0;
+  const leads = form.leadCount ?? 0;
+  return `${page} · ${questions} choice question${questions === 1 ? "" : "s"} · ${leads} lead${leads === 1 ? "" : "s"}`;
+}
+
+/** The result line under an import: found, added, and the ones already in DAMS. */
+export function importOutcomeLine(result: MetaLeadImportResult): string {
+  const parts = [
+    `${result.found} lead${result.found === 1 ? "" : "s"} found`,
+    `${result.new} added`,
+    `${result.alreadyInDams} ${result.alreadyInDams === 1 ? "was" : "were"} already in DAMS`,
+  ];
+  if (result.failed > 0) parts.push(`${result.failed} failed`);
+  return parts.join(" · ");
+}
+
+/** Floria Heights when the form has no project saved yet. */
+export function defaultProjectId(projects: { id: number; name: string }[]): string {
+  const match = projects.find((project) => /floria heights/i.test(project.name))
+    ?? projects.find((project) => /floria/i.test(project.name));
+  return match ? String(match.id) : "";
+}
+
+/** Which lead field a Facebook question is obviously about. Empty when it is not obvious. */
+export function suggestTarget(question: LeadFormQuestion): LeadFormAnswerTarget | "" {
+  const text = `${question.label ?? ""} ${question.key}`.toLowerCase();
+  if (/apartment|bedroom|bed\s*room|\bstudio\b|property type/.test(text)) return "PropertyType";
+  if (/installment|payment preference|on cash/.test(text)) return "PaymentPreference";
+  if (/buying for|purchase intent|buy for/.test(text)) return "PurchaseIntent";
+  return "";
+}
+
+/** The fixed value an option clearly names, or empty when it does not. */
+export function suggestOptionValue(target: LeadFormAnswerTarget, option: LeadFormOption): string {
+  const text = `${option.value ?? ""} ${option.key}`.toLowerCase().replace(/_+/g, " ");
+  if (target === "PropertyType") {
+    if (/\bstudio\b/.test(text)) return "Studio";
+    if (/\b3\b|three/.test(text) && /bed/.test(text)) return "3 Bed";
+    if (/\b2\b|two/.test(text) && /bed/.test(text)) return "2 Bed";
+    if (/\b1\b|one/.test(text) && /bed/.test(text)) return "1 Bed";
+    return "";
+  }
+  if (target === "PaymentPreference") {
+    if (/need more|needs detail|more detail/.test(text)) return "NeedsDetails";
+    if (/cash/.test(text)) return "Cash";
+    if (/\byes\b|installment/.test(text)) return "Installments";
+    return "";
+  }
+  if (/personal|self use|selfuse/.test(text)) return "SelfUse";
+  if (/investment/.test(text)) return "Investment";
+  return "";
+}
+
+function suggestOptionValues(target: LeadFormAnswerTarget, options: LeadFormOption[]): Record<string, string> {
+  return Object.fromEntries(
+    options.flatMap((option) => {
+      const value = suggestOptionValue(target, option);
+      return value ? [[option.key, value]] : [];
+    }),
+  );
+}
+
+/**
+ * The draft the Set up answers popup opens on: saved answers win, and anything still blank is
+ * filled when the question or the option text makes the value obvious.
+ */
+export function initialFormDraft(mapping: LeadFormMapping, projects: { id: number; name: string }[]): FormMappingDraft {
+  const draft = draftFromMapping(mapping);
+  const questions = { ...draft.questions };
+  for (const question of mappableQuestions(mapping)) {
+    if (questions[question.key]) continue;
+    const target = suggestTarget(question);
+    if (!target) continue;
+    questions[question.key] = { target, values: suggestOptionValues(target, question.options) };
+  }
+  return { projectId: draft.projectId || defaultProjectId(projects), questions };
 }

@@ -1,274 +1,446 @@
-import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import type { User } from "../App.tsx";
-import Button from "../lib/Button.tsx";
 import {
-  CrmAccess,
-  CrmHeader,
-  CrmModal,
-  CrmTabs,
-  ErrorBanner,
-  inputClass,
-  Label,
-  StatePanel,
-} from "../features/leads/CrmUi.tsx";
-import MetaIntegrationsPanel from "../features/integrations/MetaIntegrationsPanel.tsx";
+  Avatar,
+  Button,
+  ConfirmDialog,
+  DataTable,
+  Dropdown,
+  EmptyState,
+  IconPlus,
+  IconSettings,
+  Modal,
+  PageHeader,
+  StatusBadge,
+  Tabs,
+  TextField,
+  useIsPhone,
+  useToast,
+  type DataTableColumn,
+} from "../components/ui";
+import { roleLabel } from "../features/access/permissions.ts";
 import { apiJson, forgetCrmLookups, jsonRequest } from "../features/leads/leadApi.ts";
-import type {
-  ClosureReason,
-  LeadSource,
-  StaffAccount,
-  StaffAccountProvisionResult,
-  StaffInvitationResult,
-} from "../features/leads/types.ts";
+import type { StaffAccount, StaffAccountProvisionResult, StaffInvitationResult } from "../features/leads/types.ts";
 import {
+  accessBadgeTone,
   accessLabel,
-  accessTone,
-  applyLoginSelection,
+  accountsWithLogin,
   buildProvisionPayload,
   buildUpdatePayload,
-  canManageAccount,
-  canProvisionAccess,
-  canResendInvitation,
   describeProvisionOutcome,
   describeResendOutcome,
-  invitationState,
-  invitationSummary,
-  loginEmailIsReadOnly,
+  inviteReady,
+  isOwnAccount,
   newManageForm,
   newProvisionForm,
   provisionableEmployees,
-  usesExistingEmployee,
+  roleFilterOptions,
 } from "../features/staff/staffAccessState.ts";
 import type { Notice } from "../features/staff/staffAccessState.ts";
-import { canActOnAccount, canChangeEmploymentStatus, canOpenCrmSettings, grantableRoles } from "../features/staff/staffRolePermissions.ts";
-import { roleLabel } from "../features/access/permissions.ts";
+import { canActOnAccount, canOpenCrmSettings, grantableRoles } from "../features/staff/staffRolePermissions.ts";
+import MetaIntegrationsPanel from "../features/integrations/MetaIntegrationsPanel.tsx";
 
 type Props = { user: User | null };
-type LinkableUser = { userId: number; fullName: string; email: string; role: string };
-
-/**
- * Which staff flow the modal is in. Provisioning creates or connects a login through POST;
- * managing edits one that already exists through PUT. An employee with no account only ever
- * reaches the first, because the second has nothing to update.
- */
-type StaffIntent =
-  | { kind: "provision"; employee: StaffAccount | null }
-  | { kind: "manage"; account: StaffAccount };
+const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
+const NEW_EMPLOYEE = "new";
 
 export default function CrmSettingsPage({ user }: Props) {
-  return <CrmAccess user={user}>{user && (canOpenCrmSettings(user.role) ? <SettingsWorkspace user={user} /> : <StatePanel title="Admin or Sales Manager access required" message="Only an Admin or Sales Manager can manage staff accounts, lead sources and closure reasons." />)}</CrmAccess>;
+  if (!user || !canOpenCrmSettings(user.role)) {
+    return (
+      <div className={PAGE}>
+        <EmptyState
+          icon={<IconSettings size={26} />}
+          title={user ? "Admin or Sales manager access required" : "Sign in required"}
+          message={user ? "Only an Admin or Sales manager can manage staff accounts and integrations." : "Sign in with a staff account to open CRM settings."}
+        />
+      </div>
+    );
+  }
+  return <SettingsWorkspace user={user} />;
 }
 
 function SettingsWorkspace({ user }: { user: User }) {
-  // Returning from Meta's consent screen should land on the tab that sent you there.
-  const [tab, setTab] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("tab") === "integrations" || params.has("meta") ? "integrations" : "staff";
-  });
-  // An integration alert links here while the page may already be open; that navigation keeps
-  // it mounted, so the initial tab alone would never see the link's tab. Keyed on the navigation,
-  // not the URL: a second alert to the same ?tab=integrations, after the Admin moved to another
-  // tab, changes no URL but is still a new navigation.
   const route = useLocation();
-  const [linkedNavigation, setLinkedNavigation] = useState(route.key);
-  if (route.key !== linkedNavigation) {
-    setLinkedNavigation(route.key);
+  const isPhone = useIsPhone();
+  const [tab, setTab] = useState(() => initialTab(window.location.search));
+  const [seen, setSeen] = useState(route.key);
+  const [giving, setGiving] = useState(false);
+  const [staffReady, setStaffReady] = useState(false);
+  if (route.key !== seen) {
+    setSeen(route.key);
     if (new URLSearchParams(route.search).get("tab") === "integrations") setTab("integrations");
   }
+
+  return (
+    <div className={PAGE}>
+      <PageHeader
+        back={{ to: "/crm", label: "Lead CRM" }}
+        title="CRM settings"
+        actions={tab === "staff" ? <GiveAccessButton isPhone={isPhone} disabled={!staffReady} onClick={() => setGiving(true)} /> : undefined}
+      />
+      <StaffAndIntegrations user={user} tab={tab} onTab={setTab} giving={giving} onGiving={setGiving} onStaffReady={setStaffReady} />
+    </div>
+  );
+}
+
+function initialTab(search: string) {
+  const params = new URLSearchParams(search);
+  return params.get("tab") === "integrations" || params.has("meta") ? "integrations" : "staff";
+}
+
+/**
+ * The Give access button lives in the page header, but the dialog and the staff list live
+ * together so a successful invite can reload the same rows the button just changed.
+ */
+function StaffAndIntegrations({ user, tab, onTab, giving, onGiving, onStaffReady }: {
+  user: User;
+  tab: string;
+  onTab: (tab: string) => void;
+  giving: boolean;
+  onGiving: (open: boolean) => void;
+  onStaffReady: (ready: boolean) => void;
+}) {
+  const toast = useToast();
   const [staff, setStaff] = useState<StaffAccount[]>([]);
-  const [linkable, setLinkable] = useState<LinkableUser[]>([]);
-  const [sources, setSources] = useState<LeadSource[]>([]);
-  const [reasons, setReasons] = useState<ClosureReason[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modal, setModal] = useState<"source" | "reason" | null>(null);
-  const [editing, setEditing] = useState<LeadSource | ClosureReason | null>(null);
-  const [staffIntent, setStaffIntent] = useState<StaffIntent | null>(null);
-  // Feedback for things the page cannot show by reloading: an account that was created but
-  // whose activation email failed looks identical in the table to one that was emailed.
-  const [notice, setNotice] = useState<Notice | null>(null);
-  const [resending, setResending] = useState<number | null>(null);
+  const [role, setRole] = useState("");
+  const [managing, setManaging] = useState<StaffAccount | null>(null);
 
   const load = useCallback(async () => {
-    // Every save here reloads through this, so other CRM screens pick up the change.
-    forgetCrmLookups();
-    setLoading(true); setError(null);
+    setLoading(true);
+    setError(null);
     try {
-      const [staffRows, users, sourceRows, reasonRows] = await Promise.all([
-        apiJson<StaffAccount[]>("/api/staff/accounts"),
-        apiJson<LinkableUser[]>("/api/staff/linkable-users"),
-        apiJson<LeadSource[]>("/api/lead-config/sources?includeInactive=true"),
-        apiJson<ClosureReason[]>("/api/lead-config/closure-reasons?includeInactive=true"),
-      ]);
-      setStaff(staffRows); setLinkable(users); setSources(sourceRows); setReasons(reasonRows);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "CRM settings could not be loaded."); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-
-  const open = (kind: typeof modal, value: typeof editing = null) => { setEditing(value); setModal(kind); };
-
-  /**
-   * Sends a waiting employee a fresh link. The reload runs whichever way it went: a stored
-   * invitation replaces the previous one even when the email fails, so the expiry on screen
-   * is stale either way.
-   */
-  const resendInvitation = async (account: StaffAccount) => {
-    if (resending !== null) return;
-    setResending(account.employeeId); setNotice(null);
-    try {
-      const result = await apiJson<StaffInvitationResult>(`/api/staff/accounts/${account.employeeId}/resend-invitation`, { method: "POST" });
-      setNotice(describeResendOutcome(result));
+      setStaff(await apiJson<StaffAccount[]>("/api/staff/accounts"));
     } catch (caught) {
-      setNotice({ tone: "error", message: caught instanceof Error ? caught.message : "The invitation could not be sent." });
+      setError(caught instanceof Error ? caught.message : "Staff accounts could not be loaded.");
     } finally {
-      setResending(null);
-      await load();
+      setLoading(false);
     }
-  };
+  }, []);
 
-  const finishStaff = async (outcome: Notice) => { setStaffIntent(null); setNotice(outcome); await load(); };
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (!loading && error === null) onStaffReady(true); }, [error, loading, onStaffReady]);
+
+  const logins = accountsWithLogin(staff);
+  const shown = role ? logins.filter((account) => account.role === role) : logins;
+  const finish = async (outcome: Notice) => {
+    if (outcome.tone === "error") toast.error(outcome.message);
+    else toast.success(outcome.message);
+    forgetCrmLookups();
+    await load();
+  };
 
   return (
     <>
-      <CrmHeader title="CRM administration" subtitle="Manage secure staff access and the controlled configuration used by the Lead workflow." role={user.role} actions={<Button variant="outline" onClick={() => location.assign("/crm")}>← Lead workspace</Button>} />
-      <div className="mx-auto w-full max-w-[1350px] space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        {error && <ErrorBanner message={error} onRetry={() => void load()} />}
-        {notice && <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} />}
-        <CrmTabs active={tab} onChange={setTab} items={[{ id: "staff", label: "Staff accounts", count: staff.length }, { id: "sources", label: "Lead sources", count: sources.length }, { id: "reasons", label: "Closure reasons", count: reasons.length }, { id: "integrations", label: "Integrations" }]} />
-        <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6">
-          {/* Integrations loads its own data, so it stays usable even if the shared
-              configuration fetch above failed. */}
-          {tab === "integrations" ? <MetaIntegrationsPanel /> : loading ? <p className="py-16 text-center text-sm text-[var(--text-muted)]">Loading configuration…</p> : (
-            <>
-              {tab === "staff" && <SettingsTable title="Staff accounts" description="Give an employee a DAMS login and they are emailed an activation link to choose their own password. Nobody, Admins included, ever sets or sees somebody else's password." addLabel="Give DAMS access" onAdd={() => setStaffIntent({ kind: "provision", employee: null })} headers={["Employee", "Login", "Role", "DAMS access", "Employment", ""]} rows={staff.map((item) => [<div><p className="font-semibold text-[var(--text-heading)]">{item.fullName}</p><p className="text-xs text-[var(--text-muted)]">{item.jobTitle} · {item.department}</p></div>, item.email ?? "—", roleLabel(item.role), <AccessCell account={item} />, item.status, <div className="flex flex-wrap gap-2">{canProvisionAccess(item.access) && <Button size="sm" onClick={() => setStaffIntent({ kind: "provision", employee: item })}>Give DAMS access</Button>}{canManageAccount(item.access) && canActOnAccount(user.role, item.role) && <Button size="sm" variant="outline" onClick={() => setStaffIntent({ kind: "manage", account: item })}>Manage</Button>}{canResendInvitation(item.access) && canActOnAccount(user.role, item.role) && <Button size="sm" variant="outline" disabled={resending !== null} onClick={() => void resendInvitation(item)}>{resending === item.employeeId ? "Sending…" : "Resend invitation"}</Button>}</div>])} empty="No employees exist yet." />}
-              {tab === "sources" && <SettingsTable title="Lead sources" description="The original source is preserved when repeat enquiries enrich a lead." addLabel="Create source" onAdd={() => open("source")} headers={["Source", "Code", "Customer mapping", "Status", ""]} rows={sources.map((item) => [item.name, <code className="text-xs">{item.code}</code>, item.customerSource, item.isActive ? "Active" : "Inactive", <Button size="sm" variant="outline" onClick={() => open("source", item)}>Edit</Button>])} empty="No lead sources configured." />}
-              {tab === "reasons" && <SettingsTable title="Closure reasons" description="Lost and Dormant cannot be selected without an active configured reason." addLabel="Create reason" onAdd={() => open("reason")} headers={["Reason", "Code", "Applies to", "Status", ""]} rows={reasons.map((item) => [item.name, <code className="text-xs">{item.code}</code>, item.kind, item.isActive ? "Active" : "Inactive", <Button size="sm" variant="outline" onClick={() => open("reason", item)}>Edit</Button>])} empty="No closure reasons configured." />}
-            </>
-          )}
-        </section>
-      </div>
-
-      {staffIntent && <StaffModal intent={staffIntent} actorRole={user.role} staff={staff} users={linkable} onClose={() => setStaffIntent(null)} onDone={finishStaff} />}
-      {modal === "source" && <SourceModal item={editing as LeadSource | null} onClose={() => setModal(null)} onSaved={async () => { setModal(null); await load(); }} />}
-      {modal === "reason" && <ReasonModal item={editing as ClosureReason | null} onClose={() => setModal(null)} onSaved={async () => { setModal(null); await load(); }} />}
+      <Tabs
+        aria-label="CRM settings"
+        value={tab}
+        onChange={onTab}
+        items={[{ id: "staff", label: "Staff accounts", count: logins.length }, { id: "integrations", label: "Integrations" }]}
+      />
+      {tab === "integrations" ? <MetaIntegrationsPanel /> : (
+        <StaffAccounts
+          user={user}
+          loading={loading}
+          error={error}
+          role={role}
+          options={roleFilterOptions(logins)}
+          rows={shown}
+          onRole={setRole}
+          onRetry={() => void load()}
+          onManage={setManaging}
+        />
+      )}
+      {giving && (
+        <GiveAccessDialog
+          actorRole={user.role}
+          staff={provisionableEmployees(staff)}
+          onClose={() => onGiving(false)}
+          onDone={async (outcome) => { onGiving(false); await finish(outcome); }}
+        />
+      )}
+      {managing && (
+        <ManageAccountDialog
+          actorRole={user.role}
+          actorUserId={user.userId}
+          account={managing}
+          onClose={() => setManaging(null)}
+          onDone={async (outcome) => { setManaging(null); await finish(outcome); }}
+        />
+      )}
     </>
   );
 }
 
-function SettingsTable({ title, description, addLabel, onAdd, headers, rows, empty }: { title: string; description: string; addLabel: string; onAdd: () => void; headers: string[]; rows: React.ReactNode[][]; empty: string }) {
-  return <div><div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h2 className="text-lg font-semibold text-[var(--text-heading)]">{title}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">{description}</p></div><Button size="sm" onClick={onAdd}>+ {addLabel}</Button></div>{rows.length === 0 ? <p className="rounded-xl border border-dashed border-[var(--border)] py-16 text-center text-sm text-[var(--text-muted)]">{empty}</p> : <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wider text-[var(--text-muted)]">{headers.map((h, i) => <th className="px-3 py-3" key={`${h}-${i}`}>{h}</th>)}</tr></thead><tbody>{rows.map((row, i) => <tr className="border-b border-[var(--border)] last:border-0" key={i}>{row.map((cell, j) => <td className="px-3 py-4 text-[var(--text-secondary)]" key={j}>{cell}</td>)}</tr>)}</tbody></table></div>}</div>;
+function GiveAccessButton({ isPhone, disabled, onClick }: { isPhone: boolean; disabled?: boolean; onClick: () => void }) {
+  return (
+    <Button icon={<IconPlus size={16} />} disabled={disabled} onClick={onClick}>
+      {isPhone ? "Give access" : "Give DAMS access"}
+    </Button>
+  );
 }
 
-function StaffModal({ intent, actorRole, staff, users, onClose, onDone }: { intent: StaffIntent; actorRole: string; staff: StaffAccount[]; users: LinkableUser[]; onClose: () => void; onDone: (outcome: Notice) => void | Promise<void> }) {
-  const managing = intent.kind === "manage" ? intent.account : null;
-  // An employee the Admin reached this modal through stays fixed. Letting the selection drift
-  // to somebody else is how the wrong person ends up with a login.
-  const [locked] = useState(() => (intent.kind === "provision" ? intent.employee : null));
-  const [form, setForm] = useState(() => (managing ? newManageForm(managing) : newProvisionForm(locked)));
-  const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
-  const set = (key: keyof typeof form, value: string) => setForm((f) => ({ ...f, [key]: value }));
-  const pickEmployee = (id: string) => { const employee = staff.find((e) => e.employeeId === Number(id)); setForm((f) => ({ ...f, existingEmployeeId: id, fullName: employee?.fullName ?? f.fullName, email: employee?.email ?? f.email, phone: employee?.phone ?? f.phone, jobTitle: employee?.jobTitle ?? f.jobTitle, department: employee?.department ?? f.department })); };
-  // Select and clear are one transition, in staffAccessState so it can be tested: clearing has
-  // to put the previous login's identity back rather than leave it stranded on the form.
-  const pickUser = (id: string) => setForm((f) => applyLoginSelection(f, users.find((u) => u.userId === Number(id)) ?? null, locked));
-  const save = async () => {
-    setSaving(true); setError(null);
-    try {
-      if (managing) {
-        await apiJson(`/api/staff/accounts/${managing.employeeId}`, jsonRequest("PUT", buildUpdatePayload(form)));
-        await onDone({ tone: "success", message: `Saved role and employment status for ${managing.fullName}.` });
-      } else {
-        const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form, locked)));
-        // The account exists now whatever the email did, so the form closes either way.
-        // Leaving it open after a failed send is what invites a second account for one person.
-        await onDone(describeProvisionOutcome(result));
-      }
-    } catch (caught) {
-      // Nothing was saved, so this belongs in the form where it can still be corrected.
-      setError(caught instanceof Error ? caught.message : "Staff account could not be saved.");
-    } finally { setSaving(false); }
-  };
-  // The employee's own identity is fixed once the modal was opened for one. The *login's*
-  // email is a separate question: an employee record may have no address at all, so it stays
-  // editable until it belongs to a login that already exists.
-  const fixedIdentity = Boolean(managing) || Boolean(locked);
-  const emailReadOnly = loginEmailIsReadOnly(form, Boolean(managing));
-  const employeeAlreadyExists = usesExistingEmployee(form, locked);
-  return <CrmModal open title={managing ? "Manage staff account" : "Give DAMS access"} subtitle={managing ? "Role and employment status. A password belongs to the person who owns the account and cannot be set or reset from here." : "The employee is emailed an activation link and chooses their own password. Public sign-up remains customer-only."} onClose={onClose} footer={<ModalFooter saving={saving} onClose={onClose} onSave={() => void save()} />}>
-    <div className="space-y-4">
-      {error && <ErrorBanner message={error} />}
-      {!managing && (locked
-        ? <ReadOnlyField label="Employee" value={`${locked.fullName}${locked.jobTitle ? ` · ${locked.jobTitle}` : ""}`} />
-        : <div>
-            <SelectField label="Employee" value={form.existingEmployeeId} onChange={pickEmployee} options={provisionableEmployees(staff).map((e) => [String(e.employeeId), e.fullName])} empty="Create a new employee record too" />
-            <p className="mt-1.5 text-xs text-[var(--text-muted)]">Employees are normally created in the Employees module first; this screen gives one of them a login.</p>
-          </div>)}
-      {!managing && <div>
-        <SelectField label="Connect existing login" value={form.existingUserId} onChange={pickUser} options={users.map((u) => [String(u.userId), `${u.fullName} · ${u.email}`])} empty="Create a new login" />
-        {form.existingUserId && <p className="mt-1.5 text-xs text-[var(--text-muted)]">This login already exists and keeps whatever password it has. Whether an activation email is needed is decided by DAMS, not here.</p>}
-      </div>}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <TextField label="Full name" required disabled={fixedIdentity} value={form.fullName} onChange={(v) => set("fullName", v)} />
-        <TextField label={managing || form.existingUserId ? "Email" : "Login email"} required disabled={emailReadOnly} type="email" value={form.email} onChange={(v) => set("email", v)} />
-        <SelectField label="CRM role" required value={form.role} onChange={(v) => set("role", v)} options={grantableRoles(actorRole)} />
-        {/* Only when this request is the thing that creates the employment record. For an
-            existing employee the backend ignores these, and the Employees module owns them —
-            showing them here would invite an Admin to edit data DAMS then discards. */}
-        {!managing && !employeeAlreadyExists && <>
-          <TextField label="Job title" required value={form.jobTitle} onChange={(v) => set("jobTitle", v)} />
-          <TextField label="Department" required value={form.department} onChange={(v) => set("department", v)} />
-          <TextField label="Phone" required value={form.phone} onChange={(v) => set("phone", v)} />
-          <TextField label="Join date" required type="date" value={form.joinDate} onChange={(v) => set("joinDate", v)} />
-        </>}
-        {managing && canChangeEmploymentStatus(actorRole) && <SelectField label="Employment status" value={form.status} onChange={(v) => set("status", v)} options={[["Active", "Active"], ["OnLeave", "On leave"], ["Terminated", "Terminated"]]} />}
-      </div>
-      {managing && <p className="text-xs text-[var(--text-muted)]">DAMS access: {accessLabel(managing.access)}. {managing.access === "Invited" ? "Use Resend invitation on the row to send a new activation link — activation is the employee's own step and cannot be done for them." : managing.access === "Disabled" ? "A disabled login cannot sign in, and re-enabling one is not available from this screen." : "This employee has activated their login and manages their own password."}</p>}
+function StaffAccounts({ user, loading, error, role, options, rows, onRole, onRetry, onManage }: {
+  user: User;
+  loading: boolean;
+  error: string | null;
+  role: string;
+  options: { value: string; label: string }[];
+  rows: StaffAccount[];
+  onRole: (role: string) => void;
+  onRetry: () => void;
+  onManage: (account: StaffAccount) => void;
+}) {
+  if (loading && rows.length === 0) {
+    return <div className="flex flex-col gap-2.5">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-16 animate-pulse rounded-card bg-track" />)}</div>;
+  }
+  if (error && rows.length === 0) {
+    return <EmptyState icon={<IconSettings size={26} />} title="Staff accounts could not be loaded" action={<Button variant="outline" onClick={onRetry}>Try again</Button>} />;
+  }
+
+  const columns: DataTableColumn<StaffAccount>[] = [
+    {
+      key: "name",
+      header: "Name",
+      render: (account) => (
+        <span className="flex items-center gap-3">
+          <Avatar name={account.fullName} size={36} />
+          <span className="min-w-0">
+            <span className="block font-extrabold text-ink">{account.fullName}</span>
+            {account.jobTitle && <span className="block text-small text-ink-muted">{account.jobTitle}</span>}
+          </span>
+        </span>
+      ),
+    },
+    { key: "email", header: "Login email", render: (account) => account.email ?? "—" },
+    { key: "role", header: "Role", className: "font-bold", render: (account) => roleLabel(account.role) },
+    {
+      key: "access",
+      header: "Access",
+      render: (account) => <StatusBadge status={accessLabel(account.access)} tone={accessBadgeTone(account.access)} />,
+    },
+    {
+      key: "manage",
+      header: "",
+      align: "right",
+      render: (account) => canActOnAccount(user.role, account.role)
+        ? <Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onManage(account); }}>Manage</Button>
+        : null,
+    },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Dropdown size="filter" label="Role" aria-label="Role" value={role} onChange={onRole} options={options} className="md:max-w-xs" />
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(account) => account.employeeId}
+        onRowClick={(account) => { if (canActOnAccount(user.role, account.role)) onManage(account); }}
+        rowLabel={(account) => `Manage ${account.fullName}`}
+        minWidth={760}
+        empty={<EmptyState icon={<IconSettings size={26} />} title={role ? "No staff accounts for this role" : "No staff accounts yet"} />}
+        phoneCard={(account) => <StaffCard account={account} onManage={canActOnAccount(user.role, account.role) ? () => onManage(account) : undefined} />}
+      />
     </div>
-  </CrmModal>;
+  );
 }
 
-/** The DAMS access column: the state, and what an outstanding link is doing about it. */
-function AccessCell({ account }: { account: StaffAccount }) {
-  const invitation = invitationState(account);
-  const detail = invitationSummary(invitation);
-  return <div className="space-y-1">
-    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${accessTone(account.access)}`}>{accessLabel(account.access)}</span>
-    {detail && <p className="text-xs text-[var(--text-muted)]">{detail}</p>}
-  </div>;
+function StaffCard({ account, onManage }: { account: StaffAccount; onManage?: () => void }) {
+  return (
+    <div className="rounded-card border border-line bg-card p-4">
+      <div className="flex items-start gap-3">
+        <Avatar name={account.fullName} size={40} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="m-0 truncate text-body font-extrabold text-ink">{account.fullName}</p>
+              <p className="m-0 truncate text-small text-ink-muted">{roleLabel(account.role)}{account.jobTitle ? ` · ${account.jobTitle}` : ""}</p>
+            </div>
+            <StatusBadge status={accessLabel(account.access)} tone={accessBadgeTone(account.access)} />
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="m-0 min-w-0 truncate text-small text-ink-2">{account.email ?? "—"}</p>
+            {onManage && <Button variant="outline" size="sm" onClick={onManage}>Manage</Button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-/**
- * Page-level feedback. A warning is its own tone on purpose: an account that exists but could
- * not be emailed is neither a success nor a failure, and showing it as either causes the
- * wrong next move.
- */
-function NoticeBanner({ notice, onDismiss }: { notice: Notice; onDismiss: () => void }) {
-  const tone = notice.tone === "success" ? "border-emerald-500/25 bg-emerald-500/[0.07] text-emerald-300"
-    : notice.tone === "warning" ? "border-amber-500/25 bg-amber-500/[0.07] text-amber-200"
-    : "border-rose-500/25 bg-rose-500/[0.07] text-rose-300";
-  return <div role={notice.tone === "error" ? "alert" : "status"} className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm ${tone}`}>
-    <span>{notice.message}</span>
-    <button type="button" onClick={onDismiss} aria-label="Dismiss" className="shrink-0 rounded-lg px-2 text-lg leading-none opacity-70 hover:opacity-100">×</button>
-  </div>;
+function GiveAccessDialog({ actorRole, staff, onClose, onDone }: {
+  actorRole: string;
+  staff: StaffAccount[];
+  onClose: () => void;
+  onDone: (outcome: Notice) => Promise<void>;
+}) {
+  const toast = useToast();
+  const [choice, setChoice] = useState("");
+  const [form, setForm] = useState(() => newProvisionForm(null));
+  const [saving, setSaving] = useState(false);
+  const creating = choice === NEW_EMPLOYEE;
+  const ready = inviteReady({ employeeId: choice, fullName: form.fullName, email: form.email, phone: form.phone, role: form.role });
+  const phoneError = creating && form.phone.trim().length > 0 && form.phone.trim().length < 7 ? "At least 7 characters." : undefined;
+
+  const pick = (value: string) => {
+    setChoice(value);
+    if (value === NEW_EMPLOYEE) {
+      setForm(newProvisionForm(null));
+      return;
+    }
+    setForm(newProvisionForm(staff.find((employee) => String(employee.employeeId) === value) ?? null));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form)));
+      await onDone(describeProvisionOutcome(result));
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "The invitation could not be sent.");
+      setSaving(false);
+    }
+  };
+
+  const options = [
+    ...staff.map((employee) => ({
+      value: String(employee.employeeId),
+      label: employee.jobTitle ? `${employee.fullName} — ${employee.jobTitle}` : employee.fullName,
+    })),
+    { value: NEW_EMPLOYEE, label: "+ Someone new" },
+  ];
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Give DAMS access"
+      size="md"
+      phoneLayout="fullscreen"
+      busy={saving}
+      primaryAction={{ label: "Send invite", onClick: () => void save(), disabled: !ready, loading: saving }}
+    >
+      <div className="flex flex-col gap-4">
+        <Dropdown label="Employee" required value={choice} onChange={pick} options={options} placeholder="Select an employee" />
+        {creating && (
+          <>
+            <TextField label="Full name" required value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
+            <TextField label="Phone" required value={form.phone} error={phoneError} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+          </>
+        )}
+        <TextField label="Login email" required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+        <Dropdown
+          label="Role"
+          required
+          value={form.role}
+          onChange={(value) => setForm({ ...form, role: value })}
+          options={grantableRoles(actorRole).map(([value, label]) => ({ value, label }))}
+        />
+      </div>
+    </Modal>
+  );
 }
 
-function SourceModal({ item, onClose, onSaved }: { item: LeadSource | null; onClose: () => void; onSaved: () => void | Promise<void> }) {
-  const [form, setForm] = useState({ code: item?.code ?? "", name: item?.name ?? "", displayOrder: item?.displayOrder?.toString() ?? "100", customerSource: item?.customerSource ?? "Other", isActive: item?.isActive ?? true }); const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
-  const save = async () => { setSaving(true); setError(null); try { await apiJson(item ? `/api/lead-config/sources/${item.id}` : "/api/lead-config/sources", jsonRequest(item ? "PUT" : "POST", { ...form, displayOrder: Number(form.displayOrder) })); await onSaved(); } catch (e) { setError(e instanceof Error ? e.message : "Source could not be saved."); } finally { setSaving(false); } };
-  return <CrmModal open title={item ? "Edit lead source" : "Create lead source"} onClose={onClose} footer={<ModalFooter saving={saving} onClose={onClose} onSave={() => void save()} />}><div className="space-y-4">{error && <ErrorBanner message={error} />}<TextField label="Name" required value={form.name} onChange={(v) => setForm({ ...form, name: v })} /><TextField label="Code" required disabled={Boolean(item)} value={form.code} onChange={(v) => setForm({ ...form, code: v.toLowerCase().replace(/[^a-z0-9_]/g, "_") })} /><SelectField label="Converted customer source" value={form.customerSource} onChange={(v) => setForm({ ...form, customerSource: v })} options={["WalkIn", "Phone", "Referral", "Website", "Other"].map((v) => [v, v])} /><TextField label="Display order" type="number" value={form.displayOrder} onChange={(v) => setForm({ ...form, displayOrder: v })} />{item && <Checkbox label="Active" checked={form.isActive} onChange={(v) => setForm({ ...form, isActive: v })} />}</div></CrmModal>;
-}
+function ManageAccountDialog({ actorRole, actorUserId, account, onClose, onDone }: {
+  actorRole: string;
+  actorUserId: string;
+  account: StaffAccount;
+  onClose: () => void;
+  onDone: (outcome: Notice) => Promise<void>;
+}) {
+  const toast = useToast();
+  const [role, setRole] = useState(account.role ?? "Employee");
+  const [saving, setSaving] = useState(false);
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [confirmOff, setConfirmOff] = useState(false);
+  const own = isOwnAccount(actorUserId, account);
+  const busy = saving || accessBusy;
 
-function ReasonModal({ item, onClose, onSaved }: { item: ClosureReason | null; onClose: () => void; onSaved: () => void | Promise<void> }) {
-  const [form, setForm] = useState({ code: item?.code ?? "", name: item?.name ?? "", kind: item?.kind ?? "Both", displayOrder: item?.displayOrder?.toString() ?? "100", isActive: item?.isActive ?? true }); const [saving, setSaving] = useState(false); const [error, setError] = useState<string | null>(null);
-  const save = async () => { setSaving(true); setError(null); try { await apiJson(item ? `/api/lead-config/closure-reasons/${item.id}` : "/api/lead-config/closure-reasons", jsonRequest(item ? "PUT" : "POST", { ...form, displayOrder: Number(form.displayOrder) })); await onSaved(); } catch (e) { setError(e instanceof Error ? e.message : "Reason could not be saved."); } finally { setSaving(false); } };
-  return <CrmModal open title={item ? "Edit closure reason" : "Create closure reason"} onClose={onClose} footer={<ModalFooter saving={saving} onClose={onClose} onSave={() => void save()} />}><div className="space-y-4">{error && <ErrorBanner message={error} />}<TextField label="Reason" required value={form.name} onChange={(v) => setForm({ ...form, name: v })} /><TextField label="Code" required disabled={Boolean(item)} value={form.code} onChange={(v) => setForm({ ...form, code: v.toLowerCase().replace(/[^a-z0-9_]/g, "_") })} /><SelectField label="Applies to" value={form.kind} onChange={(v) => setForm({ ...form, kind: v as ClosureReason["kind"] })} options={[["Lost", "Lost"], ["Dormant", "Dormant"], ["Both", "Both"]]} /><TextField label="Display order" type="number" value={form.displayOrder} onChange={(v) => setForm({ ...form, displayOrder: v })} />{item && <Checkbox label="Active" checked={form.isActive} onChange={(v) => setForm({ ...form, isActive: v })} />}</div></CrmModal>;
-}
+  const save = async () => {
+    if (role === account.role) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiJson(`/api/staff/accounts/${account.employeeId}`, jsonRequest("PUT", buildUpdatePayload({ ...newManageForm(account), role })));
+      await onDone({ tone: "success", message: `Saved role for ${account.fullName}.` });
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "The role could not be saved.");
+      setSaving(false);
+    }
+  };
 
-function ModalFooter({ saving, onClose, onSave }: { saving: boolean; onClose: () => void; onSave: () => void }) { return <div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>Cancel</Button><Button disabled={saving} onClick={onSave}>{saving ? "Saving…" : "Save"}</Button></div>; }
-function TextField({ label, value, onChange, required, type = "text", disabled }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; disabled?: boolean }) { return <div><Label required={required}>{label}</Label><input className={inputClass} type={type} required={required} disabled={disabled} value={value} onChange={(e) => onChange(e.target.value)} /></div>; }
-function ReadOnlyField({ label, value }: { label: string; value: string }) { return <div><Label>{label}</Label><p className="rounded-xl border border-[var(--border)] bg-[var(--bg-muted)] px-3.5 py-2.5 text-sm text-[var(--text-secondary)]">{value}</p></div>; }
-function SelectField({ label, value, onChange, options, required, empty }: { label: string; value: string; onChange: (value: string) => void; options: string[][]; required?: boolean; empty?: string }) { return <div><Label required={required}>{label}</Label><AppSelect className={inputClass} required={required} value={value} onChange={(e) => onChange(e.target.value)}>{(empty || !value) && <option value="">{empty ?? "Select…"}</option>}{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</AppSelect></div>; }
-function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) { return <label className="flex items-center gap-3 rounded-xl border border-[var(--border)] px-4 py-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />{label}</label>; }
+  const runAccess = async (path: string, success: Notice | ((result: StaffInvitationResult) => Notice)) => {
+    setAccessBusy(true);
+    try {
+      const result = path.endsWith("resend-invitation")
+        ? await apiJson<StaffInvitationResult>(`/api/staff/accounts/${account.employeeId}/${path}`, { method: "POST" })
+        : await apiJson(`/api/staff/accounts/${account.employeeId}/${path}`, { method: "POST" });
+      const outcome = typeof success === "function" ? success(result as StaffInvitationResult) : success;
+      await onDone(outcome);
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "DAMS access could not be changed.");
+      setAccessBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Modal
+        open
+        onClose={onClose}
+        title="Manage staff account"
+        size="md"
+        phoneLayout="popup"
+        busy={busy}
+        primaryAction={{ label: "Save changes", onClick: () => void save(), disabled: role === (account.role ?? ""), loading: saving }}
+      >
+        <div className="flex flex-col gap-4">
+          <TextField label="Full name" required disabled readOnly value={account.fullName} />
+          <TextField label="Login email" required disabled readOnly value={account.email ?? ""} />
+          <Dropdown
+            label="Role"
+            required
+            value={role}
+            onChange={setRole}
+            options={grantableRoles(actorRole).map(([value, label]) => ({ value, label }))}
+          />
+          <div className="flex items-center justify-between gap-3 rounded-field border border-line-soft bg-page px-3 py-3">
+            <div className="min-w-0">
+              <p className="m-0 text-caption font-bold uppercase tracking-[0.4px] text-ink-muted">DAMS access</p>
+              <div className="mt-1.5">
+                <StatusBadge status={accessLabel(account.access)} tone={accessBadgeTone(account.access)} />
+              </div>
+            </div>
+            {account.access === "Active" && !own && (
+              <Button variant="danger" size="sm" disabled={busy} onClick={() => setConfirmOff(true)}>Turn off access</Button>
+            )}
+            {account.access === "Disabled" && (
+              <Button variant="outline" size="sm" loading={accessBusy} onClick={() => void runAccess("enable-access", { tone: "success", message: `Access turned on for ${account.fullName}.` })}>Turn on access</Button>
+            )}
+            {account.access === "Invited" && (
+              <Button variant="outline" size="sm" loading={accessBusy} onClick={() => void runAccess("resend-invitation", describeResendOutcome)}>Resend invite</Button>
+            )}
+          </div>
+        </div>
+      </Modal>
+      <ConfirmDialog
+        open={confirmOff}
+        danger
+        loading={accessBusy}
+        title="Turn off access?"
+        message={`${account.fullName} will not be able to sign in until access is turned on again.`}
+        confirmLabel="Turn off access"
+        onClose={() => setConfirmOff(false)}
+        onConfirm={() => {
+          setConfirmOff(false);
+          void runAccess("disable-access", { tone: "success", message: `Access turned off for ${account.fullName}.` });
+        }}
+      />
+    </>
+  );
+}

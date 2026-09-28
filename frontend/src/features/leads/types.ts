@@ -158,6 +158,16 @@ export interface MetaResource {
   /** Lead forms only: whether an administrator has linked it to a project or its answers to lead fields. */
   hasFormMapping?: boolean;
   formMappingProjectName?: string | null;
+  /** Facebook Pages only: when a lead from this Page was last received. */
+  lastLeadAt?: string | null;
+  /** Facebook Pages only: leads received from this Page in the last seven days. */
+  leadsLast7Days?: number;
+  /** Lead forms only: choice questions. Null until the form's questions have been read. */
+  choiceQuestionCount?: number | null;
+  /** Lead forms only: a saved mapping includes at least one answer. */
+  answersSetUp?: boolean;
+  /** Lead forms only: submissions that came from this form. */
+  leadCount?: number;
 }
 
 export interface MetaResourceGroup {

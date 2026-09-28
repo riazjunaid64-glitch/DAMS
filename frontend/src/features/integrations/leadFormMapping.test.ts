@@ -4,8 +4,11 @@ import {
   buildFormMappingRequest,
   draftFromMapping,
   formMappingSummary,
+  initialFormDraft,
   isMappableForm,
   mappableQuestions,
+  suggestOptionValue,
+  suggestTarget,
   withOptionValue,
   withQuestionTarget,
 } from "./metaIntegrationState.ts";
@@ -103,5 +106,82 @@ describe("lead form mapping", () => {
     draft = withQuestionTarget(draft, "are_you_buying_for_?", "PropertyType");
 
     expect(draft.questions["are_you_buying_for_?"]).toEqual({ target: "PropertyType", values: {} });
+  });
+});
+
+describe("suggested answers for the Floria Heights form", () => {
+  const questions = [
+    {
+      key: "are_you_interested_in_a_5-year_installment_plan?",
+      label: "Are you interested in a 5-year installment plan?",
+      options: [
+        { key: "yes", value: "Yes" },
+        { key: "need_more_details", value: "Need more details" },
+        { key: "no_(_on_cash)", value: "No ( On Cash)" },
+      ],
+    },
+    {
+      key: "which_apartment_type_are_you_interested_in?",
+      label: "Which apartment type are you interested in?",
+      options: [
+        { key: "studio_apartment", value: "Studio Apartment" },
+        { key: "1_bedroom_apartment", value: "1 Bedroom Apartment" },
+        { key: "2_bedroom_apartment", value: "2 Bedroom Apartment" },
+        { key: "3_bedroom_apartment", value: "3 Bedroom Apartment" },
+      ],
+    },
+    {
+      key: "are_you_buying_for_?",
+      label: "Are you buying for ?",
+      options: [
+        { key: "investment", value: "Investment" },
+        { key: "personal_living", value: "Personal Living" },
+      ],
+    },
+  ];
+
+  it("picks the lead field and the fixed value the answer text already says", () => {
+    expect(suggestTarget(questions[0])).toBe("PaymentPreference");
+    expect(suggestTarget(questions[1])).toBe("PropertyType");
+    expect(suggestTarget(questions[2])).toBe("PurchaseIntent");
+    expect(suggestOptionValue("PaymentPreference", questions[0].options[0])).toBe("Installments");
+    expect(suggestOptionValue("PaymentPreference", questions[0].options[1])).toBe("NeedsDetails");
+    expect(suggestOptionValue("PaymentPreference", questions[0].options[2])).toBe("Cash");
+    expect(suggestOptionValue("PropertyType", questions[1].options[1])).toBe("1 Bed");
+    expect(suggestOptionValue("PropertyType", questions[1].options[2])).toBe("2 Bed");
+    expect(suggestOptionValue("PurchaseIntent", questions[2].options[1])).toBe("SelfUse");
+  });
+
+  it("opens a new form on those suggestions and on Floria Heights", () => {
+    const mapping: LeadFormMapping = {
+      formExternalId: "form-1",
+      questions: [...questions, { key: "full_name", label: "Full name", options: [] }],
+      answers: [],
+    };
+    const draft = initialFormDraft(mapping, [{ id: 4, name: "Floria Heights" }, { id: 5, name: "Other" }]);
+    expect(draft.projectId).toBe("4");
+    expect(draft.questions[questions[1].key]).toEqual({
+      target: "PropertyType",
+      values: {
+        studio_apartment: "Studio",
+        "1_bedroom_apartment": "1 Bed",
+        "2_bedroom_apartment": "2 Bed",
+        "3_bedroom_apartment": "3 Bed",
+      },
+    });
+  });
+
+  it("keeps a saved mapping instead of overwriting it with a suggestion", () => {
+    const mapping = floria({
+      interestedProjectId: 9,
+      answers: [{
+        questionKey: "are_you_buying_for_?",
+        target: "PurchaseIntent",
+        options: [{ optionKey: "investment", optionLabel: "Investment", value: "Investment" }],
+      }],
+    });
+    const draft = initialFormDraft(mapping, [{ id: 4, name: "Floria Heights" }]);
+    expect(draft.projectId).toBe("9");
+    expect(draft.questions["are_you_buying_for_?"].values).toEqual({ investment: "Investment" });
   });
 });
