@@ -311,7 +311,7 @@ builder.Services.AddScoped<IMetaLeadEventProcessor, MetaLeadEventProcessor>();
 builder.Services.AddScoped<IMetaIntegrationAlertService, MetaIntegrationAlertService>();
 builder.Services.AddHostedService<IntegrationBackgroundService>();
 
-// ── Notification platform ──────────────────────────────────────────────────────────────
+// ── Notification platform ────────────────────────────────────────────────────────────
 // Business modules depend only on INotificationDispatcher and INotificationEventService.
 // Channels are registered as a collection, so adding WhatsApp, SMS or mobile push later is
 // one more INotificationChannelSender and one more enum value — no module changes shape.
