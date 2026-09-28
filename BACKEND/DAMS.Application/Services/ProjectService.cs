@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ProjectDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
@@ -23,13 +24,17 @@ namespace DAMS.Application.Services
 
         public async Task<ProjectResponseDto> CreateProjectAsync(CreateProjectDto dto, int adminId)
         {
-            if (await _context.Projects.AnyAsync(p => p.ProjectName == dto.ProjectName))
-                throw new Exception("Project name already exists.");
+            var name = RequireText(dto.ProjectName, "Project name is required.");
+            var location = RequireText(dto.Location, "Location is required.");
+            RequireDates(dto.StartingDate, dto.ExpectedCompletionDate);
+
+            if (await _context.Projects.AnyAsync(p => p.ProjectName == name))
+                throw new BusinessRuleException("Project name already exists.");
 
             var project = new Project
             {
-                ProjectName = dto.ProjectName,
-                Location = dto.Location,
+                ProjectName = name,
+                Location = location,
                 Category = dto.Category,
                 Description = dto.Description,
                 StartingDate = dto.StartingDate,
@@ -51,11 +56,15 @@ namespace DAMS.Application.Services
             if (project == null)
                 throw new Exception("Project not found.");
 
-            if (await _context.Projects.AnyAsync(p => p.Id != id && p.ProjectName == dto.ProjectName))
-                throw new Exception("Project name already exists.");
+            var name = RequireText(dto.ProjectName, "Project name is required.");
+            var location = RequireText(dto.Location, "Location is required.");
+            RequireDates(dto.StartingDate, dto.ExpectedCompletionDate);
 
-            project.ProjectName = dto.ProjectName;
-            project.Location = dto.Location;
+            if (await _context.Projects.AnyAsync(p => p.Id != id && p.ProjectName == name))
+                throw new BusinessRuleException("Project name already exists.");
+
+            project.ProjectName = name;
+            project.Location = location;
             project.Category = dto.Category;
             project.Description = dto.Description;
             project.StartingDate = dto.StartingDate;
@@ -125,6 +134,22 @@ namespace DAMS.Application.Services
                     || u.Status == UnitStatus.OnPaymentPlan),
                 SoldUnits = p.Units.Count(u => u.Status == UnitStatus.Sold)
             };
+
+        private static string RequireText(string? value, string message)
+        {
+            var trimmed = (value ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+                throw new BusinessRuleException(message);
+            return trimmed;
+        }
+
+        // The form compares calendar days. A completion on the start date is allowed;
+        // a completion with no start date is allowed.
+        private static void RequireDates(DateTime? start, DateTime? completion)
+        {
+            if (start.HasValue && completion.HasValue && completion.Value.Date < start.Value.Date)
+                throw new BusinessRuleException("Completion date can't be before the start date.");
+        }
 
         private static ProjectResponseDto MapToResponse(Project project)
         {
