@@ -20,13 +20,29 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
+        // Only a rule the form can show (duplicate number, size, price, a status the booking
+        // owns) is a 400. A missing project or unit is a 404. A SQL failure or any other
+        // exception must reach ExceptionMiddleware.
+        private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (BusinessRuleException ex)
+            {
+                return new BadRequestObjectResult(new { message = ex.Message });
+            }
+            catch (MissingRecordException ex)
+            {
+                return new NotFoundObjectResult(new { message = ex.Message });
+            }
+        }
+
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPost]
-    public async Task<IActionResult> Create(CreateUnitDto dto)
-    {
-        var result = await _unitService.CreateUnitAsync(dto);
-        return Ok(result);
-    }
+    public Task<IActionResult> Create(CreateUnitDto dto) =>
+        Write(async () => Ok(await _unitService.CreateUnitAsync(dto)));
 
     [AllowAnonymous]
     [HttpGet("types")]
@@ -52,11 +68,8 @@ namespace DAMS.Api.Controllers
 
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpPut("{id}")]
-    public async Task<IActionResult> Update(int id, UpdateUnitDto dto)
-    {
-        var result = await _unitService.UpdateUnitAsync(id, dto);
-        return Ok(result);
-    }
+    public Task<IActionResult> Update(int id, UpdateUnitDto dto) =>
+        Write(async () => Ok(await _unitService.UpdateUnitAsync(id, dto)));
 
     [Authorize(Roles = AppRoles.AdminOrAccountant)]
     [HttpDelete("{id}")]

@@ -1,8 +1,8 @@
 namespace DAMS.Infrastructure.Data
 {
     /// <summary>
-    /// Bumped whenever a unit row is inserted, updated or deleted, so the project list
-    /// cannot keep serving unit counts from before that change.
+    /// Bumped whenever a unit row or a project photo is inserted, updated or deleted, so the
+    /// project list cannot keep serving unit counts or the cover photo from before that change.
     /// </summary>
     public static class ProjectListCache
     {

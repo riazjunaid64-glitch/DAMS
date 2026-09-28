@@ -27,8 +27,9 @@ namespace DAMS.Application.Services
             .AnyAsync(p => p.Id == dto.ProjectId);
 
         if (!projectExists)
-            throw new Exception("Project not found");
+            throw new MissingRecordException("Project not found");
 
+        RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
         await EnsureUnitNumberIsFree(dto.ProjectId, unitNumber, null);
 
@@ -93,8 +94,9 @@ namespace DAMS.Application.Services
         var unit = await _context.Units.FindAsync(id);
 
         if (unit == null)
-            throw new Exception("Unit not found");
+            throw new MissingRecordException("Unit not found");
 
+        RequireMeasurable(dto.Size, dto.Price);
         var unitNumber = NormaliseUnitNumber(dto.UnitNumber);
         await EnsureUnitNumberIsFree(unit.ProjectId, unitNumber, id);
 
@@ -105,7 +107,7 @@ namespace DAMS.Application.Services
         unit.Price = dto.Price;
 
         if (!Enum.TryParse<UnitStatus>(dto.Status, true, out var parsedStatus))
-            throw new Exception("Invalid unit status provided.");
+            throw new BusinessRuleException("Invalid unit status provided.");
 
         // While a unit has an active booking its status is workflow-managed; editing it
         // here (e.g. back to Available) would allow a second booking on the same unit.
@@ -115,7 +117,7 @@ namespace DAMS.Application.Services
                 .AnyAsync(b => b.UnitId == id && b.Status != BookingStatus.Cancelled);
 
             if (hasActiveBooking)
-                throw new Exception(
+                throw new BusinessRuleException(
                     "This unit has an active booking, so its status is managed by the booking workflow and cannot be changed here. Cancel or complete the booking instead.");
         }
 
@@ -146,12 +148,20 @@ namespace DAMS.Application.Services
         return true;
     }
 
+    private static void RequireMeasurable(decimal size, decimal price)
+    {
+        if (size <= 0)
+            throw new BusinessRuleException("Size must be greater than 0.");
+        if (price <= 0)
+            throw new BusinessRuleException("Price must be greater than 0.");
+    }
+
     private static string NormaliseUnitNumber(string unitNumber)
     {
         var trimmed = (unitNumber ?? string.Empty).Trim();
 
         if (trimmed.Length == 0)
-            throw new Exception("Unit number is required.");
+            throw new BusinessRuleException("Unit number is required.");
 
         return trimmed;
     }
@@ -169,7 +179,7 @@ namespace DAMS.Application.Services
                 && (exceptUnitId == null || u.Id != exceptUnitId));
 
         if (taken)
-            throw new Exception($"Unit number \"{unitNumber}\" already exists in this project.");
+            throw new BusinessRuleException($"Unit number \"{unitNumber}\" already exists in this project.");
     }
 
     private static UnitResponseDto Map(Unit unit)

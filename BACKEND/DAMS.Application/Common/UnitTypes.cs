@@ -95,7 +95,7 @@ namespace DAMS.Application.Common
             throw Rejected();
         }
 
-        private static InvalidOperationException Rejected() =>
+        private static BusinessRuleException Rejected() =>
             new($"Unit type must be one of: {string.Join(", ", Allowed)}.");
     }
 }

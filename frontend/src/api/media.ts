@@ -19,10 +19,24 @@ const getCategoryName = (category?: number): string | undefined => {
   return categoryNameMap[category] || "Gallery";
 };
 
+async function failure(res: Response, fallback: string): Promise<never> {
+  const text = await res.text();
+  if (text) {
+    try {
+      const body = JSON.parse(text) as { message?: string };
+      if (body.message) throw new Error(body.message);
+    } catch (caught) {
+      if (!(caught instanceof SyntaxError)) throw caught;
+    }
+    if (text.length < 300) throw new Error(text);
+  }
+  throw new Error(fallback);
+}
+
 // Project Media API
 export const getProjectMedia = async (projectId: number): Promise<ProjectMedia[]> => {
   const res = await api(`/api/Project/${projectId}/media`, undefined, false);
-  if (!res.ok) throw new Error("Failed to fetch project media");
+  if (!res.ok) return failure(res, "Failed to fetch project media");
   return res.json();
 };
 
@@ -45,7 +59,7 @@ export const uploadProjectMedia = async (
     headers: {}, // Let browser set Content-Type for FormData
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload project media");
+  if (!res.ok) return failure(res, "Failed to upload project media");
   return res.json();
 };
 
@@ -68,7 +82,7 @@ export const uploadProjectMediaBulk = async (
     headers: {},
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload project media bulk");
+  if (!res.ok) return failure(res, "Failed to upload project media bulk");
   return res.json();
 };
 
@@ -76,20 +90,20 @@ export const deleteProjectMedia = async (projectId: number, mediaId: number): Pr
   const res = await api(`/api/Project/${projectId}/media/${mediaId}`, {
     method: "DELETE",
   });
-  if (!res.ok) throw new Error("Failed to delete project media");
+  if (!res.ok) return failure(res, "Failed to delete project media");
 };
 
 export const setProjectCoverMedia = async (projectId: number, mediaId: number): Promise<void> => {
   const res = await api(`/api/Project/${projectId}/media/${mediaId}/set-cover`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error("Failed to set project cover media");
+  if (!res.ok) return failure(res, "Failed to set project cover media");
 };
 
 // Unit Media API
 export const getUnitMedia = async (unitId: number): Promise<UnitMedia[]> => {
   const res = await api(`/api/Unit/${unitId}/media`, undefined, false);
-  if (!res.ok) throw new Error("Failed to fetch unit media");
+  if (!res.ok) return failure(res, "Failed to fetch unit media");
   return res.json();
 };
 
@@ -112,7 +126,7 @@ export const uploadUnitMediaBulk = async (
     headers: {},
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload unit media bulk");
+  if (!res.ok) return failure(res, "Failed to upload unit media bulk");
   return res.json();
 };
 
@@ -120,12 +134,12 @@ export const deleteUnitMedia = async (unitId: number, mediaId: number): Promise<
   const res = await api(`/api/Unit/${unitId}/media/${mediaId}`, {
     method: "DELETE",
   });
-  if (!res.ok) throw new Error("Failed to delete unit media");
+  if (!res.ok) return failure(res, "Failed to delete unit media");
 };
 
 export const setUnitCoverMedia = async (unitId: number, mediaId: number): Promise<void> => {
   const res = await api(`/api/Unit/${unitId}/media/${mediaId}/set-cover`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error("Failed to set unit cover media");
+  if (!res.ok) return failure(res, "Failed to set unit cover media");
 };

@@ -24,27 +24,39 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
+        // Only a rule the form can show (duplicate name, dates, a blank required field) is a 400.
+        // A missing project is a 404. A SQL failure or any other exception must reach
+        // ExceptionMiddleware, which logs it and answers with a safe 500 in production.
+        private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (BusinessRuleException ex)
+            {
+                return new BadRequestObjectResult(new { message = ex.Message });
+            }
+            catch (MissingRecordException ex)
+            {
+                return new NotFoundObjectResult(new { message = ex.Message });
+            }
+        }
+
         // CREATE PROJECT (Admin only)
         [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPost]
-        public async Task<IActionResult> CreateProject(CreateProjectDto dto)
+        public Task<IActionResult> CreateProject(CreateProjectDto dto)
         {
             var adminId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-
-            var result = await _projectService.CreateProjectAsync(dto, adminId);
-
-            return Ok(result);
+            return Write(async () => Ok(await _projectService.CreateProjectAsync(dto, adminId)));
         }
 
         // UPDATE PROJECT (Admin only)
         [Authorize(Roles = AppRoles.AdminOrAccountant)]
         [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateProject(int id, UpdateProjectDto dto)
-        {
-            var result = await _projectService.UpdateProjectAsync(id, dto);
-
-            return Ok(result);
-        }
+        public Task<IActionResult> UpdateProject(int id, UpdateProjectDto dto) =>
+            Write(async () => Ok(await _projectService.UpdateProjectAsync(id, dto)));
 
         // GET ALL PROJECTS (Public)
         [AllowAnonymous]
