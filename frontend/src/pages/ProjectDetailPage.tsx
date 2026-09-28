@@ -26,7 +26,7 @@ import {
 } from "../components/ui";
 import { ProjectDialog } from "./ProjectsPage.tsx";
 import { useProjects } from "../contexts/projectsContextValue.ts";
-import { photosUploadedMessage, unitSavedMessage } from "../components/project/editRules.ts";
+import { photoUploadNotice, unitSavedMessage } from "../components/project/editRules.ts";
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
 import { formatDay } from "../lib/dates.ts";
@@ -386,7 +386,15 @@ function MediaTab({ projectId, media, canWrite, onChange }: {
         uploading={uploading}
         onUpload={(files) => {
           setUploading(true);
-          void run(photosUploadedMessage(files.length), () => uploadProjectMediaBulk(projectId, files)).finally(() => setUploading(false));
+          void uploadProjectMediaBulk(projectId, files)
+            .then((saved) => {
+              const notice = photoUploadNotice(files.length, saved.length);
+              if (notice.success) toast.success(notice.success);
+              if (notice.error) toast.error(notice.error);
+              if (saved.length > 0) onChange();
+            })
+            .catch((caught: unknown) => toast.error(caught instanceof Error ? caught.message : "Photos could not be uploaded."))
+            .finally(() => setUploading(false));
         }}
         onSetCover={(photo) => void run("Cover photo updated", () => setProjectCoverMedia(projectId, Number(photo.id)))}
         onDelete={(photo) => void run("Photo deleted", () => deleteProjectMedia(projectId, Number(photo.id)))}
