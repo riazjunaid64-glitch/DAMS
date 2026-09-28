@@ -489,6 +489,44 @@ public sealed class NotificationSecurityTests
         Assert.DoesNotContain(h.SalesUserId, after);
     }
 
+    [Fact]
+    public async Task ADisabledLogin_DropsOutOfAudiencesAndCannotBeDelivered_WhileEmploymentStaysActive()
+    {
+        await using var h = await NotificationTestHarness.CreateAsync();
+        var selection = new Interfaces.NotificationAudienceSelection();
+
+        Assert.Contains(h.SalesUserId, await h.Recipients.ResolveAsync(NotificationAudienceType.AllSalesEmployees, selection));
+        Assert.Contains(h.CustomerUserId, await h.Recipients.ResolveAsync(NotificationAudienceType.AllCustomers, selection));
+
+        Assert.True(await h.Dispatcher.DispatchAsync(Announce(h.SalesUserId, "still-active", "Before access was turned off")));
+        var queued = await h.Db.Notifications.SingleAsync(n => n.DedupKey == "still-active");
+        Assert.True(await h.Eligibility.CanDeliverAsync(queued));
+
+        var sales = await h.Db.Users.SingleAsync(u => u.UserId == h.SalesUserId);
+        var customer = await h.Db.Users.SingleAsync(u => u.UserId == h.CustomerUserId);
+        sales.AccountStatus = UserAccountStatus.Disabled;
+        customer.AccountStatus = UserAccountStatus.Disabled;
+        await h.Db.SaveChangesAsync();
+
+        Assert.Equal(EmployeeStatus.Active, (await h.Db.Employees.SingleAsync(e => e.UserId == h.SalesUserId)).Status);
+        Assert.DoesNotContain(h.SalesUserId, await h.Recipients.ResolveAsync(NotificationAudienceType.AllSalesEmployees, selection));
+        Assert.DoesNotContain(h.SalesUserId, await h.Recipients.ResolveAsync(NotificationAudienceType.AllInternalStaff, selection));
+        Assert.DoesNotContain(h.CustomerUserId, await h.Recipients.ResolveAsync(NotificationAudienceType.AllCustomers, selection));
+
+        var targets = await h.Recipients.ResolveTargetsAsync(NotificationAudienceType.AllCustomers, selection);
+        Assert.Contains(targets, target => target.Email == "walkin@dams.test");
+        Assert.DoesNotContain(targets, target => target.UserId == h.CustomerUserId);
+
+        Assert.False(await h.Eligibility.CanDeliverAsync(queued));
+        Assert.False(await h.Dispatcher.DispatchAsync(Announce(h.SalesUserId, "after-disable", "Company update")));
+        Assert.False(await h.Db.Notifications.AnyAsync(n => n.DedupKey == "after-disable"));
+
+        var filtered = await h.Eligibility.FilterEligibleTargetsAsync(
+            NotificationType.AdminAnnouncement,
+            new[] { new Interfaces.NotificationRecipientTarget(h.SalesUserId, null, "Sana Sales") });
+        Assert.Empty(filtered);
+    }
+
     private static NotificationRequest Announce(int userId, string key, string title) => new()
     {
         Type = NotificationType.AdminAnnouncement,

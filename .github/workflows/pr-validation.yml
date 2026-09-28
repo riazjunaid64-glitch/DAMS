@@ -71,7 +71,7 @@ jobs:
         run: >-
           dotnet test BACKEND/DAMS.Application.Tests/DAMS.Application.Tests.csproj
           --configuration Release
-          --filter "FullyQualifiedName~SqlServerProductionInvariantTests|FullyQualifiedName~ClientIdentitySqlTests"
+          --filter "FullyQualifiedName~SqlServerProductionInvariantTests|FullyQualifiedName~ClientIdentitySqlTests|FullyQualifiedName~AccessTokenSqlServerTests"
           --logger "trx;LogFileName=sqlserver-tests.trx"
       # A connection failure would otherwise silently skip every test and report a green job.
       - name: Assert the suite actually ran

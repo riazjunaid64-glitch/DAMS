@@ -7,8 +7,9 @@ using Microsoft.EntityFrameworkCore;
 namespace DAMS.Application.Services.Notifications
 {
     /// <summary>
-    /// Turns an audience description into concrete user ids. Deactivated staff and closed
-    /// customer records drop out here, so no broadcast path has to remember to exclude them.
+    /// Turns an audience description into concrete user ids. A disabled login, deactivated
+    /// staff and closed customer records drop out here, so no broadcast path has to remember
+    /// to exclude them.
     /// </summary>
     public sealed class NotificationRecipientResolver : INotificationRecipientResolver
     {
@@ -57,7 +58,8 @@ namespace DAMS.Application.Services.Notifications
             var customers = await _context.Customers
                 .AsNoTracking()
                 .Where(c => c.Status == CustomerStatus.Active
-                            && (c.UserId != null || (c.Email != null && c.Email != "")))
+                            && ((c.UserId != null && c.User!.AccountStatus == UserAccountStatus.Active)
+                                || (c.UserId == null && c.Email != null && c.Email != "")))
                 .Select(c => new { c.UserId, c.Email, c.FullName })
                 .ToListAsync(cancellationToken);
 
@@ -103,7 +105,7 @@ namespace DAMS.Application.Services.Notifications
             // audience count an admin is asked to confirm.
             return await _context.Users
                 .AsNoTracking()
-                .Where(u => requested.Contains(u.UserId))
+                .Where(u => requested.Contains(u.UserId) && u.AccountStatus == UserAccountStatus.Active)
                 .Select(u => u.UserId)
                 .ToListAsync(cancellationToken);
         }
@@ -111,7 +113,8 @@ namespace DAMS.Application.Services.Notifications
         private async Task<List<int>> CustomerUsersAsync(IQueryable<Domain.Entities.Customer> customers, CancellationToken cancellationToken) =>
             await customers
                 .AsNoTracking()
-                .Where(c => c.UserId != null && c.Status == CustomerStatus.Active)
+                .Where(c => c.UserId != null && c.Status == CustomerStatus.Active
+                            && c.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(c => c.UserId!.Value)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -121,6 +124,7 @@ namespace DAMS.Application.Services.Notifications
                 .AsNoTracking()
                 .Where(e => e.UserId != null
                             && e.Status == EmployeeStatus.Active
+                            && e.User!.AccountStatus == UserAccountStatus.Active
                             && e.User!.Role.Role_name == role)
                 .Select(e => e.UserId!.Value)
                 .ToListAsync(cancellationToken);
@@ -129,14 +133,16 @@ namespace DAMS.Application.Services.Notifications
         {
             var employees = await _context.Employees
                 .AsNoTracking()
-                .Where(e => e.UserId != null && e.Status == EmployeeStatus.Active)
+                .Where(e => e.UserId != null
+                            && e.Status == EmployeeStatus.Active
+                            && e.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(e => e.UserId!.Value)
                 .ToListAsync(cancellationToken);
 
             // Admins usually have no employee record; they are staff all the same.
             var admins = await _context.Users
                 .AsNoTracking()
-                .Where(u => u.Role.Role_name == LeadRoles.Admin)
+                .Where(u => u.Role.Role_name == LeadRoles.Admin && u.AccountStatus == UserAccountStatus.Active)
                 .Select(u => u.UserId)
                 .ToListAsync(cancellationToken);
 
@@ -153,7 +159,8 @@ namespace DAMS.Application.Services.Notifications
                 .Where(b => b.Unit.ProjectId == projectId
                             && b.Status != BookingStatus.Cancelled
                             && b.Customer.UserId != null
-                            && b.Customer.Status == CustomerStatus.Active)
+                            && b.Customer.Status == CustomerStatus.Active
+                            && b.Customer.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(b => b.Customer.UserId!.Value)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -168,7 +175,10 @@ namespace DAMS.Application.Services.Notifications
 
             return await _context.Bookings
                 .AsNoTracking()
-                .Where(b => ids.Contains(b.Id) && b.Customer.UserId != null && b.Customer.Status == CustomerStatus.Active)
+                .Where(b => ids.Contains(b.Id)
+                            && b.Customer.UserId != null
+                            && b.Customer.Status == CustomerStatus.Active
+                            && b.Customer.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(b => b.Customer.UserId!.Value)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -186,7 +196,8 @@ namespace DAMS.Application.Services.Notifications
                             && i.Status != InstallmentStatus.Paid
                             && i.Booking.Status != BookingStatus.Cancelled
                             && i.Booking.Customer.UserId != null
-                            && i.Booking.Customer.Status == CustomerStatus.Active)
+                            && i.Booking.Customer.Status == CustomerStatus.Active
+                            && i.Booking.Customer.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(i => i.Booking.Customer.UserId!.Value)
                 .Distinct()
                 .ToListAsync(cancellationToken);
@@ -204,7 +215,8 @@ namespace DAMS.Application.Services.Notifications
                 .Where(l => ids.Contains(l.Id)
                             && l.AssignedEmployee != null
                             && l.AssignedEmployee.UserId != null
-                            && l.AssignedEmployee.Status == EmployeeStatus.Active)
+                            && l.AssignedEmployee.Status == EmployeeStatus.Active
+                            && l.AssignedEmployee.User!.AccountStatus == UserAccountStatus.Active)
                 .Select(l => l.AssignedEmployee!.UserId!.Value)
                 .Distinct()
                 .ToListAsync(cancellationToken);

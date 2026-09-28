@@ -48,6 +48,8 @@ public sealed class SqlServerFactAttribute : FactAttribute
 
 public sealed class SqlServerProductionInvariantTests
 {
+    internal static Task<SqlTestDatabase> CreateDatabaseAsync() => SqlTestDatabase.CreateAsync();
+
     private static readonly FinancialWorkflowActor Actor = new(901, "SQL Concurrency Admin");
 
     /// <summary>The smallest byte sequence the upload validator accepts as a PDF.</summary>
@@ -6752,6 +6754,8 @@ public sealed class SqlServerProductionInvariantTests
     // integration-event columns only apply when that table already exists at the starting point.
     private static Task AddLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         ALTER TABLE [Leads] ADD [PaymentPreference] int NOT NULL CONSTRAINT [DF_Test_Leads_PaymentPreference] DEFAULT 0;
+        IF COL_LENGTH(N'[Users]', N'TokenVersion') IS NULL
+            ALTER TABLE [Users] ADD [TokenVersion] int NOT NULL CONSTRAINT [DF_Test_Users_TokenVersion] DEFAULT 0;
         IF OBJECT_ID(N'[ExternalIntegrationEvents]') IS NOT NULL
             AND COL_LENGTH(N'[ExternalIntegrationEvents]', N'RequeueCount') IS NULL
         BEGIN
@@ -6763,6 +6767,11 @@ public sealed class SqlServerProductionInvariantTests
 
     private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         ALTER TABLE [Leads] DROP CONSTRAINT [DF_Test_Leads_PaymentPreference]; ALTER TABLE [Leads] DROP COLUMN [PaymentPreference];
+        IF OBJECT_ID(N'[DF_Test_Users_TokenVersion]') IS NOT NULL
+        BEGIN
+            ALTER TABLE [Users] DROP CONSTRAINT [DF_Test_Users_TokenVersion];
+            ALTER TABLE [Users] DROP COLUMN [TokenVersion];
+        END
         IF OBJECT_ID(N'[DF_Test_Events_RequeueCount]') IS NOT NULL
         BEGIN
             ALTER TABLE [ExternalIntegrationEvents] DROP CONSTRAINT [DF_Test_Events_FailureWasTransient], [DF_Test_Events_RequeueCount];
@@ -7758,7 +7767,7 @@ public sealed class SqlServerProductionInvariantTests
         public Task DeleteAsync(string storedFileName, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
-    private sealed class SqlTestDatabase : IAsyncDisposable
+    internal sealed class SqlTestDatabase : IAsyncDisposable
     {
         private readonly string _masterConnection;
         private readonly string _databaseName;
