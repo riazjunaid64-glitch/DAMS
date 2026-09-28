@@ -21,7 +21,7 @@ import {
 import { useProjects } from "../contexts/projectsContextValue.ts";
 import { can } from "../features/access/permissions.ts";
 import { unitStatus } from "../features/leads/labels.ts";
-import { fieldForServerMessage, photosUploadedMessage, unitDraftChanged, unitDraftReady, unitSavedMessage } from "../components/project/editRules.ts";
+import { fieldForServerMessage, photoUploadNotice, unitDraftChanged, unitDraftReady, unitSavedMessage } from "../components/project/editRules.ts";
 import { floorChoices, floorLabel } from "../lib/floors.ts";
 import { formatPkr } from "../utils/currency.ts";
 import { parseProjectRow } from "../utils/parseProject.ts";
@@ -148,7 +148,12 @@ export default function UnitDetailPage({ user }: Props) {
           onUpload={(files) => {
             setUploading(true);
             void uploadUnitMediaBulk(unit.id, files)
-              .then(async () => { toast.success(photosUploadedMessage(files.length)); await reloadMedia(); })
+              .then(async (saved) => {
+                const notice = photoUploadNotice(files.length, saved.length);
+                if (notice.success) toast.success(notice.success);
+                if (notice.error) toast.error(notice.error);
+                if (saved.length > 0) await reloadMedia();
+              })
               .catch((caught: unknown) => toast.error(caught instanceof Error ? caught.message : "Photos could not be uploaded."))
               .finally(() => setUploading(false));
           }}
@@ -190,8 +195,8 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
   const editing = unit ?? null;
   const [types, setTypes] = useState<string[]>([...UNIT_TYPES]);
   const [number, setNumber] = useState(editing?.unitNumber ?? "");
-  const [type, setType] = useState(editing?.unitType || UNIT_TYPES[0]);
-  const [floor, setFloor] = useState(String(editing?.floorNumber ?? 0));
+  const [type, setType] = useState(editing?.unitType ?? "");
+  const [floor, setFloor] = useState(editing ? String(editing.floorNumber) : "");
   const [size, setSize] = useState(editing ? String(editing.size) : "");
   const [price, setPrice] = useState(editing ? String(editing.price) : "");
   const [numberError, setNumberError] = useState<string | undefined>();
@@ -260,8 +265,8 @@ export function UnitDialog({ projectId, unit, onClose, onSaved }: {
     >
       <div className="flex flex-col gap-4">
         <TextField label="Unit number" required value={number} error={numberError} onChange={(event) => { setNumber(event.target.value); setNumberError(undefined); }} />
-        <Dropdown label="Type" required value={type} onChange={setType} options={typeOptions} />
-        <Dropdown label="Floor" required value={floor} onChange={setFloor} options={floorChoices(editing?.floorNumber)} />
+        <Dropdown label="Type" required placeholder="Select" value={type} onChange={setType} options={typeOptions} />
+        <Dropdown label="Floor" required placeholder="Select" value={floor} onChange={setFloor} options={floorChoices(editing?.floorNumber)} />
         <NumberField label="Size" required decimals={0} suffix="sq ft" value={size} onChange={setSize} />
         <NumberField label="Price" required decimals={0} prefix="Rs" value={price} onChange={setPrice} />
       </div>
