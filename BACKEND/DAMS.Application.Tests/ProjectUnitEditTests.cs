@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.ProjectDtos;
 using DAMS.Application.DTOs.UnitDtos;
 using DAMS.Application.Services;
@@ -21,7 +22,7 @@ public class ProjectUnitEditTests
         await using var h = await LeadTestHarness.CreateAsync();
         var units = new UnitService(h.Db);
 
-        var rejected = await Assert.ThrowsAsync<Exception>(() => units.UpdateUnitAsync(h.UnitId, Draft("A-102", 10_000_000m)));
+        var rejected = await Assert.ThrowsAsync<BusinessRuleException>(() => units.UpdateUnitAsync(h.UnitId, Draft("A-102", 10_000_000m)));
 
         Assert.Equal("Unit number \"A-102\" already exists in this project.", rejected.Message);
     }
@@ -56,7 +57,7 @@ public class ProjectUnitEditTests
         Assert.Equal(9_500_000m, booking.AgreedSalePrice);
         Assert.Equal(UnitStatus.Booked, (await h.Db.Units.SingleAsync(u => u.Id == h.UnitId)).Status);
 
-        var blocked = await Assert.ThrowsAsync<Exception>(() => new UnitService(h.Db).UpdateUnitAsync(
+        var blocked = await Assert.ThrowsAsync<BusinessRuleException>(() => new UnitService(h.Db).UpdateUnitAsync(
             h.UnitId, Draft("A-101", 12_000_000m, nameof(UnitStatus.Available))));
         Assert.Contains("managed by the booking workflow", blocked.Message);
     }
@@ -70,13 +71,56 @@ public class ProjectUnitEditTests
 
         var projects = new ProjectService(h.Db, new DiscardingCache());
 
-        var rejected = await Assert.ThrowsAsync<Exception>(() => projects.UpdateProjectAsync(h.ProjectId, Project("Other Tower")));
+        var rejected = await Assert.ThrowsAsync<BusinessRuleException>(() => projects.UpdateProjectAsync(h.ProjectId, Project("Other Tower")));
         Assert.Equal("Project name already exists.", rejected.Message);
 
         var updated = await projects.UpdateProjectAsync(h.ProjectId, Project("Floria Heights", "Islamabad", ProjectStatus.Completed));
         Assert.Equal("Floria Heights", updated.ProjectName);
         Assert.Equal("Islamabad", updated.Location);
         Assert.Equal(ProjectStatus.Completed, updated.Status);
+    }
+
+    [Fact]
+    public async Task AUnitCannotBeSavedUnlessSizeAndPriceAreGreaterThanZero()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var units = new UnitService(h.Db);
+
+        var noSize = Draft("A-101", 10_000_000m);
+        noSize.Size = 0;
+        var size = await Assert.ThrowsAsync<BusinessRuleException>(() => units.UpdateUnitAsync(h.UnitId, noSize));
+        Assert.Equal("Size must be greater than 0.", size.Message);
+
+        var noPrice = Draft("A-101", 0);
+        var price = await Assert.ThrowsAsync<BusinessRuleException>(() => units.CreateUnitAsync(new CreateUnitDto
+        {
+            ProjectId = h.ProjectId,
+            UnitNumber = "A-103",
+            UnitType = "2 Bed",
+            FloorNumber = 1,
+            Size = 900m,
+            Price = noPrice.Price
+        }));
+        Assert.Equal("Price must be greater than 0.", price.Message);
+    }
+
+    [Fact]
+    public async Task AProjectCompletionDateCannotBeBeforeTheStartDate()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var projects = new ProjectService(h.Db, new DiscardingCache());
+        var tooEarly = Project("Floria Heights");
+        tooEarly.StartingDate = new DateTime(2026, 5, 1);
+        tooEarly.ExpectedCompletionDate = new DateTime(2026, 4, 1);
+
+        var rejected = await Assert.ThrowsAsync<BusinessRuleException>(() => projects.UpdateProjectAsync(h.ProjectId, tooEarly));
+        Assert.Equal("Completion date can't be before the start date.", rejected.Message);
+
+        var sameDay = Project("Floria Heights");
+        sameDay.StartingDate = new DateTime(2026, 5, 1);
+        sameDay.ExpectedCompletionDate = new DateTime(2026, 5, 1);
+        var updated = await projects.UpdateProjectAsync(h.ProjectId, sameDay);
+        Assert.Equal(new DateTime(2026, 5, 1), updated.ExpectedCompletionDate);
     }
 
     private static UpdateUnitDto Draft(string number, decimal price, string status = nameof(UnitStatus.Available)) => new()
