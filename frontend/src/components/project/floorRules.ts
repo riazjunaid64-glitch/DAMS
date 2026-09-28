@@ -17,7 +17,8 @@ export type FloorRow = {
 export const LOWEST_FLOOR = -10;
 export const HIGHEST_FLOOR = 200;
 export const MAX_BASEMENTS = 10;
-export const MAX_FLOORS_ABOVE_GROUND = 200;
+/** The server's limit on the whole list, ground floor and basements included. */
+export const MAX_FLOORS = 200;
 
 let nextKey = 0;
 const newKey = () => `floor-${(nextKey += 1)}`;
@@ -62,6 +63,11 @@ export function quickSetupFrom(floors: readonly Floor[]): { basements: string; a
   };
 }
 
+/** The most floors above ground Create floors may build: the ground floor and the basements count towards MAX_FLOORS too. */
+export function maxFloorsAboveGround(basements: number): number {
+  return MAX_FLOORS - 1 - basements;
+}
+
 /** Basement N … Basement 1, Ground floor, 1st floor … Nth floor. */
 export function standardFloors(basements: number, aboveGround: number): Floor[] {
   const floors: Floor[] = [];
@@ -82,11 +88,29 @@ export function createFloors(rows: readonly FloorRow[], basements: number, above
   return sortRows([...kept, ...built]);
 }
 
-/** "Add floor": an empty row at the end with the next free number above the top floor. */
+/**
+ * The number "Add floor" gives a new row: the first unused number above the top floor, else the
+ * highest unused number below it. Null when the list is full or every allowed number is taken.
+ */
+export function nextFreeFloorNumber(rows: readonly FloorRow[]): number | null {
+  if (rows.length >= MAX_FLOORS) return null;
+  const used = new Set(rows.map((row) => typedFloorNumber(row.number)).filter((number): number is number => number !== null));
+  const top = used.size === 0 ? -1 : Math.max(...used);
+  for (let number = Math.max(top + 1, LOWEST_FLOOR); number <= HIGHEST_FLOOR; number += 1) if (!used.has(number)) return number;
+  for (let number = HIGHEST_FLOOR; number >= LOWEST_FLOOR; number -= 1) if (!used.has(number)) return number;
+  return null;
+}
+
+/** "Add floor": an empty row at the end with the next free number. Unchanged when there is none. */
 export function addFloorRow(rows: readonly FloorRow[]): FloorRow[] {
-  const numbers = rows.map((row) => typedFloorNumber(row.number)).filter((number): number is number => number !== null);
-  const next = numbers.length === 0 ? 0 : Math.max(...numbers) + 1;
-  return [...rows, { key: newKey(), number: String(Math.min(next, HIGHEST_FLOOR)), name: "", unitCount: 0, savedNumber: null }];
+  const next = nextFreeFloorNumber(rows);
+  if (next === null) return [...rows];
+  return [...rows, { key: newKey(), number: String(next), name: "", unitCount: 0, savedNumber: null }];
+}
+
+/** A problem with the list as a whole (the rows themselves may all be fine). */
+export function floorListError(rows: readonly FloorRow[]): string | undefined {
+  return rows.length > MAX_FLOORS ? `A project can have at most ${MAX_FLOORS} floors. Remove ${rows.length - MAX_FLOORS} to save.` : undefined;
 }
 
 /** What is wrong with a row, and which of its two inputs to mark. */
@@ -129,7 +153,8 @@ export function floorsPayload(rows: readonly FloorRow[]): Floor[] {
 /**
  * The Overview DETAILS line: "2 basements · Ground · 18 floors · Rooftop". Basements count every
  * negative number, "Ground" shows when 0 exists, floors count the positive floors with a standard
- * name, and any other positive floor is added by its own name. No list: "Not set up".
+ * name, and every floor with its own name ("Parking", "Lobby", "Rooftop") is then added bottom to
+ * top. No list: "Not set up".
  */
 export function floorSummary(floors: readonly Floor[] | null | undefined): string {
   if (!floors || floors.length === 0) return "Not set up";
@@ -141,6 +166,6 @@ export function floorSummary(floors: readonly Floor[] | null | undefined): strin
   if (basements > 0) parts.push(basements === 1 ? "1 basement" : `${basements} basements`);
   if (sorted.some((floor) => floor.number === 0)) parts.push("Ground");
   if (standard > 0) parts.push(standard === 1 ? "1 floor" : `${standard} floors`);
-  for (const floor of above) if (!isStandardName(floor)) parts.push(floor.name.trim());
+  for (const floor of sorted) if (!isStandardName(floor)) parts.push(floor.name.trim());
   return parts.join(" · ");
 }

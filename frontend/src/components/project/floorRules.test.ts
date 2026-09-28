@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   addFloorRow,
   createFloors,
+  floorListError,
   floorRowErrors,
   floorSummary,
   floorsPayload,
+  maxFloorsAboveGround,
+  nextFreeFloorNumber,
   quickSetupFrom,
   rowsFromFloors,
   sortRows,
@@ -92,6 +95,25 @@ describe("floor rows", () => {
     ]);
   });
 
+  it("finds a free number for Add floor, and none once the list is full", () => {
+    const at = (numbers: number[]) => numbers.map((number, index) => ({ key: `k${index}`, number: String(number), name: `F${number}`, unitCount: 0, savedNumber: null }));
+    expect(nextFreeFloorNumber(at([0, 1, 2]))).toBe(3);
+    // The top floor is already 200: take the highest gap below it rather than a second 200.
+    expect(nextFreeFloorNumber(at([0, 1, 5, 200]))).toBe(199);
+    expect(addFloorRow(at([0, 200])).at(-1)?.number).toBe("199");
+    const full = at(Array.from({ length: 200 }, (_, index) => index - 10));
+    expect(nextFreeFloorNumber(full)).toBeNull();
+    expect(addFloorRow(full)).toHaveLength(200);
+  });
+
+  it("keeps the whole list within the server's 200 floors", () => {
+    expect(maxFloorsAboveGround(0)).toBe(199);
+    expect(maxFloorsAboveGround(10)).toBe(189);
+    expect(createFloors([], 10, maxFloorsAboveGround(10))).toHaveLength(200);
+    expect(floorListError(createFloors([], 10, maxFloorsAboveGround(10)))).toBeUndefined();
+    expect(floorListError(createFloors([], 10, 190))).toBe("A project can have at most 200 floors. Remove 1 to save.");
+  });
+
   it("counts units", () => {
     expect([0, 1, 4].map(unitCountLabel)).toEqual(["No units", "1 unit", "4 units"]);
   });
@@ -104,12 +126,17 @@ describe("Overview floors summary", () => {
       ...standardFloors(2, 18).filter((floor) => floor.number !== -1),
       { number: 19, name: "Rooftop" },
     ];
-    expect(floorSummary(floors)).toBe("2 basements · Ground · 18 floors · Rooftop");
+    expect(floorSummary(floors)).toBe("2 basements · Ground · 18 floors · Parking · Rooftop");
+  });
+
+  it("adds custom names from every position, basements and ground included", () => {
+    expect(floorSummary([{ number: -1, name: "Parking" }, { number: 0, name: "Lobby" }, { number: 1, name: "1st floor" }]))
+      .toBe("1 basement · Ground · 1 floor · Parking · Lobby");
   });
 
   it("uses the singular and skips what the building does not have", () => {
-    expect(floorSummary([{ number: -1, name: "Parking" }, { number: 1, name: "1st floor" }])).toBe("1 basement · 1 floor");
-    expect(floorSummary([{ number: 0, name: "Lobby" }])).toBe("Ground");
+    expect(floorSummary([{ number: -1, name: "Basement 1" }, { number: 1, name: "1st floor" }])).toBe("1 basement · 1 floor");
+    expect(floorSummary([{ number: 0, name: "Ground floor" }])).toBe("Ground");
   });
 
   it("says Not set up without a list", () => {

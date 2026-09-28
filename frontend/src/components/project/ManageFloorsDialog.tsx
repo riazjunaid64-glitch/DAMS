@@ -17,11 +17,13 @@ import {
 import { bareInputClass, controlBoxClass } from "../ui/styles.ts";
 import {
   MAX_BASEMENTS,
-  MAX_FLOORS_ABOVE_GROUND,
   addFloorRow,
   createFloors,
+  floorListError,
   floorRowErrors,
   floorsPayload,
+  maxFloorsAboveGround,
+  nextFreeFloorNumber,
   quickSetupFrom,
   rowsFromFloors,
   sortRows,
@@ -92,9 +94,12 @@ export function ManageFloorsDialog({ projectId, projectName, onClose, onSaved }:
 
   const errors = useMemo(() => floorRowErrors(rows), [rows]);
   const basementCount = basements === "" ? 0 : wholeInRange(basements, 0, MAX_BASEMENTS);
-  const floorCount = wholeInRange(aboveGround, 1, MAX_FLOORS_ABOVE_GROUND);
+  const aboveGroundLimit = maxFloorsAboveGround(basementCount ?? 0);
+  const floorCount = wholeInRange(aboveGround, 1, aboveGroundLimit);
+  const listError = floorListError(rows);
   const canCreate = basementCount !== null && floorCount !== null && !saving;
-  const canSave = !loading && !saving && rows.length > 0 && Object.keys(errors).length === 0;
+  const canAdd = nextFreeFloorNumber(rows) !== null;
+  const canSave = !loading && !saving && rows.length > 0 && !listError && Object.keys(errors).length === 0;
 
   const create = () => {
     if (basementCount === null || floorCount === null) return;
@@ -160,7 +165,7 @@ export function ManageFloorsDialog({ projectId, projectName, onClose, onSaved }:
                 decimals={0}
                 value={aboveGround}
                 onChange={setAboveGround}
-                error={aboveGround !== "" && floorCount === null ? `1 to ${MAX_FLOORS_ABOVE_GROUND}` : undefined}
+                error={aboveGround !== "" && floorCount === null ? `1 to ${aboveGroundLimit}` : undefined}
               />
               <Button
                 variant="outline"
@@ -204,7 +209,9 @@ export function ManageFloorsDialog({ projectId, projectName, onClose, onSaved }:
               </div>
             )}
 
-            <Button variant="link" className="self-start" icon={<IconPlus size={16} />} onClick={() => setRows(addFloorRow)}>
+            {listError && <p role="alert" className="text-small font-bold text-danger">{listError}</p>}
+
+            <Button variant="link" className="self-start" icon={<IconPlus size={16} />} disabled={!canAdd} onClick={() => setRows(addFloorRow)}>
               Add floor
             </Button>
           </div>
