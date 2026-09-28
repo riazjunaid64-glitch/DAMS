@@ -139,7 +139,7 @@ export default function UnitDetailPage({ user }: Props) {
         <InfoCard label="Floor" value={floorLabel(unit.floorNumber)} />
         <InfoCard label="Price" value={formatPkr(unit.price)} />
       </div>
-      <Card title={`Photos (${photos.length})}>
+      <Card title={`Photos (${photos.length})`}>
         {photos.length === 0 && <p className="m-0 mb-3 text-sm text-ink-muted">No photos for this unit yet</p>}
         <PhotoGallery
           photos={photos}
