@@ -24,15 +24,16 @@ namespace DAMS.Api.Controllers
             _mediaService = mediaService;
         }
 
-        // Business rules (a project name already in use) are thrown as exceptions. Return the
-        // message as 400 so the form can show it under the field.
+        // Only a rule the form can show (duplicate name, dates, a blank required field) is a 400.
+        // A SQL failure or any other exception must reach ExceptionMiddleware, which logs it
+        // and answers with a safe 500 in production.
         private static async Task<IActionResult> Write(Func<Task<IActionResult>> action)
         {
             try
             {
                 return await action();
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (BusinessRuleException ex)
             {
                 return new BadRequestObjectResult(new { message = ex.Message });
             }
