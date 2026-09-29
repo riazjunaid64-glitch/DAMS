@@ -1,10 +1,15 @@
-import { Card, KeyValueGrid, StatusBadge, type KeyValueItem } from "../../components/ui";
+import { Button, Card, KeyValueGrid, Notice, StatusBadge, type KeyValueItem } from "../../components/ui";
 import { paymentPreferenceLabel, purchaseIntentLabel } from "./labels.ts";
 import { latestSubmission, platformLabel, unmappedAnswers } from "./leadPage.ts";
 import type { ExternalSubmission, Lead } from "./types.ts";
 
 /** The lead's details: contact, requirement, where it came from and notes. */
-export function LeadOverview({ lead, submissions }: { lead: Lead; submissions: ExternalSubmission[] }) {
+export function LeadOverview({ lead, submissions, submissionsError, onRetrySubmissions }: {
+  lead: Lead;
+  submissions: ExternalSubmission[];
+  submissionsError?: string | null;
+  onRetrySubmissions?: () => void;
+}) {
   const submission = latestSubmission(submissions);
   const payment = paymentPreferenceLabel(lead.paymentPreference);
   const requirement: KeyValueItem[] = [
@@ -40,6 +45,15 @@ export function LeadOverview({ lead, submissions }: { lead: Lead; submissions: E
         <KeyValueGrid items={requirement} />
       </Card>
       <Card title="Source">
+        {submissionsError && (
+          <Notice
+            tone="orange"
+            title="Source details unavailable"
+            message={submissionsError}
+            action={onRetrySubmissions ? <Button variant="outline" onClick={onRetrySubmissions}>Try again</Button> : undefined}
+            className="mb-3"
+          />
+        )}
         <KeyValueGrid items={source} />
       </Card>
       <Card title="Notes">
