@@ -98,11 +98,13 @@ namespace DAMS.Application.Services
 
             // A manager may only link logins that are already staff (Sales Manager or
             // Salesperson). Admin logins, and customer portal logins with their names and emails,
-            // are neither shown to them nor theirs to convert.
+            // are neither shown to them nor theirs to convert. A disabled login is not linkable
+            // at all: granting access refuses it rather than turning it back on.
             var isAdmin = actor.IsAdmin;
             return _context.Users
                 .AsNoTracking()
-                .Where(u => !_context.Employees.Any(e => e.UserId == u.UserId)
+                .Where(u => u.AccountStatus != UserAccountStatus.Disabled
+                            && !_context.Employees.Any(e => e.UserId == u.UserId)
                             && (isAdmin
                                 || u.Role.Role_name == LeadRoles.Manager
                                 || u.Role.Role_name == LeadRoles.Employee))
@@ -214,15 +216,20 @@ namespace DAMS.Application.Services
                         throw new InvalidOperationException(
                             "That login is disabled. Re-enable the account before giving it staff access.");
 
-                    user.RoleId = role.RoleId;
+                    // Captured before RoleId changes. ClientVerificationSatisfied only applies
+                    // while the role is still Client, so an unverified client who is handed a
+                    // staff role would otherwise sign in with the password login currently refuses.
+                    var previousRoleId = user.RoleId;
+                    var unverifiedClient = IsUnverifiedClient(user);
 
-                    // A client who never proved the address is not an active staff login. Move it
+                    // A client who never proved the address — pending, or the legacy Active
+                    // accounts that predate verification — is not an active staff login. Move it
                     // to Invited, drop any password or session it carried, cancel the client
                     // verification links, and send the staff invitation so they choose their own
-                    // staff password. An active login already has a password only its owner knows,
-                    // so linking it does not send an activation link. One already Invited gets a
-                    // fresh invitation and keeps waiting.
-                    if (user.AccountStatus == UserAccountStatus.PendingEmailVerification)
+                    // staff password. A login whose address is already proven keeps that password
+                    // and is not sent an activation link. One already Invited gets a fresh
+                    // invitation and keeps waiting.
+                    if (user.AccountStatus == UserAccountStatus.PendingEmailVerification || unverifiedClient)
                     {
                         await PromotePendingLoginToInvitedAsync(user, cancellationToken);
                         needsInvitation = true;
@@ -230,6 +237,16 @@ namespace DAMS.Application.Services
                     else
                     {
                         needsInvitation = user.AccountStatus == UserAccountStatus.Invited;
+                    }
+
+                    user.RoleId = role.RoleId;
+
+                    // The same rule as UpdateAsync: a different role is a different permission,
+                    // and the refresh token they already hold would mint an access token for it.
+                    if (previousRoleId != role.RoleId)
+                    {
+                        user.RefreshToken = null;
+                        user.RefreshTokenExpiresAt = null;
                     }
                 }
                 else
@@ -603,6 +620,16 @@ namespace DAMS.Application.Services
                         .FirstOrDefault()
                 })
                 .FirstAsync(cancellationToken);
+
+        /// <summary>
+        /// A client login DAMS has never proven the mailbox for. Pending registration is one
+        /// shape of this; an Active client left over from before verification is the other.
+        /// Staff logins are not included: they prove themselves through an invitation, and a
+        /// missing <see cref="User.EmailVerifiedAt"/> is normal for them.
+        /// </summary>
+        private static bool IsUnverifiedClient(User user) =>
+            string.Equals(user.Role?.Role_name, AppRoles.Client, StringComparison.OrdinalIgnoreCase)
+            && user.EmailVerifiedAt == null;
 
         /// <summary>
         /// Drops whatever credential a not-yet-verified client login is holding: the password,

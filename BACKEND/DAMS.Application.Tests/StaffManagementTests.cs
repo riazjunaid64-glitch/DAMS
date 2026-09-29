@@ -218,9 +218,13 @@ public sealed class StaffManagementTests
         var auth = new AuthService(h.Db, new FixedTokenService());
 
         const string password = "client-pass-1";
+        const string rawRefresh = "client-refresh-token";
         var client = await h.Db.Users.SingleAsync(u => u.UserId == h.ClientUserId);
+        // This client has already proved the mailbox. An Active client who has not is a
+        // different case and must not keep the password.
+        Assert.NotNull(client.EmailVerifiedAt);
         client.Password = BCrypt.Net.BCrypt.HashPassword(password);
-        client.RefreshToken = "client-session";
+        client.RefreshToken = Sha256(rawRefresh);
         client.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1);
         await h.Db.SaveChangesAsync();
         var passwordBefore = client.Password;
@@ -241,15 +245,129 @@ public sealed class StaffManagementTests
         h.Db.ChangeTracker.Clear();
         var after = await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == h.ClientUserId);
         Assert.Equal(passwordBefore, after.Password);
-        Assert.Equal("client-session", after.RefreshToken);
+        Assert.Null(after.RefreshToken);
+        Assert.Null(after.RefreshTokenExpiresAt);
         Assert.Equal(UserAccountStatus.Active, after.AccountStatus);
         Assert.Equal(LeadRoles.Employee, after.Role.Role_name);
         Assert.Equal(EmployeeStatus.Active,
             await h.Db.Employees.Where(e => e.UserId == h.ClientUserId).Select(e => e.Status).SingleAsync());
 
+        // The refresh token from the client session must not mint a staff access token.
+        Assert.Null(await auth.RefreshTokenAsync(new RefreshTokenRequestDto { RefreshToken = rawRefresh }));
         var session = await auth.LoginAsync(new LoginRequestDto { Email = "client@dams.test", Password = password });
         Assert.NotNull(session);
         Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = "client@dams.test", Password = "not-the-password" }));
+    }
+
+    [Fact]
+    public async Task An_unverified_active_client_becomes_an_invited_staff_login_and_loses_the_old_password()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        const string oldPassword = "legacy-client-password";
+        const string rawRefresh = "legacy-client-refresh";
+        var legacy = new User
+        {
+            FullName = "Legacy Client",
+            Email = "legacy.active@example.com",
+            NormalizedEmail = EmailIdentity.Normalize("legacy.active@example.com"),
+            Password = BCrypt.Net.BCrypt.HashPassword(oldPassword),
+            RoleId = 2,
+            AccountStatus = UserAccountStatus.Active,
+            EmailVerifiedAt = null,
+            RefreshToken = Sha256(rawRefresh),
+            RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(2)
+        };
+        h.Db.Users.Add(legacy);
+        await h.Db.SaveChangesAsync();
+        h.Db.ClientEmailVerifications.Add(new ClientEmailVerification
+        {
+            UserId = legacy.UserId,
+            TokenHash = Sha256("legacy-client-verification"),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddHours(12)
+        });
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        // Still a customer login until an admin links it. A manager cannot take it over.
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => staff.CreateAsync(
+            h.Manager, NewStaff(name: legacy.FullName, email: legacy.Email, existingUserId: legacy.UserId)));
+        Assert.Empty(invitations.Calls);
+
+        var result = await staff.CreateAsync(h.Admin, NewStaff(
+            name: legacy.FullName,
+            email: legacy.Email,
+            role: LeadRoles.Employee,
+            existingUserId: legacy.UserId));
+
+        Assert.Equal(StaffAccountAccess.Invited, result.Account.Access);
+        Assert.NotEqual(StaffAccountAccess.Active, result.Account.Access);
+        Assert.True(result.InvitationRequired);
+        Assert.Equal(legacy.UserId, Assert.Single(invitations.Calls).UserId);
+
+        h.Db.ChangeTracker.Clear();
+        var after = await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == legacy.UserId);
+        Assert.Equal(UserAccountStatus.Invited, after.AccountStatus);
+        Assert.Equal(LeadRoles.Employee, after.Role.Role_name);
+        Assert.Null(after.Password);
+        Assert.Null(after.RefreshToken);
+        Assert.Null(after.RefreshTokenExpiresAt);
+        Assert.NotNull(await h.Db.ClientEmailVerifications.AsNoTracking()
+            .Where(v => v.UserId == legacy.UserId)
+            .Select(v => v.RevokedAt)
+            .SingleAsync());
+
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = legacy.Email, Password = oldPassword }));
+        Assert.Null(await auth.RefreshTokenAsync(new RefreshTokenRequestDto { RefreshToken = rawRefresh }));
+    }
+
+    [Fact]
+    public async Task Linking_staff_without_a_verification_stamp_keeps_the_password_and_drops_a_changed_role_session()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+
+        const string password = "manager-pass-1";
+        const string rawRefresh = "manager-refresh-token";
+        var login = new User
+        {
+            FullName = "Unlinked Manager",
+            Email = "unlinked.manager@example.com",
+            NormalizedEmail = EmailIdentity.Normalize("unlinked.manager@example.com"),
+            Password = BCrypt.Net.BCrypt.HashPassword(password),
+            RoleId = 3,
+            AccountStatus = UserAccountStatus.Active,
+            EmailVerifiedAt = null,
+            RefreshToken = Sha256(rawRefresh),
+            RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1)
+        };
+        h.Db.Users.Add(login);
+        await h.Db.SaveChangesAsync();
+        var passwordBefore = login.Password;
+        h.Db.ChangeTracker.Clear();
+
+        var result = await staff.CreateAsync(h.Admin, NewStaff(
+            name: login.FullName,
+            email: login.Email,
+            role: LeadRoles.Employee,
+            existingUserId: login.UserId));
+
+        Assert.Equal(StaffAccountAccess.Active, result.Account.Access);
+        Assert.Equal(LeadRoles.Employee, result.Account.Role);
+        Assert.False(result.InvitationRequired);
+        Assert.Empty(invitations.Calls);
+
+        h.Db.ChangeTracker.Clear();
+        var after = await h.Db.Users.SingleAsync(u => u.UserId == login.UserId);
+        Assert.Equal(passwordBefore, after.Password);
+        Assert.Equal(UserAccountStatus.Active, after.AccountStatus);
+        Assert.Null(after.RefreshToken);
+        Assert.Null(after.RefreshTokenExpiresAt);
     }
 
     [Fact]
@@ -490,6 +608,8 @@ public sealed class StaffManagementTests
         h.Db.Users.Add(disabled);
         await h.Db.SaveChangesAsync();
         h.Db.ChangeTracker.Clear();
+
+        Assert.DoesNotContain(await service.GetLinkableUsersAsync(h.Admin), u => u.UserId == disabled.UserId);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(
             h.Admin, NewStaff(
