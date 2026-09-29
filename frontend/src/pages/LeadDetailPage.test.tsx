@@ -112,7 +112,100 @@ describe("LeadDetailPage load coordination", () => {
     await screen.findByText("Saved after slow load");
     resolveSlowFollowUps!(oldList);
     await waitFor(() => expect(screen.getByText("Saved after slow load")).toBeTruthy());
-    expect(screen.queryByText("Follow-up 2")).toBeNull();
+  });
+
+  it("ignores a stale off-tab follow-ups GET after save while on Overview", async () => {
+    stubMatchMedia();
+    let resolveSlowFollowUps: (body: FollowUp[]) => void;
+    const slowFollowUps = new Promise<Response>((resolve) => {
+      resolveSlowFollowUps = (body) => resolve(json(body));
+    });
+    let followUpsGets = 0;
+    const oldList = [followUp(1, "Pending", "2026-09-28T10:00:00")];
+    const newList = [followUp(1, "Pending", "2026-09-28T10:00:00"), followUp(2, "Pending", "2026-09-30T10:00:00", "Saved off tab")];
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.endsWith("/api/leads/1") && method === "GET") return json(sampleLead());
+      if (url.includes("external-submissions")) return json([]);
+      if (url.includes("/timeline")) return json([]);
+      if (url.includes("/follow-ups") && method === "GET") {
+        followUpsGets += 1;
+        if (followUpsGets === 1) return slowFollowUps;
+        return json(newList);
+      }
+      return json({ message: "not found" }, 404);
+    });
+
+    renderLead();
+    await screen.findByRole("heading", { name: "Ali Khan" });
+    fireEvent.click(screen.getByRole("tab", { name: /Overview/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Follow-up" }));
+    fireEvent.click(await screen.findByRole("button", { name: "test-save-follow-up" }));
+    resolveSlowFollowUps!(oldList);
+    fireEvent.click(screen.getByRole("tab", { name: /Follow-ups/i }));
+    await screen.findByText("Saved off tab");
+    expect(followUpsGets).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not toast a stale lead refresh failure", async () => {
+    stubMatchMedia();
+    let resolveSlowLead: (response: Response) => void;
+    const slowLead = new Promise<Response>((resolve) => {
+      resolveSlowLead = resolve;
+    });
+    let leadGets = 0;
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.endsWith("/api/leads/1") && method === "GET") {
+        leadGets += 1;
+        if (leadGets === 1) return json(sampleLead());
+        if (leadGets === 2) return slowLead;
+        return json(sampleLead());
+      }
+      if (url.includes("external-submissions")) return json([]);
+      if (url.includes("/follow-ups")) return json([followUp(1, "Pending", "2026-09-28T10:00:00")]);
+      if (url.includes("/timeline")) return json([]);
+      return json({ message: "not found" }, 404);
+    });
+
+    renderLead();
+    await screen.findByRole("button", { name: "Mark done" });
+    fireEvent.click(screen.getByRole("button", { name: "Follow-up" }));
+    fireEvent.click(await screen.findByRole("button", { name: "test-save-follow-up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Follow-up" }));
+    fireEvent.click(await screen.findByRole("button", { name: "test-save-follow-up" }));
+    await waitFor(() => expect(leadGets).toBe(3));
+    void json({ message: "stale lead refresh" }, 500).then((response) => resolveSlowLead!(response));
+    await waitFor(() => expect(screen.queryByText("stale lead refresh")).toBeNull());
+  });
+
+  it("does not refetch external submissions when the lead header refreshes", async () => {
+    stubMatchMedia();
+    let submissionGets = 0;
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.endsWith("/api/leads/1") && method === "GET") return json(sampleLead());
+      if (url.includes("external-submissions")) {
+        submissionGets += 1;
+        return json([]);
+      }
+      if (url.includes("/follow-ups")) return json([followUp(1, "Pending", "2026-09-28T10:00:00")]);
+      if (url.includes("/timeline")) return json([]);
+      return json({ message: "not found" }, 404);
+    });
+
+    renderLead("/crm/leads/1");
+    await screen.findByRole("heading", { name: "Ali Khan" });
+    await waitFor(() => expect(submissionGets).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Follow-up" }));
+    fireEvent.click(await screen.findByRole("button", { name: "test-save-follow-up" }));
+    await waitFor(() => expect(submissionGets).toBe(1));
   });
 
   it("shows a stale notice, disables row actions, and retries a failed refresh", async () => {

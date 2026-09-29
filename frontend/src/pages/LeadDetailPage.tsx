@@ -128,8 +128,10 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
     return () => controller.abort();
   }, [leadId, attempt]);
 
+  const loadedLeadId = lead?.id;
+
   useEffect(() => {
-    if (!lead || !Number.isFinite(leadId) || leadId <= 0) return;
+    if (!loadedLeadId || !Number.isFinite(leadId) || leadId <= 0) return;
     const controller = new AbortController();
     const generation = ++submissionsGeneration.current;
     apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`, { signal: controller.signal })
@@ -143,7 +145,7 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
         setSubmissionsError(caught instanceof Error ? caught.message : "Source details could not be loaded.");
       });
     return () => controller.abort();
-  }, [lead, leadId, submissionsAttempt]);
+  }, [loadedLeadId, leadId, submissionsAttempt]);
 
   const fetchPart = useCallback(async (part: Part, signal?: AbortSignal): Promise<Parts[Part]> => {
     switch (part) {
@@ -193,6 +195,12 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
     }
   };
 
+  const invalidatePart = (part: Part) => {
+    ++partGeneration.current[part];
+    setParts((current) => ({ ...current, [part]: undefined }));
+    setPartErrors((current) => ({ ...current, [part]: undefined }));
+  };
+
   /**
    * After an action: the lead (header, cards, counts) and the section it changed. The section on
    * screen reloads now with the old copy kept meanwhile; one not on screen is dropped and loads
@@ -206,10 +214,13 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
         if (generation !== leadGeneration.current) return;
         setLead(nextLead);
       })
-      .catch((caught) => toast.error(caught instanceof Error ? caught.message : "The lead could not be refreshed."));
+      .catch((caught) => {
+        if (generation !== leadGeneration.current) return;
+        toast.error(caught instanceof Error ? caught.message : "The lead could not be refreshed.");
+      });
     for (const part of new Set<Part>([...changed, "timeline"])) {
       if (part === openPart) void loadPart(part);
-      else setParts((current) => ({ ...current, [part]: undefined }));
+      else invalidatePart(part);
     }
   };
 
