@@ -158,6 +158,11 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? ConvertedUnitNumber { get; set; }
 
+        /// <summary>Existing CRM customer matched by this lead's phone or email, when unambiguous.</summary>
+        public int? MatchedCustomerId { get; set; }
+
+        public string? MatchedCustomerName { get; set; }
+
         /// <summary>Who last marked the lead Lost or Dormant.</summary>
         public string? ClosedByName { get; set; }
     }
