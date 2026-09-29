@@ -264,7 +264,11 @@ export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
     : units.length ? "Choose a unit" : "No units available";
 
   const save = () => void run(
-    () => apiJson<{ bookingReference: string }>(`/api/leads/${lead.id}/convert`, jsonRequest("POST", { unitId: Number(unitId), notes: notes.trim() || null })),
+    () => apiJson<{ bookingReference: string }>(`/api/leads/${lead.id}/convert`, jsonRequest("POST", {
+      unitId: Number(unitId),
+      notes: notes.trim() || null,
+      customerId: lead.matchedCustomerId ?? undefined,
+    })),
     (result) => `Converted to booking ${result.bookingReference}`,
   );
 
@@ -280,6 +284,9 @@ export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
     >
       <form id={formId} noValidate onSubmit={(event) => { event.preventDefault(); if (unitId) save(); }} className="flex flex-col gap-5">
         <DialogSummary title={lead.fullName} detail={[lead.phone, lead.propertyType, paymentPreferenceLabel(lead.paymentPreference)?.label].filter(Boolean).join(" · ")} />
+        {lead.matchedCustomerName && (
+          <Notice tone="blue" title="Existing customer" message={`${lead.matchedCustomerName} — this lead will be linked to their record when you convert.`} />
+        )}
         {loaded && loaded.length > 1 && (
           <Dropdown label="Project" required options={loaded.map((item) => ({ value: String(item.id), label: item.name }))} value={projectId} onChange={(value) => { setProjectId(value); setUnitId(""); }} />
         )}
