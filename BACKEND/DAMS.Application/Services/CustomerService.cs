@@ -6,6 +6,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
 using DAMS.Application.Common;
+using DAMS.Domain.Common;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -134,9 +135,6 @@ namespace DAMS.Application.Services
                         CustomerId = r.CustomerId,
                         IsRequired = r.IsRequired,
                         Status = r.Status,
-                        // Needed by CustomerDocumentCompletion.Calculate to compute PostponedDue;
-                        // omitting it made the list badge silently under-report overdue postponements
-                        // versus the detail/checklist views that share the same rule.
                         PostponedUntil = r.PostponedUntil
                     })
                     .ToListAsync();
@@ -172,11 +170,6 @@ namespace DAMS.Application.Services
             if (dto.WasProvided(nameof(dto.SourceNotes))) customer.SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim();
             if (dto.WasProvided(nameof(dto.Notes))) customer.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             customer.UpdatedAt = DateTime.UtcNow;
-            // Customer.UserId is absent from the list above, and that omission is the rule rather
-            // than an oversight: contact details describe how to reach somebody, ownership
-            // describes whose bookings these are. Correcting a typo in an email address must not
-            // move a customer's payment history to whoever else holds the new address, and must
-            // not take it away from the login that has always owned it.
 
             await _context.SaveChangesAsync();
 
@@ -204,8 +197,6 @@ namespace DAMS.Application.Services
         {
             if (_context.Database.CurrentTransaction == null)
             {
-                // Wrapped in an execution strategy because the DbContext has retry-on-failure
-                // enabled, which is incompatible with a bare BeginTransactionAsync.
                 var strategy = _context.Database.CreateExecutionStrategy();
                 return await strategy.ExecuteAsync(async () =>
                 {
@@ -238,20 +229,18 @@ namespace DAMS.Application.Services
             string? occupation,
             string? whatsapp)
         {
-            var normalizedPhone = NormalizePhone(phone);
+            var normalizedPhoneKey = ContactNormalization.NormalizePhoneOrNull(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+            var storedPhone = NormalizePhone(phone);
 
-            // Deduplication only. Which record this is, never whose it is — see the comment on the
-            // match below.
             Customer? existing = null;
             if (normalizedCnic != null)
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.CNIC == normalizedCnic);
 
-            if (existing == null)
+            if (existing == null && normalizedPhoneKey != null)
             {
-                existing = await _context.Customers.FirstOrDefaultAsync(c => c.Phone == normalizedPhone);
-
+                existing = await ResolveCustomerByNormalizedPhoneAsync(normalizedPhoneKey);
                 if (existing != null)
                     EnsureWeakMatchDoesNotConflict(existing, normalizedCnic, normalizedEmail);
             }
@@ -259,39 +248,24 @@ namespace DAMS.Application.Services
             if (existing == null && normalizedEmail != null)
             {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Email == normalizedEmail);
+                if (existing != null)
+                    EnsureEmailMatchDoesNotConflict(existing, normalizedCnic);
             }
 
             if (existing != null)
             {
-                // A blocked customer must not silently re-enter the pipeline through
-                // "new customer" details that match their record.
                 if (existing.Status == CustomerStatus.Blocked)
                     throw new InvalidOperationException(
                         "These details match a blocked customer. The booking cannot proceed.");
-
-                // An existing record is NOT claimed here, whatever matched.
-                //
-                // This used to attach linkUserId to any unowned customer found by CNIC or email,
-                // on the reasoning that a strong identifier match means it is the same person. It
-                // does not. It means somebody typed a value that is also on file — and a CNIC is
-                // printed on documents, shared with agents and photocopied at every office, while
-                // an email address is simply whatever the form said. Neither is a secret, so
-                // neither can be the thing that hands a login somebody's payment history.
-                //
-                // Matching still does its real job above: it stops DAMS creating a duplicate CRM
-                // record. Deciding who owns that record is a different question with a different
-                // standard of proof, and it belongs to ICustomerAccountLinkService.
                 return new CustomerResolution(existing.Id, WasCreated: false);
             }
 
             var customer = new Customer
             {
-                // Deliberately unowned. A brand-new CRM record is not evidence about who may read
-                // it later; ICustomerAccountLinkService attaches a login when, and only when, one of
-                // its three trusted paths says so.
                 FullName = fullName.Trim(),
                 FatherName = string.IsNullOrWhiteSpace(fatherName) ? null : fatherName.Trim(),
-                Phone = normalizedPhone,
+                Phone = storedPhone,
+                NormalizedPhone = normalizedPhoneKey,
                 CNIC = normalizedCnic,
                 Email = normalizedEmail,
                 Address = string.IsNullOrWhiteSpace(address) ? null : address.Trim(),
@@ -322,10 +296,6 @@ namespace DAMS.Application.Services
             }
             catch (Exception ex)
             {
-                // Documents are advisory. A missing table during a rolling deployment, a transient
-                // database failure, or an assignment conflict must never turn a committed customer
-                // (and therefore a booking) into a failed core workflow. Remove failed tracked rows so
-                // the scoped context can safely continue; the reconciliation worker retries later.
                 var advisoryEntries = _context.ChangeTracker.Entries()
                              .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
                              .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
@@ -340,6 +310,41 @@ namespace DAMS.Application.Services
                 _logger.LogWarning(ex,
                     "Customer {CustomerId} was created without its advisory document defaults; reconciliation will retry.",
                     customer.Id);
+            }
+        }
+
+        private async Task<Customer?> ResolveCustomerByNormalizedPhoneAsync(string normalizedPhoneKey)
+        {
+            var matches = await _context.Customers
+                .Where(c => c.NormalizedPhone == normalizedPhoneKey)
+                .Take(2)
+                .ToListAsync();
+
+            if (matches.Count == 0)
+            {
+                var unstamped = await _context.Customers
+                    .Where(c => c.NormalizedPhone == null)
+                    .ToListAsync();
+                matches = unstamped
+                    .Where(c => ContactNormalization.NormalizePhoneOrNull(c.Phone) == normalizedPhoneKey)
+                    .Take(2)
+                    .ToListAsync();
+            }
+
+            if (matches.Count > 1)
+                throw new InvalidOperationException(
+                    "More than one customer has this phone, choose the customer");
+
+            return matches.Count == 1 ? matches[0] : null;
+        }
+
+        private static void EnsureEmailMatchDoesNotConflict(Customer existing, string? normalizedCnic)
+        {
+            if (normalizedCnic != null &&
+                !string.IsNullOrWhiteSpace(existing.CNIC) &&
+                !string.Equals(existing.CNIC, normalizedCnic, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("This email belongs to another customer.");
             }
         }
 
@@ -363,8 +368,6 @@ namespace DAMS.Application.Services
             }
         }
 
-        // "0300-1234567", "0300 1234567" and "03001234567" must all match the same
-        // customer, so strip everything except digits (and a leading +).
         private static string NormalizePhone(string phone)
         {
             var trimmed = phone.Trim();
