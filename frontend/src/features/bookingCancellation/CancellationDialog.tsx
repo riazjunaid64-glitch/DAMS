@@ -2,6 +2,7 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent, type ReactNode } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
+import { DatePicker } from "../../components/ui";
 import { bookingCancellationApi } from "./api";
 import { computeRetained, idempotencyKey, isStaleCancellationError, money, pakistanToday, trapDialogKeys, validateCancellationDecision } from "./state";
 import type { CancelBookingRequest, CancellationRefundDecision, RefundPaymentMethod } from "./types";
@@ -251,8 +252,7 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
                         </label>
                         <Field label="Payment Reference" required={refundPaymentMethod !== "Cash"} value={refundPaymentReference}
                           onChange={(e) => setRefundPaymentReference(e.target.value)} />
-                        <Field label="Refund Date" type="date" required value={refundPaidAt}
-                          onChange={(e) => setRefundPaidAt(e.target.value)} />
+                        <DatePicker label="Refund Date" locked value={refundPaidAt} onChange={setRefundPaidAt} />
                       </>
                     )}
 

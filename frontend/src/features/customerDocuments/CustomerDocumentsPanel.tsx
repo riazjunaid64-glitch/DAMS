@@ -2,6 +2,8 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import Button from "../../lib/Button.tsx";
 import Modal from "../../lib/Modal.tsx";
+import { DatePicker } from "../../components/ui";
+import { karachiDateInput } from "../../lib/dates.ts";
 import { documentJson, jsonBody, openPrivateDocument } from "./documentApi.ts";
 import { canOverride, matchesDocumentFilter, statusLabel, statusTone, uploadAllowed, type DocumentFilter } from "./documentState.ts";
 import DocumentSummaryBadge from "./DocumentSummaryBadge.tsx";
@@ -222,7 +224,7 @@ function ActionModal({ customerId, action, onClose, onSaved }: { customerId: num
     <h2 id="document-action-title" className="text-lg font-semibold text-[var(--text-heading)]">{title}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">{requirement.name} · {statusLabel(requirement.status)}</p>
     {error && <p className="mt-4 rounded-xl bg-rose-500/10 p-3 text-sm text-rose-300" role="alert">{error}</p>}
     <div className="mt-5 space-y-4">{kind === "upload" && <label className="block text-sm text-[var(--text-secondary)]">File <span aria-hidden>*</span><input required type="file" accept={requirement.allowedFileTypes.join(",")} onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="mt-2 block w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3 text-sm" /><span className="mt-1 block text-xs text-[var(--text-muted)]">{requirement.allowedFileTypes.join(", ").toUpperCase()} · up to {formatBytes(requirement.maxFileSizeBytes)}</span></label>}
-      {(kind === "postpone" || kind === "due") && <label className="block text-sm text-[var(--text-secondary)]">{kind === "postpone" ? "Collect by (optional)" : "Due date"}<input type="date" min={kind === "postpone" ? new Date(Date.now() + 86400000).toISOString().slice(0, 10) : undefined} value={date} onChange={(e) => setDate(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" /></label>}
+      {(kind === "postpone" || kind === "due") && <DatePicker label={kind === "postpone" ? "Collect by (optional)" : "Due date"} min={kind === "postpone" ? karachiDateInput(1) : undefined} value={date} onChange={setDate} />}
       {kind !== "upload" && kind !== "requested" && <label className="block text-sm text-[var(--text-secondary)]">{needsReason ? "Reason" : "Review note (optional)"}<textarea required={needsReason} rows={4} value={reason} onChange={(e) => setReason(e.target.value)} className="mt-2 w-full rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-3" /></label>}
     </div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? "Saving…" : title}</Button></div>
   </form></Modal>;
@@ -254,7 +256,7 @@ function AddRequirementModal({ customerId, open, categories, existing, onClose, 
         <label className="flex items-center gap-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={form.saveGlobal} onChange={(e) => setForm({ ...form, saveGlobal: e.target.checked })} />Save as a reusable global category</label>
         {form.saveGlobal && <><FieldLabel label="Stable category code" required><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "_") })} className={inputClass} /></FieldLabel><FieldLabel label="Apply global category"><AppSelect value={form.assignment} onChange={(e) => setForm({ ...form, assignment: e.target.value as AssignmentMode })} className={inputClass}><option value="None">Do not assign automatically</option><option value="NewCustomersOnly">New customers only</option><option value="AllActiveCustomers">All existing active customers</option><option value="SelectedCustomers">This customer only</option></AppSelect></FieldLabel></>}
       </>}
-      <div className="grid gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[var(--border)] p-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} />Required for this customer</label><FieldLabel label="Due date"><input type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className={inputClass} /></FieldLabel></div>
+      <div className="grid gap-4 sm:grid-cols-2"><label className="flex items-center gap-3 rounded-xl border border-[var(--border)] p-3 text-sm text-[var(--text-secondary)]"><input type="checkbox" checked={form.required} onChange={(e) => setForm({ ...form, required: e.target.checked })} />Required for this customer</label><DatePicker label="Due date" value={form.dueDate} onChange={(dueDate) => setForm({ ...form, dueDate })} /></div>
     </div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="ghost" disabled={saving} onClick={onClose}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? "Adding…" : "Add requirement"}</Button></div>
   </form></Modal>;
 }

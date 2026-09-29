@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Checkbox, ChoiceChips, DateField, FieldShell, TextField, TimeField } from "../../components/ui";
+import { Checkbox, ChoiceChips, DatePicker, FieldShell, TextField, TimePicker } from "../../components/ui";
 import { karachiDateInput } from "../../lib/dates.ts";
 import { QUICK_DAYS, quickDayOf, visitDayChoices } from "./leadPage.ts";
 
@@ -35,8 +35,8 @@ export function WhenPicker({ label, required, value, onChange, quick = "days", e
       <div className="flex flex-col gap-2.5">
         <ChoiceChips aria-label="Quick pick" options={choices} value={chosen} onChange={pick} />
         <div className="grid grid-cols-2 gap-2.5">
-          <DateField aria-label="Date" min={karachiDateInput(0)} value={value.date} onChange={(e) => onChange({ ...value, date: e.target.value })} />
-          <TimeField aria-label="Time" value={value.time} onChange={(e) => onChange({ ...value, time: e.target.value })} />
+          <DatePicker aria-label="Date" min={karachiDateInput(0)} value={value.date} onChange={(date) => onChange({ ...value, date })} />
+          <TimePicker aria-label="Time" value={value.time} onChange={(time) => onChange({ ...value, time })} />
         </div>
       </div>
     </FieldShell>

@@ -94,6 +94,14 @@ namespace DAMS.Application.Services
                 Content = upload.Content, FileName = upload.FileName, Length = upload.Length
             });
             var ownership = await ResolveEvidenceOwnerAsync(ownerType, ownerId, cancellationToken);
+            // A customer payment or a cancellation refund holds exactly one proof file; the filtered
+            // unique index backs this up when two uploads race.
+            if (ownerType == FinancialEvidenceOwnerType.CustomerPayment
+                && await _context.FinancialEvidence.AsNoTracking().AnyAsync(e => e.CustomerPaymentId == ownerId, cancellationToken))
+                throw new InvalidOperationException("This payment already has proof attached.");
+            if (ownerType == FinancialEvidenceOwnerType.CancellationRefund
+                && await _context.FinancialEvidence.AsNoTracking().AnyAsync(e => e.CancellationRefundId == ownerId, cancellationToken))
+                throw new InvalidOperationException("This refund already has proof attached.");
             var stored = await _storage.SaveAsync(upload.Content, validated.Extension, cancellationToken);
             try
             {
@@ -103,6 +111,8 @@ namespace DAMS.Application.Services
                     PayoutId = ownerType == FinancialEvidenceOwnerType.CommissionPayout ? ownerId : null,
                     RebateId = ownerType == FinancialEvidenceOwnerType.Rebate ? ownerId : null,
                     RebateDisbursementId = ownerType == FinancialEvidenceOwnerType.RebateDisbursement ? ownerId : null,
+                    CustomerPaymentId = ownerType == FinancialEvidenceOwnerType.CustomerPayment ? ownerId : null,
+                    CancellationRefundId = ownerType == FinancialEvidenceOwnerType.CancellationRefund ? ownerId : null,
                     StoredFileName = stored, OriginalFileName = validated.OriginalFileName,
                     ContentType = validated.ContentType, FileSize = validated.FileSize,
                     UploadedByUserId = actor.UserId, UploadedByName = actor.DisplayName, UploadedAt = DateTime.UtcNow
@@ -136,8 +146,11 @@ namespace DAMS.Application.Services
             var ownerType = evidence.CommissionId.HasValue ? FinancialEvidenceOwnerType.Commission
                 : evidence.PayoutId.HasValue ? FinancialEvidenceOwnerType.CommissionPayout
                 : evidence.RebateId.HasValue ? FinancialEvidenceOwnerType.Rebate
-                : FinancialEvidenceOwnerType.RebateDisbursement;
-            var ownerId = evidence.CommissionId ?? evidence.PayoutId ?? evidence.RebateId ?? evidence.RebateDisbursementId!.Value;
+                : evidence.RebateDisbursementId.HasValue ? FinancialEvidenceOwnerType.RebateDisbursement
+                : evidence.CustomerPaymentId.HasValue ? FinancialEvidenceOwnerType.CustomerPayment
+                : FinancialEvidenceOwnerType.CancellationRefund;
+            var ownerId = evidence.CommissionId ?? evidence.PayoutId ?? evidence.RebateId ?? evidence.RebateDisbursementId
+                ?? evidence.CustomerPaymentId ?? evidence.CancellationRefundId!.Value;
             var ownership = await ResolveEvidenceOwnerAsync(ownerType, ownerId, cancellationToken);
             var stream = await _storage.OpenReadAsync(evidence.StoredFileName, cancellationToken)
                 ?? throw new FileNotFoundException("The evidence metadata exists, but its private file is missing.");
@@ -209,6 +222,14 @@ namespace DAMS.Application.Services
                     .Where(d => d.Id == id).Select(d => new EvidenceOwnership(null, d.Rebate.CustomerId,
                         d.Rebate.BookingId, null, null, d.RebateId, d.Id)).SingleOrDefaultAsync(cancellationToken)
                     ?? throw new KeyNotFoundException("Rebate disbursement not found."),
+                FinancialEvidenceOwnerType.CustomerPayment => await _context.Payments.AsNoTracking()
+                    .Where(p => p.Id == id).Select(p => new EvidenceOwnership(null, p.Booking.CustomerId, p.BookingId,
+                        null, null, null, null)).SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new KeyNotFoundException("Payment not found."),
+                FinancialEvidenceOwnerType.CancellationRefund => await _context.BookingCancellationRefunds.AsNoTracking()
+                    .Where(r => r.Id == id).Select(r => new EvidenceOwnership(null, r.Settlement.Booking.CustomerId,
+                        r.Settlement.BookingId, null, null, null, null)).SingleOrDefaultAsync(cancellationToken)
+                    ?? throw new KeyNotFoundException("Refund not found."),
                 _ => throw new InvalidOperationException("Evidence owner type is invalid.")
             };
         }

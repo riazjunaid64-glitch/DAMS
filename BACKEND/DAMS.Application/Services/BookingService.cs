@@ -739,7 +739,11 @@ namespace DAMS.Application.Services
                     PaymentReference = p.PaymentReference,
                     ReceiptNumber = p.ReceiptNumber,
                     Notes = p.Notes,
-                    PaidAt = p.PaidAt
+                    PaidAt = p.PaidAt,
+                    Proof = p.Evidence.OrderBy(e => e.Id).Select(e => new PaymentProofDto
+                    {
+                        Id = e.Id, FileName = e.OriginalFileName, FileSize = e.FileSize
+                    }).FirstOrDefault()
                 })
                 .ToListAsync();
         }
@@ -848,10 +852,11 @@ namespace DAMS.Application.Services
                 .AsNoTracking()
                 .Include(b => b.Customer)
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
-                .Include(b => b.Payments)
+                .Include(b => b.Payments).ThenInclude(p => p.Evidence)
                 .Include(b => b.Installments)
                 .Include(b => b.CancellationSettlement!).ThenInclude(s => s.RefundPayableAccount)
                 .Include(b => b.CancellationSettlement!).ThenInclude(s => s.Refund!).ThenInclude(r => r.FinanceAccount)
+                .Include(b => b.CancellationSettlement!).ThenInclude(s => s.Refund!).ThenInclude(r => r.Evidence)
                 .AsSplitQuery()
                 .FirstAsync(b => b.Id == id, cancellationToken);
 
@@ -995,7 +1000,8 @@ namespace DAMS.Application.Services
                         Notes = b.CancellationSettlement.Refund.Notes,
                         RecordedByUserId = b.CancellationSettlement.Refund.RecordedByUserId,
                         RecordedByName = b.CancellationSettlement.Refund.RecordedByName,
-                        RecordedAt = b.CancellationSettlement.Refund.RecordedAt
+                        RecordedAt = b.CancellationSettlement.Refund.RecordedAt,
+                        Proof = ProofOf(b.CancellationSettlement.Refund.Evidence)
                     }
                 },
                 Payments = b.Payments == null
@@ -1013,7 +1019,8 @@ namespace DAMS.Application.Services
                             PaymentReference = p.PaymentReference,
                             ReceiptNumber = p.ReceiptNumber,
                             Notes = p.Notes,
-                            PaidAt = p.PaidAt
+                            PaidAt = p.PaidAt,
+                            Proof = ProofOf(p.Evidence)
                         })
                         .ToList()
             };
@@ -1107,8 +1114,18 @@ namespace DAMS.Application.Services
         private static BookingResponseDto SanitizeForClient(BookingResponseDto dto)
         {
             dto.InternalNotes = null;
+            // Proof files are Admin / Accountant material; a customer's own copy never names one.
+            foreach (var payment in dto.Payments) payment.Proof = null;
+            if (dto.CancellationSettlement?.Refund is { } refund) refund.Proof = null;
             return dto;
         }
+
+        /// <summary>The one proof file of a payment or refund, when the query loaded its evidence.</summary>
+        private static PaymentProofDto? ProofOf(IEnumerable<FinancialEvidence>? evidence) =>
+            evidence?.OrderBy(e => e.Id).Select(e => new PaymentProofDto
+            {
+                Id = e.Id, FileName = e.OriginalFileName, FileSize = e.FileSize
+            }).FirstOrDefault();
 
         // Globally unique sequential receipt number, e.g. RCP-000001.
         private async Task<string> GenerateReceiptNumberAsync()

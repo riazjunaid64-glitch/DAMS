@@ -130,3 +130,49 @@ export function resolveMediaUrl(path: string | null | undefined): string {
   const base = apiBaseUrl();
   return base ? `${base}${slug}` : slug;
 }
+
+/**
+ * POSTs a form (a file upload) and reports how much has been sent, which fetch cannot. Signs in
+ * the same way `api` does, and on a rejected token refreshes it and sends once more. Resolves to a
+ * Response so callers read it like any other API call; rejects with an AbortError when `signal` fires.
+ */
+export function apiUpload(
+  endpoint: string,
+  body: FormData,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal,
+  isRetry: boolean = false
+): Promise<Response> {
+  const send = () =>
+    new Promise<Response>((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `${apiBaseUrl()}${endpoint}`);
+      request.withCredentials = true;
+      request.responseType = "blob";
+      if (_accessToken) request.setRequestHeader("Authorization", `Bearer ${_accessToken}`);
+      request.setRequestHeader("ngrok-skip-browser-warning", "true");
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+      };
+      request.onload = () =>
+        resolve(new Response(request.response as Blob, { status: request.status, headers: { "Content-Type": request.getResponseHeader("Content-Type") ?? "application/json" } }));
+      request.onerror = () => reject(new TypeError("The upload could not reach the server."));
+      request.onabort = () => reject(new DOMException("The upload was stopped.", "AbortError"));
+      signal?.addEventListener("abort", () => request.abort(), { once: true });
+      if (signal?.aborted) {
+        reject(new DOMException("The upload was stopped.", "AbortError"));
+        return;
+      }
+      request.send(body);
+    });
+
+  return send().then(async (response) => {
+    if (response.status === 401 && !isRetry) {
+      const hadSession = _accessToken != null;
+      if (await refreshAccessToken()) return apiUpload(endpoint, body, onProgress, signal, true);
+      _accessToken = null;
+      if (hadSession) notifyAccessChanged();
+    }
+    return response;
+  });
+}

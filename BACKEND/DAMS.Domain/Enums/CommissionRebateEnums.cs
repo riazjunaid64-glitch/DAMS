@@ -114,6 +114,8 @@ namespace DAMS.Domain.Enums
         Commission = 0,
         CommissionPayout = 1,
         Rebate = 2,
-        RebateDisbursement = 3
+        RebateDisbursement = 3,
+        CustomerPayment = 4,
+        CancellationRefund = 5
     }
 }

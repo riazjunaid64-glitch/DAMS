@@ -7,6 +7,8 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import type { ProofFile } from "../features/proof/proofApi";
+import { DatePicker } from "../components/ui";
 import BookingCommissionRebatePanel from "../features/commissionRebates/BookingCommissionRebatePanel.tsx";
 import { BookingTabs, DetailRow, EmptyState, PanelCard, StatCard, TabPanel } from "../features/bookings/ui.tsx";
 import { Icons, th } from "../features/bookings/tokens.tsx";
@@ -69,6 +71,7 @@ interface BookingPayment {
   receiptNumber?: string | null;
   notes?: string | null;
   paidAt: string;
+  proof?: ProofFile | null;
 }
 
 interface InstallmentSchedule {
@@ -931,9 +934,9 @@ export default function BookingDetailPage({ user }: Props) {
                   <Field label="Discount %" type="number" min="0" max="100" step="0.01"
                     value={finForm.discountPercent}
                     onChange={(e) => setFinForm({ ...finForm, discountPercent: e.target.value })} />
-                  <Field label="Booking Amount Due Date (optional)" type="date"
+                  <DatePicker label="Booking Amount Due Date (optional)"
                     value={finForm.bookingAmountDueDate}
-                    onChange={(e) => setFinForm({ ...finForm, bookingAmountDueDate: e.target.value })} />
+                    onChange={(bookingAmountDueDate) => setFinForm({ ...finForm, bookingAmountDueDate })} />
                   <div className="sm:col-span-2">
                     <Field label="Discount Reason (optional)"
                       value={finForm.discountReason}
@@ -1000,16 +1003,16 @@ export default function BookingDetailPage({ user }: Props) {
                 <Field label="Number of Installments" type="number" min={1} max={600} required
                   value={form.numberOfInstallments} disabled={planLocked}
                   onChange={(e) => setForm({ ...form, numberOfInstallments: e.target.value })} />
-                <Field label="Installment Start Date" type="date" required
+                <DatePicker label="Installment Start Date" required
                   value={form.installmentStartDate} disabled={planLocked}
-                  onChange={(e) => setForm({ ...form, installmentStartDate: e.target.value })} />
+                  onChange={(installmentStartDate) => setForm({ ...form, installmentStartDate })} />
                 <Field label="Possession Amount (optional)" type="number" min="0" step="0.01"
                   value={form.possessionAmount} disabled={planLocked}
                   onChange={(e) => setForm({ ...form, possessionAmount: e.target.value })} />
                 {Number(form.possessionAmount) > 0 && (
-                  <Field label="Possession Due Date" type="date" required
+                  <DatePicker label="Possession Due Date" required
                     value={form.possessionDueDate} disabled={planLocked}
-                    onChange={(e) => setForm({ ...form, possessionDueDate: e.target.value })} />
+                    onChange={(possessionDueDate) => setForm({ ...form, possessionDueDate })} />
                 )}
 
                 <div className="sm:col-span-2 rounded-xl border border-[var(--border)] bg-[var(--surface-glass-hover)] px-4 py-3 text-sm text-[var(--text-secondary)]">
@@ -1294,8 +1297,8 @@ export default function BookingDetailPage({ user }: Props) {
               </label>
               <Field label="Reference (optional)" value={payForm.paymentReference}
                 onChange={(e) => setPayForm({ ...payForm, paymentReference: e.target.value })} />
-              <Field label="Payment Date" type="date" value={payForm.paidAt}
-                onChange={(e) => setPayForm({ ...payForm, paidAt: e.target.value })} />
+              <DatePicker label="Payment Date" required max={pakistanToday()} value={payForm.paidAt}
+                onChange={(paidAt) => setPayForm({ ...payForm, paidAt })} />
               <Field label="Notes (optional)" value={payForm.notes}
                 onChange={(e) => setPayForm({ ...payForm, notes: e.target.value })} />
 
@@ -1345,8 +1348,8 @@ export default function BookingDetailPage({ user }: Props) {
               </label>
               <Field label="Reference (optional)" value={bookingPayForm.paymentReference}
                 onChange={(e) => setBookingPayForm({ ...bookingPayForm, paymentReference: e.target.value })} />
-              <Field label="Payment Date" type="date" value={bookingPayForm.paidAt}
-                onChange={(e) => setBookingPayForm({ ...bookingPayForm, paidAt: e.target.value })} />
+              <DatePicker label="Payment Date" required max={pakistanToday()} value={bookingPayForm.paidAt}
+                onChange={(paidAt) => setBookingPayForm({ ...bookingPayForm, paidAt })} />
               <Field label="Notes (optional)" value={bookingPayForm.notes}
                 onChange={(e) => setBookingPayForm({ ...bookingPayForm, notes: e.target.value })} />
 

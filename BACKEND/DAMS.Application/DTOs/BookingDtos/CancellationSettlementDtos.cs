@@ -56,5 +56,6 @@ namespace DAMS.Application.DTOs.BookingDtos
         public int RecordedByUserId { get; set; }
         public string RecordedByName { get; set; } = string.Empty;
         public DateTime RecordedAt { get; set; }
+        public PaymentProofDto? Proof { get; set; }
     }
 }

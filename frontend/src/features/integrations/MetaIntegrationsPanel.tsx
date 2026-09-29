@@ -3,7 +3,7 @@ import {
   Button,
   Card,
   ConfirmDialog,
-  DateField,
+  DatePicker,
   EmptyState,
   IconLink,
   Modal,
@@ -430,13 +430,13 @@ function ImportLeadsDialog({ connectionId, page, onClose, onDone }: {
       cancelLabel={result ? null : "Cancel"}
     >
       <div className="flex flex-col gap-3">
-        <DateField
+        <DatePicker
           label="Leads submitted since"
           required
           value={since}
           min={earliest}
           max={today}
-          onChange={(event) => { setSince(event.target.value); setResult(null); }}
+          onChange={(value) => { setSince(value); setResult(null); }}
         />
         {result && <p className="m-0 text-sm font-bold text-ink">{importOutcomeLine(result)}</p>}
       </div>

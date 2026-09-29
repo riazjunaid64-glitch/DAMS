@@ -1,4 +1,5 @@
 import { monthStartIso, todayIso, type DateRange, type RangePreset } from "./dateRange";
+import { DatePicker } from "../ui";
 
 function presetRange(preset: RangePreset, current: DateRange): DateRange {
   if (preset === "today") {
@@ -45,26 +46,8 @@ export default function DateRangeFilter({ value, onChange }: Props) {
 
       {value.preset === "custom" && (
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">From</label>
-            <input
-              type="date"
-              value={value.from}
-              max={value.to || undefined}
-              onChange={e => onChange({ ...value, from: e.target.value })}
-              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">To</label>
-            <input
-              type="date"
-              value={value.to}
-              min={value.from || undefined}
-              onChange={e => onChange({ ...value, to: e.target.value })}
-              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            />
-          </div>
+          <DatePicker label="From" required value={value.from} max={value.to || undefined} onChange={from => onChange({ ...value, from })} className="w-44" />
+          <DatePicker label="To" required value={value.to} min={value.from || undefined} onChange={to => onChange({ ...value, to })} className="w-44" />
         </div>
       )}
     </div>

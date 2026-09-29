@@ -25,7 +25,11 @@ export { DEFAULT_PAGE_SIZE, pageItems, pageRange } from "./pageItems.ts";
 
 // 06 Form fields
 export { FieldShell, type FieldBaseProps } from "./FieldShell.tsx";
-export { TextField, NumberField, DateField, TimeField, type TextFieldProps, type NumberFieldProps } from "./TextField.tsx";
+export { TextField, NumberField, type TextFieldProps, type NumberFieldProps } from "./TextField.tsx";
+export { DatePicker, type DatePickerProps } from "./DatePicker.tsx";
+export { TimePicker, type TimePickerProps } from "./TimePicker.tsx";
+export { AttachProof, type AttachProofFile, type AttachProofProps } from "./AttachProof.tsx";
+export { PROOF_MAX_BYTES, PROOF_TOO_LARGE, PROOF_WRONG_TYPE, formatFileSize, proofFileError } from "./proofFile.ts";
 export { TextArea, type TextAreaProps } from "./TextArea.tsx";
 export { ChoiceChips, RadioGroup, Checkbox, Toggle } from "./Choice.tsx";
 

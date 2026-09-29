@@ -2,6 +2,7 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
+import { DatePicker } from "../../components/ui";
 import { bookingCancellationApi } from "./api";
 import { idempotencyKey, money, pakistanToday, refundDecisionLabel, refundStatusLabel, trapDialogKeys } from "./state";
 import type { CancellationSettlement, PayCancellationRefundRequest, RefundPaymentMethod } from "./types";
@@ -161,7 +162,7 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
               </label>
               <Field label="Payment Reference" required={paymentMethod !== "Cash"} value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)} />
-              <Field label="Refund Date" type="date" required value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
+              <DatePicker label="Refund Date" required max={pakistanToday()} value={paidAt} onChange={setPaidAt} />
               <Field as="textarea" label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
               <div className="flex gap-2">

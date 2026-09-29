@@ -1,11 +1,11 @@
-import { useId, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { BottomSheet } from "./BottomSheet.tsx";
 import { Button } from "./Button.tsx";
 import { cx } from "./cx.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { IconFilter, IconPlus } from "./icons.tsx";
 import { SearchBar } from "./SearchBar.tsx";
-import { DateField } from "./TextField.tsx";
+import { DatePicker } from "./DatePicker.tsx";
 import type { Option } from "./types.ts";
 
 export type FilterDef =
@@ -72,7 +72,7 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
               className="w-auto max-w-[240px]"
             />
           ) : (
-            <FilterDate key={filter.key} label={filter.label} value={values[filter.key] ?? ""} onChange={(value) => onChange({ [filter.key]: value })} />
+            <DatePicker key={filter.key} size="filter" label={filter.label} value={values[filter.key] ?? ""} onChange={(value) => onChange({ [filter.key]: value })} />
           ),
         )}
         <Button variant="link" onClick={onReset} className="ml-1">Reset</Button>
@@ -113,33 +113,16 @@ export function FilterBar({ search, filters, values, onChange, onReset, onAdd, a
                 onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
               />
             ) : (
-              <DateField
+              <DatePicker
                 key={filter.key}
                 label={filter.label}
                 value={draft[filter.key] ?? ""}
-                onChange={(event) => setDraft((current) => ({ ...current, [filter.key]: event.target.value }))}
+                onChange={(value) => setDraft((current) => ({ ...current, [filter.key]: value }))}
               />
             ),
           )}
         </div>
       </BottomSheet>
-    </div>
-  );
-}
-
-/** Compact date box for the desktop filter bar: grey label, bold date. */
-function FilterDate({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
-  const id = useId();
-  return (
-    <div className="flex h-10 items-center gap-2 rounded-field border border-line-input bg-card px-3 text-small focus-within:border-primary focus-within:ring-3 focus-within:ring-primary-ring">
-      <label htmlFor={id} className="font-bold text-ink-muted">{label}</label>
-      <input
-        id={id}
-        type="date"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="border-0 bg-transparent p-0 font-extrabold text-ink outline-none"
-      />
     </div>
   );
 }

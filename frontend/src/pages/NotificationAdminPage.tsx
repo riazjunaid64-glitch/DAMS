@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { User } from "../App.tsx";
 import { can } from "../features/access/permissions.ts";
 import Button from "../lib/Button.tsx";
+import { DatePicker, TimePicker } from "../components/ui";
 import {
   cancelJob,
   compose,
@@ -933,7 +934,7 @@ function ComposeTab() {
         bookingIds: [],
         leadIds: [],
       },
-      // datetime-local gives a local wall-clock value; converting here means the schedule
+      // The date and time pickers give a local wall-clock value (YYYY-MM-DDTHH:mm); converting here means the schedule
       // means the same instant regardless of where the server runs.
       scheduledAt: form.scheduledAt === "" ? null : new Date(form.scheduledAt).toISOString(),
       requestKey,
@@ -1036,9 +1037,24 @@ function ComposeTab() {
                 <input value={form.userIds} onChange={(e) => { setForm({ ...form, userIds: e.target.value }); setPreview(null); }} className={inputClass} />
               </Field>
             )}
-            <Field label="Send at" hint="Leave blank to send immediately. Your local time.">
-              <input type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} className={inputClass} />
-            </Field>
+            <div>
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Send at</span>
+              <div className="grid grid-cols-2 gap-2.5">
+                <DatePicker
+                  aria-label="Send date"
+                  value={form.scheduledAt.slice(0, 10)}
+                  onChange={(date) => setForm({ ...form, scheduledAt: date === "" ? "" : `${date}T${form.scheduledAt.slice(11, 16) || "09:00"}` })}
+                />
+                <TimePicker
+                  aria-label="Send time"
+                  required
+                  disabled={form.scheduledAt === ""}
+                  value={form.scheduledAt.slice(11, 16)}
+                  onChange={(time) => setForm({ ...form, scheduledAt: `${form.scheduledAt.slice(0, 10)}T${time}` })}
+                />
+              </div>
+              <span className="mt-1 block text-[11px] text-[var(--text-muted)]">Leave blank to send immediately. Your local time.</span>
+            </div>
           </div>
 
           <fieldset className="flex flex-wrap gap-4">

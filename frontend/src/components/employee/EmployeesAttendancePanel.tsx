@@ -2,6 +2,7 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
+import { DatePicker } from "../ui";
 import DateRangeFilter from "./DateRangeFilter.tsx";
 import { defaultRange, todayIso, type DateRange } from "./dateRange";
 import {
@@ -138,16 +139,7 @@ function MarkAttendance() {
           <p className="text-sm text-[var(--text-muted)]">Record the daily status for every active employee</p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Date</label>
-            <input
-              type="date"
-              value={selectedDate}
-              max={todayIso()}
-              onChange={e => setSelectedDate(e.target.value)}
-              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            />
-          </div>
+          <DatePicker label="Date" required max={todayIso()} value={selectedDate} onChange={setSelectedDate} className="w-48" />
           <Button onClick={saveAll} disabled={loading || rows.every(r => r.status == null)}>
             Save All
           </Button>

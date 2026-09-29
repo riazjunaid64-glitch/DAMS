@@ -2,6 +2,7 @@ import { useState } from "react";
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
 import { ReceiptBrandHeader } from "./BrandLogos.tsx";
+import { DatePicker } from "./ui";
 
 export interface SalarySlipData {
   employeeName: string;
@@ -75,7 +76,10 @@ function EditableField({
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: "6px", flex: 1, minWidth: 0 }}>
       <span style={{ fontWeight: 600, whiteSpace: "nowrap", fontSize: "12.5px" }}>{label}</span>
-      {editing ? (
+      {editing && type === "date" ? (
+        // Picking a day is the save, so the picker opens straight away and there is no blur to wait for.
+        <DatePicker aria-label={label} required defaultOpen value={draft} onChange={onSave} className="flex-1" />
+      ) : editing ? (
         <input
           type={type}
           value={draft}
