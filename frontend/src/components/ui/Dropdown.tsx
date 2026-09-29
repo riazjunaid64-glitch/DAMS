@@ -1,7 +1,7 @@
-import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { cx } from "./cx.ts";
 import { FieldShell, type FieldBaseProps } from "./FieldShell.tsx";
-import { IconCheck, IconChevronDown } from "./icons.tsx";
+import { IconCheck, IconChevronDown, IconSearch } from "./icons.tsx";
 import { MenuPanel } from "./MenuPanel.tsx";
 import { controlBoxClass, menuRowClass } from "./styles.ts";
 import type { Option } from "./types.ts";
@@ -31,7 +31,14 @@ export type DropdownProps = FieldBaseProps & {
   "aria-label"?: string;
   /** Starts with the list open (previews). */
   defaultOpen?: boolean;
+  /** A search box in the list. Options whose label contains the typed text stay visible. */
+  searchable?: boolean;
 };
+
+/** The text a person can search or type-ahead against. */
+function optionText(option: DropdownOption): string {
+  return typeof option.label === "string" ? option.label : option.value;
+}
 
 /**
  * The one select in the app. A custom list (not the browser's native look) that works the same
@@ -56,6 +63,7 @@ export function Dropdown({
   className,
   "aria-label": ariaLabel,
   defaultOpen = false,
+  searchable = false,
 }: DropdownProps) {
   const autoId = useId();
   const triggerId = id ?? `dd-${autoId}`;
@@ -65,21 +73,36 @@ export function Dropdown({
   const messageId = `${triggerId}-msg`;
   const [open, setOpen] = useState(defaultOpen);
   const [active, setActive] = useState(() => (defaultOpen ? options.findIndex((option) => option.value === value) : -1));
+  const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const query = search.trim().toLowerCase();
+  const shown = searchable && query !== ""
+    ? options.filter((option) => optionText(option).toLowerCase().includes(query))
+    : options;
+  const closeList = () => {
+    setOpen(false);
+    setSearch("");
+  };
   const { anchorRef, panelRef, style } = usePopover<HTMLButtonElement, HTMLDivElement>({
     open,
-    onClose: () => setOpen(false),
+    onClose: closeList,
     matchWidth: true,
   });
   const typed = useRef({ text: "", at: 0 });
 
-  const selectedIndex = options.findIndex((option) => option.value === value);
-  const selected = options[selectedIndex];
+  const selected = options.find((option) => option.value === value);
+  const selectedIndex = shown.findIndex((option) => option.value === value);
   const isFilter = size === "filter";
 
+  useEffect(() => {
+    if (open && searchable) searchRef.current?.focus();
+  }, [open, searchable]);
+
   const enabledIndex = (from: number, step: 1 | -1) => {
-    for (let i = 0, next = from; i < options.length; i += 1) {
-      next = (next + step + options.length) % options.length;
-      if (!options[next]?.disabled) return next;
+    if (shown.length === 0) return -1;
+    for (let i = 0, next = from; i < shown.length; i += 1) {
+      next = (next + step + shown.length) % shown.length;
+      if (!shown[next]?.disabled) return next;
     }
     return -1;
   };
@@ -96,12 +119,12 @@ export function Dropdown({
 
   const pick = (option: DropdownOption) => {
     if (option.disabled) return;
-    setOpen(false);
+    closeList();
     anchorRef.current?.focus();
     if (option.value !== value) onChange(option.value);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     switch (event.key) {
       case "ArrowDown":
       case "ArrowUp":
@@ -113,33 +136,40 @@ export function Dropdown({
       case "End":
         if (!open) return;
         event.preventDefault();
-        show(event.key === "Home" ? enabledIndex(-1, 1) : enabledIndex(options.length, -1));
+        show(event.key === "Home" ? enabledIndex(-1, 1) : enabledIndex(shown.length, -1));
         return;
       case "Enter":
       case " ":
         event.preventDefault();
         if (!open) openList();
-        else if (options[active]) pick(options[active]);
+        else if (shown[active]) pick(shown[active]);
         return;
       case "Tab":
-        if (open) setOpen(false);
+        if (open) closeList();
         return;
     }
-    if (event.key.length === 1 && /\S/.test(event.key)) {
-      const now = Date.now();
-      typed.current = { text: (now - typed.current.at < 700 ? typed.current.text : "") + event.key.toLowerCase(), at: now };
-      const start = open ? active : selectedIndex;
-      for (let i = 1; i <= options.length; i += 1) {
-        const index = (start + i + options.length) % options.length;
-        const option = options[index]!;
-        const text = typeof option.label === "string" ? option.label : option.value;
-        if (!option.disabled && text.toLowerCase().startsWith(typed.current.text)) {
-          if (open) show(index);
-          else if (option.value !== value) onChange(option.value);
-          break;
-        }
+    if (searchable || event.key.length !== 1 || !/\S/.test(event.key)) return;
+    const now = Date.now();
+    typed.current = { text: (now - typed.current.at < 700 ? typed.current.text : "") + event.key.toLowerCase(), at: now };
+    const pool = open ? shown : options;
+    const start = open ? active : options.findIndex((option) => option.value === value);
+    for (let i = 1; i <= pool.length; i += 1) {
+      const index = (start + i + pool.length) % pool.length;
+      const option = pool[index]!;
+      if (!option.disabled && optionText(option).toLowerCase().startsWith(typed.current.text)) {
+        if (open) show(index);
+        else if (option.value !== value) onChange(option.value);
+        break;
       }
     }
+  };
+
+  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End" || event.key === "Enter") {
+      onKeyDown(event);
+      return;
+    }
+    if (event.key === "Tab" && open) closeList();
   };
 
   const trigger = (
@@ -158,7 +188,7 @@ export function Dropdown({
       aria-invalid={error ? true : undefined}
       aria-describedby={error || helper ? messageId : undefined}
       aria-required={required || undefined}
-      onClick={() => (open ? setOpen(false) : openList())}
+      onClick={() => (open ? closeList() : openList())}
       onKeyDown={onKeyDown}
       className={cx(
         "cursor-pointer text-left outline-none disabled:cursor-not-allowed",
@@ -191,8 +221,26 @@ export function Dropdown({
 
   const list = open && (
     <MenuPanel ref={panelRef} id={listId} role="listbox" style={style} labelledBy={label ? labelId : undefined} label={label ? undefined : ariaLabel}>
-      {options.length === 0 && <p className="px-3 py-2.5 text-small text-ink-muted">No options</p>}
-      {options.map((option, index) => {
+      {searchable && (
+        <div className="sticky top-0 z-10 bg-card px-1.5 pb-1.5 pt-0.5">
+          <div className="flex h-10 items-center gap-2 rounded-field border border-line-input bg-card px-3">
+            <IconSearch size={16} className="shrink-0 text-ink-2" />
+            <input
+              ref={searchRef}
+              type="search"
+              value={search}
+              onChange={(event) => { setSearch(event.target.value); setActive(0); }}
+              onKeyDown={onSearchKeyDown}
+              placeholder="Search"
+              aria-label="Search options"
+              autoComplete="off"
+              className="h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-sm font-bold text-ink outline-none placeholder:font-bold placeholder:text-ink-faint [&::-webkit-search-cancel-button]:hidden"
+            />
+          </div>
+        </div>
+      )}
+      {shown.length === 0 && <p className="px-3 py-2.5 text-small text-ink-muted">{query ? "No matches" : "No options"}</p>}
+      {shown.map((option, index) => {
         const isSelected = index === selectedIndex;
         return (
           <div

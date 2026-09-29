@@ -26,24 +26,29 @@ import {
   accessBadgeTone,
   accessLabel,
   accountsWithLogin,
+  applyLoginSelection,
   buildProvisionPayload,
   buildUpdatePayload,
   describeProvisionOutcome,
   describeResendOutcome,
   inviteReady,
+  isExistingLoginError,
   isOwnAccount,
+  loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
   provisionableEmployees,
+  provisionSubmitLabel,
   roleFilterOptions,
 } from "../features/staff/staffAccessState.ts";
-import type { Notice } from "../features/staff/staffAccessState.ts";
+import type { LinkableLogin, Notice } from "../features/staff/staffAccessState.ts";
 import { canActOnAccount, canOpenCrmSettings, grantableRoles } from "../features/staff/staffRolePermissions.ts";
 import MetaIntegrationsPanel from "../features/integrations/MetaIntegrationsPanel.tsx";
 
 type Props = { user: User | null };
 const PAGE = "mx-auto flex w-full max-w-[1500px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-8 md:py-7";
 const NEW_EMPLOYEE = "new";
+const EXISTING_LOGIN_FIELD = "existing-login";
 
 export default function CrmSettingsPage({ user }: Props) {
   if (!user || !canOpenCrmSettings(user.role)) {
@@ -280,27 +285,55 @@ function GiveAccessDialog({ actorRole, staff, onClose, onDone }: {
   const toast = useToast();
   const [choice, setChoice] = useState("");
   const [form, setForm] = useState(() => newProvisionForm(null));
+  const [login, setLogin] = useState<LinkableLogin | null>(null);
+  const [logins, setLogins] = useState<LinkableLogin[]>([]);
+  const [loginsError, setLoginsError] = useState<string | null>(null);
+  const [emailTaken, setEmailTaken] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const creating = choice === NEW_EMPLOYEE;
+  const locked = staff.find((employee) => String(employee.employeeId) === choice) ?? null;
+  const emailLocked = loginEmailIsReadOnly(form, false);
   const ready = inviteReady({ employeeId: choice, fullName: form.fullName, email: form.email, phone: form.phone, role: form.role });
   const phoneError = creating && form.phone.trim().length > 0 && form.phone.trim().length < 7 ? "At least 7 characters." : undefined;
 
-  const pick = (value: string) => {
+  useEffect(() => {
+    let cancelled = false;
+    apiJson<LinkableLogin[]>("/api/staff/linkable-users")
+      .then((rows) => { if (!cancelled) setLogins(rows); })
+      .catch((caught) => {
+        if (!cancelled) setLoginsError(caught instanceof Error ? caught.message : "Existing logins could not be loaded.");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const pickEmployee = (value: string) => {
     setChoice(value);
-    if (value === NEW_EMPLOYEE) {
-      setForm(newProvisionForm(null));
-      return;
-    }
-    setForm(newProvisionForm(staff.find((employee) => String(employee.employeeId) === value) ?? null));
+    setEmailTaken(null);
+    const next = value === NEW_EMPLOYEE ? null : staff.find((employee) => String(employee.employeeId) === value) ?? null;
+    setForm((current) => applyLoginSelection(
+      { ...newProvisionForm(next), role: current.role },
+      login,
+      next,
+    ));
+  };
+
+  const pickLogin = (userId: string) => {
+    setEmailTaken(null);
+    const chosen = logins.find((row) => String(row.userId) === userId) ?? null;
+    setLogin(chosen);
+    setForm((current) => applyLoginSelection(current, chosen, locked));
   };
 
   const save = async () => {
     setSaving(true);
+    setEmailTaken(null);
     try {
-      const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form)));
+      const result = await apiJson<StaffAccountProvisionResult>("/api/staff/accounts", jsonRequest("POST", buildProvisionPayload(form, locked)));
       await onDone(describeProvisionOutcome(result));
     } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : "The invitation could not be sent.");
+      const message = caught instanceof Error ? caught.message : "The invitation could not be sent.";
+      if (isExistingLoginError(message)) setEmailTaken(message);
+      else toast.error(message);
       setSaving(false);
     }
   };
@@ -313,6 +346,11 @@ function GiveAccessDialog({ actorRole, staff, onClose, onDone }: {
     { value: NEW_EMPLOYEE, label: "+ Someone new" },
   ];
 
+  const loginOptions = [
+    { value: "", label: "None — send a new invite" },
+    ...logins.map((row) => ({ value: String(row.userId), label: `${row.fullName} — ${row.email}` })),
+  ];
+
   return (
     <Modal
       open
@@ -321,17 +359,43 @@ function GiveAccessDialog({ actorRole, staff, onClose, onDone }: {
       size="md"
       phoneLayout="fullscreen"
       busy={saving}
-      primaryAction={{ label: "Send invite", onClick: () => void save(), disabled: !ready, loading: saving }}
+      primaryAction={{ label: provisionSubmitLabel(login), onClick: () => void save(), disabled: !ready, loading: saving }}
     >
       <div className="flex flex-col gap-4">
-        <Dropdown label="Employee" required value={choice} onChange={pick} options={options} placeholder="Select an employee" />
+        <Dropdown label="Employee" required value={choice} onChange={pickEmployee} options={options} placeholder="Select an employee" />
+        <Dropdown
+          id={EXISTING_LOGIN_FIELD}
+          label="Existing login"
+          searchable
+          value={form.existingUserId}
+          onChange={pickLogin}
+          options={loginOptions}
+          placeholder="None — send a new invite"
+          helper={loginsError ?? undefined}
+        />
         {creating && (
           <>
             <TextField label="Full name" required value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
             <TextField label="Phone" required value={form.phone} error={phoneError} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
           </>
         )}
-        <TextField label="Login email" required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+        <TextField
+          label="Login email"
+          required
+          type="email"
+          value={form.email}
+          readOnly={emailLocked}
+          disabled={emailLocked}
+          error={emailTaken ? (
+            <>
+              {emailTaken}{" "}
+              <button type="button" className="cursor-pointer underline" onClick={() => document.getElementById(EXISTING_LOGIN_FIELD)?.focus()}>
+                Choose the existing login
+              </button>
+            </>
+          ) : undefined}
+          onChange={(event) => { setEmailTaken(null); setForm({ ...form, email: event.target.value }); }}
+        />
         <Dropdown
           label="Role"
           required

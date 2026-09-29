@@ -305,6 +305,24 @@ export interface LinkableLogin {
   userId: number;
   fullName: string;
   email: string;
+  /** `UserAccountStatus` as the API serializes it. Omitted only by tests that do not branch on it. */
+  accountStatus?: "Active" | "Invited" | "Disabled" | "PendingEmailVerification";
+}
+
+/**
+ * The primary button on Give DAMS access. An active login is connected as it is. Anything
+ * still waiting — including a client who never verified — is sent a staff invitation.
+ */
+export function provisionSubmitLabel(login: LinkableLogin | null): "Give access" | "Send invite" {
+  if (!login) return "Send invite";
+  return login.accountStatus === "Invited" || login.accountStatus === "PendingEmailVerification"
+    ? "Send invite"
+    : "Give access";
+}
+
+/** The server's "choose the existing login" refusal, as opposed to any other save error. */
+export function isExistingLoginError(message: string): boolean {
+  return /already exists/i.test(message);
 }
 
 /**

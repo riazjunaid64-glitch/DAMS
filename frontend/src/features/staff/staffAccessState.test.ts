@@ -18,11 +18,13 @@ import {
   invitationState,
   invitationSummary,
   inviteReady,
+  isExistingLoginError,
   isOwnAccount,
   loginEmailIsReadOnly,
   newManageForm,
   newProvisionForm,
   provisionableEmployees,
+  provisionSubmitLabel,
   roleFilterOptions,
   usesExistingEmployee,
 } from "./staffAccessState.ts";
@@ -315,6 +317,36 @@ describe("selecting and clearing an existing login", () => {
       applyLoginSelection(newProvisionForm(noEmail), login, noEmail), null, noEmail);
 
     expect(cleared.email).toBe("");
+  });
+
+  it("selecting a linkable login puts existingUserId in the POST and locks the email", () => {
+    const active = { ...login, accountStatus: "Active" as const };
+    const form = applyLoginSelection(newProvisionForm(employee), active, employee);
+
+    expect(loginEmailIsReadOnly(form, false)).toBe(true);
+    expect(buildProvisionPayload(form, employee)).toMatchObject({
+      existingUserId: 12,
+      existingEmployeeId: 4,
+      email: "imran@dams.test",
+      fullName: "Imran Khan",
+    });
+    expect(provisionSubmitLabel(active)).toBe("Give access");
+  });
+
+  it("asks to send an invite for a pending or invited login, and for a new one", () => {
+    expect(provisionSubmitLabel({ ...login, accountStatus: "PendingEmailVerification" })).toBe("Send invite");
+    expect(provisionSubmitLabel({ ...login, accountStatus: "Invited" })).toBe("Send invite");
+    expect(provisionSubmitLabel(null)).toBe("Send invite");
+    expect(provisionSubmitLabel({ ...login, accountStatus: "Disabled" })).toBe("Give access");
+  });
+
+  it("recognises the server's existing-login refusal and leaves other errors alone", () => {
+    expect(isExistingLoginError(
+      "A login with that email already exists. Choose it from existing accounts.",
+    )).toBe(true);
+    expect(isExistingLoginError(
+      "That login is disabled. Re-enable the account before giving it staff access.",
+    )).toBe(false);
   });
 });
 
