@@ -19,8 +19,12 @@ namespace DAMS.Application.Services
             _notifications = notifications;
         }
 
-        public async Task<LeadSiteVisitDto> ScheduleAsync(
-            int leadId, ScheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadSiteVisitDto> ScheduleAsync(
+            int leadId, ScheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => ScheduleCoreAsync(leadId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadSiteVisitDto> ScheduleCoreAsync(
+            int leadId, ScheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var lead = await LeadGate.LoadActiveAsync(_context, leadId, ctx, cancellationToken);
 
@@ -75,22 +79,26 @@ namespace DAMS.Application.Services
                 $"Site visit scheduled for {LeadDisplay.When(dto.ScheduledAt)}.", ctx,
                 a => a.Notes = visit.MeetingLocation);
 
-            await _context.SaveChangesAsync(cancellationToken);
-
-            activity.SiteVisitId = visit.Id;
-            await NotifyEmployeeAsync(lead, employeeId, ctx, NotificationType.SiteVisitScheduled,
-                $"Site visit booked for {LeadService.FullName(lead)}",
-                $"{LeadDisplay.When(dto.ScheduledAt)} at {visit.MeetingLocation}.",
-                $"visit:{visit.Id}", cancellationToken);
-            await _context.SaveChangesAsync(cancellationToken);
-            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
-            await _context.SaveChangesAsync(cancellationToken);
+            // The timeline link and the notification key need the generated id. The second save
+            // stays in the same transaction as the visit, so a conflict cannot leave the visit behind.
+            await LeadGate.SaveThenLinkAsync(_context, lead.Id, async ct =>
+            {
+                activity.SiteVisitId = visit.Id;
+                await NotifyEmployeeAsync(lead, employeeId, ctx, NotificationType.SiteVisitScheduled,
+                    $"Site visit booked for {LeadService.FullName(lead)}",
+                    $"{LeadDisplay.When(dto.ScheduledAt)} at {visit.MeetingLocation}.",
+                    $"visit:{visit.Id}", ct);
+            }, cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);
         }
 
-        public async Task<LeadSiteVisitDto> RescheduleAsync(
-            int visitId, RescheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadSiteVisitDto> RescheduleAsync(
+            int visitId, RescheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => RescheduleCoreAsync(visitId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadSiteVisitDto> RescheduleCoreAsync(
+            int visitId, RescheduleSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var visit = await LoadForWriteAsync(visitId, ctx, cancellationToken);
 
@@ -126,15 +134,18 @@ namespace DAMS.Application.Services
                     a.NewValue = dto.ScheduledAt.ToString("u");
                 });
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(visit.Id, cancellationToken);
         }
 
-        public async Task<LeadSiteVisitDto> CompleteAsync(
-            int visitId, CompleteSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadSiteVisitDto> CompleteAsync(
+            int visitId, CompleteSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => CompleteCoreAsync(visitId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadSiteVisitDto> CompleteCoreAsync(
+            int visitId, CompleteSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var visit = await LoadForWriteAsync(visitId, ctx, cancellationToken);
 
@@ -181,7 +192,6 @@ namespace DAMS.Application.Services
                     a.NewValue = dto.Outcome.ToString();
                 });
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
@@ -196,7 +206,11 @@ namespace DAMS.Application.Services
             int visitId, CloseSiteVisitDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
             CloseAsync(visitId, dto, LeadSiteVisitStatus.Missed, ctx, cancellationToken);
 
-        private async Task<LeadSiteVisitDto> CloseAsync(
+        private Task<LeadSiteVisitDto> CloseAsync(
+            int visitId, CloseSiteVisitDto dto, LeadSiteVisitStatus status, LeadUserContext ctx, CancellationToken cancellationToken) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => CloseCoreAsync(visitId, dto, status, ctx, ct), cancellationToken);
+
+        private async Task<LeadSiteVisitDto> CloseCoreAsync(
             int visitId, CloseSiteVisitDto dto, LeadSiteVisitStatus status, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var visit = await LoadForWriteAsync(visitId, ctx, cancellationToken);
@@ -228,7 +242,6 @@ namespace DAMS.Application.Services
                     $"missed:{visit.Id}", isEscalation: true, cancellationToken: cancellationToken);
             }
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 

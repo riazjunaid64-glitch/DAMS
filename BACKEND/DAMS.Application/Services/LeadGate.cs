@@ -138,26 +138,41 @@ namespace DAMS.Application.Services
             }
         }
 
+        /// <summary>
+        /// Runs one lead action as a single commit. SQL Server retries transient errors, and a
+        /// retry must not replay rows a failed attempt already marked as stored, so the tracker
+        /// is cleared only when this method owns the transaction. A caller that already has one
+        /// open — recording a call that also schedules the follow-up — is joined rather than nested.
+        /// The in-memory store used by tests is not relational and runs the action directly.
+        /// </summary>
+        public static async Task<T> RunAtomicallyAsync<T>(
+            AppDbContext context, Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
+        {
+            if (!context.Database.IsRelational() || context.Database.CurrentTransaction != null)
+                return await action(cancellationToken);
+
+            var attempt = 0;
+            return await context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                if (attempt++ > 0)
+                    context.ChangeTracker.Clear();
+
+                await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+                var result = await action(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return result;
+            });
+        }
+
         public static async Task RefreshNextActionAsync(
             AppDbContext context, int leadId, CancellationToken cancellationToken)
         {
-            var followUp = await context.LeadFollowUps
-                .AsNoTracking()
-                .Where(f => f.LeadId == leadId
-                            && (f.Status == LeadFollowUpStatus.Pending || f.Status == LeadFollowUpStatus.Missed))
-                .OrderBy(f => f.DueAt)
-                .Select(f => new { At = (DateTime?)f.DueAt, Summary = f.Title })
-                .FirstOrDefaultAsync(cancellationToken);
-
-            var visit = await context.LeadSiteVisits
-                .AsNoTracking()
-                .Where(v => v.LeadId == leadId
-                            && (v.Status == LeadSiteVisitStatus.Scheduled
-                                || v.Status == LeadSiteVisitStatus.Rescheduled
-                                || v.Status == LeadSiteVisitStatus.Missed))
-                .OrderBy(v => v.ScheduledAt)
-                .Select(v => new { At = (DateTime?)v.ScheduledAt, Summary = "Site visit at " + v.MeetingLocation })
-                .FirstOrDefaultAsync(cancellationToken);
+            // Rows staged in this context but not saved yet still count. Callers can refresh
+            // before the one save that writes them, instead of saving first and then writing
+            // the lead again — the gap another user can win, leaving the follow-up committed
+            // and the lead update failed.
+            var followUp = await EarliestOpenFollowUpAsync(context, leadId, cancellationToken);
+            var visit = await EarliestOpenVisitAsync(context, leadId, cancellationToken);
 
             // Plans made before the lead was closed died with it; a reopen starts clean.
             // Compare the recording time: a closed lead cannot receive communications, so anything
@@ -170,24 +185,11 @@ namespace DAMS.Application.Services
             // Only the latest real exchange's plan is outstanding. A later conversation has either
             // carried the plan out or replaced it; an unanswered attempt does neither unless it
             // sets a plan of its own.
-            var communication = await context.LeadCommunications
-                .AsNoTracking()
-                .Where(c => c.LeadId == leadId
-                            && (c.Connected || c.NextActionAt != null)
-                            && (reopenedAt == null || c.CreatedAt >= reopenedAt))
-                .OrderByDescending(c => c.OccurredAt)
-                .ThenByDescending(c => c.Id)
-                // A follow-up linked to this exchange already carries the plan. Counting the
-                // communication as well would leave it Overdue after that follow-up is done.
-                // An older row with no follow-up still contributes, when it is the latest exchange.
-                .Select(c => new
-                {
-                    At = c.FollowUpId == null ? c.NextActionAt : null,
-                    Summary = c.NextAction ?? c.Summary
-                })
-                .FirstOrDefaultAsync(cancellationToken);
+            var communication = await LatestExchangeAsync(context, leadId, reopenedAt, cancellationToken);
 
-            var next = new[] { followUp, visit, communication }
+            // Stable order: a follow-up and a visit at the same moment keep the follow-up, matching
+            // the previous array order. A latest exchange with no date of its own contributes nothing.
+            var next = new NextStep?[] { followUp, visit, communication }
                 .Where(x => x?.At != null)
                 .OrderBy(x => x!.At)
                 .FirstOrDefault();
@@ -196,6 +198,148 @@ namespace DAMS.Application.Services
             lead.NextActionAt = next?.At;
             lead.NextActionSummary = next == null ? null : LeadContactNormalizer.Limit(next.Summary, 300);
             lead.UpdatedAt = DateTime.UtcNow;
+        }
+
+        /// <summary>
+        /// Writes the staged follow-up, visit or communication together with the lead's next
+        /// action, then the links that need the database-generated id (timeline foreign key,
+        /// notification dedup key). Both saves share the caller's transaction.
+        /// </summary>
+        public static async Task SaveThenLinkAsync(
+            AppDbContext context, int leadId, Func<CancellationToken, Task> linkAsync, CancellationToken cancellationToken)
+        {
+            await RefreshNextActionAsync(context, leadId, cancellationToken);
+            await context.SaveChangesAsync(cancellationToken);
+            await linkAsync(cancellationToken);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        private sealed record NextStep(DateTime? At, string Summary);
+
+        // A class, not a struct: FirstOrDefaultAsync must be able to return null when the lead
+        // has no exchange yet. A default struct would look like a real row dated year 1.
+        private sealed record Exchange(DateTime OccurredAt, int SortId, DateTime CreatedAt, DateTime? At, string Summary);
+
+        private static List<int> ShadowedIds<TEntity>(AppDbContext context, int leadId, Func<TEntity, int> leadIdOf, Func<TEntity, int> idOf)
+            where TEntity : class =>
+            context.ChangeTracker.Entries<TEntity>()
+                .Where(e => leadIdOf(e.Entity) == leadId
+                            && e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted
+                            && idOf(e.Entity) > 0)
+                .Select(e => idOf(e.Entity))
+                .Distinct()
+                .ToList();
+
+        private static async Task<NextStep?> EarliestOpenFollowUpAsync(
+            AppDbContext context, int leadId, CancellationToken cancellationToken)
+        {
+            var shadowed = ShadowedIds<LeadFollowUp>(context, leadId, f => f.LeadId, f => f.Id);
+            var storedQuery = context.LeadFollowUps.AsNoTracking()
+                .Where(f => f.LeadId == leadId
+                            && (f.Status == LeadFollowUpStatus.Pending || f.Status == LeadFollowUpStatus.Missed));
+            if (shadowed.Count > 0)
+                storedQuery = storedQuery.Where(f => !shadowed.Contains(f.Id));
+
+            var stored = await storedQuery
+                .OrderBy(f => f.DueAt)
+                .Select(f => new NextStep((DateTime?)f.DueAt, f.Title))
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var local = context.ChangeTracker.Entries<LeadFollowUp>()
+                .Where(e => e.Entity.LeadId == leadId && e.State is EntityState.Added or EntityState.Modified)
+                .Select(e => e.Entity)
+                .Where(f => f.Status is LeadFollowUpStatus.Pending or LeadFollowUpStatus.Missed)
+                .Select(f => new NextStep(f.DueAt, f.Title));
+
+            return Earliest(stored, local);
+        }
+
+        private static async Task<NextStep?> EarliestOpenVisitAsync(
+            AppDbContext context, int leadId, CancellationToken cancellationToken)
+        {
+            var shadowed = ShadowedIds<LeadSiteVisit>(context, leadId, v => v.LeadId, v => v.Id);
+            var storedQuery = context.LeadSiteVisits.AsNoTracking()
+                .Where(v => v.LeadId == leadId
+                            && (v.Status == LeadSiteVisitStatus.Scheduled
+                                || v.Status == LeadSiteVisitStatus.Rescheduled
+                                || v.Status == LeadSiteVisitStatus.Missed));
+            if (shadowed.Count > 0)
+                storedQuery = storedQuery.Where(v => !shadowed.Contains(v.Id));
+
+            var stored = await storedQuery
+                .OrderBy(v => v.ScheduledAt)
+                .Select(v => new NextStep((DateTime?)v.ScheduledAt, "Site visit at " + v.MeetingLocation))
+                .FirstOrDefaultAsync(cancellationToken);
+
+            var local = context.ChangeTracker.Entries<LeadSiteVisit>()
+                .Where(e => e.Entity.LeadId == leadId && e.State is EntityState.Added or EntityState.Modified)
+                .Select(e => e.Entity)
+                .Where(v => v.Status is LeadSiteVisitStatus.Scheduled or LeadSiteVisitStatus.Rescheduled or LeadSiteVisitStatus.Missed)
+                .Select(v => new NextStep(v.ScheduledAt, "Site visit at " + v.MeetingLocation));
+
+            return Earliest(stored, local);
+        }
+
+        private static NextStep? Earliest(NextStep? stored, IEnumerable<NextStep> local)
+        {
+            var steps = local.ToList();
+            if (stored != null)
+                steps.Add(stored);
+            return steps.OrderBy(s => s.At).FirstOrDefault();
+        }
+
+        private static async Task<NextStep?> LatestExchangeAsync(
+            AppDbContext context, int leadId, DateTime? reopenedAt, CancellationToken cancellationToken)
+        {
+            var shadowed = ShadowedIds<LeadCommunication>(context, leadId, c => c.LeadId, c => c.Id);
+            var storedQuery = context.LeadCommunications.AsNoTracking()
+                .Where(c => c.LeadId == leadId
+                            && (c.Connected || c.NextActionAt != null)
+                            && (reopenedAt == null || c.CreatedAt >= reopenedAt));
+            if (shadowed.Count > 0)
+                storedQuery = storedQuery.Where(c => !shadowed.Contains(c.Id));
+
+            var stored = await storedQuery
+                .OrderByDescending(c => c.OccurredAt)
+                .ThenByDescending(c => c.Id)
+                .Select(c => new Exchange(
+                    c.OccurredAt,
+                    c.Id,
+                    c.CreatedAt,
+                    // A follow-up linked to this exchange already carries the plan. Counting the
+                    // communication as well would leave it Overdue after that follow-up is done.
+                    c.FollowUpId == null ? c.NextActionAt : null,
+                    c.NextAction ?? c.Summary))
+                .FirstOrDefaultAsync(cancellationToken);
+
+            // An unsaved row has no id yet. It sorts after every saved row that shares its
+            // OccurredAt, which is where it will land once the database assigns the id.
+            var local = context.ChangeTracker.Entries<LeadCommunication>()
+                .Where(e => e.Entity.LeadId == leadId && e.State is EntityState.Added or EntityState.Modified)
+                .Select(e => e.Entity)
+                .Where(c => (c.Connected || c.NextActionAt != null)
+                            && (reopenedAt == null || c.CreatedAt >= reopenedAt))
+                .Select(c => new Exchange(
+                    c.OccurredAt,
+                    c.Id > 0 ? c.Id : int.MaxValue,
+                    c.CreatedAt,
+                    c.FollowUpId == null && c.FollowUp == null ? c.NextActionAt : null,
+                    c.NextAction ?? c.Summary));
+
+            var exchanges = local.ToList();
+            if (stored != null)
+                exchanges.Add(stored);
+
+            if (exchanges.Count == 0)
+                return null;
+
+            var latest = exchanges
+                .OrderByDescending(e => e.OccurredAt)
+                .ThenByDescending(e => e.SortId)
+                .ThenByDescending(e => e.CreatedAt)
+                .First();
+
+            return new NextStep(latest.At, latest.Summary);
         }
     }
 }
