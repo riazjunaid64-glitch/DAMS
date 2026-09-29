@@ -1,1 +1,1 @@
-file:///tmp/leadservice-full.cs
+// mcp connectivity test
