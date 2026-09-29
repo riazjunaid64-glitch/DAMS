@@ -150,7 +150,10 @@ function App() {
     // On a shared computer that is what stops the next person from receiving the previous
     // user's notifications.
     await detachPushOnLogout();
-    void api("/api/Auth/logout", { method: "POST" }, false);
+    // The access token has to go with this call. A newer sign-in elsewhere replaces the
+    // refresh cookie this browser still holds, and logout can only end that session if it
+    // knows which login it is.
+    void api("/api/Auth/logout", { method: "POST" });
     setAccessToken(null);
     setUser(null);
     publishAuthSession("logout");

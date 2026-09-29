@@ -170,12 +170,18 @@ namespace DAMS.Api.Controllers
             return Ok(new { accessToken = tokens.AccessToken, expiresInMinutes = tokens.ExpiresInMinutes });
         }
 
+        [AllowAnonymous]
         [HttpPost("logout")]
         public async Task<IActionResult> Logout()
         {
             var refreshToken = Request.Cookies["refreshToken"];
-            if (!string.IsNullOrWhiteSpace(refreshToken))
-                await _authService.RevokeRefreshTokenAsync(refreshToken);
+            var revoked = !string.IsNullOrWhiteSpace(refreshToken)
+                && await _authService.RevokeRefreshTokenAsync(refreshToken);
+
+            // Another sign-in replaces the one stored refresh token. This browser can still hold
+            // the older cookie plus a live access token. The access token is what names the login.
+            if (!revoked && int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                await _authService.RevokeUserSessionAsync(userId);
 
             Response.Cookies.Delete("refreshToken", new CookieOptions { Path = "/api/Auth" });
             return Ok();

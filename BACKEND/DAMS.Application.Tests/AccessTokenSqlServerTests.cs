@@ -34,12 +34,26 @@ public sealed class AccessTokenSqlServerTests
             await migrate.Database.MigrateAsync();
 
         await using var factory = new SqlApiFactory(database.ConnectionString);
+        int adminId;
         int userId;
         int employeeId;
+        int versionBefore;
         string token;
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var admin = new User
+            {
+                RoleId = 1,
+                FullName = "SQL Admin",
+                Email = "sql-revoke-admin@dams.test",
+                NormalizedEmail = EmailIdentity.Normalize("sql-revoke-admin@dams.test"),
+                Password = "hash",
+                AccountStatus = UserAccountStatus.Active
+            };
+            db.Users.Add(admin);
+            await db.SaveChangesAsync();
+
             var user = new User
             {
                 RoleId = 3,
@@ -61,10 +75,14 @@ public sealed class AccessTokenSqlServerTests
             };
             db.Add(employee);
             await db.SaveChangesAsync();
+            adminId = admin.UserId;
             userId = user.UserId;
             employeeId = employee.Id;
+            versionBefore = user.TokenVersion;
             token = scope.ServiceProvider.GetRequiredService<ITokenService>().GenerateAccessToken(user, LeadRoles.Manager);
         }
+
+        Assert.NotEqual(adminId, userId);
 
         var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -74,7 +92,7 @@ public sealed class AccessTokenSqlServerTests
         using (var scope = factory.Services.CreateScope())
         {
             await scope.ServiceProvider.GetRequiredService<IStaffManagementService>().DisableAccessAsync(
-                new LeadUserContext { UserId = 1, Role = LeadRoles.Admin, DisplayName = "SQL admin" },
+                new LeadUserContext { UserId = adminId, Role = LeadRoles.Admin, DisplayName = "SQL admin" },
                 employeeId);
         }
 
@@ -86,7 +104,7 @@ public sealed class AccessTokenSqlServerTests
             .AsNoTracking()
             .SingleAsync(candidate => candidate.UserId == userId);
         Assert.Equal(UserAccountStatus.Disabled, stored.AccountStatus);
-        Assert.True(stored.TokenVersion > 0);
+        Assert.True(stored.TokenVersion > versionBefore);
     }
 
     [SqlServerFact]

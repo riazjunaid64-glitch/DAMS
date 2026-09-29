@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using DAMS.Api.Security;
 using DAMS.Application.Common;
+using DAMS.Application.DTOs.Auth;
 using DAMS.Application.DTOs.EmployeeDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Security;
@@ -120,6 +121,36 @@ public sealed class AccessTokenRevocationTests : IClassFixture<AccessTokenRevoca
     }
 
     [Fact]
+    public async Task Logout_WithTheCurrentRefreshCookie_RejectsTheAccessToken()
+    {
+        var session = await SignInManagerAsync(userId: 86);
+
+        var client = Client(session.SecondAccessToken);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/Auth/profile")).StatusCode);
+
+        var logout = await PostLogoutAsync(session.SecondRefreshToken, bearer: null);
+        Assert.Equal(HttpStatusCode.OK, logout.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/Auth/profile")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Logout_WithAStaleRefreshCookie_StillRejectsThatAccessToken()
+    {
+        var session = await SignInManagerAsync(userId: 87);
+
+        var first = Client(session.FirstAccessToken);
+        var second = Client(session.SecondAccessToken);
+        Assert.Equal(HttpStatusCode.OK, (await first.GetAsync("/api/Auth/profile")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await second.GetAsync("/api/Auth/profile")).StatusCode);
+
+        var logout = await PostLogoutAsync(session.FirstRefreshToken, session.FirstAccessToken);
+        Assert.Equal(HttpStatusCode.OK, logout.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await first.GetAsync("/api/Auth/profile")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await second.GetAsync("/api/Auth/profile")).StatusCode);
+    }
+
+    [Fact]
     public async Task ACachedStamp_IsDroppedWhenTheLoginChanges_SoTheNextRequestReloadsIt()
     {
         var seeded = await SeedManagerAsync(userId: 85);
@@ -195,6 +226,39 @@ public sealed class AccessTokenRevocationTests : IClassFixture<AccessTokenRevoca
         }
 
         Assert.False(cache.TryGet(9, out _));
+    }
+
+    private async Task<SignedInManager> SignInManagerAsync(int userId)
+    {
+        var seeded = await SeedManagerAsync(userId);
+        const string password = "correct-password-1";
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = await db.Users.SingleAsync(candidate => candidate.UserId == seeded.UserId);
+            user.Password = BCrypt.Net.BCrypt.HashPassword(password);
+            await db.SaveChangesAsync();
+        }
+
+        using var login = _factory.Services.CreateScope();
+        var auth = login.ServiceProvider.GetRequiredService<IAuthService>();
+        var email = $"manager{userId}@dams.test";
+        var first = await auth.LoginAsync(new LoginRequestDto { Email = email, Password = password });
+        var second = await auth.LoginAsync(new LoginRequestDto { Email = email, Password = password });
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotEqual(first!.RefreshToken, second!.RefreshToken);
+        return new SignedInManager(first.AccessToken, first.RefreshToken, second.AccessToken, second.RefreshToken);
+    }
+
+    private async Task<HttpResponseMessage> PostLogoutAsync(string refreshToken, string? bearer)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/Auth/logout");
+        if (bearer != null)
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        request.Headers.TryAddWithoutValidation("Cookie", "refreshToken=" + Uri.EscapeDataString(refreshToken));
+        return await _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false })
+            .SendAsync(request);
     }
 
     private HttpClient Client(string token)
@@ -276,6 +340,9 @@ public sealed class AccessTokenRevocationTests : IClassFixture<AccessTokenRevoca
     }
 
     private sealed record SeededManager(int UserId, int EmployeeId, string Token);
+
+    private sealed record SignedInManager(
+        string FirstAccessToken, string FirstRefreshToken, string SecondAccessToken, string SecondRefreshToken);
 
     public sealed class ApiFactory : WebApplicationFactory<Program>
     {
