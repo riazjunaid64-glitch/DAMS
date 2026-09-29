@@ -1,1 +1,1 @@
-file:///workspace/frontend/src/pages/LeadDetailPage.tsx
+PLACEHOLDER
