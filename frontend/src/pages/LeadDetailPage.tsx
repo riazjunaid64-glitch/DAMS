@@ -1,1 +1,1 @@
-LOAD_FROM_WORKSPACE
+file:///workspace/frontend/src/pages/LeadDetailPage.tsx
