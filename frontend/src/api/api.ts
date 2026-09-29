@@ -17,8 +17,20 @@ function apiBaseUrl(): string {
 // The refresh token lives in an httpOnly cookie set by the backend.
 let _accessToken: string | null = null;
 
+/** Fired once when a signed-in request is rejected and the refresh cookie cannot replace it. */
+export const ACCESS_CHANGED_EVENT = "dams-access-changed";
+
+let accessChangeNotified = false;
+
 export function setAccessToken(token: string | null): void {
   _accessToken = token;
+  if (token) accessChangeNotified = false;
+}
+
+function notifyAccessChanged(): void {
+  if (accessChangeNotified || typeof window === "undefined") return;
+  accessChangeNotified = true;
+  window.dispatchEvent(new Event(ACCESS_CHANGED_EVENT));
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
@@ -41,6 +53,7 @@ export async function refreshAccessToken(): Promise<boolean> {
         }
         const data = (await res.json()) as { accessToken: string };
         _accessToken = data.accessToken;
+        accessChangeNotified = false;
         return true;
       } catch {
         _accessToken = null;
@@ -96,11 +109,13 @@ export const api = async (
     !isRetry &&
     endpoint !== "/api/Auth/refresh"
   ) {
+    const hadSession = _accessToken != null;
     const refreshed = await refreshAccessToken();
     if (refreshed) {
       return api(endpoint, options, includeAuth, true);
     }
     _accessToken = null;
+    if (hadSession) notifyAccessChanged();
   }
 
   return response;

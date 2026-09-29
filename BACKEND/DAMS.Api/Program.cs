@@ -15,6 +15,7 @@ using DAMS.Api;
 using DAMS.Api.Middleware;
 using DAMS.Api.Services;
 using DAMS.Application.Common;
+using DAMS.Application.Security;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.RateLimiting;
@@ -240,7 +241,11 @@ builder.Services.AddControllers(options =>
         o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
-builder.Services.AddDbContextPool<AppDbContext>(options =>
+builder.Services.AddSingleton<IAccessSessionCache, MemoryAccessSessionCache>();
+builder.Services.AddSingleton<AccessSessionSaveInterceptor>();
+builder.Services.AddSingleton<AccessSessionTransactionInterceptor>();
+
+builder.Services.AddDbContextPool<AppDbContext>((sp, options) =>
 {
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("DefaultConnection"),
@@ -248,7 +253,9 @@ builder.Services.AddDbContextPool<AppDbContext>(options =>
         // Registered here, not in AppDbContext.OnConfiguring: pooling forbids options changes there.
         .AddInterceptors(
             ProjectListCacheTransactionInterceptor.Instance,
-            ProjectListCacheMediaInterceptor.Instance);
+            ProjectListCacheMediaInterceptor.Instance,
+            sp.GetRequiredService<AccessSessionSaveInterceptor>(),
+            sp.GetRequiredService<AccessSessionTransactionInterceptor>());
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -381,7 +388,15 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         ValidIssuer = jwtSettings["Issuer"],
         ValidAudience = jwtSettings["Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(key)
+        IssuerSigningKey = new SymmetricSecurityKey(key),
+        // Five minutes of slack left a disabled login working well after the token's own
+        // expiry. Thirty seconds covers clock drift without extending a revoked token.
+        ClockSkew = TimeSpan.FromSeconds(30)
+    };
+
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = AccessTokenSessionValidator.Validate
     };
 });
 

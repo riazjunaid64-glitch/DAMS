@@ -1,10 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using DAMS.Application.Interfaces;
-using DAMS.Domain.Entities;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DAMS.Application.Tests;
@@ -87,11 +84,8 @@ public sealed class RebateReasonOptionalTests : IClassFixture<IdempotentMoneyOpe
     private HttpClient Admin()
     {
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-        using var scope = _factory.Services.CreateScope();
-        var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
-            tokens.GenerateAccessToken(
-                new User { UserId = 42, Email = "actor@dams.test", FullName = "Rebate Admin" }, "Admin"));
+            TestAccessSessions.Issue(_factory.Services, 42, "Admin", "actor@dams.test", "Rebate Admin"));
         return client;
     }
 }

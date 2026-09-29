@@ -134,6 +134,7 @@ namespace DAMS.Infrastructure.Data
             modelBuilder.Entity<User>(entity =>
             {
                 entity.Property(u => u.AccountStatus).HasConversion<int>();
+                entity.Property(u => u.TokenVersion).HasDefaultValue(0);
 
                 // The database-enforced login identity. An application-level "does this email
                 // exist?" check cannot survive two registrations arriving at once — both read

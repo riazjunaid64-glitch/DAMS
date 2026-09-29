@@ -230,17 +230,36 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task RevokeRefreshTokenAsync(string refreshToken)
+        public async Task<bool> RevokeRefreshTokenAsync(string refreshToken)
         {
             if (string.IsNullOrWhiteSpace(refreshToken))
-                return;
+                return false;
 
             var refreshTokenHash = HashRefreshToken(refreshToken);
             var user = await _context.Users.FirstOrDefaultAsync(u => u.RefreshToken == refreshTokenHash);
             if (user == null)
-                return;
+                return false;
 
             await ClearSessionAsync(user);
+            return true;
+        }
+
+        public async Task RevokeUserSessionAsync(int userId)
+        {
+            if (userId <= 0)
+                return;
+
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == userId);
+            if (user == null)
+                return;
+
+            // The interceptor moves the version when a live refresh token is cleared. Setting it
+            // here as well covers a login whose stored refresh token was already replaced: the
+            // cookie no longer matches, but the access token issued with it must still die.
+            user.RefreshToken = null;
+            user.RefreshTokenExpiresAt = null;
+            user.TokenVersion++;
+            await _context.SaveChangesAsync();
         }
 
         private async Task ClearSessionAsync(User user)

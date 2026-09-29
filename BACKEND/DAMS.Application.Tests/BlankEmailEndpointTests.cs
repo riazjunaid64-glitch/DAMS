@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -289,12 +288,8 @@ public sealed class BlankEmailEndpointTests : IClassFixture<IdempotentMoneyOpera
     private HttpClient Admin()
     {
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
-        using var scope = _factory.Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreated();
-        var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
-            tokens.GenerateAccessToken(
-                new User { UserId = 43, Email = "lead-admin@dams.test", FullName = "Lead Admin" }, "Admin"));
+            TestAccessSessions.Issue(_factory.Services, 43, "Admin", "lead-admin@dams.test", "Lead Admin"));
         return client;
     }
 

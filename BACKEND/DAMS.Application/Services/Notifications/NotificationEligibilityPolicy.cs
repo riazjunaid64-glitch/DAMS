@@ -482,7 +482,7 @@ namespace DAMS.Application.Services.Notifications
                 ? new HashSet<int>()
                 : (await _context.Users
                     .AsNoTracking()
-                    .Where(u => ids.Contains(u.UserId))
+                    .Where(u => ids.Contains(u.UserId) && u.AccountStatus == UserAccountStatus.Active)
                     .Select(u => new
                     {
                         u.UserId,
@@ -725,8 +725,10 @@ namespace DAMS.Application.Services.Notifications
 
         private async Task<RecipientSnapshot?> LoadRecipientAsync(int userId, CancellationToken cancellationToken)
         {
+            // A disabled login keeps its employee row. Delivery, including push already queued,
+            // has to notice the login itself, not only employment.
             var user = await _context.Users.AsNoTracking()
-                .Where(u => u.UserId == userId)
+                .Where(u => u.UserId == userId && u.AccountStatus == UserAccountStatus.Active)
                 .Select(u => new
                 {
                     u.UserId,

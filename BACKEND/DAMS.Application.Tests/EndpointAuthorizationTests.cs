@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text;
 using DAMS.Api.Controllers;
-using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -556,17 +555,13 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
 
     private AuthenticationHeaderValue BearerFor(string role, bool verified)
     {
-        using var scope = _factory.Services.CreateScope();
-        var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
-        var token = tokens.GenerateAccessToken(
-            new User
-            {
-                UserId = 42,
-                Email = "actor@dams.test",
-                FullName = "Test Actor",
-                EmailVerifiedAt = verified ? new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) : null
-            },
-            role);
+        var token = TestAccessSessions.Issue(
+            _factory.Services,
+            userId: 42,
+            roleName: role,
+            email: "actor@dams.test",
+            fullName: "Test Actor",
+            emailVerifiedAt: verified ? new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc) : null);
         return new AuthenticationHeaderValue("Bearer", token);
     }
 

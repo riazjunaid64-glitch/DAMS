@@ -35,5 +35,11 @@ namespace  DAMS.Domain.Entities
 
         public string? RefreshToken { get; set; }
         public DateTime? RefreshTokenExpiresAt { get; set; }
+
+        // Bumped whenever this login's access must die immediately: disable, role change,
+        // employment change, password change, or logout. The access token carries the same
+        // number; a mismatch is rejected on the next request instead of waiting out the
+        // token's remaining lifetime.
+        public int TokenVersion { get; set; }
     }
 }
