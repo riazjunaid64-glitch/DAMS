@@ -22,32 +22,14 @@ namespace DAMS.Application.Services
             _followUps = followUps;
         }
 
-        public async Task<LeadCommunicationDto> RecordAsync(
-            int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
-        {
-            // Scheduling the next follow-up writes the communication and the follow-up together.
-            // Production SQL retries transient errors, and EF refuses a transaction opened
-            // outside that strategy. Join a transaction the caller already has rather than
-            // nesting one. The in-memory store is not relational, so it takes the direct path.
-            if (!dto.NextActionAt.HasValue
-                || !_context.Database.IsRelational()
-                || _context.Database.CurrentTransaction != null)
-                return await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
-
-            var attempt = 0;
-            return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
-            {
-                // A retry replays a rolled-back save. Rows from the failed attempt are still
-                // marked stored in the tracker, so they have to be dropped before the replay.
-                if (attempt++ > 0)
-                    _context.ChangeTracker.Clear();
-
-                await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
-                var recorded = await RecordCoreAsync(leadId, dto, ctx, cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-                return recorded;
-            });
-        }
+        /// <summary>
+        /// The call, its timeline link and any follow-up it schedules commit together. A conflict
+        /// rolls all of them back, so a retry cannot record the call a second time. Joins a
+        /// transaction the caller already has; the in-memory store takes the direct path.
+        /// </summary>
+        public Task<LeadCommunicationDto> RecordAsync(
+            int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => RecordCoreAsync(leadId, dto, ctx, ct), cancellationToken);
 
         private async Task<LeadCommunicationDto> RecordCoreAsync(
             int leadId, RecordLeadCommunicationDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
@@ -149,9 +131,9 @@ namespace DAMS.Application.Services
 
             if (dto.NextActionAt.HasValue)
             {
-                // The communication is already tracked, so the follow-up service's save writes
-                // both rows. RecordAsync has already joined them in one transaction when the
-                // store supports one, so a failure here does not leave the communication behind.
+                // CreateAsync joins this transaction and writes the follow-up with the call.
+                // The communication's own link to that follow-up, and the timeline's link back
+                // to the call, need the generated ids, so they ride in one more save.
                 var title = LeadContactNormalizer.Clean(dto.NextAction);
                 var scheduled = await _followUps.CreateAsync(lead.Id, new CreateLeadFollowUpDto
                 {
@@ -163,18 +145,16 @@ namespace DAMS.Application.Services
 
                 communication.FollowUpId = scheduled.Id;
                 activity.CommunicationId = communication.Id;
-                await _context.SaveChangesAsync(cancellationToken);
                 await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
                 await _context.SaveChangesAsync(cancellationToken);
             }
             else
             {
-                await _context.SaveChangesAsync(cancellationToken);
-
-                // The activity's link to the communication needs the generated id.
-                activity.CommunicationId = communication.Id;
-                await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
-                await _context.SaveChangesAsync(cancellationToken);
+                await LeadGate.SaveThenLinkAsync(_context, lead.Id, _ =>
+                {
+                    activity.CommunicationId = communication.Id;
+                    return Task.CompletedTask;
+                }, cancellationToken);
             }
 
             return await LoadAsync(communication.Id, cancellationToken);

@@ -48,8 +48,12 @@ namespace DAMS.Application.Services
             return followUp;
         }
 
-        public async Task<LeadFollowUpDto> CreateAsync(
-            int leadId, CreateLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadFollowUpDto> CreateAsync(
+            int leadId, CreateLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => CreateCoreAsync(leadId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadFollowUpDto> CreateCoreAsync(
+            int leadId, CreateLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var lead = await LeadGate.LoadActiveAsync(_context, leadId, ctx, cancellationToken);
 
@@ -73,27 +77,32 @@ namespace DAMS.Application.Services
                 $"{LeadDisplay.Words(dto.Type)} scheduled for {LeadDisplay.When(dto.DueAt)}.", ctx,
                 a => a.Notes = followUp.Title);
 
-            await _context.SaveChangesAsync(cancellationToken);
-            await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
-
-            activity.FollowUpId = followUp.Id;
-
-            var ownerUserId = await GetEmployeeUserIdAsync(employeeId, cancellationToken);
-            if (ownerUserId.HasValue && ownerUserId != ctx.UserId)
+            // The timeline link and the notification key need the generated id, so they are a
+            // second save. Both saves sit in RunAtomicallyAsync's transaction: a conflict rolls
+            // the follow-up back with them, and a retry cannot create a second one.
+            await LeadGate.SaveThenLinkAsync(_context, lead.Id, async ct =>
             {
-                await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.FollowUpAssigned,
-                    $"New {LeadDisplay.Words(dto.Type)} on {LeadService.FullName(lead)}",
-                    $"{followUp.Title} — due {LeadDisplay.When(dto.DueAt)}.",
-                    $"task:{followUp.Id}:{ownerUserId.Value}", cancellationToken: cancellationToken);
-            }
+                activity.FollowUpId = followUp.Id;
 
-            await _context.SaveChangesAsync(cancellationToken);
+                var ownerUserId = await GetEmployeeUserIdAsync(employeeId, ct);
+                if (ownerUserId.HasValue && ownerUserId != ctx.UserId)
+                {
+                    await _notifications.QueueAsync(lead.Id, ownerUserId.Value, NotificationType.FollowUpAssigned,
+                        $"New {LeadDisplay.Words(dto.Type)} on {LeadService.FullName(lead)}",
+                        $"{followUp.Title} — due {LeadDisplay.When(dto.DueAt)}.",
+                        $"task:{followUp.Id}:{ownerUserId.Value}", cancellationToken: ct);
+                }
+            }, cancellationToken);
 
             return await LoadAsync(followUp.Id, cancellationToken);
         }
 
-        public async Task<LeadFollowUpDto> CompleteAsync(
-            int followUpId, CompleteLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadFollowUpDto> CompleteAsync(
+            int followUpId, CompleteLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => CompleteCoreAsync(followUpId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadFollowUpDto> CompleteCoreAsync(
+            int followUpId, CompleteLeadFollowUpDto dto, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var followUp = await LoadForWriteAsync(followUpId, ctx, cancellationToken);
 
@@ -131,15 +140,18 @@ namespace DAMS.Application.Services
                     $"Next {LeadDisplay.Words(next.Type)} scheduled for {LeadDisplay.When(next.DueAt)}.", ctx,
                     a => a.Notes = next.Title);
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(followUp.Id, cancellationToken);
         }
 
-        public async Task<LeadFollowUpDto> CancelAsync(
-            int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken = default)
+        public Task<LeadFollowUpDto> CancelAsync(
+            int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => CancelCoreAsync(followUpId, reason, ctx, ct), cancellationToken);
+
+        private async Task<LeadFollowUpDto> CancelCoreAsync(
+            int followUpId, string? reason, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var followUp = await LoadForWriteAsync(followUpId, ctx, cancellationToken);
 
@@ -159,18 +171,24 @@ namespace DAMS.Application.Services
                     a.FollowUpId = followUp.Id;
                 });
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
 
             return await LoadAsync(followUp.Id, cancellationToken);
         }
 
-        public async Task<LeadFollowUpDto> RescheduleAsync(
+        public Task<LeadFollowUpDto> RescheduleAsync(
             int followUpId,
             RescheduleLeadFollowUpDto dto,
             LeadUserContext ctx,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            LeadGate.RunAtomicallyAsync(_context, ct => RescheduleCoreAsync(followUpId, dto, ctx, ct), cancellationToken);
+
+        private async Task<LeadFollowUpDto> RescheduleCoreAsync(
+            int followUpId,
+            RescheduleLeadFollowUpDto dto,
+            LeadUserContext ctx,
+            CancellationToken cancellationToken)
         {
             if (dto.DueAt <= DateTime.UtcNow.AddMinutes(-1))
                 throw new InvalidOperationException("A follow-up must be rescheduled for a future time.");
@@ -201,7 +219,6 @@ namespace DAMS.Application.Services
                     activity.FollowUpId = followUp.Id;
                 });
 
-            await _context.SaveChangesAsync(cancellationToken);
             await LeadGate.RefreshNextActionAsync(_context, lead.Id, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             return await LoadAsync(followUp.Id, cancellationToken);
