@@ -210,6 +210,269 @@ public sealed class StaffManagementTests
     }
 
     [Fact]
+    public async Task An_existing_active_login_is_linked_without_an_invitation_and_can_sign_in_as_staff()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        const string password = "client-pass-1";
+        var client = await h.Db.Users.SingleAsync(u => u.UserId == h.ClientUserId);
+        client.Password = BCrypt.Net.BCrypt.HashPassword(password);
+        client.RefreshToken = "client-session";
+        client.RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(1);
+        await h.Db.SaveChangesAsync();
+        var passwordBefore = client.Password;
+        h.Db.ChangeTracker.Clear();
+
+        var result = await staff.CreateAsync(h.Admin, NewStaff(
+            name: "Client Person",
+            email: "client@dams.test",
+            role: LeadRoles.Employee,
+            existingUserId: h.ClientUserId));
+
+        Assert.Equal(h.ClientUserId, result.Account.UserId);
+        Assert.Equal(LeadRoles.Employee, result.Account.Role);
+        Assert.Equal(StaffAccountAccess.Active, result.Account.Access);
+        Assert.False(result.InvitationRequired);
+        Assert.Empty(invitations.Calls);
+
+        h.Db.ChangeTracker.Clear();
+        var after = await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == h.ClientUserId);
+        Assert.Equal(passwordBefore, after.Password);
+        Assert.Equal("client-session", after.RefreshToken);
+        Assert.Equal(UserAccountStatus.Active, after.AccountStatus);
+        Assert.Equal(LeadRoles.Employee, after.Role.Role_name);
+        Assert.Equal(EmployeeStatus.Active,
+            await h.Db.Employees.Where(e => e.UserId == h.ClientUserId).Select(e => e.Status).SingleAsync());
+
+        var session = await auth.LoginAsync(new LoginRequestDto { Email = "client@dams.test", Password = password });
+        Assert.NotNull(session);
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = "client@dams.test", Password = "not-the-password" }));
+    }
+
+    [Fact]
+    public async Task A_pending_client_login_becomes_an_invited_staff_login_with_a_redeemable_invitation()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+
+        var settings = new NotificationSettingsStore(h.Db);
+        await settings.SetAsync(NotificationSettingKeys.PublicBaseUrl, "https://dams.test", h.AdminUserId);
+        await settings.SetAsync(NotificationSettingKeys.CompanyName, "DAMS Estates", h.AdminUserId);
+        await settings.SetAsync(NotificationSettingKeys.AppName, "DAMS", h.AdminUserId);
+        await h.Db.SaveChangesAsync();
+
+        var email = new NotificationTestHarness.FakeEmailSender();
+        var invitations = new StaffInvitationService(h.Db, settings, email, h.Clock);
+        var staff = new StaffManagementService(h.Db, invitations);
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        const string oldPassword = "old-client-password";
+        const string openToken = "pending-client-verification-token";
+        var pending = new User
+        {
+            FullName = "Pending Client",
+            Email = "pending.client@example.com",
+            NormalizedEmail = EmailIdentity.Normalize("pending.client@example.com"),
+            Password = BCrypt.Net.BCrypt.HashPassword(oldPassword),
+            RoleId = 2,
+            AccountStatus = UserAccountStatus.PendingEmailVerification,
+            RefreshToken = "pending-session",
+            RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(2)
+        };
+        h.Db.Users.Add(pending);
+        await h.Db.SaveChangesAsync();
+        h.Db.ClientEmailVerifications.AddRange(
+            new ClientEmailVerification
+            {
+                UserId = pending.UserId,
+                TokenHash = Sha256(openToken),
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddHours(12)
+            },
+            new ClientEmailVerification
+            {
+                UserId = pending.UserId,
+                TokenHash = Sha256("already-used-token"),
+                CreatedAt = DateTime.UtcNow.AddHours(-2),
+                ExpiresAt = DateTime.UtcNow.AddHours(10),
+                VerifiedAt = DateTime.UtcNow.AddHours(-1)
+            });
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var offered = await staff.GetLinkableUsersAsync(h.Admin);
+        Assert.Equal(UserAccountStatus.PendingEmailVerification,
+            offered.Single(u => u.UserId == pending.UserId).AccountStatus);
+        Assert.DoesNotContain(await staff.GetLinkableUsersAsync(h.Manager), u => u.UserId == pending.UserId);
+
+        // A manager still cannot turn a customer login into staff, pending or not.
+        await Assert.ThrowsAsync<LeadAuthorizationException>(() => staff.CreateAsync(
+            h.Manager, NewStaff(name: pending.FullName, email: pending.Email, existingUserId: pending.UserId)));
+        Assert.Empty(email.Sent);
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(UserAccountStatus.PendingEmailVerification,
+            (await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == pending.UserId)).AccountStatus);
+
+        var result = await staff.CreateAsync(h.Admin, NewStaff(
+            name: pending.FullName,
+            email: pending.Email,
+            role: LeadRoles.Employee,
+            existingUserId: pending.UserId));
+
+        Assert.Equal(pending.UserId, result.Account.UserId);
+        Assert.Equal(LeadRoles.Employee, result.Account.Role);
+        Assert.Equal(StaffAccountAccess.Invited, result.Account.Access);
+        Assert.NotEqual(StaffAccountAccess.Active, result.Account.Access);
+        Assert.True(result.InvitationRequired);
+        Assert.True(result.InvitationSent);
+
+        var listed = (await staff.GetAccountsAsync()).Single(a => a.UserId == pending.UserId);
+        Assert.Equal(StaffAccountAccess.Invited, listed.Access);
+        Assert.NotEqual(StaffAccountAccess.Active, listed.Access);
+
+        h.Db.ChangeTracker.Clear();
+        var linked = await h.Db.Users.Include(u => u.Role).SingleAsync(u => u.UserId == pending.UserId);
+        Assert.Equal(UserAccountStatus.Invited, linked.AccountStatus);
+        Assert.Equal(LeadRoles.Employee, linked.Role.Role_name);
+        Assert.Null(linked.Password);
+        Assert.Null(linked.RefreshToken);
+        Assert.Null(linked.RefreshTokenExpiresAt);
+
+        var verifications = await h.Db.ClientEmailVerifications.AsNoTracking()
+            .Where(v => v.UserId == pending.UserId)
+            .ToListAsync();
+        Assert.NotNull(verifications.Single(v => v.VerifiedAt == null).RevokedAt);
+        Assert.Null(verifications.Single(v => v.VerifiedAt != null).RevokedAt);
+
+        var clientVerification = new ClientEmailVerificationService(h.Db, settings, email, h.Clock);
+        var spent = await clientVerification.VerifyAsync(openToken, "a-client-password");
+        Assert.False(spent.Verified);
+
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = pending.Email, Password = oldPassword }));
+
+        const string chosen = "chosen-by-the-staff-1";
+        var link = Regex.Match(email.Sent[^1].TextBody, @"https?://\S*/activate-account#token=\S+");
+        Assert.True(link.Success, "No activation link was present in the invitation email.");
+        var token = Uri.UnescapeDataString(link.Value.Split("#token=", StringSplitOptions.None)[1]);
+        var activation = await invitations.ActivateAsync(token, chosen);
+        Assert.True(activation.Activated, activation.Error);
+
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(UserAccountStatus.Active,
+            (await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == pending.UserId)).AccountStatus);
+        var session = await auth.LoginAsync(new LoginRequestDto { Email = pending.Email, Password = chosen });
+        Assert.NotNull(session);
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto { Email = pending.Email, Password = oldPassword }));
+    }
+
+    [Fact]
+    public async Task A_pending_login_already_on_an_employee_is_never_listed_as_active()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var invitations = new FakeInvitations();
+        var staff = new StaffManagementService(h.Db, invitations);
+        var auth = new AuthService(h.Db, new FixedTokenService());
+
+        const string oldPassword = "legacy-client-password";
+        var user = new User
+        {
+            FullName = "Legacy Pending",
+            Email = "legacy.pending@example.com",
+            NormalizedEmail = EmailIdentity.Normalize("legacy.pending@example.com"),
+            Password = BCrypt.Net.BCrypt.HashPassword(oldPassword),
+            RoleId = 4,
+            AccountStatus = UserAccountStatus.PendingEmailVerification,
+            RefreshToken = "legacy-session",
+            RefreshTokenExpiresAt = DateTime.UtcNow.AddDays(2)
+        };
+        var employee = new Employee
+        {
+            User = user,
+            FullName = "Legacy Pending",
+            Email = "legacy.pending@example.com",
+            JobTitle = "Sales Executive",
+            Department = "Sales",
+            Phone = "03001230000",
+            JoinDate = DateTime.UtcNow.Date,
+            Status = EmployeeStatus.Active
+        };
+        h.Db.Employees.Add(employee);
+        await h.Db.SaveChangesAsync();
+        h.Db.ClientEmailVerifications.Add(new ClientEmailVerification
+        {
+            UserId = user.UserId,
+            TokenHash = Sha256("legacy-open-token"),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddHours(6)
+        });
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var listed = (await staff.GetAccountsAsync()).Single(a => a.Email == "legacy.pending@example.com");
+        Assert.Equal(StaffAccountAccess.Invited, listed.Access);
+        Assert.NotEqual(StaffAccountAccess.Active, listed.Access);
+
+        employee = await h.Db.Employees.SingleAsync(e => e.Id == listed.EmployeeId);
+        employee.Status = EmployeeStatus.OnLeave;
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var blocked = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            staff.ResendInvitationAsync(h.Admin, listed.EmployeeId));
+        Assert.Contains("not in Active employment", blocked.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(invitations.Calls);
+        h.Db.ChangeTracker.Clear();
+        Assert.Equal(UserAccountStatus.PendingEmailVerification,
+            (await h.Db.Users.AsNoTracking().SingleAsync(u => u.Email == "legacy.pending@example.com")).AccountStatus);
+
+        employee = await h.Db.Employees.SingleAsync(e => e.Id == listed.EmployeeId);
+        employee.Status = EmployeeStatus.Active;
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var off = await staff.DisableAccessAsync(h.Admin, listed.EmployeeId);
+        Assert.Equal(StaffAccountAccess.Disabled, off.Access);
+        var on = await staff.EnableAccessAsync(h.Admin, listed.EmployeeId);
+        Assert.Equal(StaffAccountAccess.Invited, on.Access);
+        Assert.NotEqual(StaffAccountAccess.Active, on.Access);
+
+        h.Db.ChangeTracker.Clear();
+        var restored = await h.Db.Users.SingleAsync(u => u.Email == "legacy.pending@example.com");
+        Assert.Equal(UserAccountStatus.Invited, restored.AccountStatus);
+        Assert.Null(restored.Password);
+        Assert.Null(restored.RefreshToken);
+        Assert.NotNull(await h.Db.ClientEmailVerifications.AsNoTracking()
+            .Where(v => v.UserId == restored.UserId && v.VerifiedAt == null)
+            .Select(v => v.RevokedAt)
+            .SingleAsync());
+        Assert.Null(await auth.LoginAsync(new LoginRequestDto
+        {
+            Email = "legacy.pending@example.com",
+            Password = oldPassword
+        }));
+
+        // Back to pending so resend is what repairs a row the list already calls "Invite sent".
+        restored.AccountStatus = UserAccountStatus.PendingEmailVerification;
+        restored.Password = BCrypt.Net.BCrypt.HashPassword(oldPassword);
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        var resent = await staff.ResendInvitationAsync(h.Admin, listed.EmployeeId);
+        Assert.True(resent.Issued);
+        var call = Assert.Single(invitations.Calls);
+        Assert.Equal(restored.UserId, call.UserId);
+
+        h.Db.ChangeTracker.Clear();
+        var invited = await h.Db.Users.AsNoTracking().SingleAsync(u => u.UserId == restored.UserId);
+        Assert.Equal(UserAccountStatus.Invited, invited.AccountStatus);
+        Assert.Null(invited.Password);
+        Assert.Equal(StaffAccountAccess.Invited,
+            (await staff.GetAccountsAsync()).Single(a => a.EmployeeId == listed.EmployeeId).Access);
+    }
+
+    [Fact]
     public async Task A_disabled_login_is_rejected_rather_than_silently_reactivated()
     {
         await using var h = await LeadTestHarness.CreateAsync();
@@ -925,6 +1188,10 @@ public sealed class StaffManagementTests
         Assert.True(resent.Issued);
         Assert.Single(invitations.Calls);
     }
+
+    private static string Sha256(string rawToken) =>
+        Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(rawToken)));
 
     private sealed class FixedTokenService : ITokenService
     {

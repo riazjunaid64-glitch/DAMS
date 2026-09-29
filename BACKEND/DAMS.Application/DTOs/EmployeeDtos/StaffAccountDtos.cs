@@ -162,6 +162,12 @@ namespace DAMS.Application.DTOs.EmployeeDtos
         public string FullName { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
         public string Role { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Whether this login can sign in today. The Give access screen uses it to choose
+        /// between connecting an active login and sending an invitation.
+        /// </summary>
+        public UserAccountStatus AccountStatus { get; set; }
     }
 
     public class CustomerLookupDto
