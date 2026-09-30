@@ -10,6 +10,19 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public int? InstallmentId { get; set; }
 
+        /// <summary>Which installment this went to (0 is the possession row); null for the booking amount.</summary>
+        public int? InstallmentSequence { get; set; }
+
+        public InstallmentType? InstallmentType { get; set; }
+
+        public int? FinanceAccountId { get; set; }
+
+        /// <summary>The account the money was received in; null on payments recorded before accounts existed.</summary>
+        public string? AccountName { get; set; }
+
+        /// <summary>Who recorded the payment.</summary>
+        public string? RecordedByName { get; set; }
+
         public PaymentType Type { get; set; }
 
         public decimal Amount { get; set; }

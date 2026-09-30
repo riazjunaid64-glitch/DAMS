@@ -72,9 +72,8 @@ namespace DAMS.Application.Services
             var canRegenerate = await CanRegenerateAsync(bookingId);
             var paidByInstallment = await GetPaidByInstallmentAsync(bookingId);
             var nonCashCredits = await BookingCreditPolicy.GetNonCashCreditsAsync(_context, bookingId);
-            var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
-                _context, booking, booking.Installments.Sum(i => i.Amount), nonCashCredits);
-            return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits, stranded);
+            var unscheduled = await BookingCreditPolicy.UnscheduledBalanceAsync(_context, booking, nonCashCredits);
+            return MapSchedule(booking, canRegenerate, paidByInstallment, nonCashCredits, unscheduled);
         }
 
         public Task<InstallmentScheduleDto> RecordInstallmentPaymentAsync(
@@ -539,18 +538,22 @@ namespace DAMS.Application.Services
             return rows;
         }
 
-        private static DateTime CalculateDueDate(DateTime startDate, InstallmentFrequency frequency, int sequenceNumber)
+        // The date entered is the due date of installment 1; each later one is a further period on.
+        // Counted from that date rather than added to the previous row, so a 31st does not drift
+        // to the 28th for good after February.
+        private static DateTime CalculateDueDate(DateTime firstDueDate, InstallmentFrequency frequency, int sequenceNumber)
         {
+            var periods = sequenceNumber - 1;
             var months = frequency switch
             {
-                InstallmentFrequency.Monthly => sequenceNumber,
-                InstallmentFrequency.Quarterly => sequenceNumber * 3,
-                InstallmentFrequency.HalfYearly => sequenceNumber * 6,
-                InstallmentFrequency.Yearly => sequenceNumber * 12,
-                _ => sequenceNumber
+                InstallmentFrequency.Monthly => periods,
+                InstallmentFrequency.Quarterly => periods * 3,
+                InstallmentFrequency.HalfYearly => periods * 6,
+                InstallmentFrequency.Yearly => periods * 12,
+                _ => periods
             };
 
-            return startDate.Date.AddMonths(months);
+            return firstDueDate.Date.AddMonths(months);
         }
 
         // One implementation, in BookingCreditPolicy: the rebate service asks the same question
@@ -560,35 +563,18 @@ namespace DAMS.Application.Services
             BookingCreditPolicy.CanRegenerateScheduleAsync(_context, bookingId);
 
         /// <summary>
-        /// Refuses a receipt while the schedule demands LESS than the customer still owes.
-        /// <para>
-        /// Reversing a credit that a later-generated plan was built smaller by restores principal
-        /// with no installment to sit on. That is repairable — regenerate — right up until the next
-        /// receipt, which pins the plan and makes the shortfall permanently uncollectable: the sale
-        /// can never be completed and the schedule shows nothing owing. So the reversal is allowed
-        /// while the plan is still rebuildable, and the COLLECTION is what waits for the repair.
-        /// </para>
-        /// <para>
-        /// Only the part a REVERSED credit is responsible for
-        /// (<see cref="BookingCreditPolicy.UncollectableFromReversedCreditsAsync"/>) blocks a
-        /// receipt. A plan that is short for some other reason — imported, or built by hand against
-        /// part of the balance — is left alone: collection on it worked before this change and must
-        /// keep working.
-        /// </para>
+        /// Refuses a receipt while money is outside the plan — the customer owes more than the unpaid
+        /// installments hold. A receipt taken now would pin the plan (it can only be replaced while
+        /// nothing has been paid against it) and leave that amount with no installment to collect it,
+        /// so the plan has to be changed for the current balance first. The same figure the schedule
+        /// reports as <see cref="InstallmentScheduleDto.UnscheduledBalance"/>.
         /// </summary>
         private async Task EnsureScheduleCoversTheBalanceAsync(Booking booking, decimal rebateCredits)
         {
-            var scheduleTotal = await _context.Installments.AsNoTracking()
-                .Where(i => i.BookingId == booking.Id)
-                .SumAsync(i => (decimal?)i.Amount) ?? 0m;
-            var stranded = await BookingCreditPolicy.UncollectableFromReversedCreditsAsync(
-                _context, booking, scheduleTotal, rebateCredits);
-            if (stranded <= 0m) return;
+            var unscheduled = await BookingCreditPolicy.UnscheduledBalanceAsync(_context, booking, rebateCredits);
+            if (unscheduled <= 0m) return;
 
-            throw new InvalidOperationException(
-                $"A reversed rebate credit put {stranded:0.00} back on this booking that the installment "
-                + "plan does not collect, so taking this payment would lock the plan with that amount "
-                + "uncollectable. Regenerate the installment plan for the current balance first.");
+            throw new InvalidOperationException("Change the plan for the current balance first.");
         }
 
         private InstallmentScheduleDto MapSchedule(Booking booking, bool canRegenerate,
@@ -653,7 +639,11 @@ namespace DAMS.Application.Services
                 InstallmentPool = Math.Max(0m, installmentPool),
                 Frequency = booking.InstallmentFrequency,
                 NumberOfInstallments = booking.NumberOfInstallments,
-                InstallmentStartDate = booking.InstallmentPlanStartDate,
+                // What the plan actually says installment 1 falls due, so a plan built before the
+                // entered date became installment 1's date still opens Change plan on the right day.
+                InstallmentStartDate = items.Where(i => i.Type == InstallmentType.Regular)
+                    .OrderBy(i => i.SequenceNumber).Select(i => (DateTime?)i.DueDate).FirstOrDefault()
+                    ?? booking.InstallmentPlanStartDate,
                 PossessionDueDate = booking.PossessionDueDate,
                 GeneratedAt = booking.InstallmentPlanGeneratedAt,
                 HasSchedule = hasSchedule,

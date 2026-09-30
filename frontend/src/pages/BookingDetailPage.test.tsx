@@ -518,3 +518,292 @@ describe("Give possession and Complete sale", () => {
     expect(requested("POST", "/api/Booking/13/complete")[0]!.headers.get("Idempotency-Key")).toMatch(/^complete-/);
   });
 });
+
+// ── Installment plan and Payments tabs (KAN-74) ───────────────────────────────────────────────
+
+const dueOn = (month: number) => new Date(Date.UTC(2026, 9 + month - 1, 26)).toISOString().slice(0, 19);
+
+function installment(number: number, over: Record<string, unknown> = {}) {
+  return {
+    id: 100 + number, sequenceNumber: number, type: "Regular", dueDate: dueOn(number), amount: 918_000, status: "Pending",
+    amountPaid: 0, remainingBalance: 918_000, isOverdue: false, ...over,
+  };
+}
+
+const paidRow = (number: number) => installment(number, { status: "Paid", amountPaid: 918_000, remainingBalance: 0 });
+const possessionRow = () => ({
+  id: 200, sequenceNumber: 0, type: "Possession", dueDate: "2027-11-01T00:00:00", amount: 1_284_000, status: "Pending",
+  amountPaid: 0, remainingBalance: 1_284_000, isOverdue: false,
+});
+
+function planOf(items: unknown[], over: Record<string, unknown> = {}) {
+  return {
+    hasSchedule: true, canGenerate: true, canRegenerate: true, agreedSalePrice: 12_800_000, discountPercent: 0, discountAmount: 0,
+    bookingAmountReceived: 500_000, possessionAmount: 1_284_000, installmentPool: 11_016_000, frequency: "Monthly",
+    numberOfInstallments: 12, installmentStartDate: "2026-10-26T00:00:00", possessionDueDate: "2027-11-01T00:00:00",
+    scheduleTotal: 12_300_000, schedulePaid: 0, scheduleRemaining: 12_300_000, unscheduledBalance: 0, items, ...over,
+  };
+}
+
+// The Summary tab stays mounted behind the others, so text is looked up inside the tab that is showing.
+const tab = () => within(screen.getByRole("tabpanel"));
+
+const thirteen = () => [...Array.from({ length: 12 }, (_, index) => installment(index + 1)), possessionRow()];
+
+async function openPlan(schedule: unknown, over: Record<string, unknown> = {}) {
+  answers["GET /api/Booking/13/installments"] = () => ({ body: schedule });
+  show(over);
+  fireEvent.click(await screen.findByRole("tab", { name: /Installment plan|Plan/ }));
+}
+
+describe("Installment plan: no plan yet", () => {
+  const empty = { hasSchedule: false, canGenerate: true, canRegenerate: false, installmentPool: 12_300_000, possessionAmount: 0, items: [] };
+
+  it("shows one empty card with what is to be scheduled and a Create plan button", async () => {
+    await openPlan(empty, { hasInstallmentSchedule: false, installmentsTotal: 0, nextInstallment: null });
+    expect(await screen.findByText("No installment plan yet")).toBeTruthy();
+    expect(screen.getByText("Rs 12,300,000 to schedule")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create plan" })).toBeTruthy();
+  });
+
+  it("says the booking amount comes first when the plan cannot be created yet", async () => {
+    await openPlan({ ...empty, canGenerate: false }, { hasInstallmentSchedule: false, installmentsTotal: 0, nextInstallment: null });
+    expect(await screen.findByText("The booking amount must be fully received before the installment plan unlocks.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create plan" })).toBeNull();
+  });
+});
+
+describe("Create plan", () => {
+  const empty = { hasSchedule: false, canGenerate: true, canRegenerate: false, installmentPool: 12_300_000, possessionAmount: 0, items: [] };
+  const none = { hasInstallmentSchedule: false, installmentsTotal: 0, nextInstallment: null };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-29T07:00:00Z"));
+    Element.prototype.scrollIntoView = () => {};
+  });
+  afterEach(() => vi.useRealTimers());
+
+  async function open() {
+    await openPlan(empty, none);
+    fireEvent.click(await screen.findByRole("button", { name: "Create plan" }));
+    return screen.findByRole("dialog", { name: /Create installment plan/ });
+  }
+
+  function pickFirstDue(dialog: HTMLElement) {
+    fireEvent.click(within(dialog).getByRole("button", { name: /First due/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Next month" }));
+    fireEvent.click(screen.getByRole("button", { name: "October 26, 2026" }));
+  }
+
+  it("opens on the booking's terms and works out each installment as it is typed", async () => {
+    const dialog = await open();
+    expect(within(dialog).getByText("BK-000013")).toBeTruthy();
+    expect((within(dialog).getByLabelText(/Agreed sale price/) as HTMLInputElement).value).toBe("12,800,000");
+    expect(within(dialog).getByText("To schedule")).toBeTruthy();
+    expect(within(dialog).getByText("Rs 12,300,000")).toBeTruthy();
+    expect(within(dialog).getByText("Rs 1,025,000")).toBeTruthy();
+
+    fireEvent.change(within(dialog).getByLabelText(/Possession amount/), { target: { value: "1284000" } });
+    expect(within(dialog).getByText("Rs 918,000")).toBeTruthy();
+    expect(within(dialog).getByLabelText(/Possession due/, { selector: "button" })).toBeTruthy();
+  });
+
+  it("asks for the first due date before anything is sent", async () => {
+    const dialog = await open();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create plan" }));
+    expect(await within(dialog).findByText("Choose when installment 1 is due.")).toBeTruthy();
+    expect(requested("POST", "/api/Booking/13/installment-plan/generate")).toHaveLength(0);
+  });
+
+  it("saves with a retry key, thanks the user and reloads the plan", async () => {
+    answers["POST /api/Booking/13/installment-plan/generate"] = () => ({ body: planOf(thirteen()) });
+    const dialog = await open();
+    pickFirstDue(dialog);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create plan" }));
+
+    await waitFor(() => expect(requested("POST", "/api/Booking/13/installment-plan/generate")).toHaveLength(1));
+    const [saved] = requested("POST", "/api/Booking/13/installment-plan/generate");
+    expect(saved!.headers.get("Idempotency-Key")).toMatch(/^plan-/);
+    expect(saved!.body).toEqual({
+      agreedSalePrice: 12_800_000, discountPercent: 0, frequency: "Monthly", numberOfInstallments: 12,
+      installmentStartDate: "2026-10-26", possessionAmount: 0, possessionDueDate: null, regenerate: false,
+    });
+    expect(await screen.findByText("Plan created.")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(requested("GET", "/api/Booking/13/installments").length).toBeGreaterThan(1);
+  });
+
+  it("keeps the popup open with what was typed when the server refuses", async () => {
+    answers["POST /api/Booking/13/installment-plan/generate"] = () => ({ status: 400, body: { message: "Installment pool is too small for this number of installments." } });
+    const dialog = await open();
+    pickFirstDue(dialog);
+    fireEvent.change(within(dialog).getByLabelText(/Installments/, { selector: "input" }), { target: { value: "24" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create plan" }));
+
+    expect(await within(dialog).findByText("Installment pool is too small for this number of installments.")).toBeTruthy();
+    expect((within(dialog).getByLabelText(/Installments/, { selector: "input" }) as HTMLInputElement).value).toBe("24");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});
+
+describe("Installment plan: nothing paid yet", () => {
+  it("shows three stat cards, the schedule heading, Change plan and a Record payment on every unpaid row", async () => {
+    await openPlan(planOf(thirteen()));
+    expect(await screen.findByText("12 monthly installments from Oct 26, 2026")).toBeTruthy();
+    expect(tab().getByText("Plan total")).toBeTruthy();
+    expect(tab().getByText("0 of 13 paid")).toBeTruthy();
+    expect(tab().getByText("Next due")).toBeTruthy();
+    expect(tab().queryByText("Overdue")).toBeNull();
+    expect(screen.getByRole("button", { name: "Change plan" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(13);
+    expect(screen.getByText("Possession").className).toContain("text-gold-text");
+  });
+
+  it("Record payment on a row opens the payment popup for that installment", async () => {
+    await openPlan(planOf(thirteen()));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Record payment" }))[2]!);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("BK-000013 · Installment 3")).toBeTruthy();
+  });
+
+  it("has no Change plan once the server says the plan cannot be replaced", async () => {
+    await openPlan(planOf(thirteen(), { canGenerate: false, canRegenerate: false }));
+    await screen.findByText("12 monthly installments from Oct 26, 2026");
+    expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
+  });
+});
+
+describe("Installment plan: with payments", () => {
+  const paidOn = () => [paidRow(1), paidRow(2), paidRow(3), paidRow(4),
+    installment(5, { status: "Overdue", isOverdue: true }), ...Array.from({ length: 7 }, (_, index) => installment(index + 6)), possessionRow()];
+  const withPayments = () => planOf(paidOn(), { canGenerate: false, canRegenerate: false, schedulePaid: 3_672_000, scheduleRemaining: 8_628_000 });
+
+  it("shows four stat cards with the overdue amount, and no Change plan", async () => {
+    await openPlan(withPayments());
+    expect(await screen.findByText("4 of 13 paid")).toBeTruthy();
+    expect(tab().getByText("Rs 3,672,000")).toBeTruthy();
+    // The stat card and the column header both say Remaining.
+    expect(tab().getAllByText("Remaining")).toHaveLength(2);
+    // The stat card and the overdue row's badge.
+    expect(tab().getAllByText("Overdue")).toHaveLength(2);
+    expect(tab().getByText("1 installment")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
+  });
+
+  it("writes an overdue due date in red, and puts Record payment on every unpaid row but none on paid ones", async () => {
+    await openPlan(withPayments());
+    const overdue = await screen.findByText("Feb 26, 2027");
+    expect(overdue.className).toContain("text-danger");
+    expect(screen.getByText("Jan 26, 2027").className).not.toContain("text-danger");
+    expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(9);
+  });
+
+  it("pages a long plan at 20 rows", async () => {
+    const long = Array.from({ length: 25 }, (_, index) => installment(index + 1));
+    await openPlan(planOf(long, { numberOfInstallments: 25 }));
+    await screen.findByText("25 monthly installments from Oct 26, 2026");
+    expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(20);
+    fireEvent.click(screen.getByRole("button", { name: "Page 2" }));
+    expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(5);
+  });
+
+  it("phone: the last two paid and the next unpaid ones, then Show all", async () => {
+    phone(true);
+    await openPlan(withPayments());
+    expect(await screen.findByText("Installment 3")).toBeTruthy();
+    expect(screen.getByText("Installment 4")).toBeTruthy();
+    expect(screen.queryByText("Installment 2")).toBeNull();
+    expect(screen.getByText("Installment 7")).toBeTruthy();
+    expect(screen.queryByText("Installment 8")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show all 13" }));
+    expect(screen.getByText("Installment 1")).toBeTruthy();
+    expect(screen.getByText("Possession")).toBeTruthy();
+  });
+});
+
+describe("Installment plan: money outside the plan", () => {
+  const short = () => planOf(thirteen(), { unscheduledBalance: 50_000 });
+
+  it("warns with the amount, hides Record payment, and offers Change plan", async () => {
+    await openPlan(short());
+    expect(await screen.findByText("Rs 50,000 is not in the plan. Change the plan before recording more payments.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Record payment" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Change plan" }).length).toBeGreaterThan(0);
+  });
+
+  it("Change plan opens on the current plan and replaces every installment", async () => {
+    answers["POST /api/Booking/13/installment-plan/generate"] = () => ({ body: planOf(thirteen()) });
+    await openPlan(short());
+    fireEvent.click((await screen.findAllByRole("button", { name: "Change plan" }))[0]!);
+    const dialog = await screen.findByRole("dialog", { name: /Change plan/ });
+    expect(within(dialog).getByText("Replaces all 13 installments")).toBeTruthy();
+    expect((within(dialog).getByLabelText(/Installments/, { selector: "input" }) as HTMLInputElement).value).toBe("12");
+    expect(within(dialog).getByRole("button", { name: /First due/ }).textContent).toContain("Oct 26, 2026");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+    await waitFor(() => expect(requested("POST", "/api/Booking/13/installment-plan/generate")).toHaveLength(1));
+    const [saved] = requested("POST", "/api/Booking/13/installment-plan/generate");
+    expect(saved!.body).toMatchObject({ regenerate: true, installmentStartDate: "2026-10-26", possessionAmount: 1_284_000, possessionDueDate: "2027-11-01" });
+    expect(await screen.findByText("Plan changed.")).toBeTruthy();
+  });
+});
+
+describe("Payments tab", () => {
+  const rows = [
+    { id: 2, type: "Installment", installmentId: 104, installmentSequence: 4, installmentType: "Regular", amount: 918_000, paymentMethod: "BankTransfer", paymentReference: "TT-2201", receiptNumber: "RCP-000231", paidAt: "2026-09-20T07:00:00", accountName: "Cash in hand", proof: { id: 8, fileName: "slip.pdf", fileSize: 10 } },
+    { id: 1, type: "BookingAmount", installmentId: null, amount: 500_000, paymentMethod: "Cash", paymentReference: null, receiptNumber: "RCP-000001", paidAt: "2026-04-20T07:00:00", proof: null },
+  ];
+  const openPayments = async () => {
+    answers["GET /api/Booking/13/payments"] = () => ({ body: rows });
+    show({ collected: 4_172_000, rebateCredits: 0, outstanding: 8_628_000, payments: rows });
+    fireEvent.click(await screen.findByRole("tab", { name: /Payments/ }));
+  };
+
+  it("shows Collected with its payment count, Rebate credits and Outstanding", async () => {
+    await openPayments();
+    expect(await tab().findByText("Collected")).toBeTruthy();
+    expect(tab().getByText("Rs 4,172,000")).toBeTruthy();
+    expect(tab().getByText("2 payments")).toBeTruthy();
+    expect(tab().getByText("Rebate credits")).toBeTruthy();
+    expect(tab().getByText("Outstanding")).toBeTruthy();
+    expect(tab().getByText("Rs 8,628,000")).toBeTruthy();
+  });
+
+  it("lists each payment with what it was for, its method, reference and amount", async () => {
+    await openPayments();
+    expect(await tab().findByText("RCP-000231")).toBeTruthy();
+    expect(tab().getByText("Installment 4")).toBeTruthy();
+    expect(tab().getByText("Booking amount")).toBeTruthy();
+    expect(tab().getByText("Bank transfer")).toBeTruthy();
+    expect(tab().getByText("TT-2201")).toBeTruthy();
+    expect(tab().getByText("Sep 20, 2026")).toBeTruthy();
+    expect(tab().getByText("Rs 918,000")).toBeTruthy();
+    expect(tab().getByRole("button", { name: "slip.pdf" })).toBeTruthy();
+    expect(tab().getAllByRole("button", { name: "Attach proof" })).toHaveLength(1);
+  });
+
+  it("Receipt opens the receipt page inside the app, not a new tab", async () => {
+    const open = vi.spyOn(window, "open");
+    await openPayments();
+    fireEvent.click((await screen.findAllByRole("button", { name: "Receipt" }))[0]!);
+    expect(screen.getByTestId("where").textContent).toBe("/receipt/13/2");
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it("phone: a card per payment with the reference only when there is one", async () => {
+    phone(true);
+    await openPayments();
+    expect(await screen.findByText("RCP-000231")).toBeTruthy();
+    expect(screen.getAllByText("Reference")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Receipt" })).toHaveLength(2);
+  });
+
+  it("says No payments yet, and not that the payments could not be read, when there are none", async () => {
+    answers["GET /api/Booking/13/payments"] = () => ({ body: [] });
+    show({ payments: [], collected: 0 });
+    fireEvent.click(await screen.findByRole("tab", { name: /Payments/ }));
+    expect(await screen.findByText("No payments yet")).toBeTruthy();
+  });
+});

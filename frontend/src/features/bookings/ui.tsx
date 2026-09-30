@@ -102,3 +102,16 @@ export function EmptyState({ message, hint }: { message: string; hint?: string }
     </div>
   );
 }
+
+/**
+ * The big number of a stat card, with a small line under it ("Rs 3,672,000" over "4 of 13 paid").
+ * Smaller on a phone, so two cards in a row still hold "Rs 12,300,000" on one line.
+ */
+export function Figure({ amount, detail }: { amount: ReactNode; detail?: ReactNode }) {
+  return (
+    <>
+      <span className="whitespace-nowrap max-md:text-[18px]">{amount}</span>
+      {detail && <span className="mt-0.5 block text-small font-bold leading-snug text-ink-muted">{detail}</span>}
+    </>
+  );
+}

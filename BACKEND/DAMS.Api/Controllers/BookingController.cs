@@ -251,6 +251,8 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        // Create or change the plan. Retry-keyed so a double click never builds two plans.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/installment-plan/generate")]
         public async Task<IActionResult> GenerateInstallmentPlan(int id, [FromBody] GenerateInstallmentPlanDto dto)
         {

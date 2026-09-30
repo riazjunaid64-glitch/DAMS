@@ -21,6 +21,7 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         [Range(1, 600)]
         public int NumberOfInstallments { get; set; }
 
+        // The due date of installment 1.
         [Required]
         public DateTime InstallmentStartDate { get; set; }
 

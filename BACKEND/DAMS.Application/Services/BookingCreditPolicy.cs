@@ -98,6 +98,44 @@ internal static class BookingCreditPolicy
     }
 
     /// <summary>
+    /// What the customer still owes that the unpaid installments do NOT hold — the money outside the
+    /// plan, whatever put it there. The balance is net price less every payment and every credit; the
+    /// plan holds what is left on its rows after the payments and credits placed on them. Zero when
+    /// they agree, and only a plan that is short is reported: an over-holding plan cannot take more
+    /// than the balance, because every receipt is capped at what is outstanding.
+    /// <para>This is the figure the screen warns with and the payment service refuses on, so the
+    /// warning and the refusal cannot disagree.</para>
+    /// </summary>
+    public static async Task<decimal> UnscheduledBalanceAsync(
+        AppDbContext context,
+        Booking booking,
+        decimal nonCashCredits,
+        CancellationToken cancellationToken = default)
+    {
+        var collected = await context.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id)
+            .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+        var balance = Money(Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - collected - nonCashCredits));
+
+        var rows = await context.Installments.AsNoTracking()
+            .Where(i => i.BookingId == booking.Id)
+            .Select(i => new { i.Id, i.Amount })
+            .ToListAsync(cancellationToken);
+        if (rows.Count == 0) return 0m;
+
+        var cash = await context.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id && p.InstallmentId != null && p.Type == PaymentType.Installment)
+            .GroupBy(p => p.InstallmentId!.Value)
+            .Select(g => new { InstallmentId = g.Key, Paid = g.Sum(p => p.Amount) })
+            .ToDictionaryAsync(x => x.InstallmentId, x => x.Paid, cancellationToken);
+        var credits = await InstallmentCreditsByBookingAsync(context, [booking.Id], cancellationToken);
+
+        var held = rows.Sum(r => Math.Max(0m,
+            r.Amount - cash.GetValueOrDefault(r.Id) - credits.GetValueOrDefault(r.Id)));
+        return Money(Math.Max(0m, balance - held));
+    }
+
+    /// <summary>
     /// Whether this booking's installment plan can still be replaced. One implementation, because
     /// two callers ask it for opposite reasons: the schedule service before it deletes and rebuilds
     /// the rows, and the rebate service before it reverses a credit the existing plan was built

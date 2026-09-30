@@ -142,7 +142,8 @@ public sealed class FinanceBusinessDateTests
         var installment = new Installment
         {
             BookingId = world.BookingId, SequenceNumber = 1, Type = InstallmentType.Regular,
-            DueDate = today, Amount = 200_000m, Status = InstallmentStatus.Pending
+            // The whole 1,000,000 balance: a payment is only taken against a plan that covers it.
+            DueDate = today, Amount = 1_000_000m, Status = InstallmentStatus.Pending
         };
         context.Installments.Add(installment);
         await context.SaveChangesAsync();

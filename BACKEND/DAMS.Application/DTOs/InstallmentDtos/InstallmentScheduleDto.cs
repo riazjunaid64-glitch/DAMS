@@ -30,6 +30,7 @@ namespace DAMS.Application.DTOs.InstallmentDtos
 
         public int? NumberOfInstallments { get; set; }
 
+        /// <summary>The due date of installment 1.</summary>
         public DateTime? InstallmentStartDate { get; set; }
 
         public DateTime? PossessionDueDate { get; set; }
@@ -49,10 +50,10 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         public decimal ScheduleRemaining { get; set; }
 
         /// <summary>
-        /// What the customer owes that this schedule does NOT demand — normally zero. It becomes
-        /// positive when a credit the plan was built smaller by is reversed, and the plan has to be
-        /// regenerated before any further receipt can be taken (the payment service refuses one
-        /// while this is non-zero, because that receipt would pin the plan and strand the amount).
+        /// What the customer owes that the unpaid installments do NOT hold — normally zero. It turns
+        /// positive whenever the balance and the plan drift apart (a reversed rebate credit is the
+        /// usual cause), and the plan has to be changed before any further receipt can be taken: the
+        /// payment service refuses one while this is non-zero.
         /// </summary>
         public decimal UnscheduledBalance { get; set; }
 

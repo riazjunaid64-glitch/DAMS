@@ -440,7 +440,7 @@ public sealed class LongStandingFinanceDefectTests
                     Amount = 100_000m, FinanceAccountId = world.Bank.Id,
                     PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
                 }, 1));
-        Assert.Contains("Regenerate the installment plan", refusal.Message);
+        Assert.Contains("Change the plan for the current balance first", refusal.Message);
         Assert.Empty(context.Payments.Where(p => p.Type == PaymentType.Installment).ToList());
 
         // Regenerating repairs it, and collection resumes against a plan that adds up.

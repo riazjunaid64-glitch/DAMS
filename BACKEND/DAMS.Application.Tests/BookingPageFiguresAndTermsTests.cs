@@ -258,7 +258,8 @@ public sealed class BookingPageFiguresAndTermsTests
     public async Task RecordingAnInstallmentPayment_ReturnsTheExactPaymentItCreated()
     {
         await using var h = await Harness.Create(BookingStatus.PaymentPlanActive);
-        await h.AddPlan(paidCount: 0, unpaidCount: 2, unpaidStartsDaysFromToday: 5);
+        // Two installments that together hold the 500,000 still owed: a payment is only taken against a plan that covers the balance.
+        await h.AddPlan(paidCount: 0, unpaidCount: 2, unpaidStartsDaysFromToday: 5, unpaidEach: 250_000m);
         var installmentId = h.Context.Installments.OrderBy(i => i.DueDate).First().Id;
         var service = new InstallmentService(h.Context, new FinanceAccountService(h.Context));
 
@@ -301,7 +302,8 @@ public sealed class BookingPageFiguresAndTermsTests
     public async Task InstallmentPayment_RequiresAMethod_AndAReferenceUnlessCash()
     {
         await using var h = await Harness.Create(BookingStatus.PaymentPlanActive);
-        await h.AddPlan(paidCount: 0, unpaidCount: 2, unpaidStartsDaysFromToday: 5);
+        // Two installments that together hold the 500,000 still owed: a payment is only taken against a plan that covers the balance.
+        await h.AddPlan(paidCount: 0, unpaidCount: 2, unpaidStartsDaysFromToday: 5, unpaidEach: 250_000m);
         var installmentId = h.Context.Installments.OrderBy(i => i.DueDate).First().Id;
         var service = new InstallmentService(h.Context, new FinanceAccountService(h.Context));
         RecordInstallmentPaymentDto Pay(PaymentMethod? method, string? reference) => new()
@@ -406,10 +408,10 @@ public sealed class BookingPageFiguresAndTermsTests
         }
 
         /// <summary>
-        /// Adds installments of 100,000 each: paid ones first (each with its cash payment), then unpaid
+        /// Adds installments of 100,000 each (the unpaid ones of <c>unpaidEach</c>): paid ones first (each with its cash payment), then unpaid
         /// ones falling due from today + the given offset, a month apart.
         /// </summary>
-        public async Task AddPlan(int paidCount, int unpaidCount, int unpaidStartsDaysFromToday)
+        public async Task AddPlan(int paidCount, int unpaidCount, int unpaidStartsDaysFromToday, decimal unpaidEach = 100_000m)
         {
             var booking = Context.Bookings.Single();
             var number = 1;
@@ -433,7 +435,7 @@ public sealed class BookingPageFiguresAndTermsTests
                 Context.Installments.Add(new Installment
                 {
                     BookingId = booking.Id, SequenceNumber = number, DueDate = Today.AddDays(unpaidStartsDaysFromToday + i * 30),
-                    Amount = 100_000m, Status = InstallmentStatus.Pending
+                    Amount = unpaidEach, Status = InstallmentStatus.Pending
                 });
             }
             booking.NumberOfInstallments = number - 1;
