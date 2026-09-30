@@ -43,9 +43,10 @@ export function PaymentsTab({ booking, payments, paymentsError, onOpenReceipt, o
     </div>
   );
 
-  const proof = (payment: BookingPayment) => (
-    <SavedProof ownerType="CustomerPayment" ownerId={payment.id} proof={payment.proof} onChanged={onChanged} />
-  );
+  // A cancelled booking is read-only: a stored proof still opens, but nothing new is attached.
+  const proof = (payment: BookingPayment) => cancelled && !payment.proof
+    ? <span className="text-ink-faint">—</span>
+    : <SavedProof ownerType="CustomerPayment" ownerId={payment.id} proof={payment.proof} onChanged={onChanged} />;
   const receipt = (payment: BookingPayment, fullWidth = false) => (
     <Button size="sm" variant="outline" fullWidth={fullWidth} icon={<IconFile size={16} />} onClick={() => onOpenReceipt(payment)}>Receipt</Button>
   );
