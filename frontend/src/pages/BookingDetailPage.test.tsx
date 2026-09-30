@@ -442,6 +442,21 @@ describe("proof on a recorded payment", () => {
     expect(calls.map((c) => c.url)).not.toContain("/api/Booking/13/payments");
   });
 
+  it("refreshes the booking only after the proof is stored, so the list already shows it", async () => {
+    answers["POST /api/Booking/13/booking-amount-payment"] = () => ({ body: { ...base, ...awaiting, recordedPaymentId: 77 } });
+    let uploaded = false;
+    vi.mocked(uploadProof).mockImplementation(async () => { uploaded = true; });
+    const dialog = await openWithFile();
+    const reloadsBefore = requested("GET", "/api/Booking/13").length;
+    let uploadedBeforeReload: boolean | null = null;
+    const original = answers["GET /api/Booking/13"]!;
+    answers["GET /api/Booking/13"] = () => { uploadedBeforeReload ??= uploaded; return original(); };
+    fireEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
+
+    await waitFor(() => expect(requested("GET", "/api/Booking/13").length).toBeGreaterThan(reloadsBefore));
+    expect(uploadedBeforeReload).toBe(true);
+  });
+
   it("closes with a warning when the upload fails, having recorded the payment once", async () => {
     answers["POST /api/Booking/13/booking-amount-payment"] = () => ({ body: { ...base, ...awaiting, recordedPaymentId: 77 } });
     vi.mocked(uploadProof).mockRejectedValue(new Error("Network down"));

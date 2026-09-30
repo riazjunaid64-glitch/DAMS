@@ -108,17 +108,17 @@ export function RecordPaymentDialog({ booking, target, financeAccounts, accounts
       return;
     }
 
-    // The money is in, so the page refreshes now whatever happens to the proof.
-    try {
-      await onSaved();
-    } catch {
-      // The reload reports its own failure on the page.
-    }
-    // A proof that fails never undoes the payment: the popup closes with a warning, and the file is
-    // attached later from the saved payment in Payment History.
+    // The money is in. A proof that fails never undoes the payment: the popup closes with a warning and
+    // the file is attached later from the saved payment in Payment History.
     if (!proof.hasFile || await sendProof(paymentId)) toast.success("Payment recorded.");
     else toast.error("Payment recorded, but the proof did not upload. Attach it from Payment History.");
-    onClose();
+
+    // Refreshed only now, so the payment list read back already carries the proof.
+    try {
+      await onSaved();
+    } finally {
+      onClose();
+    }
   };
 
   return (
