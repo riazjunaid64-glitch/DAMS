@@ -455,7 +455,14 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
       {dialog?.type === "close" && (
         <CloseLeadDialog lead={lead} reasons={lookups?.reasons ?? null} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps", "visits"])} />
       )}
-      {dialog?.type === "convert" && <ConvertLeadDialog lead={lead} onClose={() => setDialog(null)} onSaved={() => refresh(["followUps", "visits"])} />}
+      {dialog?.type === "convert" && (
+        <ConvertLeadDialog
+          lead={lead}
+          canChooseCustomer={canManage}
+          onClose={() => setDialog(null)}
+          onSaved={() => refresh(["followUps", "visits"])}
+        />
+      )}
 
       <ConfirmDialog
         open={dialog?.type === "cancelFollowUp"}

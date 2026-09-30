@@ -776,24 +776,61 @@ namespace DAMS.Application.Services
 
             // No open lead, but this may still be a customer we already sold to. Report it so
             // staff can link rather than duplicate; it does not block lead creation.
-            // Customer phones keep their local form ("03001234567") while lead numbers are
-            // stored without the trunk/country prefix, so match on the trailing digits.
-            var customer = await _context.Customers
-                .AsNoTracking()
-                .Where(c => (normalizedPhone != null && c.Phone.EndsWith(normalizedPhone))
-                            || (normalizedEmail != null && c.Email == normalizedEmail))
-                .Select(c => new { c.Id, c.FullName, c.Phone, c.Email })
-                .FirstOrDefaultAsync(cancellationToken);
+            var customer = await FindExistingCustomerAsync(normalizedPhone, normalizedEmail, cancellationToken);
+            return (customer, []);
+        }
 
-            if (customer == null)
-                return (null, []);
-
-            return (new LeadDuplicateMatchDto
+        /// <summary>
+        /// The customer these details already belong to, when exactly one does. A phone shared by
+        /// more than one customer is not a match: naming one of them would be a guess.
+        /// </summary>
+        private async Task<LeadDuplicateMatchDto?> FindExistingCustomerAsync(
+            string? normalizedPhone, string? normalizedEmail, CancellationToken cancellationToken)
+        {
+            if (normalizedPhone != null)
             {
-                MatchedOn = normalizedPhone != null && customer.Phone.EndsWith(normalizedPhone, StringComparison.Ordinal) ? "phone" : "email",
-                CustomerId = customer.Id,
-                CustomerName = customer.FullName
-            }, []);
+                var byPhone = await _context.Customers
+                    .AsNoTracking()
+                    .Where(c => c.NormalizedPhone == normalizedPhone)
+                    .OrderBy(c => c.Id)
+                    .Select(c => new { c.Id, c.FullName })
+                    .Take(2)
+                    .ToListAsync(cancellationToken);
+
+                if (byPhone.Count > 1)
+                    return null;
+
+                if (byPhone.Count == 1)
+                {
+                    return new LeadDuplicateMatchDto
+                    {
+                        MatchedOn = "phone",
+                        CustomerId = byPhone[0].Id,
+                        CustomerName = byPhone[0].FullName
+                    };
+                }
+            }
+
+            if (normalizedEmail == null)
+                return null;
+
+            var byEmail = await _context.Customers
+                .AsNoTracking()
+                .Where(c => c.Email == normalizedEmail)
+                .OrderBy(c => c.Id)
+                .Select(c => new { c.Id, c.FullName })
+                .Take(2)
+                .ToListAsync(cancellationToken);
+
+            if (byEmail.Count != 1)
+                return null;
+
+            return new LeadDuplicateMatchDto
+            {
+                MatchedOn = "email",
+                CustomerId = byEmail[0].Id,
+                CustomerName = byEmail[0].FullName
+            };
         }
 
         /// <summary>Which of the incoming details a lead matched on. A number matches either of the
@@ -1264,10 +1301,94 @@ namespace DAMS.Application.Services
         {
             LeadAccess.EnsureStaff(ctx);
 
-            return await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
+            var detail = await LeadAccess.Scope(_context.Leads.AsNoTracking(), ctx)
                 .Where(l => l.Id == id)
                 .Select(LeadMapping.ToDetail(_context))
                 .FirstOrDefaultAsync(cancellationToken);
+
+            if (detail != null)
+                await AttachMatchedCustomerAsync(detail, ctx, cancellationToken);
+
+            return detail;
+        }
+
+        /// <summary>
+        /// The customer conversion would attach this lead to, so the convert dialog can show or
+        /// (for admin/manager) choose it. A phone shared by several customers is never picked here:
+        /// admin and manager get the list; sales only learn that a choice is required.
+        /// </summary>
+        private async Task AttachMatchedCustomerAsync(
+            LeadDetailResponseDto detail, LeadUserContext ctx, CancellationToken cancellationToken)
+        {
+            var contact = await _context.Leads
+                .AsNoTracking()
+                .Where(l => l.Id == detail.Id)
+                .Select(l => new { l.NormalizedPhone, l.NormalizedEmail })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (contact == null)
+                return;
+
+            // Same people who may send CustomerId on convert. Sales may convert but may not browse
+            // the customer directory — so they must not receive other customers' names and phones.
+            var canListPhoneMatches = ctx.IsAdmin || ctx.IsManager;
+
+            if (!string.IsNullOrEmpty(contact.NormalizedPhone))
+            {
+                var phoneMatchIds = await _context.Customers
+                    .AsNoTracking()
+                    .Where(c => c.NormalizedPhone == contact.NormalizedPhone)
+                    .OrderBy(c => c.Id)
+                    .Select(c => c.Id)
+                    .Take(2)
+                    .ToListAsync(cancellationToken);
+
+                if (phoneMatchIds.Count == 1)
+                {
+                    var match = await _context.Customers
+                        .AsNoTracking()
+                        .Where(c => c.Id == phoneMatchIds[0])
+                        .Select(c => new { c.Id, c.FullName })
+                        .FirstAsync(cancellationToken);
+                    detail.MatchedCustomerId = match.Id;
+                    detail.MatchedCustomerName = match.FullName;
+                    return;
+                }
+
+                if (phoneMatchIds.Count > 1)
+                {
+                    detail.HasAmbiguousCustomerMatch = true;
+                    if (canListPhoneMatches)
+                    {
+                        detail.PhoneMatches = await _context.Customers
+                            .AsNoTracking()
+                            .Where(c => c.NormalizedPhone == contact.NormalizedPhone)
+                            .OrderBy(c => c.FullName)
+                            .ThenBy(c => c.Id)
+                            .Select(c => new LeadCustomerMatchDto { Id = c.Id, FullName = c.FullName, Phone = c.Phone })
+                            .Take(50)
+                            .ToListAsync(cancellationToken);
+                    }
+
+                    return;
+                }
+            }
+
+            if (string.IsNullOrEmpty(contact.NormalizedEmail))
+                return;
+
+            var emailMatches = await _context.Customers
+                .AsNoTracking()
+                .Where(c => c.Email == contact.NormalizedEmail)
+                .OrderBy(c => c.Id)
+                .Select(c => new { c.Id, c.FullName })
+                .Take(2)
+                .ToListAsync(cancellationToken);
+
+            if (emailMatches.Count == 1)
+            {
+                detail.MatchedCustomerId = emailMatches[0].Id;
+                detail.MatchedCustomerName = emailMatches[0].FullName;
+            }
         }
 
         public async Task<LeadListDto> GetLeadsAsync(LeadFilterDto filter, LeadUserContext ctx, CancellationToken cancellationToken = default)

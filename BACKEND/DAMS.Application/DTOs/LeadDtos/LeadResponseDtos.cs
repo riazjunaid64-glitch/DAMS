@@ -160,6 +160,36 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         /// <summary>Who last marked the lead Lost or Dormant.</summary>
         public string? ClosedByName { get; set; }
+
+        /// <summary>
+        /// The one existing customer this lead's phone belongs to, or the one customer with this
+        /// email when the phone matches nobody. Absent when nobody matches, and absent when more
+        /// than one customer shares the phone — those are <see cref="PhoneMatches"/>, and conversion
+        /// has to be told which one.
+        /// </summary>
+        public int? MatchedCustomerId { get; set; }
+
+        public string? MatchedCustomerName { get; set; }
+
+        /// <summary>Every customer who shares this lead's phone. Empty unless there is more than one
+        /// <em>and</em> the caller may choose among customers (admin / manager). Sales see
+        /// <see cref="HasAmbiguousCustomerMatch"/> instead — they must not receive customer PII.</summary>
+        public List<LeadCustomerMatchDto> PhoneMatches { get; set; } = new();
+
+        /// <summary>
+        /// True when more than one customer shares this lead's phone. Set for every staff role so
+        /// sales can be told conversion needs a manager, without listing those customers.
+        /// </summary>
+        public bool HasAmbiguousCustomerMatch { get; set; }
+    }
+
+    public class LeadCustomerMatchDto
+    {
+        public int Id { get; set; }
+
+        public string FullName { get; set; } = string.Empty;
+
+        public string Phone { get; set; } = string.Empty;
     }
 
     public class LeadPageCountsDto

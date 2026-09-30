@@ -13,6 +13,10 @@ namespace DAMS.Domain.Entities
 
         public string Phone { get; set; } = string.Empty;
 
+        // National number used to recognise the same subscriber however the phone was written
+        // (0300…, +92…, 92…, 0092…). Lookups match this. The display Phone is left as entered.
+        public string? NormalizedPhone { get; set; }
+
         public string? CNIC { get; set; }
 
         public string? Email { get; set; }

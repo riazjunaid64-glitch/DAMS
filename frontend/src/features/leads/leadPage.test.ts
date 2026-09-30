@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assignChoices,
+  conversionCustomerId,
   floorLabel,
   followUpDue,
   followUpGroups,
@@ -127,6 +128,13 @@ describe("converting", () => {
   it("names the floor as the project does", () => {
     const parking = { ...unit(5, "P-01", "Parking space", -1), floorName: "Parking" };
     expect(unitChoices([parking])).toEqual([{ value: "5", label: "Unit P-01 — Parking space · Parking" }]);
+  });
+
+  it("sends a customer id only when the user picks from an ambiguous phone list", () => {
+    expect(conversionCustomerId({}, "")).toBeNull();
+    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }] }, "")).toBeNull();
+    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }, { id: 9 }] }, "")).toBeNull();
+    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }, { id: 9 }] }, "9")).toBe(9);
   });
 
   it("writes floors in words", () => {

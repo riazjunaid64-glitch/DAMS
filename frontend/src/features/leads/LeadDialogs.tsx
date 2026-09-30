@@ -18,8 +18,8 @@ import { DialogSummary, FormSection } from "./LeadDialogParts.tsx";
 import { describeEditConflict, editChanges, editForm, saveLeadEdit, type EditConflict, type EditForm } from "./leadEditMerge.ts";
 import { BUYING_FOR_CHOICES, contactErrors, hasErrors, PAYMENT_CHOICES, type ContactErrors } from "./leadForm.ts";
 import { paymentPreferenceLabel } from "./labels.ts";
-import { statusAndOwner, unitChoices } from "./leadPage.ts";
-import type { ClosureReason, Lead, UnitLookup } from "./types.ts";
+import { conversionCustomerId, statusAndOwner, unitChoices } from "./leadPage.ts";
+import type { ClosureReason, Lead, LeadDetail, UnitLookup } from "./types.ts";
 import { useLeadSave } from "./useLeadSave.ts";
 
 type DialogProps = { lead: Lead; onClose: () => void; onSaved: () => void };
@@ -228,7 +228,18 @@ const CLOSED_PROJECT = new Set<number | string>([3, 4, 5, "Completed", "Cancelle
  * project is the lead's own, otherwise any open project with units left. A Project choice appears
  * only when more than one has units available.
  */
-export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
+export function ConvertLeadDialog({
+  lead,
+  canChooseCustomer = false,
+  onClose,
+  onSaved,
+}: {
+  lead: LeadDetail;
+  /** Admin / manager may pick when several customers share the phone. Sales may not send CustomerId. */
+  canChooseCustomer?: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const formId = useId();
   const { projects, loading: projectsLoading } = useProjects();
   const { saving, run } = useLeadSave(onSaved);
@@ -237,6 +248,14 @@ export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
   const [projectId, setProjectId] = useState("");
   const [unitId, setUnitId] = useState("");
   const [notes, setNotes] = useState("");
+  const [chosenCustomerId, setChosenCustomerId] = useState("");
+  const ambiguous = lead.hasAmbiguousCustomerMatch === true || (lead.phoneMatches?.length ?? 0) > 1;
+  // Never auto-send a single matchedCustomerId — that would skip FindOrCreate conflict checks
+  // and would refuse a salesperson conversion (CustomerId is admin/manager only).
+  const customerId = conversionCustomerId(lead, chosenCustomerId);
+  const needsManagerForCustomer = ambiguous && !canChooseCustomer;
+  const needsCustomerChoice = ambiguous && canChooseCustomer && customerId == null;
+  const convertBlocked = !unitId || needsCustomerChoice || needsManagerForCustomer;
 
   const candidates = useMemo(() => (lead.interestedProjectId
     ? [{ id: lead.interestedProjectId, name: lead.interestedProjectName ?? projects.find((p) => p.id === lead.interestedProjectId)?.projectName ?? "" }]
@@ -264,7 +283,11 @@ export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
     : units.length ? "Choose a unit" : "No units available";
 
   const save = () => void run(
-    () => apiJson<{ bookingReference: string }>(`/api/leads/${lead.id}/convert`, jsonRequest("POST", { unitId: Number(unitId), notes: notes.trim() || null })),
+    () => apiJson<{ bookingReference: string }>(`/api/leads/${lead.id}/convert`, jsonRequest("POST", {
+      unitId: Number(unitId),
+      notes: notes.trim() || null,
+      ...(customerId != null ? { customerId } : {}),
+    })),
     (result) => `Converted to booking ${result.bookingReference}`,
   );
 
@@ -276,10 +299,33 @@ export function ConvertLeadDialog({ lead, onClose, onSaved }: DialogProps) {
       size="lg"
       phoneLayout="fullscreen"
       busy={saving}
-      primaryAction={{ label: "Convert to booking", variant: "success", form: formId, loading: saving, disabled: !unitId }}
+      primaryAction={{ label: "Convert to booking", variant: "success", form: formId, loading: saving, disabled: convertBlocked }}
     >
-      <form id={formId} noValidate onSubmit={(event) => { event.preventDefault(); if (unitId) save(); }} className="flex flex-col gap-5">
+      <form id={formId} noValidate onSubmit={(event) => { event.preventDefault(); if (!convertBlocked) save(); }} className="flex flex-col gap-5">
         <DialogSummary title={lead.fullName} detail={[lead.phone, lead.propertyType, paymentPreferenceLabel(lead.paymentPreference)?.label].filter(Boolean).join(" · ")} />
+        {lead.matchedCustomerName && !ambiguous && (
+          <p className="m-0 text-small text-ink-muted">Existing customer: {lead.matchedCustomerName}</p>
+        )}
+        {needsManagerForCustomer && (
+          <Notice
+            tone="gold"
+            title="More than one customer has this phone"
+            message="Ask a manager or administrator to convert this lead and choose the right customer."
+          />
+        )}
+        {ambiguous && canChooseCustomer && (
+          <Dropdown
+            label="Customer"
+            required
+            options={(lead.phoneMatches ?? []).map((customer) => ({
+              value: String(customer.id),
+              label: customer.phone ? `${customer.fullName} · ${customer.phone}` : customer.fullName,
+            }))}
+            value={chosenCustomerId}
+            onChange={setChosenCustomerId}
+            placeholder="Choose the customer"
+          />
+        )}
         {loaded && loaded.length > 1 && (
           <Dropdown label="Project" required options={loaded.map((item) => ({ value: String(item.id), label: item.name }))} value={projectId} onChange={(value) => { setProjectId(value); setUnitId(""); }} />
         )}

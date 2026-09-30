@@ -409,6 +409,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.FullName).IsRequired().HasMaxLength(200);
                 entity.Property(c => c.FatherName).HasMaxLength(200);
                 entity.Property(c => c.Phone).IsRequired().HasMaxLength(50);
+                entity.Property(c => c.NormalizedPhone).HasMaxLength(50);
                 entity.Property(c => c.CNIC).HasMaxLength(50);
                 entity.Property(c => c.Email).HasMaxLength(200);
                 entity.Property(c => c.Address).HasMaxLength(500);
@@ -421,6 +422,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Status).HasConversion<int>();
 
                 entity.HasIndex(c => c.Phone);
+                entity.HasIndex(c => c.NormalizedPhone);
                 entity.HasIndex(c => c.CNIC);
                 entity.HasIndex(c => c.Email);
                 entity.HasIndex(c => c.Status);

@@ -4,6 +4,7 @@ using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DAMS.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260930082033_AddCustomerNormalizedPhone")]
+    partial class AddCustomerNormalizedPhone
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -721,65 +724,6 @@ namespace DAMS.Infrastructure.Migrations
                         {
                             t.HasCheckConstraint("CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0");
                         });
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.BookingTermsHistory", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BookingId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("ChangedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int?>("ChangedByUserId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("NewAgreedSalePrice")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime?>("NewBookingAmountDueDate")
-                        .HasColumnType("date");
-
-                    b.Property<decimal>("NewBookingAmountRequired")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("NewDiscountPercent")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<string>("NewDiscountReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<decimal>("OldAgreedSalePrice")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime?>("OldBookingAmountDueDate")
-                        .HasColumnType("date");
-
-                    b.Property<decimal>("OldBookingAmountRequired")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("OldDiscountPercent")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<string>("OldDiscountReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("Source")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BookingId", "ChangedAt");
-
-                    b.ToTable("BookingTermsHistories");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
@@ -3702,9 +3646,6 @@ namespace DAMS.Infrastructure.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<int?>("CancellationRefundId")
-                        .HasColumnType("int");
-
                     b.Property<int?>("CommissionId")
                         .HasColumnType("int");
 
@@ -3712,9 +3653,6 @@ namespace DAMS.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(150)
                         .HasColumnType("nvarchar(150)");
-
-                    b.Property<int?>("CustomerPaymentId")
-                        .HasColumnType("int");
 
                     b.Property<long>("FileSize")
                         .HasColumnType("bigint");
@@ -3750,15 +3688,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CancellationRefundId")
-                        .IsUnique()
-                        .HasFilter("[CancellationRefundId] IS NOT NULL");
-
                     b.HasIndex("CommissionId");
-
-                    b.HasIndex("CustomerPaymentId")
-                        .IsUnique()
-                        .HasFilter("[CustomerPaymentId] IS NOT NULL");
 
                     b.HasIndex("PayoutId");
 
@@ -3771,7 +3701,7 @@ namespace DAMS.Infrastructure.Migrations
 
                     b.ToTable("FinancialEvidence", t =>
                         {
-                            t.HasCheckConstraint("CK_FinancialEvidence_ExactlyOneOwner", "(CASE WHEN [CommissionId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [PayoutId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [CustomerPaymentId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [CancellationRefundId] IS NULL THEN 0 ELSE 1 END) = 1");
+                            t.HasCheckConstraint("CK_FinancialEvidence_ExactlyOneOwner", "(CASE WHEN [CommissionId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [PayoutId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateId] IS NULL THEN 0 ELSE 1 END + CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END) = 1");
                         });
                 });
 
@@ -3959,35 +3889,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.HasIndex("Status", "DueDate");
 
                     b.ToTable("Installments");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.InstallmentPlanAttempt", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("AttemptKey")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<int>("BookingId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AttemptKey")
-                        .IsUnique();
-
-                    b.HasIndex("BookingId");
-
-                    b.ToTable("InstallmentPlanAttempts");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Lead", b =>
@@ -7738,17 +7639,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("Booking");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.BookingTermsHistory", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
-                        .WithMany()
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Booking");
-                });
-
             modelBuilder.Entity("DAMS.Domain.Entities.CapitalPartner", b =>
                 {
                     b.HasOne("DAMS.Domain.Entities.FinanceAccount", "FinanceAccount")
@@ -8183,19 +8073,9 @@ namespace DAMS.Infrastructure.Migrations
 
             modelBuilder.Entity("DAMS.Domain.Entities.FinancialEvidence", b =>
                 {
-                    b.HasOne("DAMS.Domain.Entities.BookingCancellationRefund", "CancellationRefund")
-                        .WithMany("Evidence")
-                        .HasForeignKey("CancellationRefundId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("DAMS.Domain.Entities.BookingCommission", "Commission")
                         .WithMany("Evidence")
                         .HasForeignKey("CommissionId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("DAMS.Domain.Entities.Payment", "CustomerPayment")
-                        .WithMany("Evidence")
-                        .HasForeignKey("CustomerPaymentId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("DAMS.Domain.Entities.CommissionPayout", "Payout")
@@ -8213,11 +8093,7 @@ namespace DAMS.Infrastructure.Migrations
                         .HasForeignKey("RebateId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.Navigation("CancellationRefund");
-
                     b.Navigation("Commission");
-
-                    b.Navigation("CustomerPayment");
 
                     b.Navigation("Payout");
 
@@ -8298,17 +8174,6 @@ namespace DAMS.Infrastructure.Migrations
                         .WithMany("Installments")
                         .HasForeignKey("BookingId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Booking");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.InstallmentPlanAttempt", b =>
-                {
-                    b.HasOne("DAMS.Domain.Entities.Booking", "Booking")
-                        .WithMany()
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Booking");
@@ -8941,11 +8806,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("ThirdPartyAttributions");
                 });
 
-            modelBuilder.Entity("DAMS.Domain.Entities.BookingCancellationRefund", b =>
-                {
-                    b.Navigation("Evidence");
-                });
-
             modelBuilder.Entity("DAMS.Domain.Entities.BookingCancellationSettlement", b =>
                 {
                     b.Navigation("Refund");
@@ -9139,11 +8999,6 @@ namespace DAMS.Infrastructure.Migrations
                     b.Navigation("AuditEntries");
 
                     b.Navigation("Entries");
-                });
-
-            modelBuilder.Entity("DAMS.Domain.Entities.Payment", b =>
-                {
-                    b.Navigation("Evidence");
                 });
 
             modelBuilder.Entity("DAMS.Domain.Entities.Project", b =>
