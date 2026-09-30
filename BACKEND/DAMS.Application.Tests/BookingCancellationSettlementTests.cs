@@ -450,6 +450,30 @@ public sealed class BookingCancellationSettlementTests
     }
 
     [Fact]
+    public async Task PayPendingRefund_DateBeforeOpeningBalanceDate_IsRejected()
+    {
+        // Cancelled well before go-live, so the refund date passes the cancellation check and only the
+        // committed opening-balance date can refuse it.
+        var h = await Harness.Create(paid: 500_000m);
+        await h.Service.CancelBookingAsync(h.BookingId,
+            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater), Actor);
+        (await h.Context.BookingCancellationSettlements.SingleAsync()).CancellationDate = PakistanTime.Today.AddDays(-5);
+        h.Context.OpeningBalanceSets.Add(new OpeningBalanceSet
+        {
+            AsAtDate = PakistanTime.Today.AddDays(-2), IsCommitted = true, CommittedAt = DateTime.UtcNow, CommittedByUserId = 1
+        });
+        await h.Context.SaveChangesAsync();
+
+        var pay = new PayCancellationRefundDto
+        {
+            FinanceAccountId = h.CashAccountId, PaymentMethod = PaymentMethod.Cash,
+            PaidAt = PakistanTime.Today.AddDays(-3), IdempotencyKey = "before-opening-pay"
+        };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.PayCancellationRefundAsync(h.BookingId, pay, Actor));
+        Assert.Contains("committed opening balance date", error.Message);
+    }
+
+    [Fact]
     public async Task PayPendingRefund_DateBeforeCancellationDate_IsRejected()
     {
         // The settlement was just created (CancelledAt == now), so paying it out "yesterday" is

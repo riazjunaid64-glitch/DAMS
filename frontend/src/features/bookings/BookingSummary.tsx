@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Button, Card, IconAlert, IconFile, InfoCard, Notice, cx, useIsPhone } from "../../components/ui";
+import { Button, Card, IconAlert, IconFile, InfoCard, Notice, StatusBadge, cx, useIsPhone } from "../../components/ui";
 import { formatDay, formatMonthDay } from "../../lib/dates.ts";
 import { formatPkr } from "../../utils/currency.ts";
 import type { BookingDetail } from "./detailTypes.ts";
 import { formatPhone } from "./format.ts";
-import { termsNotSet } from "./statusNames.ts";
+import { SavedProof } from "../proof/SavedProof.tsx";
+import { PAYMENT_METHODS } from "./paymentForm.ts";
+import { refundStatus, termsNotSet } from "./statusNames.ts";
 
 type Row = {
   label: ReactNode;
@@ -79,26 +81,66 @@ type SummaryProps = {
   leadLink: boolean;
   onSetTerms: () => void;
   onEditTerms: () => void;
-  /** Cancelled bookings: the cancellation settlement, which KAN-75 owns, shown above the figures. */
-  settlement: ReactNode;
+  /** Cancelled bookings: reloads the booking once a proof file is attached to the refund. */
+  onProofChanged: () => Promise<void> | void;
 };
 
 /** The Summary tab: which cards it holds depends on the booking's status. */
-export function BookingSummary({ booking, leadLink, onSetTerms, onEditTerms, settlement }: SummaryProps) {
+export function BookingSummary({ booking, leadLink, onSetTerms, onEditTerms, onProofChanged }: SummaryProps) {
   if (termsNotSet(booking)) return <TermsNotSetSummary booking={booking} leadLink={leadLink} onSetTerms={onSetTerms} />;
   if (booking.status === "AwaitingBookingAmount") return <AwaitingSummary booking={booking} leadLink={leadLink} onEditTerms={onEditTerms} />;
   if (booking.status === "Cancelled") {
     return (
-      <div className="flex flex-col gap-4">
-        {settlement}
-        <div className="grid items-start gap-4 lg:grid-cols-2">
-          <PriceAndPayments booking={booking} />
-          <CustomerAndUnit booking={booking} leadLink={leadLink} />
-        </div>
+      <div className="grid items-start gap-4 lg:grid-cols-3">
+        <CancellationCard booking={booking} onProofChanged={onProofChanged} />
+        {/* Nothing is owed on a cancelled booking, so there is no Outstanding here. */}
+        <Card title="Price">
+          <Rows rows={[
+            { label: "Agreed sale price", value: formatPkr(booking.agreedSalePrice) },
+            discountRow(booking),
+            { label: "Net sale price", value: formatPkr(netSalePrice(booking)), divider: true },
+          ]} />
+        </Card>
+        <CustomerAndUnit booking={booking} leadLink={leadLink} />
       </div>
     );
   }
   return <PlanSummary booking={booking} leadLink={leadLink} />;
+}
+
+/** What the cancellation decided, and once the refund is paid, how it was paid. */
+function CancellationCard({ booking, onProofChanged }: { booking: BookingDetail; onProofChanged: () => Promise<void> | void }) {
+  const settlement = booking.cancellationSettlement;
+  if (!settlement) {
+    return (
+      <Card title="Cancellation">
+        <p className="m-0 text-body text-ink-2">This booking was cancelled before cancellation details were recorded.</p>
+      </Card>
+    );
+  }
+  const refund = settlement.refund;
+  return (
+    <Card title="Cancellation">
+      <Rows rows={[
+        { label: "Cancelled on", value: formatDay(settlement.cancelledAt) },
+        { label: "Reason", value: settlement.reason },
+        { label: "Customer paid", value: formatPkr(settlement.customerCashReceivedSnapshot) },
+        { label: "Refund", value: formatPkr(settlement.refundAmount) },
+        { label: "Company keeps", value: formatPkr(settlement.retainedAmount), divider: true, bold: true },
+      ]} />
+      <div className="mt-2.5"><StatusBadge status={refundStatus(settlement.refundStatus)} /></div>
+      {refund && (
+        <div className="mt-3 border-t border-line-soft pt-2">
+          <Rows rows={[
+            { label: "Refund paid on", value: formatDay(refund.paidAt) },
+            { label: "Method", value: PAYMENT_METHODS.find((method) => method.value === refund.paymentMethod)?.label ?? refund.paymentMethod },
+            { label: "Reference", value: refund.paymentReference || "—" },
+            { label: "Proof", value: <SavedProof ownerType="CancellationRefund" ownerId={refund.id} proof={refund.proof} onChanged={onProofChanged} /> },
+          ]} />
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function TermsNotSetSummary({ booking, leadLink, onSetTerms }: { booking: BookingDetail; leadLink: boolean; onSetTerms: () => void }) {

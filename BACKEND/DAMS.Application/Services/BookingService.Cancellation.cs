@@ -424,6 +424,9 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Refund date cannot be in the future.");
             if (paidAt.Date < settlement.CancellationDate.Date)
                 throw new InvalidOperationException("Refund date cannot be before the cancellation date.");
+            // The same opening-balance bound every other cash movement is held to: a refund dated inside
+            // the committed opening balances would be counted twice.
+            await FinanceDateRules.EnsureAsync(_context, paidAt, "Refund date", cancellationToken);
 
             // 12. Reference collision, scoped to the selected account.
             await EnsureRefundReferenceAvailableAsync(dto.FinanceAccountId, paymentReference, cancellationToken);

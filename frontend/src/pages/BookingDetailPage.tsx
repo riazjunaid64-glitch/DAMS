@@ -10,8 +10,8 @@ import BookingCommissionRebatePanel from "../features/commissionRebates/BookingC
 import { TabPanel } from "../features/bookings/ui.tsx";
 import { missingReadMessages, readBookingDetail, type WantedReads } from "../features/bookings/detailReads.ts";
 import { createPanelRefreshSignal, type PanelRefreshSignal } from "../features/bookings/refreshCoordination.ts";
-import BookingCancellationPanel from "../features/bookingCancellation/BookingCancellationPanel.tsx";
-import CancellationDialog, { type CancellationDialogHandle } from "../features/bookingCancellation/CancellationDialog.tsx";
+import { CancelBookingDialog } from "../features/bookingCancellation/CancelBookingDialog.tsx";
+import { PayRefundDialog } from "../features/bookingCancellation/PayRefundDialog.tsx";
 import { BookingHeader } from "../features/bookings/BookingHeader.tsx";
 import { BookingSummary } from "../features/bookings/BookingSummary.tsx";
 import { CompleteSaleDialog } from "../features/bookings/CompleteSaleDialog.tsx";
@@ -34,6 +34,8 @@ type Dialog =
   | { kind: "pay"; target: PaymentTarget }
   | { kind: "possession" }
   | { kind: "complete" }
+  | { kind: "cancel" }
+  | { kind: "payRefund" }
   | null;
 
 export default function BookingDetailPage({ user }: Props) {
@@ -67,7 +69,6 @@ export default function BookingDetailPage({ user }: Props) {
   // across a closure boundary. useRef keeps only the first one; the rest are three closures a
   // render, which is not worth a lazy-init dance on a page that re-renders on typing.
   const panelRefresh = useRef<PanelRefreshSignal>(createPanelRefreshSignal());
-  const cancelDialog = useRef<CancellationDialogHandle>(null);
   const [activeTab, setActiveTab] = useState("summary");
   // Every tab opened so far. A panel is rendered from its first visit and then kept mounted, so a
   // half-typed commission or a loaded audit page survives a trip to another tab — and a tab's data
@@ -217,6 +218,7 @@ export default function BookingDetailPage({ user }: Props) {
   const runMainAction = (kind: MainActionKind) => {
     if (!booking) return;
     if (kind === "recordPayment") setDialog({ kind: "pay", target: { kind: "bookingAmount", limit: booking.bookingAmountRemaining } });
+    else if (kind === "payRefund") setDialog({ kind: "payRefund" });
     else setDialog({ kind: kind === "givePossession" ? "possession" : "complete" });
   };
 
@@ -260,7 +262,7 @@ export default function BookingDetailPage({ user }: Props) {
         stale={!bookingIsFresh}
         onBack={() => navigate("/confirmed-bookings")}
         onPrint={() => navigate(`/application-form?bookingId=${booking.id}`)}
-        onCancel={() => cancelDialog.current?.open()}
+        onCancel={() => setDialog({ kind: "cancel" })}
         onMain={runMainAction}
       />
 
@@ -297,17 +299,7 @@ export default function BookingDetailPage({ user }: Props) {
           leadLink={can(user?.role, "crm")}
           onSetTerms={() => setDialog({ kind: "terms" })}
           onEditTerms={() => setDialog({ kind: "terms" })}
-          settlement={
-            // Cancellation settlement lives on the Summary rather than above the tabs: it is a summary
-            // of what a cancelled booking owes, and the header badge already says it is cancelled.
-            <BookingCancellationPanel
-              bookingId={bookingId}
-              status={booking.status}
-              settlement={booking.cancellationSettlement}
-              financeAccounts={financeAccounts}
-              onChanged={load}
-            />
-          }
+          onProofChanged={() => load()}
         />
       </TabPanel>
 
@@ -372,15 +364,19 @@ export default function BookingDetailPage({ user }: Props) {
       )}
       {dialog?.kind === "possession" && <PossessionDialog booking={booking} onClose={closeDialog} onSaved={() => load()} />}
       {dialog?.kind === "complete" && <CompleteSaleDialog booking={booking} onClose={closeDialog} onSaved={() => load()} />}
-
-      <CancellationDialog
-        ref={cancelDialog}
-        bookingId={bookingId}
-        status={booking.status}
-        unitNumber={booking.unitNumber}
-        financeAccounts={financeAccounts}
-        onCancelled={load}
-      />
+      {dialog?.kind === "cancel" && (
+        <CancelBookingDialog booking={booking} financeAccounts={financeAccounts} accountsError={accountsError} onClose={closeDialog} onCancelled={() => load()} />
+      )}
+      {dialog?.kind === "payRefund" && booking.cancellationSettlement && (
+        <PayRefundDialog
+          booking={booking}
+          refundAmount={booking.cancellationSettlement.refundAmount}
+          financeAccounts={financeAccounts}
+          accountsError={accountsError}
+          onClose={closeDialog}
+          onPaid={() => load()}
+        />
+      )}
     </div>
   );
 }

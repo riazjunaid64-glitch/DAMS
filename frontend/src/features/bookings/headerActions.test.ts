@@ -49,6 +49,16 @@ describe("headerActions", () => {
     expect(settled.main?.disabled).toBe(false);
   });
 
+  it("cancelled: Pay refund only while a refund is still owed", () => {
+    const owed = headerActions({ ...base, status: "Cancelled", cancellationSettlement: { refundStatus: "Pending" } });
+    expect(owed).toEqual({ cancel: false, main: { kind: "payRefund", label: "Pay refund", disabled: false } });
+    expect(phoneActions(owed)).toEqual({ extras: ["print"], more: "printer" });
+    for (const refundStatus of ["Paid", "NotRequired"]) {
+      expect(headerActions({ ...base, status: "Cancelled", cancellationSettlement: { refundStatus } }).main).toBeNull();
+    }
+    expect(headerActions({ ...base, status: "Cancelled", cancellationSettlement: null }).main).toBeNull();
+  });
+
   it("sale completed and cancelled: Print only, as a printer icon on the phone", () => {
     for (const status of ["SaleCompleted", "Cancelled"]) {
       const actions = headerActions({ ...base, status });

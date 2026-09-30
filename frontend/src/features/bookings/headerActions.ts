@@ -1,7 +1,7 @@
 import type { BookingDetail } from "./detailTypes.ts";
 import { termsNotSet } from "./statusNames.ts";
 
-export type MainActionKind = "recordPayment" | "givePossession" | "completeSale";
+export type MainActionKind = "recordPayment" | "givePossession" | "completeSale" | "payRefund";
 
 export interface HeaderActions {
   /** Cancel booking: only while Awaiting booking amount or Payment plan, which is the server's rule. */
@@ -13,7 +13,7 @@ export interface HeaderActions {
 type ActionInput = Pick<
   BookingDetail,
   "status" | "bookingAmountRequired" | "bookingAmountRemaining" | "hasInstallmentSchedule" | "outstanding" | "installmentsPaid" | "installmentsTotal"
->;
+> & { cancellationSettlement?: { refundStatus: string } | null };
 
 /**
  * Which buttons the header shows for a booking. Print application form is on every status, so it
@@ -36,6 +36,10 @@ export function headerActions(booking: ActionInput): HeaderActions {
     // Completing can only fail while money or an installment is still open, so it is withheld then.
     const settled = booking.outstanding <= 0 && booking.installmentsPaid >= booking.installmentsTotal;
     return { cancel, main: { kind: "completeSale", label: "Complete sale", disabled: !settled } };
+  }
+  if (booking.status === "Cancelled") {
+    // Only while a refund is still owed: once it is paid, or none was due, there is nothing to do.
+    return { cancel, main: booking.cancellationSettlement?.refundStatus === "Pending" ? { kind: "payRefund", label: "Pay refund", disabled: false } : null };
   }
   return { cancel, main: null };
 }
