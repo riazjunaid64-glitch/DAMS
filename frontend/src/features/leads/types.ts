@@ -95,6 +95,17 @@ export interface LeadDetail extends Lead {
   convertedUnitNumber?: string | null;
   /** Who last marked the lead Lost or Dormant. */
   closedByName?: string | null;
+  /** The one existing customer this lead's phone or email belongs to. */
+  matchedCustomerId?: number | null;
+  matchedCustomerName?: string | null;
+  /** Set when more than one customer shares the phone; conversion has to choose. */
+  phoneMatches?: LeadCustomerMatch[];
+}
+
+export interface LeadCustomerMatch {
+  id: number;
+  fullName: string;
+  phone: string;
 }
 
 export interface LastCommunication {

@@ -7439,6 +7439,47 @@ public sealed class SqlServerProductionInvariantTests
         sheet.LiabilityGroups.SelectMany(g => g.Lines)
             .Where(l => l.Name == "Commission Payable").Sum(l => l.Amount);
 
+    [SqlServerFact]
+    public async Task CustomerNormalizedPhoneBackfill_StoresTheNationalNumber()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260928224109_AddUserTokenVersion");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES
+                    (N'Local', N'03001234567', 0, 0, '2020-01-01'),
+                    (N'Plus', N'+92 300 1234567', 0, 0, '2020-01-01'),
+                    (N'International', N'00923001234567', 0, 0, '2020-01-01'),
+                    (N'Country', N'923001234567', 0, 0, '2020-01-01'),
+                    (N'Dashed', N'0300-1234567', 0, 0, '2020-01-01'),
+                    (N'Blank', N'---', 0, 0, '2020-01-01');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.Customers.AsNoTracking()
+                .Select(c => new { c.FullName, c.NormalizedPhone })
+                .ToListAsync();
+
+            Assert.Equal("3001234567", rows.Single(r => r.FullName == "Local").NormalizedPhone);
+            Assert.Equal("3001234567", rows.Single(r => r.FullName == "Plus").NormalizedPhone);
+            Assert.Equal("3001234567", rows.Single(r => r.FullName == "International").NormalizedPhone);
+            Assert.Equal("3001234567", rows.Single(r => r.FullName == "Country").NormalizedPhone);
+            Assert.Equal("3001234567", rows.Single(r => r.FullName == "Dashed").NormalizedPhone);
+            Assert.Null(rows.Single(r => r.FullName == "Blank").NormalizedPhone);
+        }
+    }
+
     private static DbContextOptions<AppDbContext> Options(string connectionString,
         SaveChangesInterceptor? interceptor = null)
     {

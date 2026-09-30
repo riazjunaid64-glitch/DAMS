@@ -36,7 +36,6 @@ namespace DAMS.Application.Services
             {
                 FullName = dto.FullName.Trim(),
                 FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim(),
-                Phone = NormalizePhone(dto.Phone),
                 CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim(),
                 Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant(),
                 Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim(),
@@ -47,6 +46,7 @@ namespace DAMS.Application.Services
                 CreatedByUserId = createdByUserId,
                 CreatedAt = DateTime.UtcNow
             };
+            ApplyPhone(customer, dto.Phone);
 
             _context.Customers.Add(customer);
             await _context.SaveChangesAsync();
@@ -164,7 +164,7 @@ namespace DAMS.Application.Services
 
             if (dto.WasProvided(nameof(dto.FullName))) customer.FullName = dto.FullName.Trim();
             if (dto.WasProvided(nameof(dto.FatherName))) customer.FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim();
-            if (dto.WasProvided(nameof(dto.Phone))) customer.Phone = NormalizePhone(dto.Phone);
+            if (dto.WasProvided(nameof(dto.Phone))) ApplyPhone(customer, dto.Phone);
             if (dto.WasProvided(nameof(dto.CNIC))) customer.CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim();
             if (dto.WasProvided(nameof(dto.Email))) customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant();
             if (dto.WasProvided(nameof(dto.Address))) customer.Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim();
@@ -238,7 +238,7 @@ namespace DAMS.Application.Services
             string? occupation,
             string? whatsapp)
         {
-            var normalizedPhone = NormalizePhone(phone);
+            var nationalPhone = LeadContactNormalizer.NormalizePhoneOrNull(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
@@ -248,17 +248,31 @@ namespace DAMS.Application.Services
             if (normalizedCnic != null)
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.CNIC == normalizedCnic);
 
-            if (existing == null)
+            if (existing == null && nationalPhone != null)
             {
-                existing = await _context.Customers.FirstOrDefaultAsync(c => c.Phone == normalizedPhone);
+                // Match the national number, not the display phone. "03001234567", "+92 300 1234567",
+                // "923001234567" and "00923001234567" are one subscriber. More than one customer
+                // with that number is a choice, not a guess.
+                var phoneMatches = await _context.Customers
+                    .Where(c => c.NormalizedPhone == nationalPhone)
+                    .OrderBy(c => c.Id)
+                    .Take(2)
+                    .ToListAsync();
 
+                if (phoneMatches.Count > 1)
+                    throw new InvalidOperationException(
+                        "More than one customer has this phone, choose the customer.");
+
+                existing = phoneMatches.Count == 1 ? phoneMatches[0] : null;
                 if (existing != null)
-                    EnsureWeakMatchDoesNotConflict(existing, normalizedCnic, normalizedEmail);
+                    EnsureWeakMatchDoesNotConflict(existing, normalizedCnic, normalizedEmail, matchedByPhone: true);
             }
 
             if (existing == null && normalizedEmail != null)
             {
                 existing = await _context.Customers.FirstOrDefaultAsync(c => c.Email == normalizedEmail);
+                if (existing != null)
+                    EnsureWeakMatchDoesNotConflict(existing, normalizedCnic, normalizedEmail, matchedByPhone: false);
             }
 
             if (existing != null)
@@ -291,7 +305,6 @@ namespace DAMS.Application.Services
                 // its three trusted paths says so.
                 FullName = fullName.Trim(),
                 FatherName = string.IsNullOrWhiteSpace(fatherName) ? null : fatherName.Trim(),
-                Phone = normalizedPhone,
                 CNIC = normalizedCnic,
                 Email = normalizedEmail,
                 Address = string.IsNullOrWhiteSpace(address) ? null : address.Trim(),
@@ -305,6 +318,7 @@ namespace DAMS.Application.Services
                 CreatedByUserId = createdByUserId,
                 CreatedAt = DateTime.UtcNow
             };
+            ApplyPhone(customer, phone);
 
             _context.Customers.Add(customer);
             await _context.SaveChangesAsync();
@@ -344,15 +358,21 @@ namespace DAMS.Application.Services
         }
 
         private static void EnsureWeakMatchDoesNotConflict(
-            Customer existing, string? normalizedCnic, string? normalizedEmail)
+            Customer existing, string? normalizedCnic, string? normalizedEmail, bool matchedByPhone)
         {
             if (normalizedCnic != null &&
                 !string.IsNullOrWhiteSpace(existing.CNIC) &&
                 !string.Equals(existing.CNIC, normalizedCnic, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
-                    "These details match an existing customer by phone, but the CNIC is different. Choose the customer explicitly or create a separate record.");
+                throw new InvalidOperationException(matchedByPhone
+                    ? "These details match an existing customer by phone, but the CNIC is different. Choose the customer explicitly or create a separate record."
+                    : "This email belongs to another customer.");
             }
+
+            // An email match already proved the addresses are the same, so only a phone match
+            // can still be holding a different address.
+            if (!matchedByPhone)
+                return;
 
             if (normalizedEmail != null &&
                 !string.IsNullOrWhiteSpace(existing.Email) &&
@@ -363,8 +383,15 @@ namespace DAMS.Application.Services
             }
         }
 
-        // "0300-1234567", "0300 1234567" and "03001234567" must all match the same
-        // customer, so strip everything except digits (and a leading +).
+        // Display form kept on Customer.Phone. The match key is NormalizedPhone.
+        private static void ApplyPhone(Customer customer, string phone)
+        {
+            customer.Phone = NormalizePhone(phone);
+            customer.NormalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(phone);
+        }
+
+        // Display form stored on Phone. "0300-1234567" and "0300 1234567" become the same
+        // digits, and a leading + is kept. Matching uses NormalizedPhone, not this string.
         private static string NormalizePhone(string phone)
         {
             var trimmed = phone.Trim();

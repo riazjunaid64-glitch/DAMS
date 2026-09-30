@@ -85,6 +85,19 @@ export function floorLabel(floor: number): string {
   return `${floor}${suffix} floor`;
 }
 
+/**
+ * The customer a conversion should attach. One match is sent as-is. Several customers sharing the
+ * phone is a choice, and nothing is sent until one is chosen — the server will not guess.
+ */
+export function conversionCustomerId(
+  lead: { matchedCustomerId?: number | null; phoneMatches?: { id: number }[] | null },
+  chosenId: string,
+): number | null {
+  if ((lead.phoneMatches?.length ?? 0) > 1)
+    return chosenId === "" ? null : Number(chosenId);
+  return lead.matchedCustomerId ?? null;
+}
+
 /** Units that can still be booked, the lead's apartment type first: "Unit 504 — 2 Bed · 5th floor", by the project's floor name. */
 export function unitChoices(units: UnitLookup[], propertyType?: string | null) {
   const wanted = propertyType?.trim().toLowerCase();
