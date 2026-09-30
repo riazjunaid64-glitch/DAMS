@@ -2176,6 +2176,16 @@ h1, h2, h3, h4, h5, h6 {
   .no-print {
     display: none !important;
   }
+  /* The phone preview shrinks the paper; the printed page is always full size. */
+  .paper-fit-box {
+    height: auto !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+  .paper-fit {
+    transform: none !important;
+    width: auto !important;
+  }
   /* margin:0 removes the browser's auto date/title/URL header & footer.
      Each receipt supplies its own inner padding for print margins. */
   @page {

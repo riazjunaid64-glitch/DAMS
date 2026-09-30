@@ -1,6 +1,7 @@
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
 import { floorName } from "../lib/floors.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
+import { modeOfPayment } from "../features/printing/paper.ts";
 import { ReceiptBrandHeader } from "./BrandLogos.tsx";
 
 export interface PaymentReceiptData {
@@ -17,7 +18,8 @@ export interface PaymentReceiptData {
   projectName: string;
   unitType: string;
   unitNumber: string;
-  block?: string | null;
+  tower?: string | null;
+  isCorner?: boolean;
   floorNumber: number;
   floorName?: string | null;
   unitSize: number;
@@ -39,18 +41,6 @@ function formatDate(iso: string) {
   const day = String(d.getDate()).padStart(2, "0");
   const month = d.toLocaleString("en-US", { month: "short" });
   return `${day}-${month}-${d.getFullYear()}`;
-}
-
-/** Which of the three printed modes (Cash / Pay Order / Online Transfer) is ticked. */
-function modeOfPayment(method: string): "Cash" | "Pay Order" | "Online Transfer" {
-  switch (method) {
-    case "Cash":
-      return "Cash";
-    case "Cheque":
-      return "Pay Order";
-    default:
-      return "Online Transfer"; // BankTransfer | Online
-  }
 }
 
 function paymentTowards(r: PaymentReceiptData): string {
@@ -108,7 +98,8 @@ function FillField({ label, value, flex }: { label: string; value?: string | num
   );
 }
 
-export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
+/** `preparedByName` is whoever prints it; "Received by" is whoever recorded the payment. */
+export default function PaymentReceipt({ data, preparedByName }: { data: PaymentReceiptData; preparedByName?: string | null }) {
   const mode = modeOfPayment(data.paymentMethod);
 
   return (
@@ -152,9 +143,10 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
         </div>
 
         <div style={{ display: "flex", gap: "30px" }}>
-          <FillField label="Apartment Type:" value={data.unitType} flex={2} />
+          <FillField label="Booking No." value={data.bookingReference} />
+          <FillField label="Apartment Type:" value={data.unitType} />
           <div style={{ display: "flex", alignItems: "center", border: "1px solid #9ca3af", padding: "3px 10px", fontSize: "12.5px", fontWeight: 600 }}>
-            <Check on={false} /> Corner
+            <Check on={data.isCorner ?? false} /> Corner
           </div>
         </div>
 
@@ -162,7 +154,7 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
           <FillField label="Apartment Number:" value={data.unitNumber} />
           <FillField label="Floor:" value={floorName(data.floorName, data.floorNumber)} />
           <FillField label="Size:" value={data.unitSize ? formatMoney(data.unitSize) : ""} />
-          <FillField label="Block:" value={data.block} />
+          <FillField label="Tower:" value={data.tower} />
         </div>
 
         <FillField label="Received From Mr/Ms/Mrs:" value={data.customerName} />
@@ -186,10 +178,10 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
             <Check on={mode === "Cash"} /> Cash
           </div>
           <div style={{ display: "flex", alignItems: "center", fontSize: "12.5px", fontWeight: 600 }}>
-            <Check on={mode === "Pay Order"} /> Pay Order
+            <Check on={mode === "Cheque"} /> Cheque / Pay Order
           </div>
           <div style={{ display: "flex", alignItems: "center", fontSize: "12.5px", fontWeight: 600 }}>
-            <Check on={mode === "Online Transfer"} /> Online Transfer
+            <Check on={mode === "Transfer"} /> Bank / Online Transfer
           </div>
         </div>
 
@@ -228,7 +220,7 @@ export default function PaymentReceipt({ data }: { data: PaymentReceiptData }) {
         </div>
         <div style={{ textAlign: "center", minWidth: "200px" }}>
           <div style={{ borderTop: "1px solid #9ca3af", paddingTop: "4px", fontSize: "12px", fontWeight: 600 }}>
-            {data.receivedByName || "\u00A0"}
+            {preparedByName || "\u00A0"}
           </div>
           <div style={{ fontSize: "11px", color: "#6b7280" }}>Prepared By</div>
         </div>

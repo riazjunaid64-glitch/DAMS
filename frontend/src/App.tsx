@@ -50,6 +50,8 @@ export interface User {
   userId: string;
   email: string;
   role: string;
+  /** The signed-in person's full name (the server sends it under this key). */
+  firstName?: string;
 }
 
 const AUTH_SESSION_EVENT = "dams-auth-session";

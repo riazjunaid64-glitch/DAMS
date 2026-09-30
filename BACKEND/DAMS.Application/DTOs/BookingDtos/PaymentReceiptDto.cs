@@ -40,8 +40,10 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public string UnitNumber { get; set; } = string.Empty;
 
-        // Derived from the unit number prefix (e.g. "A-606a" -> "A") when present.
-        public string? Block { get; set; }
+        // Taken from the booking, never guessed from the unit number.
+        public string? Tower { get; set; }
+
+        public bool IsCorner { get; set; }
 
         public int FloorNumber { get; set; }
 
