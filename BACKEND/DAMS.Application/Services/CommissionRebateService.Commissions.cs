@@ -119,14 +119,17 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(c => c.Id == commissionId && c.BookingId == bookingId, cancellationToken)
                 ?? throw new KeyNotFoundException("Commission not found for this booking.");
             ApplyToken(commission, dto.ConcurrencyToken, "commission");
-            // A pending commission is still just an agreement, so it can be corrected in place. Once
-            // any money has moved the figures are history: reverse the payout to unwind it instead.
-            if (commission.Status != BookingCommissionStatus.Pending)
-                throw new InvalidOperationException("Only a pending commission can be edited.");
-            if (commission.Payouts.Count != 0)
-                throw new InvalidOperationException("A commission with payout history cannot be edited.");
+            // A commission can be corrected while it is live, paid or not: what has already gone out stays
+            // as it is, and the new total only has to cover it. Once it is cancelled or being unwound
+            // (reversal required, reversed) the figures are history.
+            if (commission.Status is not (BookingCommissionStatus.Pending or BookingCommissionStatus.Paid))
+                throw new InvalidOperationException("Only a pending or fully paid commission can be edited.");
+            if (commission.Payouts.Count != 0 && dto.PartnerId != commission.PartnerId)
+                throw new InvalidOperationException("The partner cannot be changed once a payment has been made.");
 
-            var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
+            // Optional: the popup has no such field, so the notes stand in for it.
+            var changeReason = Limited(dto.ChangeReason, "Change reason", 2000)
+                ?? Limited(dto.ManualReason, "Notes", 2000) ?? "Commission corrected.";
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
             if (await _context.BookingCommissions.AnyAsync(c => c.Id != commissionId && c.BookingId == bookingId
@@ -162,9 +165,14 @@ namespace DAMS.Application.Services
                 dto.IsManual ? dto.ManualReason : null, booking);
             if (commission.FinalAmount <= 0m)
                 throw new InvalidOperationException("Final commission must be greater than zero.");
+            var alreadyPaid = NetPaid(commission);
+            if (commission.FinalAmount < alreadyPaid)
+                throw new InvalidOperationException($"The commission cannot be less than the {alreadyPaid:0.00} already paid.");
 
-            // A correction leaves the commission where it was — pending, for the corrected amount —
-            // so only the figures and the audit trail change.
+            // Fully paid stays Paid only while the new total is still exactly what was paid; any more and
+            // something remains to pay, so it is Pending again.
+            if (alreadyPaid > 0m)
+                commission.Status = commission.FinalAmount == alreadyPaid ? BookingCommissionStatus.Paid : BookingCommissionStatus.Pending;
             commission.UpdatedAt = DateTime.UtcNow;
 
             // The obligation moves by the DIFFERENCE, dated today. Restating the original accrual

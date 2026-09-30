@@ -37,7 +37,7 @@ export interface CommissionRule {
 export interface MoneyMovement {
   id:number; financeAccountId:number|null; financeAccountName:string|null; installmentId:number|null;
   rebateMethod:RebateMethod|null; amount:number; reversedAmount:number; date:string; paymentMethod:string|null;
-  reference:string|null; notes:string|null; concurrencyToken:string;
+  reference:string|null; notes:string|null; recordedByName:string|null; concurrencyToken:string;
   evidence:Evidence[];
 }
 
@@ -49,7 +49,7 @@ export interface AuditEntry {
 }
 
 export interface Commission {
-  id:number; bookingId:number; bookingReference:string; partnerId:number; partnerName:string; attributionId:number|null;
+  id:number; bookingId:number; bookingReference:string; partnerId:number; partnerName:string; partnerType:string; attributionId:number|null;
   ruleId:number|null; ruleRevisionId:number|null; ruleRevisionNumber:number|null; ruleNameSnapshot:string|null; rulePriority:number|null; isManual:boolean; manualReason:string|null;
   allocationPercent:number;
   calculationType:CalculationType; percentageRate:number|null; fixedAmount:number|null; calculationBasis:CalculationBasis;

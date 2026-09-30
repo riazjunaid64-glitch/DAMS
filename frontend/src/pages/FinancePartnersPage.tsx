@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { pageAccess } from "../features/access/permissions.ts";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
@@ -24,6 +25,7 @@ const money = (value:number) => `Rs ${value.toLocaleString("en-PK", { maximumFra
 const today = pakistanToday;
 
 export default function FinancePartnersPage({user}:{user:User|null}) {
+  const access=pageAccess(user?.role,"finance");
   const navigate=useNavigate();
   const [partners,setPartners]=useState<Partner[]>([]), [accounts,setAccounts]=useState<CashAccount[]>([]);
   const [capitalAccounts,setCapitalAccounts]=useState<CapitalAccount[]>([]), [activeStates,setActiveStates]=useState<Record<number,boolean>>({});
@@ -54,7 +56,7 @@ export default function FinancePartnersPage({user}:{user:User|null}) {
   };
 
   const load=useCallback(async()=>{setLoading(true);setError(null);try{const [partnerResponse,accountResponse,allAccountResponse]=await Promise.all([api("/api/finance/partners?includeInactive=true"),api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=true"),api("/api/finance/accounts/options?includeInactive=true&cashLikeOnly=false")]);if(!partnerResponse.ok)throw new Error((await partnerResponse.json().catch(()=>null))?.message??"Partners could not be loaded.");const rows=await partnerResponse.json() as Partner[];setPartners(rows);setShares(Object.fromEntries(rows.map(row=>[row.id,String(row.profitSharePercent)])));setActiveStates(Object.fromEntries(rows.map(row=>[row.id,row.isActive])));if(accountResponse.ok)setAccounts(await accountResponse.json());if(allAccountResponse.ok){const all=await allAccountResponse.json() as CapitalAccount[];setCapitalAccounts(all.filter(account=>account.type==="Capital"||Number(account.type)===6));}}catch(caught){setError(caught instanceof Error?caught.message:"Partners could not be loaded.");}finally{setLoading(false);}},[]);
-  useEffect(()=>{if(user?.role!=="Admin"){navigate("/");return;}void load();},[user,navigate,load]);
+  useEffect(()=>{if(access==="wait")return;if(access==="deny"){navigate("/");return;}void load();},[access,navigate,load]);
 
   const total=partners.filter(partner=>activeStates[partner.id]).reduce((sum,partner)=>sum+(Number(shares[partner.id])||0),0);
   // Contributions and withdrawals name the bank account the money moved through; the statement
@@ -87,7 +89,7 @@ export default function FinancePartnersPage({user}:{user:User|null}) {
   const closeStatement=()=>{statementRequest.current++;setStatementPartner(null);setStatement(null);setStatementError(null);setStatementLoading(false);};
   const saveTransaction=async()=>{if(!transactionPartner||recordingTransaction)return;const amount=Number(form.amount);if(!Number.isFinite(amount)||amount<=0){setError("Enter an amount greater than zero.");return;}const movesCash=form.type==="Contribution"||form.type==="Withdrawal";if(movesCash&&!form.financeAccountId){setError("Choose the cash or bank account used.");return;}setRecordingTransaction(true);setError(null);try{const signature=`capital:${transactionPartner.id}:${form.type}:${amount}:${form.date}`;const body=new FormData();body.append("type",form.type);body.append("amount",String(amount));body.append("date",form.date);if(movesCash&&form.financeAccountId)body.append("financeAccountId",form.financeAccountId);if(form.reference)body.append("reference",form.reference);if(form.note)body.append("note",form.note);if(selectedAttachment)body.append("attachment",selectedAttachment);const response=await api(`/api/finance/partners/${transactionPartner.id}/transactions/form`,moneyRequest(idempotency.key(signature,"capital-movement"),{method:"POST",body}));if(!response.ok)throw new Error(await financeApiError(response,"Transaction could not be saved."));idempotency.release(signature);setTransactionPartner(null);setSelectedAttachment(null);setForm({type:"Contribution",amount:"",date:today(),financeAccountId:"",reference:"",note:""});await load();}catch(caught){setError(caught instanceof Error?caught.message:"Transaction could not be saved.");}finally{setRecordingTransaction(false);}};
 
-  if(user?.role!=="Admin")return null;
+  if(access!=="allow")return null;
   return <Container className="py-8"><div className="mb-6 flex flex-wrap items-end justify-between gap-3"><div><Link to="/finance/reports" className="text-sm text-[var(--accent)]">← Financial reports</Link><h1 className="mt-1 text-3xl font-bold text-[var(--text-heading)]">Capital Partners</h1><p className="text-sm text-[var(--text-muted)]">Partner capital, frozen distribution shares, and double-sided bank movements.</p></div><div className="flex gap-2"><Link to="/finance/accounts"><Button variant="outline">Capital Accounts</Button></Link><Button onClick={()=>setPartnerForm({id:null,name:"",cnic:"",ntn:"",profitSharePercent:"0",financeAccountId:"",joinedDate:"",exitedDate:"",concurrencyToken:""})}>Add partner</Button></div></div>
   {error&&<p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{error}</p>}
   <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 ${Math.abs(total-100)<=.01?"border-emerald-500/30 bg-emerald-500/5":"border-rose-500/40 bg-rose-500/10"}`}><div><p className="font-semibold">Active profit shares: {total.toFixed(4)}%</p><p className="text-xs text-[var(--text-muted)]">All active partners must total 100%. Historical ProfitShare transactions keep their original percentage snapshot.</p></div><Button disabled={savingShares||Math.abs(total-100)>.01} onClick={()=>void saveShares()}>{savingShares?"Saving…":"Save shares"}</Button></div>
