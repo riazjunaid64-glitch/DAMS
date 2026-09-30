@@ -21,7 +21,7 @@ export const SOURCES = [
 export const PAYMENT_FOR = [
   { value: "Booking", label: "Booking" },
   { value: "Confirmation", label: "Confirmation" },
-  { value: "Lump sum", label: "Lump sum" },
+  { value: "LumSum", label: "Lump sum" },
 ];
 
 export const KIN_RELATIONS = ["Wife", "Husband", "Father", "Mother", "Son", "Daughter", "Brother", "Sister", "Other"]

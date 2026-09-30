@@ -143,6 +143,7 @@ namespace DAMS.Application.Services
             var attribution = await ResolveAttributionAsync(bookingId, dto.PartnerId, dto.AttributionId, cancellationToken);
 
             var previousAmount = commission.FinalAmount;
+            var previousStatus = commission.Status;
             // Captured before the reset below zeroes BasisAmount. Only meaningful when the commission
             // was ALREADY manual: a rule-driven record's basis belongs to the rule, not to an
             // operator's choice, so switching TO manual has nothing of this shape to freeze against.
@@ -182,7 +183,7 @@ namespace DAMS.Application.Services
                 CommissionAccrualKind.Adjustment, actor, changeReason);
 
             Audit(FinancialWorkflowAction.CommissionAdjusted, actor, partner.Id, booking.CustomerId, bookingId,
-                commission.Id, oldCommission: commission.Status, newCommission: commission.Status,
+                commission.Id, oldCommission: previousStatus, newCommission: commission.Status,
                 previousAmount: previousAmount, newAmount: commission.FinalAmount, reason: changeReason,
                 commissionRuleId: commission.RuleId, commissionRuleRevisionId: commission.RuleRevisionId);
             await _context.SaveChangesAsync(cancellationToken);

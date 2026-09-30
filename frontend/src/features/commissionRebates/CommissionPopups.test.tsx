@@ -33,8 +33,9 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("Pay commission", () => {
   const show = (run = vi.fn(async (operation: () => Promise<BookingWorkspace>) => operation())) => {
     const onClose = vi.fn();
-    wrap(<PayCommissionDialog bookingId={13} commission={commission} financeAccounts={accounts} accountsError={null} run={run} onClose={onClose} />);
-    return { run, onClose };
+    const onProofUploaded = vi.fn(async () => undefined);
+    wrap(<PayCommissionDialog bookingId={13} commission={commission} financeAccounts={accounts} accountsError={null} run={run} onProofUploaded={onProofUploaded} onClose={onClose} />);
+    return { run, onClose, onProofUploaded };
   };
 
   it("starts on what remains and pays that with today's date", async () => {
@@ -53,13 +54,24 @@ describe("Pay commission", () => {
 
   it("attaches the optional proof to the payment that was just made", async () => {
     vi.mocked(commissionRebateApi.payout).mockResolvedValue(workspaceOf({ commissions: [{ ...commission, payouts: [{ id: 61 }] } as never] }));
-    const { onClose } = show();
+    const { onClose, onProofUploaded } = show();
     fireEvent.change(screen.getByLabelText(/Reference/), { target: { value: "TRX-1" } });
     const slip = new File(["x"], "slip.pdf", { type: "application/pdf" });
     fireEvent.change(document.querySelector("input[type=file]") as HTMLInputElement, { target: { files: [slip] } });
     fireEvent.click(primary("Pay commission"));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(uploadProof).toHaveBeenCalledWith("CommissionPayout", 61, slip, expect.any(Function), expect.any(AbortSignal));
+    // The row was built from the answer to the save, which was before the file went up: read it again.
+    expect(onProofUploaded).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-read the workspace when there is no proof", async () => {
+    vi.mocked(commissionRebateApi.payout).mockResolvedValue(workspaceOf({ commissions: [{ ...commission, payouts: [{ id: 61 }] } as never] }));
+    const { onClose, onProofUploaded } = show();
+    fireEvent.change(screen.getByLabelText(/Reference/), { target: { value: "TRX-1" } });
+    fireEvent.click(primary("Pay commission"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onProofUploaded).not.toHaveBeenCalled();
   });
 
   it("shows the server's bank-details message with a link to the partner page, and stays open", async () => {
@@ -120,12 +132,41 @@ describe("Add commission with a new partner", () => {
   });
 });
 
+describe("Edit commission", () => {
+  const editing = (over: Record<string, unknown>) => ({
+    id: 1, partnerId: 7, partnerName: "Ali Estate Agency", status: "Pending", isManual: true, calculationType: "Percentage",
+    calculationBasis: "NetSalePriceAfterDiscount", percentageRate: 2, fixedAmount: null, manualReason: "Agreed on the phone",
+    finalAmount: 256_000, paidAmount: 0, outstandingAmount: 256_000, basisAmount: 12_800_000, concurrencyToken: "c1", payouts: [], ...over,
+  }) as unknown as Commission;
+  const open = (existing: Commission) => wrap(
+    <CommissionDialog bookingId={13} workspace={figures} existing={existing} partners={[{ id: 7, name: "Ali Estate Agency" } as Partner]}
+      takenPartnerIds={new Set([7])} run={vi.fn()} onPartnerCreated={vi.fn()} onClose={vi.fn()} />,
+  );
+
+  it("lets the partner change until the first payout, then locks it", () => {
+    open(editing({}));
+    expect((screen.getByRole("combobox", { name: /Partner/ }) as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+    open(editing({ paidAmount: 100_000, payouts: [{ id: 61 }] }));
+    expect((screen.getByRole("combobox", { name: /Partner/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers Notes on a manual commission but not on a rule-driven one, which would discard them", () => {
+    open(editing({}));
+    expect(screen.getByLabelText("Notes")).toBeTruthy();
+    cleanup();
+    open(editing({ isManual: false, ruleNameSnapshot: "Standard agency rate" }));
+    expect(screen.queryByLabelText("Notes")).toBeNull();
+  });
+});
+
 describe("Apply rebate", () => {
   const show = (r: Rebate, installments = [{ id: 15, sequenceNumber: 5, type: "Regular", remainingBalance: 918_000, status: "Pending" }]) => {
     const run = vi.fn(async (operation: () => Promise<BookingWorkspace>) => operation());
     const onClose = vi.fn();
-    wrap(<ApplyRebateDialog bookingId={13} rebate={r} workspace={figures} installments={installments} financeAccounts={accounts} accountsError={null} run={run} onClose={onClose} />);
-    return { onClose };
+    const onProofUploaded = vi.fn(async () => undefined);
+    wrap(<ApplyRebateDialog bookingId={13} rebate={r} workspace={figures} installments={installments} financeAccounts={accounts} accountsError={null} run={run} onProofUploaded={onProofUploaded} onClose={onClose} />);
+    return { onClose, onProofUploaded };
   };
 
   it("pays by cash or bank with an account, a reference and optional proof", async () => {
@@ -139,6 +180,18 @@ describe("Apply rebate", () => {
       method: "CashOrBankPayment", amount: 150_000, appliedAt: pakistanToday(), financeAccountId: 1, installmentId: null, paymentMethod: "BankTransfer", reference: "TRX-91540",
       rebateConcurrencyToken: "r1",
     }));
+  });
+
+  it("re-reads the workspace once the proof of a cash payment has uploaded", async () => {
+    vi.mocked(commissionRebateApi.disburseRebate).mockResolvedValue(workspaceOf({ rebates: [rebate("CashOrBankPayment", { disbursements: [{ id: 81 }] })] }));
+    const { onClose, onProofUploaded } = show(rebate("CashOrBankPayment"));
+    fireEvent.change(screen.getByLabelText(/Reference/), { target: { value: "TRX-91540" } });
+    const slip = new File(["x"], "slip.pdf", { type: "application/pdf" });
+    fireEvent.change(document.querySelector("input[type=file]") as HTMLInputElement, { target: { files: [slip] } });
+    fireEvent.click(primary("Apply rebate"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(uploadProof).toHaveBeenCalledWith("RebateDisbursement", 81, slip, expect.any(Function), expect.any(AbortSignal));
+    expect(onProofUploaded).toHaveBeenCalledTimes(1);
   });
 
   it("taking it off installments asks for the installment, and no account", () => {

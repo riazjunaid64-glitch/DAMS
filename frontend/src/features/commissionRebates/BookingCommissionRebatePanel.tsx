@@ -279,7 +279,7 @@ export default function BookingCommissionRebatePanel({ bookingId, onChanged, ref
         />
       )}
       {dialog?.kind === "pay" && (
-        <PayCommissionDialog bookingId={bookingId} commission={dialog.commission} financeAccounts={accounts} accountsError={accountsError} run={run} onClose={closeDialog} />
+        <PayCommissionDialog bookingId={bookingId} commission={dialog.commission} financeAccounts={accounts} accountsError={accountsError} run={run} onProofUploaded={refreshWorkspace} onClose={closeDialog} />
       )}
       {dialog?.kind === "reverseCommission" && (
         <ReasonDialog
@@ -304,6 +304,7 @@ export default function BookingCommissionRebatePanel({ bookingId, onChanged, ref
           financeAccounts={accounts}
           accountsError={accountsError}
           run={run}
+          onProofUploaded={refreshWorkspace}
           onClose={closeDialog}
         />
       )}

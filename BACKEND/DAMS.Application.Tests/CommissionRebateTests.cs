@@ -794,6 +794,45 @@ public sealed class CommissionRebateTests
         commission = Assert.Single(workspace.Commissions);
         Assert.Equal(BookingCommissionStatus.Pending, commission.Status);
         Assert.Equal(1_000m, commission.OutstandingAmount);
+        var audit = Assert.Single(harness.Context.FinancialWorkflowAuditEntries,
+            e => e.Action == FinancialWorkflowAction.CommissionAdjusted);
+        Assert.Equal(BookingCommissionStatus.Paid, audit.PreviousCommissionStatus);
+        Assert.Equal(BookingCommissionStatus.Pending, audit.NewCommissionStatus);
+    }
+
+    [Fact]
+    public async Task AppliedRebate_EditedUpward_IsAuditedAsAppliedToPending()
+    {
+        await using var harness = await Harness.Create();
+        var workspace = await harness.Service.CreateRebateAsync(harness.BookingId, new CreateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 500m, Reason = "Loyalty", Method = CustomerRebateMethod.OutstandingBalanceReduction
+        }, Actor);
+        var rebate = Assert.Single(workspace.Rebates);
+        workspace = await harness.Service.RecordRebateDisbursementAsync(harness.BookingId, rebate.Id,
+            new RecordRebateDisbursementDto
+            {
+                Method = CustomerRebateMethod.OutstandingBalanceReduction, Amount = 500m, AppliedAt = DateTime.UtcNow,
+                IdempotencyKey = "full-apply", RebateConcurrencyToken = rebate.ConcurrencyToken
+            }, Actor);
+        rebate = Assert.Single(workspace.Rebates);
+        Assert.Equal(CustomerRebateStatus.Applied, rebate.Status);
+
+        workspace = await harness.Service.UpdateRebateAsync(harness.BookingId, rebate.Id, new UpdateCustomerRebateDto
+        {
+            CalculationType = FinancialCalculationType.FixedAmount,
+            CalculationBasis = FinancialCalculationBasis.NetSalePriceAfterDiscount,
+            FixedAmount = 800m, Reason = "Loyalty", Method = CustomerRebateMethod.OutstandingBalanceReduction,
+            ConcurrencyToken = rebate.ConcurrencyToken
+        }, Actor);
+
+        Assert.Equal(CustomerRebateStatus.Pending, Assert.Single(workspace.Rebates).Status);
+        var audit = Assert.Single(harness.Context.FinancialWorkflowAuditEntries,
+            e => e.Action == FinancialWorkflowAction.RebateAdjusted);
+        Assert.Equal(CustomerRebateStatus.Applied, audit.PreviousRebateStatus);
+        Assert.Equal(CustomerRebateStatus.Pending, audit.NewRebateStatus);
     }
 
     [Fact]

@@ -20,11 +20,13 @@ type Props = {
   /** Set when the account list could not be loaded, so the account field can say why it is empty. */
   accountsError: string | null;
   run: RunMutation;
+  /** Re-reads the workspace, so a proof uploaded after the save shows on its row. */
+  onProofUploaded: () => Promise<void>;
   onClose: () => void;
 };
 
 /** Pay commission: a payment to the partner, with optional proof. Bank transfer needs the partner's bank details. */
-export function PayCommissionDialog({ bookingId, commission, financeAccounts, accountsError, run, onClose }: Props) {
+export function PayCommissionDialog({ bookingId, commission, financeAccounts, accountsError, run, onProofUploaded, onClose }: Props) {
   const toast = useToast();
   const keys = useIdempotencyKeys();
   const proof = useProofUpload();
@@ -79,8 +81,9 @@ export function PayCommissionDialog({ bookingId, commission, financeAccounts, ac
       // A failed proof never undoes the payment: the popup closes with a warning and the file is
       // attached later from the payment row.
       const payoutId = newMovementId(commission.payouts, saved.commissions.find((c) => c.id === commission.id)?.payouts ?? []);
-      if (proof.hasFile && !(payoutId !== null && await proof.upload("CommissionPayout", payoutId))) {
-        toast.error("The payment was saved, but its proof did not upload. Attach it from the payment.");
+      if (proof.hasFile) {
+        if (payoutId !== null && await proof.upload("CommissionPayout", payoutId)) await onProofUploaded().catch(() => undefined);
+        else toast.error("The payment was saved, but its proof did not upload. Attach it from the payment.");
       }
       onClose();
     } catch (failure) {

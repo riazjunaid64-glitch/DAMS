@@ -143,3 +143,13 @@ describe("leaving and the summary", () => {
     expect(emptyDraft().paidOn).toBe(pakistanToday());
   });
 });
+
+describe("Payment for", () => {
+  it("keeps the canonical value the printed form ticks, and only shows a friendlier label", async () => {
+    const { PAYMENT_FOR } = await import("./draft.ts");
+    const { bookingToApplicationForm } = await import("../../utils/bookingToApplicationForm.ts");
+    const lump = PAYMENT_FOR.find((option) => option.label === "Lump sum")!;
+    expect(lump.value).toBe("LumSum");
+    expect(bookingToApplicationForm({ applicationPaymentType: lump.value }).paymentType).toBe("LumSum");
+  });
+});

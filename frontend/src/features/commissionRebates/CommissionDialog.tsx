@@ -133,7 +133,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
               required
               searchable
               placeholder="Select partner"
-              disabled={saving || !!existing}
+              disabled={saving || (existing?.payouts.length ?? 0) > 0}
               error={shown.partnerId}
               options={partnerChoices}
               value={form.partnerId}
@@ -143,7 +143,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
           </div>
 
           {ruleDriven ? (
-            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set on the Finance page"}”.`} message="Its amount is worked out by the rule; only the partner's notes can change here." />
+            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set on the Finance page"}”.`} message="Its amount is worked out by the rule; only the partner can change here." />
           ) : (
             <>
               <ChoiceChips variant="segmented" label="Type" required options={TYPES} value={form.calculationType} onChange={(calculationType) => set({ calculationType: calculationType as CommissionFormState["calculationType"] })} />
@@ -171,7 +171,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
             note={ruleDriven ? adjustmentNote : [commissionAllocationPercent(form, existing) !== 100 && `${commissionAllocationPercent(form, existing)}% allocation applied.`, adjustmentNote].filter(Boolean).join(" ") || undefined}
           />
 
-          <TextArea label="Notes" rows={3} maxLength={2000} disabled={saving} value={form.notes} onChange={(event) => set({ notes: event.target.value })} />
+          {!ruleDriven && <TextArea label="Notes" rows={3} maxLength={2000} disabled={saving} value={form.notes} onChange={(event) => set({ notes: event.target.value })} />}
 
           {canCancel && (
             <Button variant="link" disabled={saving} onClick={() => setCancelling(true)} className="self-start font-extrabold text-danger">Cancel this commission</Button>

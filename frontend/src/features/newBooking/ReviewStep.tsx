@@ -6,7 +6,7 @@ import { formatPkr } from "../../utils/currency.ts";
 import type { FinanceAccountOption } from "../bookings/detailTypes.ts";
 import { formatPhone } from "../bookings/format.ts";
 import { PAYMENT_METHODS } from "../bookings/paymentForm.ts";
-import { SOURCES, draftFigures, receivedAmount, type BookingDraft, type StepIndex } from "./draft.ts";
+import { PAYMENT_FOR, SOURCES, draftFigures, receivedAmount, type BookingDraft, type StepIndex } from "./draft.ts";
 import { formatSqFt } from "../../components/project/unitList.ts";
 
 type Props = {
@@ -78,7 +78,7 @@ export function ReviewStep({ draft, financeAccounts, onEdit }: Props) {
     ...(received > 0 ? ([
       ["Account", account ? `${account.name} — ${account.accountHolderName}` : "—"],
       ["Method", PAYMENT_METHODS.find((m) => m.value === draft.method)?.label ?? draft.method],
-      ["Payment for", draft.paymentFor],
+      ["Payment for", PAYMENT_FOR.find((o) => o.value === draft.paymentFor)?.label ?? draft.paymentFor],
       ["Reference no.", dash(draft.reference)],
       ["Date", formatDay(`${draft.paidOn}T12:00:00`)],
     ] as Row[]) : []),

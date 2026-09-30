@@ -165,6 +165,7 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException($"The rebate cannot be less than the {alreadyGiven:0.00} already given.");
 
             var previousAmount = rebate.FinalAmount;
+            var previousStatus = rebate.Status;
             rebate.CalculationType = dto.CalculationType;
             rebate.PercentageRate = dto.PercentageRate.HasValue ? Rate(dto.PercentageRate.Value) : null;
             rebate.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
@@ -185,7 +186,7 @@ namespace DAMS.Application.Services
                     : CustomerRebateStatus.Pending;
             rebate.UpdatedAt = DateTime.UtcNow;
             Audit(FinancialWorkflowAction.RebateAdjusted, actor, customerId: booking.CustomerId, bookingId: bookingId,
-                rebateId: rebate.Id, oldRebate: rebate.Status, newRebate: rebate.Status,
+                rebateId: rebate.Id, oldRebate: previousStatus, newRebate: rebate.Status,
                 previousAmount: previousAmount, newAmount: rebate.FinalAmount, reason: changeReason);
             await _context.SaveChangesAsync(cancellationToken);
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);

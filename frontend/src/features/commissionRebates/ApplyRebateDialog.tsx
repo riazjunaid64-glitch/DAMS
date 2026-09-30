@@ -21,6 +21,8 @@ type Props = {
   /** Set when the account list could not be loaded, so the account field can say why it is empty. */
   accountsError: string | null;
   run: RunMutation;
+  /** Re-reads the workspace, so a proof uploaded after the save shows on its row. */
+  onProofUploaded: () => Promise<void>;
   onClose: () => void;
 };
 
@@ -32,7 +34,7 @@ const installmentLabel = (item: InstallmentOption) =>
  * cash or bank (an account, a reference, optional proof), taken off one installment, or taken off the
  * outstanding balance.
  */
-export function ApplyRebateDialog({ bookingId, rebate, workspace, installments, financeAccounts, accountsError, run, onClose }: Props) {
+export function ApplyRebateDialog({ bookingId, rebate, workspace, installments, financeAccounts, accountsError, run, onProofUploaded, onClose }: Props) {
   const toast = useToast();
   const keys = useIdempotencyKeys();
   const proof = useProofUpload();
@@ -103,8 +105,9 @@ export function ApplyRebateDialog({ bookingId, rebate, workspace, installments, 
       // A failed proof never undoes the payment: the popup closes with a warning and the file is
       // attached later from the row.
       const rowId = newMovementId(rebate.disbursements, saved.rebates.find((r) => r.id === rebate.id)?.disbursements ?? []);
-      if (cash && proof.hasFile && !(rowId !== null && await proof.upload("RebateDisbursement", rowId))) {
-        toast.error("The payment was saved, but its proof did not upload. Attach it from the payment.");
+      if (cash && proof.hasFile) {
+        if (rowId !== null && await proof.upload("RebateDisbursement", rowId)) await onProofUploaded().catch(() => undefined);
+        else toast.error("The payment was saved, but its proof did not upload. Attach it from the payment.");
       }
       onClose();
     } catch (failure) {
