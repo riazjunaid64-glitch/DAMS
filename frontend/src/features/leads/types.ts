@@ -100,6 +100,11 @@ export interface LeadDetail extends Lead {
   matchedCustomerName?: string | null;
   /** Set when more than one customer shares the phone; conversion has to choose. */
   phoneMatches?: LeadCustomerMatch[];
+  /**
+   * True when more than one customer shares the phone. Sales get this without phoneMatches
+   * (customer PII); admin/manager also get the list to choose from.
+   */
+  hasAmbiguousCustomerMatch?: boolean;
 }
 
 export interface LeadCustomerMatch {

@@ -249,7 +249,7 @@ export function ConvertLeadDialog({
   const [unitId, setUnitId] = useState("");
   const [notes, setNotes] = useState("");
   const [chosenCustomerId, setChosenCustomerId] = useState("");
-  const ambiguous = (lead.phoneMatches?.length ?? 0) > 1;
+  const ambiguous = lead.hasAmbiguousCustomerMatch === true || (lead.phoneMatches?.length ?? 0) > 1;
   // Never auto-send a single matchedCustomerId — that would skip FindOrCreate conflict checks
   // and would refuse a salesperson conversion (CustomerId is admin/manager only).
   const customerId = conversionCustomerId(lead, chosenCustomerId);

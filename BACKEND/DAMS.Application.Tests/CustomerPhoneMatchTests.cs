@@ -29,6 +29,7 @@ public sealed class CustomerPhoneMatchTests
         var detail = Assert.IsType<LeadDetailResponseDto>(await h.Leads.GetByIdAsync(leadId, h.Admin));
         Assert.Equal(existing, detail.MatchedCustomerId);
         Assert.Equal("Amina Shah", detail.MatchedCustomerName);
+        Assert.False(detail.HasAmbiguousCustomerMatch);
         Assert.Empty(detail.PhoneMatches);
 
         var before = await h.Db.Customers.CountAsync();
@@ -90,6 +91,7 @@ public sealed class CustomerPhoneMatchTests
         var leadId = await h.CreateWorkedLeadAsync("+92 300 1234567");
         var detail = Assert.IsType<LeadDetailResponseDto>(await h.Leads.GetByIdAsync(leadId, h.Admin));
         Assert.Null(detail.MatchedCustomerId);
+        Assert.True(detail.HasAmbiguousCustomerMatch);
         Assert.Equal(2, detail.PhoneMatches.Count);
         Assert.Contains(detail.PhoneMatches, c => c.Id == amina);
         Assert.Contains(detail.PhoneMatches, c => c.Id == other);
@@ -107,6 +109,22 @@ public sealed class CustomerPhoneMatchTests
         Assert.Equal(amina, chosen.CustomerId);
         Assert.False(chosen.CustomerWasCreated);
         Assert.Equal(before, await h.Db.Customers.CountAsync());
+    }
+
+    [Fact]
+    public async Task Sales_lead_detail_flags_ambiguous_phone_without_customer_pii()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        await SeedCustomerAsync(h, "Amina Shah", "03001234567", "amina@example.com");
+        await SeedCustomerAsync(h, "Other Person", "+92 300 1234567", "other@example.com");
+
+        var leadId = await h.CreateWorkedLeadAsync("+92 300 1234567");
+        var detail = Assert.IsType<LeadDetailResponseDto>(await h.Leads.GetByIdAsync(leadId, h.Sales));
+
+        Assert.True(detail.HasAmbiguousCustomerMatch);
+        Assert.Empty(detail.PhoneMatches);
+        Assert.Null(detail.MatchedCustomerId);
+        Assert.Null(detail.MatchedCustomerName);
     }
 
     [Fact]

@@ -1307,16 +1307,18 @@ namespace DAMS.Application.Services
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (detail != null)
-                await AttachMatchedCustomerAsync(detail, cancellationToken);
+                await AttachMatchedCustomerAsync(detail, ctx, cancellationToken);
 
             return detail;
         }
 
         /// <summary>
-        /// The customer conversion would attach this lead to, so the convert dialog can send that
-        /// id. A phone shared by several customers is returned as a list and not picked here.
+        /// The customer conversion would attach this lead to, so the convert dialog can show or
+        /// (for admin/manager) choose it. A phone shared by several customers is never picked here:
+        /// admin and manager get the list; sales only learn that a choice is required.
         /// </summary>
-        private async Task AttachMatchedCustomerAsync(LeadDetailResponseDto detail, CancellationToken cancellationToken)
+        private async Task AttachMatchedCustomerAsync(
+            LeadDetailResponseDto detail, LeadUserContext ctx, CancellationToken cancellationToken)
         {
             var contact = await _context.Leads
                 .AsNoTracking()
@@ -1326,27 +1328,47 @@ namespace DAMS.Application.Services
             if (contact == null)
                 return;
 
+            // Same people who may send CustomerId on convert. Sales may convert but may not browse
+            // the customer directory — so they must not receive other customers' names and phones.
+            var canListPhoneMatches = ctx.IsAdmin || ctx.IsManager;
+
             if (!string.IsNullOrEmpty(contact.NormalizedPhone))
             {
-                var matches = await _context.Customers
+                var phoneMatchIds = await _context.Customers
                     .AsNoTracking()
                     .Where(c => c.NormalizedPhone == contact.NormalizedPhone)
-                    .OrderBy(c => c.FullName)
-                    .ThenBy(c => c.Id)
-                    .Select(c => new LeadCustomerMatchDto { Id = c.Id, FullName = c.FullName, Phone = c.Phone })
-                    .Take(50)
+                    .OrderBy(c => c.Id)
+                    .Select(c => c.Id)
+                    .Take(2)
                     .ToListAsync(cancellationToken);
 
-                if (matches.Count == 1)
+                if (phoneMatchIds.Count == 1)
                 {
-                    detail.MatchedCustomerId = matches[0].Id;
-                    detail.MatchedCustomerName = matches[0].FullName;
+                    var match = await _context.Customers
+                        .AsNoTracking()
+                        .Where(c => c.Id == phoneMatchIds[0])
+                        .Select(c => new { c.Id, c.FullName })
+                        .FirstAsync(cancellationToken);
+                    detail.MatchedCustomerId = match.Id;
+                    detail.MatchedCustomerName = match.FullName;
                     return;
                 }
 
-                if (matches.Count > 1)
+                if (phoneMatchIds.Count > 1)
                 {
-                    detail.PhoneMatches = matches;
+                    detail.HasAmbiguousCustomerMatch = true;
+                    if (canListPhoneMatches)
+                    {
+                        detail.PhoneMatches = await _context.Customers
+                            .AsNoTracking()
+                            .Where(c => c.NormalizedPhone == contact.NormalizedPhone)
+                            .OrderBy(c => c.FullName)
+                            .ThenBy(c => c.Id)
+                            .Select(c => new LeadCustomerMatchDto { Id = c.Id, FullName = c.FullName, Phone = c.Phone })
+                            .Take(50)
+                            .ToListAsync(cancellationToken);
+                    }
+
                     return;
                 }
             }

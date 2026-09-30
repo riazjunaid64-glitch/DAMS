@@ -171,8 +171,16 @@ namespace DAMS.Application.DTOs.LeadDtos
 
         public string? MatchedCustomerName { get; set; }
 
-        /// <summary>Every customer who shares this lead's phone. Empty unless there is more than one.</summary>
+        /// <summary>Every customer who shares this lead's phone. Empty unless there is more than one
+        /// <em>and</em> the caller may choose among customers (admin / manager). Sales see
+        /// <see cref="HasAmbiguousCustomerMatch"/> instead — they must not receive customer PII.</summary>
         public List<LeadCustomerMatchDto> PhoneMatches { get; set; } = new();
+
+        /// <summary>
+        /// True when more than one customer shares this lead's phone. Set for every staff role so
+        /// sales can be told conversion needs a manager, without listing those customers.
+        /// </summary>
+        public bool HasAmbiguousCustomerMatch { get; set; }
     }
 
     public class LeadCustomerMatchDto
