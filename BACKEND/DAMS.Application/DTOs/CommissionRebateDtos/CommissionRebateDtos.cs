@@ -170,6 +170,14 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string? AdjustmentReason { get; set; }
     }
 
+    /// <summary>What a rule would give a partner on a booking, worked out without saving anything.</summary>
+    public sealed class CommissionPreviewDto
+    {
+        public int PartnerId { get; set; }
+        public string? RuleName { get; set; }
+        public decimal Amount { get; set; }
+    }
+
     public sealed class UpdateBookingCommissionDto : CreateBookingCommissionDto
     {
         public string ConcurrencyToken { get; set; } = string.Empty;

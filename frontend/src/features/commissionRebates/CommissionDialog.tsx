@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { Button, ChoiceChips, Dropdown, Modal, Notice, NumberField, TextArea, useToast } from "../../components/ui";
 import { formatPkr } from "../../utils/currency.ts";
 import { DialogTitle } from "../bookings/DialogTitle.tsx";
@@ -8,7 +8,7 @@ import { ReasonDialog } from "./ReasonDialog.tsx";
 import { SummaryStrip } from "./SummaryStrip.tsx";
 import { basisName, basisOptions, commissionErrors, commissionPreview, type FormErrors } from "./forms.ts";
 import { commissionActions, commissionAdjustmentNote, commissionAllocationPercent, commissionBases, commissionRequestBody, isEditableBasis, type CommissionFormState } from "./state.ts";
-import type { BookingWorkspace, Commission, Partner } from "./types.ts";
+import type { BookingWorkspace, Commission, CommissionPreview, Partner } from "./types.ts";
 import type { RunMutation } from "./runMutation.ts";
 
 type Props = {
@@ -70,7 +70,29 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
   const ruleDriven = !!existing && !existing.isManual;
   const percentage = form.calculationType === "Percentage";
   const basisLocked = !!existing && !isEditableBasis(existing.calculationBasis, commissionBases);
-  const amount = ruleDriven ? existing.finalAmount : commissionPreview(form, existing, workspace);
+
+  // A rule-driven commission keeps the figures it was agreed on, so saving it for the same partner
+  // changes nothing. A different partner is worked out again from THEIR rule, which is asked of the
+  // server before Save is allowed, so what is shown is what is saved.
+  const partnerChanged = !!existing && Number(form.partnerId) !== existing.partnerId;
+  const recalculated = ruleDriven && partnerChanged;
+  const [preview, setPreview] = useState<{ partnerId: number; result: CommissionPreview | string } | null>(null);
+  useEffect(() => {
+    if (!recalculated || !existing) return;
+    let current = true;
+    const partnerId = Number(form.partnerId);
+    commissionRebateApi.previewCommission(bookingId, partnerId, existing.id)
+      .then((result) => current && setPreview({ partnerId, result }))
+      .catch((failure) => current && setPreview({ partnerId, result: failure instanceof Error ? failure.message : "The commission could not be worked out." }));
+    return () => { current = false; };
+  }, [recalculated, existing, bookingId, form.partnerId]);
+  const worked = recalculated && preview?.partnerId === Number(form.partnerId) ? preview.result : null;
+  const previewFailed = typeof worked === "string";
+  const previewAmount = worked !== null && typeof worked !== "string" ? worked.amount : null;
+  const nothingToSave = ruleDriven && !partnerChanged;
+  const cannotSave = nothingToSave || (recalculated && previewAmount === null);
+
+  const amount = recalculated ? previewAmount ?? existing.finalAmount : ruleDriven ? existing.finalAmount : commissionPreview(form, existing, workspace);
   const adjustmentNote = commissionAdjustmentNote(existing, ruleDriven, amount);
 
   const partnerOptions = useMemo(
@@ -86,7 +108,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (saving) return;
+    if (saving || cannotSave) return;
     const problems = commissionErrors(form, existing, workspace);
     setShown(problems);
     if (Object.keys(problems).length > 0) return;
@@ -121,7 +143,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
         size="md"
         phoneLayout="fullscreen"
         title={<DialogTitle title={title} subtitle={subtitle} />}
-        primaryAction={{ label: existing ? "Save changes" : "Save commission", form: formId, loading: saving }}
+        primaryAction={{ label: existing ? "Save changes" : "Save commission", form: formId, loading: saving, disabled: cannotSave }}
       >
         <form id={formId} noValidate onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
           {error && <Notice tone="red" role="alert" title={error} />}
@@ -143,7 +165,7 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
           </div>
 
           {ruleDriven ? (
-            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set on the Finance page"}”.`} message="Its amount is worked out by the rule; only the partner can change here." />
+            <Notice tone="gold" title={`This commission follows the rule “${existing.ruleNameSnapshot ?? "set on the Finance page"}”.`} message={existing.payouts.length > 0 ? "Its amount is worked out by the rule, and the partner is locked because a payment has been made. There is nothing to change here." : "Its amount is worked out by the rule; only the partner can change here. A different partner is worked out from their own rule."} />
           ) : (
             <>
               <ChoiceChips variant="segmented" label="Type" required options={TYPES} value={form.calculationType} onChange={(calculationType) => set({ calculationType: calculationType as CommissionFormState["calculationType"] })} />
@@ -165,10 +187,12 @@ export function CommissionDialog({ bookingId, workspace, existing, partners, tak
             </>
           )}
 
+          {previewFailed && <Notice tone="red" role="alert" title={worked} message="Pick another partner, or add a rule for this one on the Finance page." />}
+
           <SummaryStrip
             label="Commission"
-            value={formatPkr(amount)}
-            note={ruleDriven ? adjustmentNote : [commissionAllocationPercent(form, existing) !== 100 && `${commissionAllocationPercent(form, existing)}% allocation applied.`, adjustmentNote].filter(Boolean).join(" ") || undefined}
+            value={recalculated && previewAmount === null ? (previewFailed ? "—" : "Working it out…") : formatPkr(amount)}
+            note={recalculated && typeof worked === "object" && worked ? `Calculated from “${worked.ruleName ?? "the rule"}” for ${partners.find((partner) => String(partner.id) === form.partnerId)?.name ?? "this partner"}.${adjustmentNote ? ` ${adjustmentNote}` : ""}` : ruleDriven ? adjustmentNote : [commissionAllocationPercent(form, existing) !== 100 && `${commissionAllocationPercent(form, existing)}% allocation applied.`, adjustmentNote].filter(Boolean).join(" ") || undefined}
           />
 
           {!ruleDriven && <TextArea label="Notes" rows={3} maxLength={2000} disabled={saving} value={form.notes} onChange={(event) => set({ notes: event.target.value })} />}

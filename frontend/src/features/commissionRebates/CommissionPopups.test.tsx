@@ -15,7 +15,7 @@ import type { BookingWorkspace, Commission, Partner, Rebate } from "./types";
 vi.mock("../proof/proofApi", () => ({ uploadProof: vi.fn(), openProof: vi.fn() }));
 vi.mock("./api", () => ({
   apiError: vi.fn(),
-  commissionRebateApi: { payout: vi.fn(), disburseRebate: vi.fn(), savePartner: vi.fn(), createCommission: vi.fn(), createRebate: vi.fn(), updateRebate: vi.fn() },
+  commissionRebateApi: { payout: vi.fn(), disburseRebate: vi.fn(), savePartner: vi.fn(), createCommission: vi.fn(), createRebate: vi.fn(), updateRebate: vi.fn(), previewCommission: vi.fn(), updateCommission: vi.fn() },
 }));
 
 const accounts = [{ id: 1, name: "Meezan Bank", accountHolderName: "Deen", isActive: true }];
@@ -149,6 +149,57 @@ describe("Edit commission", () => {
     cleanup();
     open(editing({ paidAmount: 100_000, payouts: [{ id: 61 }] }));
     expect((screen.getByRole("combobox", { name: /Partner/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  const ruleDrivenChoices = () => wrap(
+    <CommissionDialog bookingId={13} workspace={figures} existing={editing({ isManual: false, ruleId: 3, ruleNameSnapshot: "Standard agency rate" })}
+      partners={[{ id: 7, name: "Ali Estate Agency" } as Partner, { id: 8, name: "Noor Brokers" } as Partner]}
+      takenPartnerIds={new Set([7])} run={vi.fn(async (operation: () => Promise<BookingWorkspace>) => operation())} onPartnerCreated={vi.fn()} onClose={vi.fn()} />,
+  );
+  const pickNoor = () => {
+    fireEvent.click(screen.getByRole("combobox", { name: /Partner/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Noor Brokers" }));
+  };
+  const save = () => screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement;
+
+  it("has nothing to save on a rule-driven commission until the partner changes", () => {
+    ruleDrivenChoices();
+    expect(save().disabled).toBe(true);
+    expect(commissionRebateApi.previewCommission).not.toHaveBeenCalled();
+  });
+
+  it("shows what the new partner's rule gives before allowing Save, and saves for that partner with no old rule", async () => {
+    vi.mocked(commissionRebateApi.previewCommission).mockResolvedValue({ partnerId: 8, ruleName: "Noor flat fee", amount: 200_000 });
+    vi.mocked(commissionRebateApi.updateCommission).mockResolvedValue(workspaceOf({}));
+    ruleDrivenChoices();
+    pickNoor();
+    expect(save().disabled).toBe(true);
+    expect(await screen.findByText("Rs 200,000")).toBeTruthy();
+    expect(screen.getByText(/Calculated from “Noor flat fee” for Noor Brokers/)).toBeTruthy();
+    expect(commissionRebateApi.previewCommission).toHaveBeenCalledWith(13, 8, 1);
+    await waitFor(() => expect(save().disabled).toBe(false));
+
+    fireEvent.click(save());
+    await waitFor(() => expect(commissionRebateApi.updateCommission).toHaveBeenCalled());
+    expect(commissionRebateApi.updateCommission).toHaveBeenCalledWith(13, 1, expect.objectContaining({ partnerId: 8, ruleId: null, attributionId: null, isManual: false }));
+  });
+
+  it("blocks Save and says why when the new partner has no rule", async () => {
+    vi.mocked(commissionRebateApi.previewCommission).mockRejectedValue(new Error("No commission rule applies. Create a rule or use a documented manual commission."));
+    ruleDrivenChoices();
+    pickNoor();
+    expect(await screen.findByText(/No commission rule applies/)).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    expect(commissionRebateApi.updateCommission).not.toHaveBeenCalled();
+  });
+
+  it("locks the partner and the Save button after a payout, saying nothing can change", () => {
+    wrap(
+      <CommissionDialog bookingId={13} workspace={figures} existing={editing({ isManual: false, ruleId: 3, paidAmount: 100_000, payouts: [{ id: 61 }] })}
+        partners={[{ id: 7, name: "Ali Estate Agency" } as Partner]} takenPartnerIds={new Set([7])} run={vi.fn()} onPartnerCreated={vi.fn()} onClose={vi.fn()} />,
+    );
+    expect(save().disabled).toBe(true);
+    expect(screen.getByText(/There is nothing to change here/)).toBeTruthy();
   });
 
   it("offers Notes on a manual commission but not on a rule-driven one, which would discard them", () => {

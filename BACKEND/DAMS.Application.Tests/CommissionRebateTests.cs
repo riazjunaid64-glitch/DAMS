@@ -836,6 +836,81 @@ public sealed class CommissionRebateTests
     }
 
     [Fact]
+    public async Task UnchangedRuleDrivenCommission_IsNotRecalculated_WhenTheRuleHasSinceChanged()
+    {
+        await using var harness = await Harness.Create();
+        var commission = await harness.CreateRuleCommission();
+        commission = Assert.Single((await harness.Service.RecordPayoutAsync(harness.BookingId, commission.Id,
+            Payout(harness.AccountId, commission.FinalAmount, commission.ConcurrencyToken), Actor)).Commissions);
+        Assert.Equal(BookingCommissionStatus.Paid, commission.Status);
+        var agreed = commission.FinalAmount;
+        var accruals = await harness.Context.CommissionAccruals.CountAsync();
+        var audits = await harness.Context.FinancialWorkflowAuditEntries.CountAsync();
+
+        // Finance raises the rule after the commission was agreed and paid.
+        (await harness.Context.CommissionRules.SingleAsync()).PercentageRate = 5m;
+        await harness.Context.SaveChangesAsync();
+
+        var workspace = await harness.Service.UpdateCommissionAsync(harness.BookingId, commission.Id, new UpdateBookingCommissionDto
+        {
+            PartnerId = harness.PartnerId, AttributionId = harness.AttributionId, RuleId = commission.RuleId, IsManual = false,
+            ConcurrencyToken = commission.ConcurrencyToken
+        }, Actor);
+
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(agreed, commission.FinalAmount);
+        Assert.Equal(BookingCommissionStatus.Paid, commission.Status);
+        Assert.Equal(accruals, await harness.Context.CommissionAccruals.CountAsync());
+        Assert.Equal(audits, await harness.Context.FinancialWorkflowAuditEntries.CountAsync());
+    }
+
+    [Fact]
+    public async Task ChangingThePartnerOfARuleDrivenCommission_SavesExactlyWhatThePreviewShowed()
+    {
+        await using var harness = await Harness.Create();
+        var commission = await harness.CreateRuleCommission();
+        var other = new ThirdPartyPartner { Name = "Other", PartnerType = "Broker", InternalCode = "OTHER", IsActive = true };
+        harness.Context.ThirdPartyPartners.Add(other);
+        await harness.Context.SaveChangesAsync();
+        harness.Context.CommissionRules.Add(Rule("Other partner flat", 10, fixedAmount: 7_777m, partnerId: other.Id));
+        await harness.Context.SaveChangesAsync();
+        Assert.NotEqual(7_777m, commission.FinalAmount);
+
+        var preview = await harness.Service.PreviewRuleCommissionAsync(harness.BookingId, other.Id, commission.Id);
+        Assert.Equal("Other partner flat", preview.RuleName);
+        Assert.Equal(7_777m, preview.Amount);
+
+        var workspace = await harness.Service.UpdateCommissionAsync(harness.BookingId, commission.Id, new UpdateBookingCommissionDto
+        {
+            PartnerId = other.Id, IsManual = false, ConcurrencyToken = commission.ConcurrencyToken
+        }, Actor);
+
+        commission = Assert.Single(workspace.Commissions);
+        Assert.Equal(other.Id, commission.PartnerId);
+        Assert.Equal(preview.Amount, commission.FinalAmount);
+        Assert.Equal(preview.RuleName, commission.RuleNameSnapshot);
+    }
+
+    [Fact]
+    public async Task Preview_WritesNothing_AndRefusesAPartnerWithNoRule()
+    {
+        await using var harness = await Harness.Create();
+        var commission = await harness.CreateRuleCommission();
+        var other = new ThirdPartyPartner { Name = "Other", PartnerType = "Broker", InternalCode = "OTHER", IsActive = true };
+        harness.Context.ThirdPartyPartners.Add(other);
+        (await harness.Context.CommissionRules.SingleAsync()).PartnerId = harness.PartnerId;
+        await harness.Context.SaveChangesAsync();
+        var accruals = await harness.Context.CommissionAccruals.CountAsync();
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Service.PreviewRuleCommissionAsync(harness.BookingId, other.Id, commission.Id));
+        Assert.Contains("No commission rule applies", refused.Message);
+        await harness.Service.PreviewRuleCommissionAsync(harness.BookingId, harness.PartnerId, commission.Id);
+        Assert.Equal(accruals, await harness.Context.CommissionAccruals.CountAsync());
+        Assert.Equal(commission.FinalAmount, Assert.Single(harness.Context.BookingCommissions).FinalAmount);
+    }
+
+    [Fact]
     public async Task Rebate_CanBeCorrectedInPlace_EvenAfterADisbursement_ButNotBelowWhatIsGiven()
     {
         await using var harness = await Harness.Create();

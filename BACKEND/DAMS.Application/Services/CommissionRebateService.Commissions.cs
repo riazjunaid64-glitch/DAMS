@@ -105,6 +105,35 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
+        /// <summary>
+        /// The amount the rules would give this partner on this booking, through the same calculation a
+        /// save runs and with the same attribution a partner change carries (none, so a full share).
+        /// Nothing is written. An agreed adjustment on the commission being edited is included, as the
+        /// edit keeps it.
+        /// </summary>
+        public async Task<CommissionPreviewDto> PreviewRuleCommissionAsync(int bookingId, int partnerId, int? commissionId,
+            CancellationToken cancellationToken = default)
+        {
+            var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
+            EnsureActiveBooking(booking);
+            var partner = await _context.ThirdPartyPartners.AsNoTracking()
+                .SingleOrDefaultAsync(p => p.Id == partnerId, cancellationToken)
+                ?? throw new InvalidOperationException("Partner not found.");
+            if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");
+            decimal adjustment = 0m; string? adjustmentReason = null;
+            if (commissionId.HasValue)
+            {
+                var current = await _context.BookingCommissions.AsNoTracking()
+                    .SingleOrDefaultAsync(c => c.Id == commissionId.Value && c.BookingId == bookingId, cancellationToken)
+                    ?? throw new KeyNotFoundException("Commission not found for this booking.");
+                adjustment = current.AdjustmentAmount; adjustmentReason = current.AdjustmentReason;
+            }
+            var preview = new BookingCommission { BookingId = bookingId, PartnerId = partner.Id, AllocationPercentSnapshot = 100m };
+            await ApplyRuleCalculationAsync(preview, booking, partner, null, cancellationToken);
+            ApplyCommissionAdjustment(preview, adjustment, adjustmentReason, null, booking);
+            return new CommissionPreviewDto { PartnerId = partner.Id, RuleName = preview.RuleNameSnapshot, Amount = preview.FinalAmount };
+        }
+
         /// <summary>Serializable for the same reason as <see cref="CreateCommissionAsync"/>: it
         /// reads the booking's state and then moves the obligation against it.</summary>
         public Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
@@ -126,6 +155,12 @@ namespace DAMS.Application.Services
                 throw new InvalidOperationException("Only a pending or fully paid commission can be edited.");
             if (commission.Payouts.Count != 0 && dto.PartnerId != commission.PartnerId)
                 throw new InvalidOperationException("The partner cannot be changed once a payment has been made.");
+            // A rule-driven commission keeps the figures it was agreed on. Saving it again for the same
+            // partner changes nothing, and in particular does not re-run the rules: a newer rule or
+            // revision would otherwise rewrite the amount, status and accrual of a commission nobody
+            // edited. Only a different partner (who has their own rule) is recalculated.
+            if (!commission.IsManual && !dto.IsManual && dto.PartnerId == commission.PartnerId)
+                return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
 
             // Optional: the popup has no such field, so the notes stand in for it.
             var changeReason = Limited(dto.ChangeReason, "Change reason", 2000)

@@ -76,3 +76,5 @@ export interface BookingWorkspace {
 
 export interface FinanceAccountOption { id:number; name:string; accountHolderName:string; isActive:boolean }
 export interface InstallmentOption { id:number; sequenceNumber:number; type:string; remainingBalance:number; status:string }
+
+export interface CommissionPreview { partnerId:number; ruleName:string|null; amount:number }
