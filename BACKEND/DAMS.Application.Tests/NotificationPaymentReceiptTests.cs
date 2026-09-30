@@ -311,7 +311,8 @@ public sealed class NotificationPaymentReceiptTests
         {
             BookingId = h.BookingId,
             SequenceNumber = 1,
-            Amount = 500_000m,
+            // The whole 9,000,000 still owed: a payment is only taken against a plan that covers the balance.
+            Amount = 9_000_000m,
             DueDate = DateTime.UtcNow.AddDays(30),
             Status = InstallmentStatus.Pending,
             Type = InstallmentType.Regular

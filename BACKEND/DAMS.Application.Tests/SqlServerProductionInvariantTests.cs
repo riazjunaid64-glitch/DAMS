@@ -214,7 +214,8 @@ public sealed class SqlServerProductionInvariantTests
             var booking = new Booking
             {
                 BookingReference = $"CX-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
-                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m,
+                // 100,000 already received and one 100,000 installment: the plan holds the whole balance.
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 200_000m,
                 BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m,
                 BookingDate = DateTime.UtcNow
             };
@@ -228,6 +229,11 @@ public sealed class SqlServerProductionInvariantTests
                 Name = "Concurrency Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
             };
             db.AddRange(project, unit, customer, booking, installment, account);
+            db.Payments.Add(new Payment
+            {
+                Booking = booking, FinanceAccount = account, Type = PaymentType.BookingAmount, Amount = 100_000m,
+                PaymentMethod = PaymentMethod.Cash, PaidAt = DateTime.UtcNow
+            });
             await db.SaveChangesAsync();
             bookingId = booking.Id; installmentId = installment.Id; accountId = account.Id;
         }
@@ -299,10 +305,16 @@ public sealed class SqlServerProductionInvariantTests
                 Name = "Credit Race Bank", AccountHolderName = "DAMS", Type = FinanceAccountType.Bank, IsActive = true
             };
             db.AddRange(project, unit, customer, booking, account);
+            // The 100,000 booking amount is a real receipt, so the balance the plan is measured against is 700,000.
+            db.Payments.Add(new Payment
+            {
+                Booking = booking, FinanceAccount = account, Type = PaymentType.BookingAmount, Amount = 100_000m,
+                PaymentMethod = PaymentMethod.Cash, PaidAt = DateTime.UtcNow
+            });
             await db.SaveChangesAsync();
             bookingId = booking.Id; accountId = account.Id;
 
-            var rebates = new CommissionRebateService(db, new FinanceAccountService(db), new NullPrivateStorage());
+            var rebates =new CommissionRebateService(db, new FinanceAccountService(db), new NullPrivateStorage());
             var workspace = await rebates.CreateRebateAsync(bookingId, new CreateCustomerRebateDto
             {
                 CalculationType = FinancialCalculationType.FixedAmount,
@@ -415,7 +427,9 @@ public sealed class SqlServerProductionInvariantTests
         foreach (var error in outcomes)
             if (error != null)
                 Assert.True(error is InvalidOperationException ioe && (ioe.Message.Contains("uncollectable")
-                        || ioe.Message.Contains("no way to collect it")),
+                        || ioe.Message.Contains("no way to collect it")
+                        // The payment side of the race: the reversal committed first, so money is outside the plan.
+                        || ioe.Message.Contains("Change the plan for the current balance first")),
                     $"Unexpected failure shape.{Environment.NewLine}{evidence}");
 
         // Exactly one of them may commit, and one of them MUST. Both succeeding means the guards did
@@ -489,7 +503,8 @@ public sealed class SqlServerProductionInvariantTests
             var booking = new Booking
             {
                 BookingReference = $"RP-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
-                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                // 40,000 of booking amount is received below and one 100,000 installment follows: the plan holds the balance.
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 140_000m,
                 BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
             };
             var installment = new Installment
@@ -569,6 +584,64 @@ public sealed class SqlServerProductionInvariantTests
             // Two receipts for one payment is the visible symptom operators would have chased.
             Assert.Equal(2, await verify.Payments.CountAsync(p => p.BookingId == bookingId && p.ReceiptNumber != null));
         }
+    }
+
+    /// <summary>
+    /// Building a first plan runs in the same retrying execution strategy as a payment, so a commit
+    /// whose acknowledgement is lost is replayed with the plan already there — which used to fail
+    /// with "a schedule already exists" although the first execution had built it. The replay is
+    /// driven through the seam the retry itself uses: the same attempt stamp twice.
+    /// </summary>
+    [SqlServerFact]
+    public async Task ReplayingOneAttemptToBuildAFirstPlan_ReportsThePlanItBuilt()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int bookingId;
+        await using (var db = new AppDbContext(options))
+        {
+            var project = new Project { ProjectName = "Plan Replay", Location = "Karachi", CreatedById = 1 };
+            var unit = new Unit
+            {
+                Project = project, UnitNumber = "PR-01", UnitType = "Apartment",
+                Price = 1_000_000m, Status = UnitStatus.OnPaymentPlan
+            };
+            var customer = new Customer { FullName = "Plan Replay Customer", Phone = "03004445555", Status = CustomerStatus.Active };
+            var booking = new Booking
+            {
+                BookingReference = $"PR-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
+                Status = BookingStatus.PaymentPlanActive, AgreedSalePrice = 1_000_000m,
+                BookingAmountRequired = 100_000m, BookingAmountReceived = 100_000m, BookingDate = DateTime.UtcNow
+            };
+            db.AddRange(project, unit, customer, booking);
+            await db.SaveChangesAsync();
+            bookingId = booking.Id;
+        }
+
+        GenerateInstallmentPlanDto Plan(int count, bool regenerate) => new()
+        {
+            AgreedSalePrice = 1_000_000m, DiscountPercent = 0m, Frequency = InstallmentFrequency.Monthly,
+            NumberOfInstallments = count, InstallmentStartDate = DateTime.UtcNow.Date.AddMonths(1), Regenerate = regenerate
+        };
+        await using (var context = new AppDbContext(options))
+        {
+            var installments = new InstallmentService(context, new FinanceAccountService(context));
+            await installments.GenerateScheduleAsync(bookingId, Plan(3, false), 901, "plan-replay-a");
+            var replayed = await installments.GenerateScheduleAsync(bookingId, Plan(3, false), 901, "plan-replay-a");
+            Assert.Equal(3, replayed.Items.Count);
+
+            // Someone changes the plan; the old attempt arriving late must not put its plan back.
+            await installments.GenerateScheduleAsync(bookingId, Plan(2, true), 902, "plan-replay-b");
+            var late = await installments.GenerateScheduleAsync(bookingId, Plan(3, true), 901, "plan-replay-a");
+            Assert.Equal(2, late.Items.Count);
+        }
+
+        await using var verify = new AppDbContext(options);
+        Assert.Equal(2, await verify.Installments.CountAsync(i => i.BookingId == bookingId));
+        Assert.Equal(2, await verify.InstallmentPlanAttempts.CountAsync(a => a.BookingId == bookingId));
     }
 
     /// <summary>
@@ -758,7 +831,8 @@ public sealed class SqlServerProductionInvariantTests
             var booking = new Booking
             {
                 BookingReference = $"RD-{Guid.NewGuid():N}", Customer = customer, Unit = unit,
-                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 1_000_000m,
+                // 100,000 of booking amount is received below and one 100,000 installment follows: the plan holds the balance.
+                Status = BookingStatus.AwaitingBookingAmount, AgreedSalePrice = 200_000m,
                 BookingAmountRequired = 100_000m, BookingAmountReceived = 0m, BookingDate = DateTime.UtcNow
             };
             var installment = new Installment

@@ -72,6 +72,13 @@ export interface BookingPayment {
   id: number;
   bookingId: number;
   installmentId?: number | null;
+  /** Which installment it went to — 0 is the possession row; null for the booking amount. */
+  installmentSequence?: number | null;
+  installmentType?: string | null;
+  financeAccountId?: number | null;
+  /** The account the money was received in. */
+  accountName?: string | null;
+  recordedByName?: string | null;
   type: string;
   amount: number;
   paymentMethod: string;
@@ -94,6 +101,7 @@ export interface InstallmentSchedule {
   installmentPool: number;
   frequency?: string | null;
   numberOfInstallments?: number | null;
+  /** The due date of installment 1. */
   installmentStartDate?: string | null;
   possessionDueDate?: string | null;
   generatedAt?: string | null;
@@ -103,9 +111,8 @@ export interface InstallmentSchedule {
   scheduleTotal: number;
   schedulePaid: number;
   scheduleRemaining: number;
-  // What the customer owes that this plan does not demand — normally zero, positive only after a
-  // credit the plan was built smaller by is reversed. The payment service refuses a receipt while
-  // it stands, so the plan has to be regenerated first.
+  // What the customer owes that the unpaid installments do not hold — normally zero. The payment
+  // service refuses a receipt while it is above zero, so the plan has to be changed first.
   unscheduledBalance?: number;
   items: ScheduleItem[];
 }

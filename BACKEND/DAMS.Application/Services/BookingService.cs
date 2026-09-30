@@ -803,12 +803,18 @@ namespace DAMS.Application.Services
             return await _context.Payments
                 .AsNoTracking()
                 .Where(p => p.BookingId == bookingId)
-                .OrderByDescending(p => p.PaidAt)
+                .OrderByDescending(p => p.PaidAt).ThenByDescending(p => p.Id)
                 .Select(p => new BookingPaymentDto
                 {
                     Id = p.Id,
                     BookingId = p.BookingId,
                     InstallmentId = p.InstallmentId,
+                    InstallmentSequence = p.Installment == null ? null : p.Installment.SequenceNumber,
+                    InstallmentType = p.Installment == null ? null : p.Installment.Type,
+                    FinanceAccountId = p.FinanceAccountId,
+                    AccountName = p.FinanceAccount == null ? null : p.FinanceAccount.Name,
+                    RecordedByName = _context.Users.Where(u => u.UserId == p.RecordedByUserId)
+                        .Select(u => u.FullName).FirstOrDefault(),
                     Type = p.Type,
                     Amount = p.Amount,
                     PaymentMethod = p.PaymentMethod,

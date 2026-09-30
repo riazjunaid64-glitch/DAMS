@@ -67,13 +67,13 @@ internal static class BookingCreditPolicy
     /// <summary>
     /// How much of <see cref="UncollectableShortfall"/> a REVERSED credit is responsible for.
     /// <para>
-    /// This is the number the reversal guard and the payment guard act on, and it is deliberately
-    /// narrower than the raw shortfall. A schedule can fail to total the balance for reasons that
-    /// have nothing to do with a rebate — a plan imported from another system, or one built by hand
-    /// against part of the balance — and refusing to collect on those would break bookings this
-    /// change has no business touching. Reversing a credit is the one thing that ADDS uncollectable
+    /// This is the number the reversal guard acts on, and it is deliberately narrower than the raw
+    /// shortfall: refusing to reverse a credit because of a shortfall the reversal did not cause
+    /// would block a legitimate reversal. Reversing a credit is the one thing that ADDS uncollectable
     /// principal to a plan, so the responsibility is capped at what has been reversed: exactly the
     /// shortfall when the plan was sound before, and only the reversal's own share when it was not.
+    /// Collecting is stricter — <see cref="UnscheduledBalanceAsync"/> refuses a receipt while ANY
+    /// money is outside the plan, whatever put it there.
     /// </para>
     /// <para><paramref name="pendingReversal"/> is a reversal about to be written but not yet saved,
     /// so the guard that decides whether to allow it can count it.</para>
@@ -95,6 +95,44 @@ internal static class BookingCreditPolicy
                     || r.Disbursement.Method == CustomerRebateMethod.CreditNote))
             .SumAsync(r => (decimal?)r.Amount, cancellationToken) ?? 0m;
         return Money(Math.Min(shortfall, Money(reversed + pendingReversal)));
+    }
+
+    /// <summary>
+    /// What the customer still owes that the unpaid installments do NOT hold — the money outside the
+    /// plan, whatever put it there. The balance is net price less every payment and every credit; the
+    /// plan holds what is left on its rows after the payments and credits placed on them. Zero when
+    /// they agree, and only a plan that is short is reported: an over-holding plan cannot take more
+    /// than the balance, because every receipt is capped at what is outstanding.
+    /// <para>This is the figure the screen warns with and the payment service refuses on, so the
+    /// warning and the refusal cannot disagree.</para>
+    /// </summary>
+    public static async Task<decimal> UnscheduledBalanceAsync(
+        AppDbContext context,
+        Booking booking,
+        decimal nonCashCredits,
+        CancellationToken cancellationToken = default)
+    {
+        var collected = await context.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id)
+            .SumAsync(p => (decimal?)p.Amount, cancellationToken) ?? 0m;
+        var balance = Money(Math.Max(0m, booking.AgreedSalePrice - booking.DiscountAmount - collected - nonCashCredits));
+
+        var rows = await context.Installments.AsNoTracking()
+            .Where(i => i.BookingId == booking.Id)
+            .Select(i => new { i.Id, i.Amount })
+            .ToListAsync(cancellationToken);
+        if (rows.Count == 0) return 0m;
+
+        var cash = await context.Payments.AsNoTracking()
+            .Where(p => p.BookingId == booking.Id && p.InstallmentId != null && p.Type == PaymentType.Installment)
+            .GroupBy(p => p.InstallmentId!.Value)
+            .Select(g => new { InstallmentId = g.Key, Paid = g.Sum(p => p.Amount) })
+            .ToDictionaryAsync(x => x.InstallmentId, x => x.Paid, cancellationToken);
+        var credits = await InstallmentCreditsByBookingAsync(context, [booking.Id], cancellationToken);
+
+        var held = rows.Sum(r => Math.Max(0m,
+            r.Amount - cash.GetValueOrDefault(r.Id) - credits.GetValueOrDefault(r.Id)));
+        return Money(Math.Max(0m, balance - held));
     }
 
     /// <summary>
