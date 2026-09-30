@@ -1,5 +1,5 @@
 import AppSelect from "../../lib/AppSelect.tsx";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useImperativeHandle, useState, type FormEvent, type ReactNode, type Ref } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { DatePicker } from "../../components/ui";
@@ -13,7 +13,13 @@ interface FinanceAccountOption {
   accountHolderName: string;
 }
 
+/** What the page can ask of the dialog: open it from the header, where its button now lives. */
+export interface CancellationDialogHandle {
+  open: () => void;
+}
+
 interface Props {
+  ref?: Ref<CancellationDialogHandle>;
   bookingId: number;
   status: string;
   unitNumber: string;
@@ -28,7 +34,7 @@ const PAYMENT_METHODS: { value: RefundPaymentMethod; label: string }[] = [
   { value: "Online", label: "Online" },
 ];
 
-export default function CancellationDialog({ bookingId, status, unitNumber, financeAccounts, onCancelled }: Props) {
+export default function CancellationDialog({ ref, bookingId, status, unitNumber, financeAccounts, onCancelled }: Props) {
   const [open, setOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
   // True only after a fresh booking fetch has actually SUCCEEDED for this dialog-open. The
@@ -57,7 +63,6 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
   const [refundNotes, setRefundNotes] = useState("");
 
   const canCancel = status !== "Cancelled" && status !== "PossessionGiven" && status !== "SaleCompleted";
-  if (!canCancel) return null;
 
   const openDialog = () => {
     setError(null);
@@ -82,6 +87,8 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     setRefundNotes("");
     void loadFreshBooking();
   };
+
+  useImperativeHandle(ref, () => ({ open: openDialog }));
 
   const loadFreshBooking = async () => {
     setError(null);
@@ -156,9 +163,10 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     }
   };
 
+  if (!canCancel) return null;
+
   return (
     <>
-      <Button variant="danger" size="sm" onClick={() => void openDialog()}>Cancel Booking</Button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button aria-label="Close dialog" className="absolute inset-0 bg-black/70" onClick={close} />

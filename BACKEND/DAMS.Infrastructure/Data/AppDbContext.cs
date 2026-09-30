@@ -39,6 +39,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
         public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
+        public DbSet<BookingTermsHistory> BookingTermsHistories { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -675,6 +676,29 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0"));
+            });
+
+            modelBuilder.Entity<BookingTermsHistory>(entity =>
+            {
+                entity.Property(h => h.Source).HasConversion<int>();
+                entity.Property(h => h.OldAgreedSalePrice).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.NewAgreedSalePrice).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.OldDiscountPercent).HasColumnType("decimal(5,2)");
+                entity.Property(h => h.NewDiscountPercent).HasColumnType("decimal(5,2)");
+                entity.Property(h => h.OldDiscountReason).HasMaxLength(500);
+                entity.Property(h => h.NewDiscountReason).HasMaxLength(500);
+                entity.Property(h => h.OldBookingAmountRequired).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.NewBookingAmountRequired).HasColumnType("decimal(18,2)");
+                // Dates, not timestamps: the due-by date is a business date.
+                entity.Property(h => h.OldBookingAmountDueDate).HasColumnType("date");
+                entity.Property(h => h.NewBookingAmountDueDate).HasColumnType("date");
+
+                entity.HasIndex(h => new { h.BookingId, h.ChangedAt });
+
+                entity.HasOne(h => h.Booking)
+                      .WithMany()
+                      .HasForeignKey(h => h.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<BookingCancellationSettlement>(entity =>

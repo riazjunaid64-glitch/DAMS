@@ -323,7 +323,7 @@ public sealed class NotificationPaymentReceiptTests
             new DTOs.InstallmentDtos.RecordInstallmentPaymentDto
             {
                 Amount = 500_000m,
-                PaymentMethod = PaymentMethod.BankTransfer,
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-RECEIPT-1",
                 FinanceAccountId = h.FinanceAccountId
             }, h.AdminUserId);
 

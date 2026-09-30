@@ -124,6 +124,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Mark possession as handed over (payment plan must be active).
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/possession")]
         public async Task<IActionResult> GivePossession(int id, [FromBody] GivePossessionDto? dto)
         {
@@ -140,6 +141,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Complete the sale once everything is paid; moves the unit to Sold.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/complete")]
         public async Task<IActionResult> CompleteSale(int id)
         {
@@ -156,6 +158,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Set negotiated terms (sale price, discount, booking amount required) before taking payments.
+        [IdempotentMoneyOperation]
         [HttpPut("{id:int}/financials")]
         public async Task<IActionResult> UpdateFinancials(int id, [FromBody] UpdateBookingFinancialsDto dto)
         {

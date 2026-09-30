@@ -384,9 +384,9 @@ namespace DAMS.Application.Services
         /// what has been credited, which is the exact double-concession the guard exists to refuse.
         /// </summary>
         public Task<BookingResponseDto> UpdateBookingFinancialsAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId) =>
-            SerializableAsync(() => UpdateBookingFinancialsCoreAsync(id, dto), CancellationToken.None);
+            SerializableAsync(() => UpdateBookingFinancialsCoreAsync(id, dto, adminUserId), CancellationToken.None);
 
-        private async Task<BookingResponseDto> UpdateBookingFinancialsCoreAsync(int id, UpdateBookingFinancialsDto dto)
+        private async Task<BookingResponseDto> UpdateBookingFinancialsCoreAsync(int id, UpdateBookingFinancialsDto dto, int adminUserId)
         {
             var booking = await _context.Bookings.FirstOrDefaultAsync(b => b.Id == id);
 
@@ -411,6 +411,8 @@ namespace DAMS.Application.Services
 
             if (discountPercent < 0m || discountPercent > 100m)
                 throw new InvalidOperationException("Discount percent must be between 0 and 100.");
+
+            BookingTermsRules.EnsureDueDateNotPast(dto.BookingAmountDueDate);
 
             var discountAmount = Money(agreedSalePrice * discountPercent / 100m);
             var netSalePrice = agreedSalePrice - discountAmount;
@@ -439,10 +441,16 @@ namespace DAMS.Application.Services
                     + "on this booking in payments and rebate credits. Reverse or adjust the rebate credit before "
                     + "reducing the price — a rebate already granted as a credit cannot be granted again as a discount.");
 
+            // Written before the booking is touched, so the row can read "from" off it.
+            var discountReason = BookingTermsRules.ResolveDiscountReason(booking.DiscountReason, dto.DiscountReason);
+            _context.BookingTermsHistories.Add(BookingTermsRules.History(
+                booking, BookingTermsChangeSource.Terms, adminUserId, agreedSalePrice, discountPercent,
+                discountReason, bookingAmountRequired, dto.BookingAmountDueDate));
+
             booking.AgreedSalePrice = agreedSalePrice;
             booking.DiscountPercent = discountPercent;
             booking.DiscountAmount = discountAmount;
-            booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+            booking.DiscountReason = discountReason;
             booking.BookingAmountRequired = bookingAmountRequired;
             booking.BookingAmountDueDate = dto.BookingAmountDueDate;
             booking.TotalInstallmentAmount = netSalePrice - bookingAmountRequired;
@@ -468,9 +476,25 @@ namespace DAMS.Application.Services
                 }
             }
 
-            await _context.SaveChangesAsync();
+            await SaveOrReportConflictAsync();
 
             return await GetResponseAsync(booking.Id);
+        }
+
+        /// <summary>
+        /// Saves a status-changing booking edit. Two people acting on the same booking at once collide
+        /// on its row version; the loser is told so in plain words instead of getting a server error.
+        /// </summary>
+        private async Task SaveOrReportConflictAsync()
+        {
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(BookingTermsRules.ChangedByAnotherUser);
+            }
         }
 
         public Task<BookingResponseDto> RecordBookingAmountPaymentAsync(int bookingId, RecordBookingAmountPaymentDto dto,
@@ -513,6 +537,7 @@ namespace DAMS.Application.Services
                 var amount = Money(dto.Amount);
                 if (amount <= 0m)
                     throw new InvalidOperationException("Payment amount must be greater than zero.");
+                var (paymentMethod, paymentReference) = PaymentInputRules.Resolve(dto.PaymentMethod, dto.PaymentReference);
                 if (!dto.FinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required.");
                 await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value, null, cancellationToken);
@@ -561,8 +586,8 @@ namespace DAMS.Application.Services
                     FinanceAccountId = dto.FinanceAccountId,
                     Type = PaymentType.BookingAmount,
                     Amount = amount,
-                    PaymentMethod = dto.PaymentMethod,
-                    PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
+                    PaymentMethod = paymentMethod,
+                    PaymentReference = paymentReference,
                     Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                     RecordedByUserId = adminUserId,
                     IdempotencyKey = attemptKey,
@@ -679,6 +704,10 @@ namespace DAMS.Application.Services
             {
                 await _context.SaveChangesAsync();
             }
+            catch (DbUpdateConcurrencyException)
+            {
+                throw new InvalidOperationException(BookingTermsRules.ChangedByAnotherUser);
+            }
             catch (DbUpdateException ex) when (IsDuplicateRecognition(ex))
             {
                 throw new InvalidOperationException(
@@ -750,7 +779,7 @@ namespace DAMS.Application.Services
             booking.Unit.Status = UnitStatus.Sold;
             booking.Unit.UpdatedAt = DateTime.UtcNow;
 
-            await _context.SaveChangesAsync();
+            await SaveOrReportConflictAsync();
 
             await NotifyQuietlyAsync(n => n.NotifyBookingStatusAsync(
                 booking.Id, NotificationType.SaleCompleted, null, adminUserId));
@@ -902,7 +931,11 @@ namespace DAMS.Application.Services
 
             var (byBooking, byInstallment) = await LoadCreditsAsync([id], includeInstallments: true, cancellationToken);
             var floorNames = await LoadFloorNamesAsync([booking], cancellationToken);
-            return MapProjection(booking, floorNames, byBooking.GetValueOrDefault(id), byInstallment);
+            var lead = await _context.Leads.AsNoTracking()
+                .Where(l => l.ConvertedBookingId == id)
+                .Select(l => new BookingLeadDto { LeadId = l.Id, LeadReference = l.LeadReference })
+                .FirstOrDefaultAsync(cancellationToken);
+            return MapProjection(booking, floorNames, byBooking.GetValueOrDefault(id), byInstallment, lead);
         }
 
         private Task<ProjectFloorNames> LoadFloorNamesAsync(IEnumerable<Booking> bookings,
@@ -939,10 +972,13 @@ namespace DAMS.Application.Services
         /// figures are then not computed from anything.
         /// </param>
         private static BookingResponseDto MapProjection(Booking b, ProjectFloorNames floorNames,
-            decimal rebateCredits, IReadOnlyDictionary<int, decimal>? installmentCredits = null)
+            decimal rebateCredits, IReadOnlyDictionary<int, decimal>? installmentCredits = null,
+            BookingLeadDto? convertedFromLead = null)
         {
-            var installmentTotals = ComputeInstallmentTotals(b,
-                installmentCredits ?? new Dictionary<int, decimal>());
+            var credits = installmentCredits ?? new Dictionary<int, decimal>();
+            var installmentTotals = ComputeInstallmentTotals(b, credits);
+            var collected = Money((b.Payments ?? new List<Payment>()).Sum(p => p.Amount));
+            var netSalePrice = b.AgreedSalePrice - b.DiscountAmount;
 
             return new BookingResponseDto
             {
@@ -982,6 +1018,16 @@ namespace DAMS.Application.Services
                 InstallmentCashReceived = installmentTotals.Cash,
                 InstallmentRemaining = installmentTotals.Remaining,
                 HasInstallmentSchedule = installmentTotals.HasSchedule,
+                Collected = collected,
+                // A cancelled sale is no longer owed; what the parties still owe each other is the
+                // cancellation settlement, and Finance drops the booking from its receivable too.
+                Outstanding = b.Status == BookingStatus.Cancelled
+                    ? 0m
+                    : Math.Max(0m, Money(netSalePrice - collected - rebateCredits)),
+                InstallmentsPaid = b.Installments?.Count(i => i.Status == InstallmentStatus.Paid) ?? 0,
+                InstallmentsTotal = b.Installments?.Count ?? 0,
+                NextInstallment = FindNextInstallment(b, credits),
+                ConvertedFromLead = convertedFromLead,
                 BookingDate = b.BookingDate,
                 BookingAmountDueDate = b.BookingAmountDueDate,
                 BookingAmountConfirmedDate = b.BookingAmountConfirmedDate,
@@ -1151,9 +1197,48 @@ namespace DAMS.Application.Services
             return (Money(cash), settled, Math.Max(0m, Money(total - settled)), true);
         }
 
+        /// <summary>
+        /// The unpaid installment that falls due first — what a collector chases next. Its amount is
+        /// what is still to collect on it (cash and credits already taken off), which is what the
+        /// payment form offers as the default, so the two figures agree.
+        /// </summary>
+        private static NextInstallmentDto? FindNextInstallment(
+            Booking b, IReadOnlyDictionary<int, decimal> installmentCredits)
+        {
+            if (b.Status == BookingStatus.Cancelled || b.Installments is null || b.Installments.Count == 0)
+                return null;
+
+            var cashByInstallment = (b.Payments ?? new List<Payment>())
+                .Where(p => p.InstallmentId.HasValue && p.Type == PaymentType.Installment)
+                .GroupBy(p => p.InstallmentId!.Value)
+                .ToDictionary(g => g.Key, g => g.Sum(p => p.Amount));
+
+            var today = PakistanTime.Today;
+            return b.Installments
+                .Where(i => i.Status != InstallmentStatus.Paid)
+                .Select(i => (Installment: i, Remaining: Money(i.Amount
+                    - cashByInstallment.GetValueOrDefault(i.Id)
+                    - installmentCredits.GetValueOrDefault(i.Id))))
+                .Where(x => x.Remaining > 0m)
+                .OrderBy(x => x.Installment.DueDate)
+                .ThenBy(x => x.Installment.SequenceNumber)
+                .Select(x => new NextInstallmentDto
+                {
+                    Id = x.Installment.Id,
+                    Number = x.Installment.SequenceNumber,
+                    IsPossession = x.Installment.Type == InstallmentType.Possession,
+                    Amount = x.Remaining,
+                    DueDate = x.Installment.DueDate,
+                    IsOverdue = x.Installment.DueDate.Date < today
+                })
+                .FirstOrDefault();
+        }
+
         private static BookingResponseDto SanitizeForClient(BookingResponseDto dto)
         {
             dto.InternalNotes = null;
+            // Where the booking came from is sales' business, not the customer's.
+            dto.ConvertedFromLead = null;
             // Proof files are Admin / Accountant material; a customer's own copy never names one.
             foreach (var payment in dto.Payments) payment.Proof = null;
             if (dto.CancellationSettlement?.Refund is { } refund) refund.Proof = null;

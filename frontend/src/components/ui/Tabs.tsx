@@ -78,7 +78,7 @@ export function Tabs({ items, value, onChange, "aria-label": ariaLabel = "Sectio
             onClick={() => onChange(item.id)}
             onKeyDown={(event) => onKeyDown(event, index)}
             className={cx(
-              "flex h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-4 text-sm font-bold transition-colors md:h-9 md:flex-none",
+              "flex h-11 flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 text-sm font-bold transition-colors md:h-9 md:flex-none md:px-4",
               "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-45",
               active ? "bg-card text-ink shadow-sm" : "text-ink-2 hover:text-ink",
             )}

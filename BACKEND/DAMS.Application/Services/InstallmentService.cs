@@ -120,6 +120,7 @@ namespace DAMS.Application.Services
                 var amount = Money(dto.Amount);
                 if (amount <= 0m)
                     throw new InvalidOperationException("Payment amount must be greater than zero.");
+                var (paymentMethod, paymentReference) = PaymentInputRules.Resolve(dto.PaymentMethod, dto.PaymentReference);
                 if (!dto.FinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required.");
                 await _accountService.EnsureSelectableAsync(dto.FinanceAccountId.Value);
@@ -181,8 +182,8 @@ namespace DAMS.Application.Services
                     FinanceAccountId = dto.FinanceAccountId,
                     Type = PaymentType.Installment,
                     Amount = amount,
-                    PaymentMethod = dto.PaymentMethod,
-                    PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentReference) ? null : dto.PaymentReference.Trim(),
+                    PaymentMethod = paymentMethod,
+                    PaymentReference = paymentReference,
                     Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                     RecordedByUserId = adminUserId,
                     IdempotencyKey = attemptKey,
@@ -424,10 +425,22 @@ namespace DAMS.Application.Services
                 // keeps the other two commercial fields from being silently overwritten with nothing.
                 if (!isRecognised)
                 {
+                    // Kept when the form does not send one (the plan form never does): a regeneration
+                    // must not erase the reason the discount was given.
+                    var discountReason = BookingTermsRules.ResolveDiscountReason(booking.DiscountReason, dto.DiscountReason);
+                    if (agreedSalePrice != booking.AgreedSalePrice
+                        || dto.DiscountPercent != (booking.DiscountPercent ?? 0m)
+                        || discountReason != booking.DiscountReason)
+                    {
+                        _context.BookingTermsHistories.Add(BookingTermsRules.History(
+                            booking, BookingTermsChangeSource.Plan, adminUserId, agreedSalePrice, dto.DiscountPercent,
+                            discountReason, booking.BookingAmountRequired, booking.BookingAmountDueDate));
+                    }
+
                     booking.AgreedSalePrice = agreedSalePrice;
                     booking.DiscountPercent = dto.DiscountPercent;
                     booking.DiscountAmount = discountAmount;
-                    booking.DiscountReason = string.IsNullOrWhiteSpace(dto.DiscountReason) ? null : dto.DiscountReason.Trim();
+                    booking.DiscountReason = discountReason;
                 }
                 booking.InstallmentFrequency = dto.Frequency;
                 booking.NumberOfInstallments = dto.NumberOfInstallments;
