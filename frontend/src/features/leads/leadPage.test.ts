@@ -130,11 +130,11 @@ describe("converting", () => {
     expect(unitChoices([parking])).toEqual([{ value: "5", label: "Unit P-01 — Parking space · Parking" }]);
   });
 
-  it("sends the one matching customer, and waits when several share the phone", () => {
-    expect(conversionCustomerId({ matchedCustomerId: 4 }, "")).toBe(4);
+  it("sends a customer id only when the user picks from an ambiguous phone list", () => {
     expect(conversionCustomerId({}, "")).toBeNull();
+    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }] }, "")).toBeNull();
     expect(conversionCustomerId({ phoneMatches: [{ id: 4 }, { id: 9 }] }, "")).toBeNull();
-    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }, { id: 9 }], matchedCustomerId: 4 }, "9")).toBe(9);
+    expect(conversionCustomerId({ phoneMatches: [{ id: 4 }, { id: 9 }] }, "9")).toBe(9);
   });
 
   it("writes floors in words", () => {

@@ -86,16 +86,17 @@ export function floorLabel(floor: number): string {
 }
 
 /**
- * The customer a conversion should attach. One match is sent as-is. Several customers sharing the
- * phone is a choice, and nothing is sent until one is chosen — the server will not guess.
+ * Customer id to send on convert. Only an explicit pick from an ambiguous phone list is sent —
+ * a single match is shown in the dialog, but the server resolves it so phone/email conflict
+ * checks still run and a salesperson is not blocked for sending a CustomerId they may not set.
  */
 export function conversionCustomerId(
-  lead: { matchedCustomerId?: number | null; phoneMatches?: { id: number }[] | null },
+  lead: { phoneMatches?: { id: number }[] | null },
   chosenId: string,
 ): number | null {
-  if ((lead.phoneMatches?.length ?? 0) > 1)
-    return chosenId === "" ? null : Number(chosenId);
-  return lead.matchedCustomerId ?? null;
+  if ((lead.phoneMatches?.length ?? 0) <= 1)
+    return null;
+  return chosenId === "" ? null : Number(chosenId);
 }
 
 /** Units that can still be booked, the lead's apartment type first: "Unit 504 — 2 Bed · 5th floor", by the project's floor name. */

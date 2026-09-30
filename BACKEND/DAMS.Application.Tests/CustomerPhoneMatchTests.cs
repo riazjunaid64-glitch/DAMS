@@ -42,6 +42,45 @@ public sealed class CustomerPhoneMatchTests
     }
 
     [Fact]
+    public async Task Converting_without_customerId_rejects_a_phone_match_when_the_email_differs()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        var existing = await SeedCustomerAsync(h, "Amina Shah", "03001234567", "a@example.com");
+
+        var leadId = await h.CreateWorkedLeadAsync("+923001234567");
+        // CreateWorkedLeadAsync gives the lead its own email; keep that so FindOrCreate sees a conflict.
+        var lead = await h.Db.Leads.SingleAsync(l => l.Id == leadId);
+        Assert.NotEqual("a@example.com", lead.Email);
+
+        var beforeCustomers = await h.Db.Customers.CountAsync();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin));
+
+        Assert.Contains("email is different", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(beforeCustomers, await h.Db.Customers.CountAsync());
+        Assert.Equal(0, await h.Db.Bookings.CountAsync());
+        Assert.NotEqual(LeadStage.Won, (await h.LoadLeadAsync(leadId)).Stage);
+        Assert.Null((await h.LoadLeadAsync(leadId)).ConvertedCustomerId);
+        Assert.Equal(existing, (await h.Db.Customers.AsNoTracking().SingleAsync(c => c.Email == "a@example.com")).Id);
+    }
+
+    [Fact]
+    public async Task Salesperson_converts_a_phone_match_without_sending_customerId()
+    {
+        await using var h = await LeadTestHarness.CreateAsync();
+        // Compatible contact details: FindOrCreate reuses the row. Sending CustomerId would be refused.
+        var existing = await SeedCustomerAsync(h, "Amina Shah", "03001234567", email: null);
+
+        var leadId = await h.CreateWorkedLeadAsync("+92 300 1234567");
+        var result = await h.Leads.ConvertAsync(leadId, new ConvertLeadDto { UnitId = h.UnitId }, h.Sales);
+
+        Assert.Equal(existing, result.CustomerId);
+        Assert.False(result.CustomerWasCreated);
+        Assert.Equal(1, await h.Db.Bookings.CountAsync());
+        Assert.Equal(LeadStage.Won, (await h.LoadLeadAsync(leadId)).Stage);
+    }
+
+    [Fact]
     public async Task Converting_asks_to_choose_when_two_customers_share_the_phone()
     {
         await using var h = await LeadTestHarness.CreateAsync();
