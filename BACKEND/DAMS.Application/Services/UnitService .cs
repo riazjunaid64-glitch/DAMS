@@ -50,7 +50,7 @@ namespace DAMS.Application.Services
         return Map(unit, floorName);
     }
 
-    public async Task<UnitResponseDto?> GetUnitByIdAsync(int id)
+    public async Task<UnitResponseDto?> GetUnitByIdAsync(int id, bool includeLiveBooking = false)
     {
         var unit = await _context.Units
             .AsNoTracking()
@@ -70,6 +70,16 @@ namespace DAMS.Application.Services
 
         if (unit != null)
             await NameFloors(unit.ProjectId, [unit]);
+
+        if (unit != null && includeLiveBooking)
+        {
+            var live = await _context.Bookings.AsNoTracking()
+                .Where(b => b.UnitId == id && b.Status != BookingStatus.Cancelled)
+                .Select(b => new { b.Id, b.BookingReference })
+                .FirstOrDefaultAsync();
+            unit.LiveBookingId = live?.Id;
+            unit.LiveBookingReference = live?.BookingReference;
+        }
 
         return unit;
     }

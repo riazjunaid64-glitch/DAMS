@@ -11,5 +11,10 @@ namespace DAMS.Application.DTOs.UnitDtos
     public decimal Size { get; set; }
     public decimal Price { get; set; }
     public string Status { get; set; } = string.Empty;
+
+    // The unit's live (not cancelled) booking. Filled only for people who may open bookings, so a
+    // booked unit can link to it; left null for everyone else.
+    public int? LiveBookingId { get; set; }
+    public string? LiveBookingReference { get; set; }
     }
 }

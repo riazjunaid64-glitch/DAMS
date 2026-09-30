@@ -62,8 +62,13 @@ namespace DAMS.Application.DTOs.BookingDtos
         [StringLength(200)]
         public string? PaymentThrough { get; set; }
 
+        // Only the label printed on the application form (Booking / Confirmation / Lump sum). It is
+        // never read as a payment method: ApplicationPaymentMethod says how the money came in.
         [StringLength(30)]
         public string? ApplicationPaymentType { get; set; }
+
+        // How the money received with the form was paid. Required when an amount is received.
+        public PaymentMethod? ApplicationPaymentMethod { get; set; }
 
         public decimal? ApplicationAmountReceived { get; set; }
 
