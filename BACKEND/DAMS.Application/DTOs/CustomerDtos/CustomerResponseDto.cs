@@ -19,6 +19,14 @@ namespace DAMS.Application.DTOs.CustomerDtos
 
         public string? Address { get; set; }
 
+        public DateTime? DateOfBirth { get; set; }
+
+        public string? Nationality { get; set; }
+
+        public string? Occupation { get; set; }
+
+        public string? Whatsapp { get; set; }
+
         public CustomerSource Source { get; set; }
 
         public string? SourceNotes { get; set; }

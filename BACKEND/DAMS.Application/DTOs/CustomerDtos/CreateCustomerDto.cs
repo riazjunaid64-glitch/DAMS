@@ -10,6 +10,7 @@ namespace DAMS.Application.DTOs.CustomerDtos
         [StringLength(200, MinimumLength = 2)]
         public string FullName { get; set; } = string.Empty;
 
+        /// <summary>S/O, W/O, D/O — father's / husband's name on receipts.</summary>
         [StringLength(200)]
         public string? FatherName { get; set; }
 
@@ -26,10 +27,24 @@ namespace DAMS.Application.DTOs.CustomerDtos
         public string? Email { get => _email; set => _email = OptionalInput.BlankAsNull(value); }
         private string? _email;
 
+        [StringLength(50)]
+        public string? Whatsapp { get; set; }
+
+        public DateTime? DateOfBirth { get; set; }
+
+        [StringLength(100)]
+        public string? Nationality { get; set; }
+
+        [StringLength(150)]
+        public string? Occupation { get; set; }
+
         [StringLength(500)]
         public string? Address { get; set; }
 
-        [Required]
+        /// <summary>
+        /// Not asked on the New customer screen; Walk-in is stored for customers created there.
+        /// Callers that still send a source (tests, older clients) keep it.
+        /// </summary>
         public CustomerSource Source { get; set; } = CustomerSource.WalkIn;
 
         [StringLength(500)]

@@ -43,6 +43,11 @@ const TONES: Record<string, StatusTone> = {
   refundtopay: "orange",
   refundpaid: "green",
   norefund: "grey",
+  // Customers / documents (KAN-79+)
+  blocked: "red",
+  needed: "orange",
+  uploaded: "green",
+  notneeded: "grey",
 };
 
 /** Words that differ from the plain sentence-case of the status. */

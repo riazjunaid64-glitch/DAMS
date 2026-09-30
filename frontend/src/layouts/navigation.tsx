@@ -3,7 +3,6 @@ import {
   IconBell,
   IconBuilding,
   IconCalendarCheck,
-  IconFile,
   IconFolder,
   IconHome,
   IconInfo,
@@ -51,7 +50,6 @@ export function navigationFor(role: string | null | undefined): NavGroup[] {
         items: [
           { to: "/employees", label: "Employees", icon: <IconBadge size={ICON} /> },
           { to: "/finance", label: "Finance", icon: <IconWallet size={ICON} /> },
-          { to: "/customer-document-categories", label: "Document setup", icon: <IconFile size={ICON} /> },
           { to: "/notifications/settings", label: "Notifications", icon: <IconBell size={ICON} /> },
         ],
       },
@@ -81,7 +79,6 @@ export function navigationFor(role: string | null | undefined): NavGroup[] {
         items: [
           { to: "/employees", label: "Employees", icon: <IconBadge size={ICON} /> },
           { to: "/finance", label: "Finance", icon: <IconWallet size={ICON} /> },
-          { to: "/customer-document-categories", label: "Document setup", icon: <IconFile size={ICON} /> },
         ],
       },
       { ...website, items: website.items.filter((item) => item.to !== "/projects") },

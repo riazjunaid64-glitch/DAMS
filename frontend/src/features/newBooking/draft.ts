@@ -1,9 +1,10 @@
 import { pakistanToday } from "../../lib/financePeriods.ts";
 import { formatPkr } from "../../utils/currency.ts";
-import { isValidCnic, isValidEmail, isValidPkMobile } from "../../utils/validation.ts";
 import { formatPhone } from "../bookings/format.ts";
 import { referenceRequired } from "../bookings/paymentForm.ts";
 import { CUSTOM_CHIP, termsErrors, termsFigures, type TermsFigures } from "../bookings/termsForm.ts";
+import { badCnic, badMobile, CNIC_ERROR, MOBILE_ERROR } from "../customers/customerForm.ts";
+import { isValidEmail } from "../../utils/validation.ts";
 import type { PickerCustomer } from "./customers.ts";
 import type { PickerUnit } from "./units.ts";
 
@@ -120,13 +121,6 @@ export const receivedAmount = (draft: BookingDraft): number => (draft.received.t
 export const isDirty = (draft: BookingDraft, baseline: BookingDraft): boolean => JSON.stringify(draft) !== JSON.stringify(baseline);
 
 export type DraftErrors = Partial<Record<keyof BookingDraft | "unit" | "customer" | "bookingAmount" | "discount", string>>;
-
-const MOBILE_ERROR = "Enter a valid mobile number, e.g. 0300 1234567";
-const CNIC_ERROR = "Use 00000-0000000-0 or a passport number";
-// A CNIC is digits and dashes; anything else (a passport number) is accepted as typed.
-const looksLikeCnic = (text: string) => /^[\d-]+$/.test(text.trim());
-const badCnic = (text: string) => text.trim() !== "" && looksLikeCnic(text) && !isValidCnic(text);
-const badMobile = (text: string) => text.trim() !== "" && !isValidPkMobile(text);
 
 /** What is wrong with one step, field by field. Continue stays on the step while this is not empty. */
 export function stepErrors(step: StepIndex, draft: BookingDraft): DraftErrors {

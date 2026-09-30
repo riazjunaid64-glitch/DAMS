@@ -32,6 +32,8 @@ namespace DAMS.Application.Services
             int? createdByUserId,
             string? createdByName = null)
         {
+            await EnsureUniquePhoneAndCnicAsync(dto.Phone, dto.CNIC, excludeCustomerId: null);
+
             var customer = new Customer
             {
                 FullName = dto.FullName.Trim(),
@@ -39,6 +41,10 @@ namespace DAMS.Application.Services
                 CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim(),
                 Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant(),
                 Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim(),
+                DateOfBirth = dto.DateOfBirth,
+                Nationality = string.IsNullOrWhiteSpace(dto.Nationality) ? null : dto.Nationality.Trim(),
+                Occupation = string.IsNullOrWhiteSpace(dto.Occupation) ? null : dto.Occupation.Trim(),
+                Whatsapp = string.IsNullOrWhiteSpace(dto.Whatsapp) ? null : dto.Whatsapp.Trim(),
                 Source = dto.Source,
                 SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
@@ -79,91 +85,76 @@ namespace DAMS.Application.Services
 
         public async Task<CustomerListDto> GetCustomersAsync(CustomerFilterDto filter)
         {
-            var query = _context.Customers.AsNoTracking().AsQueryable();
+            var query = ApplyListFilters(_context.Customers.AsNoTracking(), filter);
 
-            if (filter.Source.HasValue)
-                query = query.Where(c => c.Source == filter.Source.Value);
+            // Summary follows search (and any legacy source/status filters) but not the card filter.
+            var matchedIds = await query.Select(c => c.Id).ToListAsync();
+            var totalCustomers = matchedIds.Count;
 
-            if (filter.Status.HasValue)
-                query = query.Where(c => c.Status == filter.Status.Value);
+            var neededByCustomer = totalCustomers == 0
+                ? new Dictionary<int, int>()
+                : await LoadDocumentsNeededByCustomerAsync(matchedIds);
 
-            if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
-            {
-                var search = filter.SearchTerm.Trim();
-                var term = search.ToLower();
-                // Something a person typed as a phone number or CNIC: digits with spaces, dashes,
-                // brackets or a plus. "0300-1234567", "0300 1234567", "03001234567" and "+92 300 1234567"
-                // all reduce to the same national number, and a CNIC matches with or without dashes.
-                var numeric = search.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')');
-                var phoneDigits = numeric ? LeadContactNormalizer.NormalizePhone(search) : string.Empty;
-                var cnicDigits = numeric ? new string(search.Where(char.IsDigit).ToArray()) : string.Empty;
-                var matchPhone = phoneDigits.Length >= LeadContactNormalizer.MinUsablePhoneDigits;
-                var matchCnic = cnicDigits.Length >= MinCnicSearchDigits;
-                query = query.Where(c =>
-                    c.FullName.ToLower().Contains(term) ||
-                    c.Phone.Contains(term) ||
-                    (c.CNIC != null && c.CNIC.ToLower().Contains(term)) ||
-                    (c.Email != null && c.Email.ToLower().Contains(term)) ||
-                    (matchPhone && c.NormalizedPhone != null && c.NormalizedPhone.Contains(phoneDigits)) ||
-                    (matchCnic && c.CNIC != null && c.CNIC.Replace("-", "").Replace(" ", "").Contains(cnicDigits)));
-            }
+            var documentsNeededCount = neededByCustomer.Count(kv => kv.Value > 0);
 
-            var totalCount = await query.CountAsync();
+            IEnumerable<int> listIds = matchedIds;
+            if (filter.DocumentsNeededOnly)
+                listIds = matchedIds.Where(id => neededByCustomer.GetValueOrDefault(id) > 0);
+
+            var filteredIds = listIds.ToList();
+            var totalCount = filteredIds.Count;
 
             var page = filter.Page < 1 ? 1 : filter.Page;
             var pageSize = filter.PageSize is < 1 or > 100 ? 20 : filter.PageSize;
 
-            var items = await query
+            // Newest first; page after the card filter so summaries stay stable when a card is clicked.
+            var pageIds = await _context.Customers.AsNoTracking()
+                .Where(c => filteredIds.Contains(c.Id))
                 .OrderByDescending(c => c.CreatedAt)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(c => new CustomerResponseDto
-                {
-                    Id = c.Id,
-                    FullName = c.FullName,
-                    FatherName = c.FatherName,
-                    Phone = c.Phone,
-                    CNIC = c.CNIC,
-                    Email = c.Email,
-                    Address = c.Address,
-                    Source = c.Source,
-                    SourceNotes = c.SourceNotes,
-                    Status = c.Status,
-                    UserId = c.UserId,
-                    Notes = c.Notes,
-                    BookingsCount = _context.Bookings.Count(b => b.CustomerId == c.Id),
-                    CreatedAt = c.CreatedAt,
-                    UpdatedAt = c.UpdatedAt
-                })
+                .Select(c => c.Id)
                 .ToListAsync();
 
-            var customerIds = items.Select(i => i.Id).ToArray();
-            var requirementRows = customerIds.Length == 0
+            var pageCustomers = pageIds.Count == 0
                 ? []
-                : await _context.CustomerDocumentRequirements.AsNoTracking()
-                    .Where(r => customerIds.Contains(r.CustomerId))
-                    .Select(r => new CustomerDocumentRequirement
-                    {
-                        CustomerId = r.CustomerId,
-                        IsRequired = r.IsRequired,
-                        Status = r.Status,
-                        // Needed by CustomerDocumentCompletion.Calculate to compute PostponedDue;
-                        // omitting it made the list badge silently under-report overdue postponements
-                        // versus the detail/checklist views that share the same rule.
-                        PostponedUntil = r.PostponedUntil
-                    })
+                : await _context.Customers.AsNoTracking()
+                    .Where(c => pageIds.Contains(c.Id))
                     .ToListAsync();
-            var summaries = requirementRows
-                .GroupBy(r => r.CustomerId)
-                .ToDictionary(g => g.Key, g => CustomerDocumentCompletion.Calculate(g));
-            foreach (var item in items)
-                item.DocumentSummary = summaries.GetValueOrDefault(item.Id)
-                    ?? CustomerDocumentCompletion.Calculate([]);
+            var byId = pageCustomers.ToDictionary(c => c.Id);
+
+            var bookingCounts = pageIds.Count == 0
+                ? new Dictionary<int, int>()
+                : await _context.Bookings.AsNoTracking()
+                    .Where(b => pageIds.Contains(b.CustomerId))
+                    .GroupBy(b => b.CustomerId)
+                    .Select(g => new { CustomerId = g.Key, Count = g.Count() })
+                    .ToDictionaryAsync(x => x.CustomerId, x => x.Count);
+
+            var items = pageIds
+                .Where(id => byId.ContainsKey(id))
+                .Select(id =>
+                {
+                    var c = byId[id];
+                    return new CustomerListItemDto
+                    {
+                        Id = c.Id,
+                        FullName = c.FullName,
+                        Phone = c.Phone,
+                        CNIC = c.CNIC,
+                        IsBlocked = c.Status == CustomerStatus.Blocked,
+                        BookingsCount = bookingCounts.GetValueOrDefault(id),
+                        DocumentsNeeded = neededByCustomer.GetValueOrDefault(id)
+                    };
+                })
+                .ToList();
 
             return new CustomerListDto
             {
                 Items = items,
                 TotalCount = totalCount,
+                TotalCustomers = totalCustomers,
+                DocumentsNeededCount = documentsNeededCount,
                 Page = page,
                 PageSize = pageSize
             };
@@ -174,6 +165,11 @@ namespace DAMS.Application.Services
             var customer = await _context.Customers.FirstOrDefaultAsync(c => c.Id == id);
             if (customer == null)
                 throw new InvalidOperationException("Customer not found.");
+
+            var phoneForCheck = dto.WasProvided(nameof(dto.Phone)) ? dto.Phone : customer.Phone;
+            var cnicForCheck = dto.WasProvided(nameof(dto.CNIC)) ? dto.CNIC : customer.CNIC;
+            if (dto.WasProvided(nameof(dto.Phone)) || dto.WasProvided(nameof(dto.CNIC)))
+                await EnsureUniquePhoneAndCnicAsync(phoneForCheck, cnicForCheck, excludeCustomerId: id);
 
             if (dto.WasProvided(nameof(dto.FullName))) customer.FullName = dto.FullName.Trim();
             if (dto.WasProvided(nameof(dto.FatherName))) customer.FatherName = string.IsNullOrWhiteSpace(dto.FatherName) ? null : dto.FatherName.Trim();
@@ -254,12 +250,18 @@ namespace DAMS.Application.Services
             var nationalPhone = LeadContactNormalizer.NormalizePhoneOrNull(phone);
             var normalizedCnic = string.IsNullOrWhiteSpace(cnic) ? null : cnic.Trim();
             var normalizedEmail = string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+            var cnicDigits = CustomerIdentityNormalizer.DigitsOnlyOrNull(normalizedCnic);
 
             // Deduplication only. Which record this is, never whose it is — see the comment on the
             // match below.
             Customer? existing = null;
-            if (normalizedCnic != null)
-                existing = await _context.Customers.FirstOrDefaultAsync(c => c.CNIC == normalizedCnic);
+            if (cnicDigits != null)
+            {
+                existing = await _context.Customers
+                    .FirstOrDefaultAsync(c =>
+                        c.CNIC != null &&
+                        c.CNIC.Replace("-", "").Replace(" ", "") == cnicDigits);
+            }
 
             if (existing == null && nationalPhone != null)
             {
@@ -340,6 +342,85 @@ namespace DAMS.Application.Services
             return new CustomerResolution(customer.Id, WasCreated: true);
         }
 
+        private async Task EnsureUniquePhoneAndCnicAsync(string? phone, string? cnic, int? excludeCustomerId)
+        {
+            var nationalPhone = LeadContactNormalizer.NormalizePhoneOrNull(phone);
+            if (nationalPhone != null && nationalPhone.Length >= LeadContactNormalizer.MinUsablePhoneDigits)
+            {
+                var match = await _context.Customers.AsNoTracking()
+                    .Where(c => c.NormalizedPhone == nationalPhone
+                                && (!excludeCustomerId.HasValue || c.Id != excludeCustomerId.Value))
+                    .OrderBy(c => c.Id)
+                    .Select(c => new { c.Id, c.FullName })
+                    .FirstOrDefaultAsync();
+                if (match != null)
+                    throw CustomerConflictException.Phone(match.Id, match.FullName);
+            }
+
+            var cnicDigits = CustomerIdentityNormalizer.DigitsOnlyOrNull(cnic);
+            if (cnicDigits != null)
+            {
+                var match = await _context.Customers.AsNoTracking()
+                    .Where(c => c.CNIC != null
+                                && c.CNIC.Replace("-", "").Replace(" ", "") == cnicDigits
+                                && (!excludeCustomerId.HasValue || c.Id != excludeCustomerId.Value))
+                    .OrderBy(c => c.Id)
+                    .Select(c => new { c.Id, c.FullName })
+                    .FirstOrDefaultAsync();
+                if (match != null)
+                    throw CustomerConflictException.Cnic(match.Id, match.FullName);
+            }
+        }
+
+        private async Task<Dictionary<int, int>> LoadDocumentsNeededByCustomerAsync(IReadOnlyList<int> customerIds)
+        {
+            var rows = await _context.CustomerDocumentRequirements.AsNoTracking()
+                .Where(r => customerIds.Contains(r.CustomerId) && r.IsRequired)
+                .Select(r => new { r.CustomerId, r.Status })
+                .ToListAsync();
+
+            return rows
+                .GroupBy(r => r.CustomerId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Count(r => CustomerDocumentsNeeded.IsNeeded(r.Status)));
+        }
+
+        private static IQueryable<Customer> ApplyListFilters(
+            IQueryable<Customer> query,
+            CustomerFilterDto filter)
+        {
+            if (filter.Source.HasValue)
+                query = query.Where(c => c.Source == filter.Source.Value);
+
+            if (filter.Status.HasValue)
+                query = query.Where(c => c.Status == filter.Status.Value);
+
+            if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
+            {
+                var search = filter.SearchTerm.Trim();
+                var term = search.ToLower();
+                // Something a person typed as a phone number or CNIC: digits with spaces, dashes,
+                // brackets or a plus. "0300-1234567", "0300 1234567", "03001234567" and "+92 300 1234567"
+                // all reduce to the same national number, and a CNIC matches with or without dashes.
+                var numeric = search.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')');
+                var phoneDigits = numeric ? LeadContactNormalizer.NormalizePhone(search) : string.Empty;
+                var cnicDigits = numeric ? CustomerIdentityNormalizer.DigitsOnly(search) : string.Empty;
+                var matchPhone = phoneDigits.Length >= LeadContactNormalizer.MinUsablePhoneDigits;
+                var matchCnic = cnicDigits.Length >= MinCnicSearchDigits;
+                query = query.Where(c =>
+                    c.FullName.ToLower().Contains(term) ||
+                    (matchPhone && c.NormalizedPhone != null && c.NormalizedPhone.Contains(phoneDigits)) ||
+                    (matchCnic && c.CNIC != null && c.CNIC.Replace("-", "").Replace(" ", "").Contains(cnicDigits)) ||
+                    // Non-numeric search still finds a phone/CNIC typed as a fragment of the display form.
+                    (!matchPhone && !matchCnic && (
+                        c.Phone.Contains(term) ||
+                        (c.CNIC != null && c.CNIC.ToLower().Contains(term)))));
+            }
+
+            return query;
+        }
+
         private async Task TryAssignDefaultDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
         {
             try
@@ -375,7 +456,10 @@ namespace DAMS.Application.Services
         {
             if (normalizedCnic != null &&
                 !string.IsNullOrWhiteSpace(existing.CNIC) &&
-                !string.Equals(existing.CNIC, normalizedCnic, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(
+                    CustomerIdentityNormalizer.DigitsOnly(existing.CNIC),
+                    CustomerIdentityNormalizer.DigitsOnly(normalizedCnic),
+                    StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(matchedByPhone
                     ? "These details match an existing customer by phone, but the CNIC is different. Choose the customer explicitly or create a separate record."
@@ -426,6 +510,10 @@ namespace DAMS.Application.Services
                 CNIC = c.CNIC,
                 Email = c.Email,
                 Address = c.Address,
+                DateOfBirth = c.DateOfBirth,
+                Nationality = c.Nationality,
+                Occupation = c.Occupation,
+                Whatsapp = c.Whatsapp,
                 Source = c.Source,
                 SourceNotes = c.SourceNotes,
                 Status = c.Status,
