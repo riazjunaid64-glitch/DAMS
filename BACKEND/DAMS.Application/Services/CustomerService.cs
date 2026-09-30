@@ -75,6 +75,8 @@ namespace DAMS.Application.Services
             return Map(customer, bookingsCount, CustomerDocumentCompletion.Calculate(requirements));
         }
 
+        private const int MinCnicSearchDigits = 5;
+
         public async Task<CustomerListDto> GetCustomersAsync(CustomerFilterDto filter)
         {
             var query = _context.Customers.AsNoTracking().AsQueryable();
@@ -87,12 +89,23 @@ namespace DAMS.Application.Services
 
             if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
             {
-                var term = filter.SearchTerm.Trim().ToLower();
+                var search = filter.SearchTerm.Trim();
+                var term = search.ToLower();
+                // Something a person typed as a phone number or CNIC: digits with spaces, dashes,
+                // brackets or a plus. "0300-1234567", "0300 1234567", "03001234567" and "+92 300 1234567"
+                // all reduce to the same national number, and a CNIC matches with or without dashes.
+                var numeric = search.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')');
+                var phoneDigits = numeric ? LeadContactNormalizer.NormalizePhone(search) : string.Empty;
+                var cnicDigits = numeric ? new string(search.Where(char.IsDigit).ToArray()) : string.Empty;
+                var matchPhone = phoneDigits.Length >= LeadContactNormalizer.MinUsablePhoneDigits;
+                var matchCnic = cnicDigits.Length >= MinCnicSearchDigits;
                 query = query.Where(c =>
                     c.FullName.ToLower().Contains(term) ||
                     c.Phone.Contains(term) ||
                     (c.CNIC != null && c.CNIC.ToLower().Contains(term)) ||
-                    (c.Email != null && c.Email.ToLower().Contains(term)));
+                    (c.Email != null && c.Email.ToLower().Contains(term)) ||
+                    (matchPhone && c.NormalizedPhone != null && c.NormalizedPhone.Contains(phoneDigits)) ||
+                    (matchCnic && c.CNIC != null && c.CNIC.Replace("-", "").Replace(" ", "").Contains(cnicDigits)));
             }
 
             var totalCount = await query.CountAsync();

@@ -112,14 +112,13 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(r => r.Id == rebateId && r.BookingId == bookingId, cancellationToken)
                 ?? throw new KeyNotFoundException("Rebate not found for this booking.");
             ApplyToken(rebate, dto.ConcurrencyToken, "rebate");
-            // Same rule as a commission: correctable while it is still only an agreement, and
-            // unwound by reversing the disbursement once any of it has actually reached the customer.
-            if (rebate.Status != CustomerRebateStatus.Pending)
-                throw new InvalidOperationException("Only a pending rebate can be edited.");
-            if (NetDisbursed(rebate) != 0m || rebate.Disbursements.Count != 0)
-                throw new InvalidOperationException("A rebate with application or payment history cannot be edited.");
+            // Same rule as a commission: correctable while it is live, given or not. What has already
+            // reached the customer stays as it is, and the new total only has to cover it.
+            if (rebate.Status is not (CustomerRebateStatus.Pending or CustomerRebateStatus.Applied or CustomerRebateStatus.Paid))
+                throw new InvalidOperationException("Only a pending or fully given rebate can be edited.");
+            if (rebate.Disbursements.Count != 0 && dto.Method != rebate.Method)
+                throw new InvalidOperationException("How the customer gets this rebate cannot change once any of it has been given.");
 
-            var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
             if (!Enum.IsDefined(dto.CalculationType) || !Enum.IsDefined(dto.CalculationBasis))
@@ -127,6 +126,8 @@ namespace DAMS.Application.Services
             if (!Enum.IsDefined(dto.Method)) throw new InvalidOperationException("Select a valid rebate method.");
             var reason = Limited(dto.Reason, "Rebate reason", 2000)
                 ?? DescribeCalculation(dto.CalculationType, dto.PercentageRate, dto.FixedAmount, dto.CalculationBasis);
+            // Optional: the popup has no such field, so the reason stands in for it.
+            var changeReason = Limited(dto.ChangeReason, "Change reason", 2000) ?? Limited(dto.Reason, "Rebate reason", 2000) ?? "Rebate corrected.";
             // The edit form cannot offer a different value for a locked basis (BookingAmountReceived,
             // AmountActuallyCollected, ManuallyApprovedAmount — see RebateRebasableBases), so it always
             // resubmits the one already stored. Re-deriving the basis amount from today's booking in
@@ -159,7 +160,12 @@ namespace DAMS.Application.Services
             if (final > Money(booking.AgreedSalePrice - booking.DiscountAmount))
                 throw new InvalidOperationException("Rebate cannot exceed the booking's net sale price.");
 
+            var alreadyGiven = NetDisbursed(rebate);
+            if (final < alreadyGiven)
+                throw new InvalidOperationException($"The rebate cannot be less than the {alreadyGiven:0.00} already given.");
+
             var previousAmount = rebate.FinalAmount;
+            var previousStatus = rebate.Status;
             rebate.CalculationType = dto.CalculationType;
             rebate.PercentageRate = dto.PercentageRate.HasValue ? Rate(dto.PercentageRate.Value) : null;
             rebate.FixedAmount = dto.FixedAmount.HasValue ? Money(dto.FixedAmount.Value) : null;
@@ -172,10 +178,15 @@ namespace DAMS.Application.Services
             rebate.Reason = reason;
             rebate.Method = dto.Method;
             rebate.Notes = Limited(dto.Notes, "Notes", 2000);
-            // A correction leaves the rebate pending, for the corrected amount.
+            // Fully given stays given only while the new total is exactly what was given; any more and
+            // something remains to give, so it is Pending again.
+            if (alreadyGiven > 0m)
+                rebate.Status = final == alreadyGiven
+                    ? (rebate.Method == CustomerRebateMethod.CashOrBankPayment ? CustomerRebateStatus.Paid : CustomerRebateStatus.Applied)
+                    : CustomerRebateStatus.Pending;
             rebate.UpdatedAt = DateTime.UtcNow;
             Audit(FinancialWorkflowAction.RebateAdjusted, actor, customerId: booking.CustomerId, bookingId: bookingId,
-                rebateId: rebate.Id, oldRebate: rebate.Status, newRebate: rebate.Status,
+                rebateId: rebate.Id, oldRebate: previousStatus, newRebate: rebate.Status,
                 previousAmount: previousAmount, newAmount: rebate.FinalAmount, reason: changeReason);
             await _context.SaveChangesAsync(cancellationToken);
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);

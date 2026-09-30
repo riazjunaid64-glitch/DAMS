@@ -61,7 +61,9 @@ namespace DAMS.Api.Controllers
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id)
     {
-        var result = await _unitService.GetUnitByIdAsync(id);
+        // The page is public, so the live booking is named only for someone signed in with the bookings role.
+        var mayOpenBookings = User.IsInRole(AppRoles.Admin) || User.IsInRole(AppRoles.Accountant);
+        var result = await _unitService.GetUnitByIdAsync(id, mayOpenBookings);
         if (result == null) return NotFound();
         return Ok(result);
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { can, homePathFor } from "./permissions.ts";
+import { can, homePathFor, pageAccess } from "./permissions.ts";
 
 describe("role permissions", () => {
   it("keeps the Accountant out of the Lead CRM and staff administration", () => {
@@ -21,5 +21,19 @@ describe("role permissions", () => {
     expect(homePathFor("Manager")).toBe("/crm");
     expect(homePathFor("Employee")).toBe("/crm");
     expect(homePathFor("Accountant")).toBe("/confirmed-bookings");
+  });
+});
+
+describe("pageAccess", () => {
+  it("waits while the signed-in user is still loading instead of turning anyone away", () => {
+    expect(pageAccess(null, "finance")).toBe("wait");
+    expect(pageAccess(undefined, "finance")).toBe("wait");
+  });
+
+  it("lets an Accountant and an Admin into finance pages, and turns sales staff away", () => {
+    expect(pageAccess("Accountant", "finance")).toBe("allow");
+    expect(pageAccess("Admin", "finance")).toBe("allow");
+    expect(pageAccess("Manager", "finance")).toBe("deny");
+    expect(pageAccess("Employee", "finance")).toBe("deny");
   });
 });

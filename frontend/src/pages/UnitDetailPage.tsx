@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import type { User } from "../App.tsx";
 import { api, resolveMediaUrl } from "../api/api.ts";
 import { readError } from "../api/readError.ts";
@@ -46,7 +46,10 @@ export default function UnitDetailPage({ user }: Props) {
   const { id } = useParams<{ id?: string }>();
   const unitId = Number(id);
   const toast = useToast();
+  const navigate = useNavigate();
   const canWrite = can(user?.role, "projects.write");
+  // Only people who may open bookings see a booking button, and only they get the unit's live booking back.
+  const canBook = can(user?.role, "bookings");
   const { reload: reloadProjects } = useProjects();
   const [unit, setUnit] = useState<UnitFromApi | null>(null);
   const [projectName, setProjectName] = useState("");
@@ -65,7 +68,7 @@ export default function UnitDetailPage({ user }: Props) {
     }
     setError(null);
     try {
-      const unitResponse = await api(`/api/Unit/${unitId}`, undefined, false);
+      const unitResponse = await api(`/api/Unit/${unitId}`, undefined, canBook);
       if (!unitResponse.ok) {
         setError("Unit not found.");
         setUnit(null);
@@ -93,7 +96,7 @@ export default function UnitDetailPage({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [toast, unitId]);
+  }, [toast, unitId, canBook]);
 
   useEffect(() => { setLoading(true); void load(); }, [load]);
 
@@ -119,7 +122,17 @@ export default function UnitDetailPage({ user }: Props) {
         title={`Unit ${unit.unitNumber}`}
         status={shown}
         subtitle={projectName || undefined}
-        actions={canWrite ? <Button variant="outline" onClick={() => setEditing(true)}>Edit unit</Button> : undefined}
+        actions={(canWrite || canBook) ? (
+          <>
+            {canWrite && <Button variant="outline" onClick={() => setEditing(true)}>Edit unit</Button>}
+            {canBook && unit.liveBookingId != null && (
+              <Button onClick={() => navigate(`/confirmed-bookings/${unit.liveBookingId}`)}>Open booking {unit.liveBookingReference} →</Button>
+            )}
+            {canBook && unit.liveBookingId == null && unit.status === "Available" && (
+              <Button onClick={() => navigate(`/confirmed-bookings/new?unitId=${unit.id}`)}>Book this unit</Button>
+            )}
+          </>
+        ) : undefined}
       />
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
         <InfoCard label="Type" value={unit.unitType || "—"} highlight />

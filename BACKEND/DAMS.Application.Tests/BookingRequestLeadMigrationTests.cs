@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.BookingRequestDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Domain.Entities;
@@ -249,7 +250,7 @@ public sealed class BookingRequestLeadMigrationTests
         var second = await h.BookingRequests.CreateBookingRequestAsync(Request(h), null);
 
         await h.BookingRequests.ApproveBookingRequestAsync(first.Id, h.AdminUserId);
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<BookingConflictException>(() =>
             h.BookingRequests.ApproveBookingRequestAsync(second.Id, h.AdminUserId));
 
         Assert.Equal(first.Id, (await h.Db.Bookings.AsNoTracking().SingleAsync()).BookingRequestId);

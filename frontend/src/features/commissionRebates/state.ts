@@ -1,28 +1,26 @@
 import type { KeyboardEvent } from "react";
-import type { CalculationBasis, CalculationType, Commission, CommissionStatus, Rebate, RebateStatus } from "./types";
+import type { CalculationBasis, CalculationType, Commission, CommissionStatus, Rebate, RebateMethod, RebateStatus } from "./types";
 
 // A commission or rebate is Pending from entry until the money is fully paid or applied, whether or
 // not part of it has already gone out — how much is paid and how much is left comes from the payment
 // rows, so the caller passes those in. Reversing is what unwinds anything already sent.
 //
-// Editing and cancelling are DIFFERENT rules, and both mirror the server exactly:
-//   • Edit needs a clean sheet. The server refuses once ANY payout row exists, reversed or not,
-//     because that payout's own figures were struck against the amount being rewritten — hence
-//     movementCount, not just the net.
-//   • Cancel is not gated on history at all. The server accepts it whenever the record is pending
-//     with nothing net paid, which a fully reversed payout satisfies. Applying the edit rule to
-//     Cancel as well left a commission that had been paid and then fully reversed with no way to
-//     close it: no Edit, no Cancel, and no payout left to reverse.
-export const commissionActions = (status:CommissionStatus, paidAmount = 0, movementCount = 0) => ({
+// Editing and cancelling are different rules, and both mirror the server:
+//   • Edit is allowed while the record is live (Pending, or fully paid / given), whether or not
+//     anything has gone out. The partner, or how the customer gets the rebate, is locked after the
+//     first payment, and the new total cannot drop below what has gone out.
+//   • Cancel needs nothing net paid. A payout that was fully reversed satisfies that, which is why it
+//     is gated on the net and not on there being any history.
+export const commissionActions = (status:CommissionStatus, paidAmount = 0) => ({
   canPay: status === "Pending",
-  canEdit: status === "Pending" && paidAmount === 0 && movementCount === 0,
+  canEdit: status === "Pending" || status === "Paid",
   canCancel: status === "Pending" && paidAmount === 0,
   canReverse: paidAmount > 0 || status === "Paid" || status === "ReversalRequired",
 });
 
-export const rebateActions = (status:RebateStatus, givenAmount = 0, movementCount = 0) => ({
+export const rebateActions = (status:RebateStatus, givenAmount = 0) => ({
   canDisburse: status === "Pending",
-  canEdit: status === "Pending" && givenAmount === 0 && movementCount === 0,
+  canEdit: status === "Pending" || status === "Applied" || status === "Paid",
   canCancel: status === "Pending" && givenAmount === 0,
   canReverse: givenAmount > 0 || status === "Applied" || status === "Paid" || status === "ReversalRequired",
 });
@@ -34,7 +32,6 @@ export interface CommissionFormState {
   percentageRate: string;
   fixedAmount: string;
   notes: string;
-  changeReason: string;
 }
 
 export interface RebateFormState {
@@ -43,7 +40,8 @@ export interface RebateFormState {
   percentageRate: string;
   fixedAmount: string;
   reason: string;
-  changeReason: string;
+  /** How the customer gets it. Locked once any of it has been given. */
+  method: RebateMethod;
 }
 
 // The bases the booking screen can state in one line. The enum carries five; these forms offer
@@ -147,7 +145,8 @@ export function commissionRequestBody(form: CommissionFormState, existing: Commi
     minimumCollectionPercent: null,
     adjustmentAmount: existing?.adjustmentAmount ?? 0,
     adjustmentReason: existing?.adjustmentReason ?? null,
-    ...(existing ? { concurrencyToken: existing.concurrencyToken, changeReason: form.changeReason } : {}),
+    // No change reason: the popup has none, and the server uses the notes as the reason.
+    ...(existing ? { concurrencyToken: existing.concurrencyToken } : {}),
   };
 }
 
@@ -164,9 +163,9 @@ export function rebateRequestBody(form: RebateFormState, existing: Rebate | null
     adjustmentReason: existing?.adjustmentReason ?? null,
     reason: form.reason.trim() || null,
     notes: existing?.notes ?? null,
-    // How the rebate reaches the customer is chosen when it is applied, not here.
-    method: existing ? existing.method : "OutstandingBalanceReduction",
-    ...(existing ? { concurrencyToken: existing.concurrencyToken, changeReason: form.changeReason } : {}),
+    method: form.method,
+    // No change reason: the popup has none, and the server uses the reason as the change reason.
+    ...(existing ? { concurrencyToken: existing.concurrencyToken } : {}),
   };
 }
 

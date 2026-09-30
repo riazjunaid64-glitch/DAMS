@@ -10,13 +10,19 @@ type SingleChoiceProps = FieldBaseProps & {
   /** Accessible name when there is no visible label. */
   "aria-label"?: string;
   className?: string;
+  /**
+   * `chips` (default): separate bordered chips. `segmented`: one grey track with the selected option as a
+   * white pill, for a two- or three-way form choice (Fixed amount | Percentage).
+   */
+  variant?: "chips" | "segmented";
 };
 
 /**
  * Single choice from a few options shown as chips (Studio / 1 Bed / 2 Bed). Behaves as a radio
  * group: one Tab stop, arrow keys move and select.
  */
-export function ChoiceChips({ options, value, onChange, label, required, helper, error, className, "aria-label": ariaLabel }: SingleChoiceProps) {
+export function ChoiceChips({ options, value, onChange, label, required, helper, error, className, variant = "chips", "aria-label": ariaLabel }: SingleChoiceProps) {
+  const segmented = variant === "segmented";
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const selectedIndex = options.findIndex((option) => option.value === value);
   const tabStop = selectedIndex >= 0 ? selectedIndex : options.findIndex((option) => !option.disabled);
@@ -37,7 +43,11 @@ export function ChoiceChips({ options, value, onChange, label, required, helper,
 
   return (
     <FieldShell as="fieldset" label={label} required={required} helper={helper} error={error} className={className}>
-      <div role="radiogroup" aria-label={label ? undefined : ariaLabel} className="flex flex-wrap gap-2">
+      <div
+        role="radiogroup"
+        aria-label={label ? undefined : ariaLabel}
+        className={segmented ? "flex gap-1 rounded-field bg-track p-1" : "flex flex-wrap gap-2"}
+      >
         {options.map((option, index) => {
           const checked = option.value === value;
           return (
@@ -52,9 +62,11 @@ export function ChoiceChips({ options, value, onChange, label, required, helper,
               onClick={() => onChange(option.value)}
               onKeyDown={(event) => onKeyDown(event, index)}
               className={cx(
-                "h-11 cursor-pointer whitespace-nowrap rounded-field border px-4 text-sm font-bold transition-colors",
+                "cursor-pointer whitespace-nowrap text-sm font-bold transition-colors",
                 "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-45",
-                checked ? "border-primary bg-primary text-white" : "border-line-input bg-card text-ink hover:bg-page",
+                segmented
+                  ? cx("h-10 flex-1 rounded-field border-0 px-3", checked ? "bg-card text-ink shadow-sm" : "bg-transparent text-ink-2 hover:text-ink")
+                  : cx("h-11 rounded-field border px-4", checked ? "border-primary bg-primary text-white" : "border-line-input bg-card text-ink hover:bg-page"),
               )}
             >
               {option.label}

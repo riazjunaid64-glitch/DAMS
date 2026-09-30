@@ -252,6 +252,7 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("GET", "/api/finance/commissions-rebates/bookings/1"),
             R("GET", "/api/finance/commissions-rebates/bookings/1/audit"),
             R("POST", "/api/finance/commissions-rebates/bookings/1/commissions"),
+            R("GET", "/api/finance/commissions-rebates/bookings/1/commission-preview?partnerId=1"),
             R("PUT", "/api/finance/commissions-rebates/bookings/1/commissions/1"),
             R("POST", "/api/finance/commissions-rebates/bookings/1/commissions/1/status"),
             R("POST", "/api/finance/commissions-rebates/bookings/1/commissions/1/payouts"),

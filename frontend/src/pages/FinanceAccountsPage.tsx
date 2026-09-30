@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { pageAccess } from "../features/access/permissions.ts";
 import { api } from "../api/api";
 import { readFinanceAccountsPage } from "../features/finance/accountPageReads";
 import Button from "../lib/Button";
@@ -42,6 +43,7 @@ function withRunningBalances(transactions: Transaction[], openingBalance: number
 }
 
 export default function FinanceAccountsPage({ user }:{user:User|null}) {
+  const access=pageAccess(user?.role,"finance");
   const navigate = useNavigate();
   const [accounts,setAccounts]=useState<Account[]>([]), [loading,setLoading]=useState(true), [search,setSearch]=useState(""), [status,setStatus]=useState("all");
   const [typeFilter,setTypeFilter]=useState(""), [holderFilter,setHolderFilter]=useState("");
@@ -82,11 +84,12 @@ export default function FinanceAccountsPage({ user }:{user:User|null}) {
   },[loadAccounts]);
 
   useEffect(()=>{
-    if(user?.role!=="Admin"){navigate("/");return;}
+    if(access==="wait")return;
+    if(access==="deny"){navigate("/");return;}
     const timer=window.setTimeout(()=>{if(accountsDebounceTimer.current===timer)accountsDebounceTimer.current=null;void loadAccounts();},250);
     accountsDebounceTimer.current=timer;
     return()=>{window.clearTimeout(timer);if(accountsDebounceTimer.current===timer)accountsDebounceTimer.current=null;accountsController.current?.abort();};
-  },[user,navigate,loadAccounts]);
+  },[access,navigate,loadAccounts]);
   const openDetail=async(a:Account)=>{setSelected(a);setTransactions([]);try{const [detail,tx]=await Promise.all([api(`/api/finance/accounts/${a.id}`),api(`/api/finance/accounts/${a.id}/transactions?take=200`)]);if(detail.ok)setSelected(await detail.json());if(tx.ok)setTransactions((await tx.json()).items);}catch{/* Empty history is shown with a safe fallback. */}};
   const save=async()=>{ if(!form||saving)return; setError(null); if(!form.name.trim()||!form.accountHolderName.trim()){setError("Account name and account holder are required.");return;} const opening=Number(form.openingBalance); if(!Number.isFinite(opening)){setError("Enter a valid opening balance.");return;} setSaving(true); try { const body={name:form.name.trim(),type:Number(form.type),accountHolderName:form.accountHolderName.trim(),openingBalance:opening,ledgerCode:form.ledgerCode.trim()||null,displayOrder:Number(form.displayOrder)||0,bankOrWalletName:form.bankOrWalletName.trim()||null,description:form.description.trim()||null,concurrencyToken:form.concurrencyToken}; const r=await api(form.id?`/api/finance/accounts/${form.id}`:"/api/finance/accounts",{method:form.id?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok){const d=await r.json().catch(()=>null);throw new Error(d?.message??"Account could not be saved.");} setForm(null);await refresh(); } catch(saveError) { setError(saveError instanceof Error?saveError.message:"Account could not be saved. Check your connection and try again."); } finally { setSaving(false); } };
   const edit=(a:Account)=>setForm({id:a.id,name:a.name,type:String(typeValue(a.type)),accountHolderName:a.accountHolderName,openingBalance:String(a.openingBalance),ledgerCode:a.ledgerCode??"",displayOrder:String(a.displayOrder),bankOrWalletName:a.bankOrWalletName??"",description:a.description??"",concurrencyToken:a.concurrencyToken,isSystemAccount:a.isSystemAccount});

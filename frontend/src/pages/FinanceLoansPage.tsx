@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { pageAccess } from "../features/access/permissions.ts";
 import { api } from "../api/api";
 import Button from "../lib/Button";
 import { DatePicker } from "../components/ui";
@@ -56,6 +57,7 @@ const movementCaption = (row:LoanTransaction) => {
 };
 
 export default function FinanceLoansPage({user}:{user:User|null}) {
+  const access=pageAccess(user?.role,"finance");
   const navigate=useNavigate();
   const [loans,setLoans]=useState<Loan[]>([]);
   const [loanAccounts,setLoanAccounts]=useState<LoanAccount[]>([]);
@@ -112,7 +114,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
     } finally { if(request===statementRequest.current)setLoadingStatement(false); }
   },[]);
 
-  useEffect(()=>{if(user?.role!=="Admin"){navigate("/");return;}void loadLoans();},[user,navigate,loadLoans]);
+  useEffect(()=>{if(access==="wait")return;if(access==="deny"){navigate("/");return;}void loadLoans();},[access,navigate,loadLoans]);
   useEffect(()=>{if(selectedId)void loadStatement(selectedId);else setStatement(null);},[selectedId,loadStatement]);
 
   // Read from the loan list, not from the statement. The list is keyed by the same id the sidebar
@@ -251,7 +253,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
     URL.revokeObjectURL(url);
   };
 
-  if(user?.role!=="Admin")return null;
+  if(access!=="allow")return null;
 
   const stats=selected?[
     {label:"Outstanding principal",value:money(selected.currentBalance),hint:undefined as string|undefined},

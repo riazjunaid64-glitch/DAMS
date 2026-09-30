@@ -53,6 +53,16 @@ export function can(role: string | null | undefined, capability: Capability): bo
   return BY_ROLE[role]?.has(capability) ?? false;
 }
 
+/**
+ * What a page that needs one capability should do right now. The signed-in user is read after the
+ * page first renders, so "no role yet" means "still loading", not "not allowed": sending someone home
+ * in that gap is what bounced every refresh.
+ */
+export function pageAccess(role: string | null | undefined, capability: Capability): "wait" | "allow" | "deny" {
+  if (!role) return "wait";
+  return can(role, capability) ? "allow" : "deny";
+}
+
 export function isSalesRole(role: string | null | undefined): boolean {
   return role === "Manager" || role === "Employee";
 }

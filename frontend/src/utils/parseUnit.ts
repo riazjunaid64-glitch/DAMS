@@ -11,6 +11,9 @@ export interface UnitFromApi {
   size: number;
   price: number;
   status: string;
+  /** The unit's live booking; sent only to people who may open bookings. */
+  liveBookingId?: number | null;
+  liveBookingReference?: string | null;
 }
 
 function num(v: unknown): number {
@@ -50,6 +53,8 @@ export function parseUnitRow(raw: unknown): UnitFromApi | null {
     size: num(o.size ?? o.Size),
     price: num(o.price ?? o.Price),
     status: String(o.status ?? o.Status ?? ""),
+    liveBookingId: o.liveBookingId == null ? null : num(o.liveBookingId),
+    liveBookingReference: typeof o.liveBookingReference === "string" ? o.liveBookingReference : null,
   };
 }
 
