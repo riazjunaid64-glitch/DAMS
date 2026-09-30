@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import {
   Checkbox,
   ChoiceChips,
-  DateField,
+  DatePicker,
   Dropdown,
   FieldShell,
   Modal,
@@ -210,7 +210,7 @@ export function CloseLeadDialog({ lead, reasons, onClose, onSaved }: DialogProps
         <ChoiceChips label="Outcome" required options={OUTCOMES} value={outcome} onChange={(value) => { setOutcome(value as "Lost" | "Dormant"); setReasonId(""); }} />
         <Dropdown label="Reason" required options={options} value={reasonId} onChange={setReasonId} placeholder={reasons ? "Choose a reason" : "Loading…"} />
         {dormant && (
-          <DateField label="Bring back on" min={today} value={bringBackOn} error={bringBackOn && bringBackOn < today ? "Choose today or a later day." : undefined} onChange={(e) => setBringBackOn(e.target.value)} />
+          <DatePicker label="Bring back on" min={today} value={bringBackOn} error={bringBackOn && bringBackOn < today ? "Choose today or a later day." : undefined} onChange={setBringBackOn} />
         )}
         <TextArea label="Notes" placeholder="Optional" value={notes} onChange={(e) => setNotes(e.target.value)} />
       </form>

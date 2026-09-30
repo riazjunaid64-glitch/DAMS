@@ -38,13 +38,24 @@ export async function settleRead<T>(response: Response | null, failure: string):
   }
 }
 
+/** Which of the two tab reads to issue. The booking is always read; a tab's data is read once its tab is opened. */
+export interface WantedReads {
+  schedule: boolean;
+  payments: boolean;
+}
+
+// A read nobody asked for has neither a value nor a failure: it is not "unavailable", it is unread.
+const notRead = { value: null, error: null };
+
 /**
- * Issues exactly the three requests this screen owns and settles each on its own. No read can abort
- * another, and none of them throws: the caller applies three outcomes.
+ * Issues the requests this screen owns and settles each on its own. No read can abort another, and
+ * none of them throws: the caller applies the outcomes. The booking carries every figure the Summary
+ * needs, so the schedule and the payment list are only fetched when a tab that shows them is opened.
  */
 export async function readBookingDetail<TBooking, TSchedule, TPayments>(
   bookingId: number | string,
   request: (path: string) => Promise<Response>,
+  wanted: WantedReads = { schedule: true, payments: true },
 ): Promise<{
   booking: ReadResult<TBooking>;
   schedule: ReadResult<TSchedule>;
@@ -52,13 +63,13 @@ export async function readBookingDetail<TBooking, TSchedule, TPayments>(
 }> {
   const [bookRes, schedRes, payRes] = await Promise.all([
     request(`/api/Booking/${bookingId}`).catch(() => null),
-    request(`/api/Booking/${bookingId}/installments`).catch(() => null),
-    request(`/api/Booking/${bookingId}/payments`).catch(() => null),
+    wanted.schedule ? request(`/api/Booking/${bookingId}/installments`).catch(() => null) : null,
+    wanted.payments ? request(`/api/Booking/${bookingId}/payments`).catch(() => null) : null,
   ]);
   return {
     booking: await settleRead<TBooking>(bookRes, bookingReadFailed),
-    schedule: await settleRead<TSchedule>(schedRes, scheduleReadFailed),
-    payments: await settleRead<TPayments>(payRes, paymentsReadFailed),
+    schedule: wanted.schedule ? await settleRead<TSchedule>(schedRes, scheduleReadFailed) : notRead,
+    payments: wanted.payments ? await settleRead<TPayments>(payRes, paymentsReadFailed) : notRead,
   };
 }
 

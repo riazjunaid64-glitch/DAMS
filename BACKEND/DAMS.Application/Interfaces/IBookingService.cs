@@ -13,6 +13,9 @@ namespace DAMS.Application.Interfaces
 
         Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter);
 
+        /// <summary>Bookings per status (and the total, cancelled included) for the filter's search, project and customer; its status is ignored.</summary>
+        Task<BookingStatusCountsDto> GetBookingStatusCountsAsync(BookingFilterDto filter);
+
         /// <summary>
         /// Cancels a booking and records its cancellation settlement (customer cash received,
         /// refund decided, retained amount) atomically with releasing the unit and running the

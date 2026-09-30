@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
 import Field from "../../lib/Field.tsx";
+import { DatePicker } from "../ui";
 import Modal from "../../lib/Modal.tsx";
 
 interface Task {
@@ -399,7 +400,7 @@ export default function EmployeeTasksTab({ employeeId }: Props) {
                   </AppSelect>
                 </div>
               </div>
-              <Field label="Due Date" type="date" value={assignForm.dueDate} onChange={e => setAssignForm(f => ({ ...f, dueDate: e.target.value }))} hint="Optional" />
+              <DatePicker label="Due Date" value={assignForm.dueDate} onChange={dueDate => setAssignForm(f => ({ ...f, dueDate }))} helper="Optional" />
               {assignError && (
                 <div className="rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-300 flex items-center gap-2">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>

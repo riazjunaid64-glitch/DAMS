@@ -6,7 +6,6 @@ import {
   IconFile,
   IconFolder,
   IconHome,
-  IconInbox,
   IconInfo,
   IconMail,
   IconTarget,
@@ -43,7 +42,6 @@ export function navigationFor(role: string | null | undefined): NavGroup[] {
         items: [
           { to: "/crm", label: "Lead CRM", icon: <IconTarget size={ICON} /> },
           { to: "/projects", label: "Projects", icon: <IconBuilding size={ICON} /> },
-          { to: "/bookings", label: "Requests", icon: <IconInbox size={ICON} /> },
           { to: "/confirmed-bookings", label: "Bookings", icon: <IconCalendarCheck size={ICON} /> },
           { to: "/customers", label: "Customers", icon: <IconUsers size={ICON} /> },
         ],
@@ -74,7 +72,6 @@ export function navigationFor(role: string | null | undefined): NavGroup[] {
         label: "Sales",
         items: [
           { to: "/projects", label: "Projects", icon: <IconBuilding size={ICON} /> },
-          { to: "/bookings", label: "Requests", icon: <IconInbox size={ICON} /> },
           { to: "/confirmed-bookings", label: "Bookings", icon: <IconCalendarCheck size={ICON} /> },
           { to: "/customers", label: "Customers", icon: <IconUsers size={ICON} /> },
         ],

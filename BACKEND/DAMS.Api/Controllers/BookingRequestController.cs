@@ -21,24 +21,12 @@ namespace DAMS.Api.Controllers
 
         [HttpPost]
         [Authorize]
-        public async Task<IActionResult> CreateBookingRequest([FromBody] CreateBookingRequestDto dto)
+        public IActionResult CreateBookingRequest([FromBody] CreateBookingRequestDto dto)
         {
-            int? userId = null;
-            var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (!string.IsNullOrEmpty(userIdClaim) && int.TryParse(userIdClaim, out var parsedUserId))
-            {
-                userId = parsedUserId;
-            }
-
-            try
-            {
-                var result = await _bookingRequestService.CreateBookingRequestAsync(dto, userId);
-                return Ok(result);
-            }
-            catch (InvalidOperationException ex)
-            {
-                return BadRequest(new { message = ex.Message });
-            }
+            // Every enquiry now arrives through the Lead CRM and becomes a booking with Convert.
+            // Nothing in the app calls this any more; it stays routable only so old clients get a
+            // clear answer instead of a 404. The other request calls, and all old data, are untouched.
+            return BadRequest(new { message = "Booking requests are closed. Please contact our sales team." });
         }
 
         [HttpGet("{id:int}")]

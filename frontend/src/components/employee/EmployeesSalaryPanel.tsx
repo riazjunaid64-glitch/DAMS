@@ -2,6 +2,7 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api.ts";
 import Button from "../../lib/Button.tsx";
+import { DatePicker } from "../ui";
 import Modal from "../../lib/Modal.tsx";
 import SalarySlip from "../SalarySlip.tsx";
 import DateRangeFilter from "./DateRangeFilter.tsx";
@@ -201,18 +202,16 @@ function PayrollRun({ onOpenReceipt }: { onOpenReceipt: (employeeId: number, sal
               ))}
             </AppSelect>
           </div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-paid-on">Paid On</label>
-            <input
-              id="payroll-paid-on"
-              type="date"
-              max={pakistanToday()}
-              value={paymentDate}
-              onChange={e => setPaymentDate(e.target.value)}
-              title="The date the money actually left the account. The payroll month it pays for is set separately."
-              className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            />
-          </div>
+          <DatePicker
+            id="payroll-paid-on"
+            label="Paid On"
+            required
+            max={pakistanToday()}
+            value={paymentDate}
+            onChange={setPaymentDate}
+            helper="The date the money actually left the account."
+            className="w-56"
+          />
           <div>
             <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]" htmlFor="payroll-month">Payroll Month</label>
             <input

@@ -22,6 +22,7 @@ import {
 } from "../features/finance/trialBalance.ts";
 import { useFinancialYearStartMonth } from "../features/finance/useFinancialYearStartMonth";
 import Button from "../lib/Button";
+import { DatePicker } from "../components/ui";
 import Container from "../lib/Container";
 import { buildPeriodRange, financePeriodLabel, pakistanToday } from "../lib/financePeriods";
 import Modal from "../lib/Modal.tsx";
@@ -415,4 +416,4 @@ function formatBalance(value:number,type:BalanceType){const normalized=String(ty
 function formatReportDate(value:string){const match=/^(\d{4})-(\d{2})-(\d{2})/.exec(value);if(!match)return "—";const date=new Date(Number(match[1]),Number(match[2])-1,Number(match[3]));return Number.isNaN(date.getTime())?"—":date.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})}
 function TrialDateModeField({value,onChange}:{value:TrialDateMode;onChange:(value:TrialDateMode)=>void}){return <fieldset><legend className="mb-1 text-xs text-[var(--text-muted)]">Date mode</legend><div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--input-bg)] p-1" aria-label="Trial Balance date mode">{([ ["asAt","As at"], ["range","Date range"] ] as [TrialDateMode,string][]).map(([mode,label])=><button type="button" aria-pressed={value===mode} key={mode} onClick={()=>onChange(mode)} className={`rounded-lg px-3 py-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${value===mode?"bg-[var(--accent)] text-[var(--btn-primary-text)]":"text-[var(--text-muted)] hover:text-[var(--text-primary)]"}`}>{label}</button>)}</div></fieldset>}
 function ReportCard({title,children}:{title:string;children:React.ReactNode}){return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><h2 className="mb-5 text-xl font-bold text-[var(--text-heading)]">{title}</h2>{children}</section>}
-function DateField({label,value,onChange,required=false}:{label:string;value:string;onChange:(value:string)=>void;required?:boolean}){return <label className="text-xs text-[var(--text-muted)]">{label}<input type="date" required={required} max={required?pakistanToday():undefined} className="mt-1 block rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text-primary)] [color-scheme:dark]" value={value} onChange={(event)=>onChange(event.target.value)}/></label>}
+function DateField({label,value,onChange,required=false}:{label:string;value:string;onChange:(value:string)=>void;required?:boolean}){return <DatePicker label={label} required={required} max={required?pakistanToday():undefined} value={value} onChange={onChange} className="w-44"/>}

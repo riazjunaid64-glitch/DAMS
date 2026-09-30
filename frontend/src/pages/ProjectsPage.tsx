@@ -5,7 +5,7 @@ import { api } from "../api/api.ts";
 import { readError } from "../api/readError.ts";
 import {
   Button,
-  DateField,
+  DatePicker,
   Dropdown,
   EmptyState,
   IconBuilding,
@@ -154,8 +154,8 @@ export function ProjectDialog({ project, onClose, onSaved }: {
         <TextField label="Project name" required value={name} error={nameError} onChange={(event) => { setName(event.target.value); setNameError(undefined); }} />
         <TextField label="Location" required value={location} onChange={(event) => setLocation(event.target.value)} />
         <Dropdown label="Category" value={category} onChange={setCategory} placeholder="Select" options={CATEGORIES.map((value) => ({ value, label: value }))} />
-        <DateField label="Start date" value={start} onChange={(event) => setStart(event.target.value)} />
-        <DateField label="Expected completion" value={completion} error={dateError} onChange={(event) => setCompletion(event.target.value)} />
+        <DatePicker label="Start date" value={start} onChange={setStart} />
+        <DatePicker label="Expected completion" value={completion} error={dateError} onChange={setCompletion} />
         <TextArea label="About" value={about} onChange={(event) => setAbout(event.target.value)} />
         {editing && <Dropdown label="Status" value={status} onChange={setStatus} options={STATUSES.map((value) => ({ value, label: value }))} />}
       </div>

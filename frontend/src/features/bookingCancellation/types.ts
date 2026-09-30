@@ -1,3 +1,5 @@
+import type { ProofFile } from "../proof/proofApi";
+
 export type CancellationRefundDecision = "None" | "PayNow" | "PayLater";
 export type CancellationRefundStatus = "NotRequired" | "Pending" | "Paid";
 export type RefundPaymentMethod = "Cash" | "BankTransfer" | "Cheque" | "Online";
@@ -14,6 +16,7 @@ export interface CancellationRefund {
   recordedByUserId: number;
   recordedByName: string;
   recordedAt: string;
+  proof?: ProofFile | null;
 }
 
 export interface CancellationSettlement {

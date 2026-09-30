@@ -7,6 +7,8 @@ namespace DAMS.Domain.Entities
         public int? PayoutId { get; set; }
         public int? RebateId { get; set; }
         public int? RebateDisbursementId { get; set; }
+        public int? CustomerPaymentId { get; set; }
+        public int? CancellationRefundId { get; set; }
         public string StoredFileName { get; set; } = string.Empty;
         public string OriginalFileName { get; set; } = string.Empty;
         public string ContentType { get; set; } = string.Empty;
@@ -19,5 +21,7 @@ namespace DAMS.Domain.Entities
         public CommissionPayout? Payout { get; set; }
         public CustomerRebate? Rebate { get; set; }
         public RebateDisbursement? RebateDisbursement { get; set; }
+        public Payment? CustomerPayment { get; set; }
+        public BookingCancellationRefund? CancellationRefund { get; set; }
     }
 }

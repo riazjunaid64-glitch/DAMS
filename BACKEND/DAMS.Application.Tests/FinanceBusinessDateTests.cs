@@ -113,7 +113,7 @@ public sealed class FinanceBusinessDateTests
         var bookings = new BookingService(context, new CustomerService(context), new FinanceAccountService(context));
         await bookings.RecordBookingAmountPaymentAsync(world.BookingId, new RecordBookingAmountPaymentDto
         {
-            Amount = 100_000m, PaymentMethod = PaymentMethod.BankTransfer,
+            Amount = 100_000m, PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DATE-1",
             FinanceAccountId = world.Bank.Id
         }, adminUserId: 1);
 

@@ -8,13 +8,15 @@ namespace DAMS.Application.DTOs.BookingDtos
         [Range(0.01, double.MaxValue, ErrorMessage = "Amount must be greater than zero.")]
         public decimal Amount { get; set; }
 
-        [Required]
-        public PaymentMethod PaymentMethod { get; set; }
+        // Nullable on the wire, like the account, so a missing one gets the same plain "required"
+        // message instead of quietly becoming Cash (the enum's zero value).
+        public PaymentMethod? PaymentMethod { get; set; }
 
         // The account the money was received in. Nullable on the wire so the service can
         // return the same "required" message the finance forms use instead of a raw 400.
         public int? FinanceAccountId { get; set; }
 
+        // Required unless the method is Cash.
         [StringLength(500)]
         public string? PaymentReference { get; set; }
 

@@ -5,6 +5,7 @@ import type { User } from "../App";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import Field from "../lib/Field";
+import { DatePicker } from "../components/ui";
 import { commissionRebateApi } from "../features/commissionRebates/api";
 import { money, pakistanToday, prettyEnum, trapDialogKeys } from "../features/commissionRebates/state";
 import type { Commission, CommissionRebateSummary, CommissionRule, Partner, Rebate } from "../features/commissionRebates/types";
@@ -76,8 +77,8 @@ export default function CommissionRebatesPage({user}:{user:User|null}){
         {formError&&<FormError text={formError}/>} 
         <Field label="Rule name" required value={ruleForm.name} onChange={e=>setRuleForm({...ruleForm,name:e.target.value})}/>
         <Field label="Priority" type="number" value={ruleForm.priority} onChange={e=>setRuleForm({...ruleForm,priority:e.target.value})}/>
-        <Field label="Effective from" type="date" required value={ruleForm.effectiveFrom} onChange={e=>setRuleForm({...ruleForm,effectiveFrom:e.target.value})}/>
-        <Field label="Effective to" type="date" value={ruleForm.effectiveTo} onChange={e=>setRuleForm({...ruleForm,effectiveTo:e.target.value})}/>
+        <DatePicker label="Effective from" required value={ruleForm.effectiveFrom} onChange={effectiveFrom=>setRuleForm({...ruleForm,effectiveFrom})}/>
+        <DatePicker label="Effective to" min={ruleForm.effectiveFrom||undefined} value={ruleForm.effectiveTo} onChange={effectiveTo=>setRuleForm({...ruleForm,effectiveTo})}/>
         <Select label="Calculation type" value={ruleForm.calculationType} set={v=>setRuleForm({...ruleForm,calculationType:v as RuleForm["calculationType"]})} options={["Percentage","FixedAmount"]}/>
         {ruleForm.calculationType==="Percentage"
           ?<Field label="Rate %" type="number" min="0.000001" max="100" step="0.000001" required value={ruleForm.percentageRate} onChange={e=>setRuleForm({...ruleForm,percentageRate:e.target.value})}/>

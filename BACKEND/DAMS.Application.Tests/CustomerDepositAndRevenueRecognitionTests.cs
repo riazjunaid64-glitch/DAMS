@@ -719,7 +719,7 @@ public sealed class CustomerDepositAndRevenueRecognitionTests
             await installments.RecordInstallmentPaymentAsync(world.BookingId, item.Id, new RecordInstallmentPaymentDto
             {
                 Amount = item.Amount, FinanceAccountId = world.Bank.Id,
-                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Mar
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEPOSIT-1", PaidAt = Mar
             }, 1);
 
         Assert.Equal(0m, (await accounts.GetByIdAsync(world.Receivables.Id)).CurrentBalance);

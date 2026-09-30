@@ -5,6 +5,7 @@ import type { User } from "../App.tsx";
 import { can } from "../features/access/permissions.ts";
 import { api } from "../api/api.ts";
 import Button from "../lib/Button.tsx";
+import { DatePicker } from "../components/ui";
 import { CrmModal, CrmTabs, ErrorBanner, inputClass, Label, StatePanel } from "../features/leads/CrmUi.tsx";
 import * as whtApi from "../features/finance/whtApi.ts";
 import { pakistanToday } from "../lib/financePeriods.ts";
@@ -683,11 +684,11 @@ function PayableTab() {
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <Label>From</Label>
-            <input type="date" className={inputClass} value={from} onChange={(e) => setFrom(e.target.value)} />
+            <DatePicker aria-label="From" value={from} onChange={setFrom} />
           </div>
           <div>
             <Label>To</Label>
-            <input type="date" className={inputClass} value={to} onChange={(e) => setTo(e.target.value)} />
+            <DatePicker aria-label="To" value={to} onChange={setTo} />
           </div>
           <Button size="sm" variant="outline"
             onClick={() => void whtApi.downloadWhtStatement(from, to).catch((e: unknown) =>
@@ -908,8 +909,7 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
           </div>
           <div>
             <Label required>Deposit date</Label>
-            <input className={inputClass} type="date" value={form.depositDate}
-              onChange={(e) => set("depositDate", e.target.value)} />
+            <DatePicker aria-label="Deposit date" required max={pakistanToday()} value={form.depositDate} onChange={(value) => set("depositDate", value)} />
           </div>
           <div>
             <Label>Challan / CPR number</Label>
@@ -922,13 +922,11 @@ function DepositModal({ item, accounts, suggested, onClose, onSaved }: {
           </div>
           <div>
             <Label>Period covered from</Label>
-            <input className={inputClass} type="date" value={form.periodFrom}
-              onChange={(e) => set("periodFrom", e.target.value)} />
+            <DatePicker aria-label="Period covered from" value={form.periodFrom} onChange={(value) => set("periodFrom", value)} />
           </div>
           <div>
             <Label>Period covered to</Label>
-            <input className={inputClass} type="date" value={form.periodTo}
-              onChange={(e) => set("periodTo", e.target.value)} />
+            <DatePicker aria-label="Period covered to" min={form.periodFrom || undefined} value={form.periodTo} onChange={(value) => set("periodTo", value)} />
           </div>
         </div>
       </div>

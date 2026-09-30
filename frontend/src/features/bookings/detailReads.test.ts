@@ -192,3 +192,26 @@ describe("what the page says is missing", () => {
     expect(messages).toContain(paymentsReadFailed);
   });
 });
+
+describe("Booking Detail reads only what was asked for", () => {
+  it("skips the schedule and the payment list until their tabs are opened, without calling them failures", async () => {
+    const { calls, request } = responder({ [paths.booking]: () => ok(booking) });
+
+    const reads = await readBookingDetail(7, request, { schedule: false, payments: false });
+
+    expect(calls).toEqual([paths.booking]);
+    expect(reads.booking.value).toEqual(booking);
+    expect(reads.schedule).toEqual({ value: null, error: null });
+    expect(reads.payments).toEqual({ value: null, error: null });
+  });
+
+  it("reads just the payment list when only that tab has been opened", async () => {
+    const { calls, request } = responder({ [paths.booking]: () => ok(booking), [paths.payments]: () => ok(payments) });
+
+    const reads = await readBookingDetail(7, request, { schedule: false, payments: true });
+
+    expect(calls.sort()).toEqual([paths.booking, paths.payments].sort());
+    expect(reads.payments.value).toEqual(payments);
+    expect(reads.schedule.error).toBeNull();
+  });
+});
