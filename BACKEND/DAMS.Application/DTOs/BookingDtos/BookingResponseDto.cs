@@ -166,6 +166,9 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public string? ApplicationPaymentType { get; set; }
 
+        // How the money taken with the form was actually paid (from that payment), for "Through".
+        public PaymentMethod? ApplicationPaymentMethod { get; set; }
+
         public decimal? ApplicationAmountReceived { get; set; }
 
         public DateTime? ApplicationDate { get; set; }

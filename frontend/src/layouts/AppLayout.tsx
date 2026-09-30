@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import type { User } from "../App.tsx";
 import SiteFooter from "../components/SiteFooter.tsx";
@@ -14,6 +15,7 @@ import {
 } from "../components/ui";
 import NotificationBell from "../features/notifications/NotificationBell.tsx";
 import { SITE_CONTACT } from "../lib/siteContact.ts";
+import { TrailContext } from "./trail.ts";
 import { can, homePathFor, isSalesRole, roleLabel } from "../features/access/permissions.ts";
 
 interface AppLayoutProps {
@@ -42,9 +44,11 @@ export default function AppLayout({ user, navGroups, displayName, setModal, onLo
   const innerPage = section != null && pathname !== section.to;
   const staff = user != null && (can(user.role, "finance") || can(user.role, "crm") || isSalesRole(user.role));
 
+  const [trail, setTrail] = useState<readonly Crumb[]>([]);
   const crumbs: Crumb[] = [
     ...(group?.label ? [{ label: group.label }] : []),
-    ...(section ? [{ label: section.label, to: innerPage ? section.to : undefined }] : []),
+    ...(section ? [{ label: section.label, to: innerPage || trail.length > 0 ? section.to : undefined }] : []),
+    ...trail,
   ];
 
   const logo = (
@@ -84,7 +88,9 @@ export default function AppLayout({ user, navGroups, displayName, setModal, onLo
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <Outlet />
+          <TrailContext.Provider value={setTrail}>
+            <Outlet />
+          </TrailContext.Provider>
         </main>
 
         {/* The public footer belongs to the website; staff work in the app shell alone. */}

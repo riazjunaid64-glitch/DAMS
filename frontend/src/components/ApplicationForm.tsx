@@ -298,7 +298,7 @@ export default function ApplicationForm({ data = {} }: { data?: ApplicationFormD
           <Cell label="Amount Received:" value={data.amountReceived} flex={3} />
           <CheckCell label="Booking" on={data.paymentType === "Booking"} flex={1} />
           <CheckCell label="Confirmation" on={data.paymentType === "Confirmation"} flex={1} />
-          <CheckCell label="LumSum" on={data.paymentType === "LumSum"} flex={1} />
+          <CheckCell label="Lump sum" on={data.paymentType === "LumSum"} flex={1} />
         </Row>
 
         <Row>

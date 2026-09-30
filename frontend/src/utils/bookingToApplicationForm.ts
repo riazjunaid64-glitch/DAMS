@@ -1,5 +1,6 @@
 import type { ApplicationFormData } from "../components/ApplicationForm.tsx";
 import { floorName } from "../lib/floors.ts";
+import { paymentMethodLabel } from "../features/printing/paper.ts";
 
 /** Format an ISO date as dd-Mon-yyyy (e.g. 07-Jun-2026). Empty string for missing dates. */
 export function formatDate(iso: string | null | undefined): string {
@@ -42,6 +43,7 @@ export interface BookingForForm {
   referenceId?: string | null;
   paymentThrough?: string | null;
   applicationPaymentType?: string | null;
+  applicationPaymentMethod?: string | null;
   applicationAmountReceived?: number | null;
   applicationDate?: string | null;
   nextOfKinName?: string | null;
@@ -56,11 +58,14 @@ export interface BookingForForm {
 export function bookingToApplicationForm(b: BookingForForm): ApplicationFormData {
   const totalDown = b.bookingAmountRequired ?? null;
   const received = b.applicationAmountReceived ?? b.bookingAmountReceived ?? null;
+  // What is still to pay of the booking amount: the amount minus everything received toward it so far.
   const remaining =
-    totalDown != null ? Math.max(0, totalDown - (received ?? 0)) : null;
+    totalDown != null ? Math.max(0, totalDown - (b.bookingAmountReceived ?? 0)) : null;
+  // "Auto" (or nothing) on the form means the booking number is the serial.
+  const serial = b.serialNo?.trim();
 
   return {
-    serialNo: b.serialNo || b.bookingReference || "",
+    serialNo: serial && serial.toLowerCase() !== "auto" ? serial : (b.bookingReference ?? ""),
     date: formatDate(b.bookingDate),
     apartmentCategory: b.apartmentCategory || b.unitType || "",
     isCorner: b.isCorner ?? false,
@@ -94,7 +99,7 @@ export function bookingToApplicationForm(b: BookingForForm): ApplicationFormData
     referenceId: b.referenceId ?? "",
     amountReceived: received ?? "",
     paymentType: b.applicationPaymentType ?? null,
-    through: b.paymentThrough ?? "",
+    through: paymentMethodLabel(b.applicationPaymentMethod),
     officeDate: formatDate(b.applicationDate || b.bookingDate),
   };
 }

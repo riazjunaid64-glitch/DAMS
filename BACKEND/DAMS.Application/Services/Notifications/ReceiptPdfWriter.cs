@@ -101,7 +101,7 @@ namespace DAMS.Application.Services.Notifications
             Row("Project", receipt.ProjectName);
             Row("Unit", receipt.UnitNumber);
             Row("Type", receipt.UnitType);
-            Row("Block", receipt.Block);
+            Row("Tower", receipt.Tower);
             Row("Floor", receipt.FloorName);
             Row("Size", receipt.UnitSize > 0 ? $"{receipt.UnitSize.ToString("N2", CultureInfo.InvariantCulture)} sq ft" : null);
 

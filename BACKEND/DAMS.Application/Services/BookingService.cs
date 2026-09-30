@@ -881,10 +881,6 @@ namespace DAMS.Application.Services
                 : (await ProjectFloorNames.LoadAsync(_context, [unit.ProjectId])).For(unit.ProjectId, unit.FloorNumber);
 
             var unitNumber = unit?.UnitNumber ?? string.Empty;
-            string? block = null;
-            var dashIndex = unitNumber.IndexOf('-');
-            if (dashIndex > 0)
-                block = unitNumber.Substring(0, dashIndex).Trim();
 
             return new PaymentReceiptDto
             {
@@ -903,7 +899,8 @@ namespace DAMS.Application.Services
                 ProjectName = project?.ProjectName ?? string.Empty,
                 UnitType = unit?.UnitType ?? string.Empty,
                 UnitNumber = unitNumber,
-                Block = string.IsNullOrWhiteSpace(block) ? null : block,
+                Tower = string.IsNullOrWhiteSpace(booking.Tower) ? null : booking.Tower.Trim(),
+                IsCorner = booking.IsCorner,
                 FloorNumber = unit?.FloorNumber ?? 0,
                 FloorName = floorName,
                 UnitSize = unit?.Size ?? 0m,
@@ -1067,6 +1064,7 @@ namespace DAMS.Application.Services
                 ReferenceId = b.ReferenceId,
                 PaymentThrough = b.PaymentThrough,
                 ApplicationPaymentType = b.ApplicationPaymentType,
+                ApplicationPaymentMethod = ApplicationPaymentMethodOf(b),
                 ApplicationAmountReceived = b.ApplicationAmountReceived,
                 ApplicationDate = b.ApplicationDate,
                 NextOfKinName = b.NextOfKinName,
@@ -1300,6 +1298,19 @@ namespace DAMS.Application.Services
         {
             var entry = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC] {note}";
             return string.IsNullOrWhiteSpace(existing) ? entry : $"{existing}\n{entry}";
+        }
+
+        // The money taken with the application form is the booking's first booking-amount payment,
+        // written in the same transaction as the booking. Its method is what the form's
+        // "Through" line must show. Null when nothing was received with the form.
+        private static PaymentMethod? ApplicationPaymentMethodOf(Booking b)
+        {
+            if (!(b.ApplicationAmountReceived > 0m) || b.Payments == null) return null;
+            return b.Payments
+                .Where(p => p.Type == PaymentType.BookingAmount && p.InstallmentId == null)
+                .OrderBy(p => p.PaidAt).ThenBy(p => p.Id)
+                .Select(p => (PaymentMethod?)p.PaymentMethod)
+                .FirstOrDefault();
         }
 
         // Receipt numbers are read-max-then-insert; two concurrent payments can pick the
