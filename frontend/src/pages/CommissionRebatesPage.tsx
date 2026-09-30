@@ -2,6 +2,7 @@ import AppSelect from "../lib/AppSelect.tsx";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
+import { pageAccess } from "../features/access/permissions.ts";
 import Button from "../lib/Button";
 import Container from "../lib/Container";
 import Field from "../lib/Field";
@@ -27,6 +28,7 @@ const rebateFilters=[{v:"Pending",n:"Pending"},{v:"Applied",n:"Applied"},{v:"Pai
   {v:"Cancelled",n:"Cancelled"},{v:"ReversalRequired",n:"Recovery required"},{v:"Reversed",n:"Reversed"}];
 
 export default function CommissionRebatesPage({user}:{user:User|null}){
+  const access=pageAccess(user?.role,"finance");
   const navigate=useNavigate();
   const [view,setView]=useState<View>("overview"),[loading,setLoading]=useState(true),[error,setError]=useState<string|null>(null);
   const [summary,setSummary]=useState<CommissionRebateSummary|null>(null),[partners,setPartners]=useState<Partner[]>([]),[partnerOptions,setPartnerOptions]=useState<Partner[]>([]),[rules,setRules]=useState<CommissionRule[]>([]),[commissions,setCommissions]=useState<Commission[]>([]),[rebates,setRebates]=useState<Rebate[]>([]);
@@ -44,11 +46,11 @@ export default function CommissionRebatesPage({user}:{user:User|null}){
   // capped fetch would leave later rules invisible in the directory.
   const loadRules=useCallback(async()=>{const request=++ruleLoadSequence.current;setRulesLoading(true);try{const result=await commissionRebateApi.rules(undefined,rulePage*25,25);if(request!==ruleLoadSequence.current)return;setRules(result.items);setRuleHasMore(result.hasMore);}catch(e){if(request===ruleLoadSequence.current)setError(e instanceof Error?e.message:"Commission rules could not be loaded.");}finally{if(request===ruleLoadSequence.current)setRulesLoading(false);}},[rulePage]);
   const loadRecords=useCallback(async()=>{if(view!=="commissions"&&view!=="rebates")return;const request=++recordLoadSequence.current;setRecordsLoading(true);setError(null);try{if(view==="commissions"){const result=await commissionRebateApi.commissions(recordStatus,commissionPage*25,25);if(request!==recordLoadSequence.current)return;setCommissions(result.items);setCommissionHasMore(result.hasMore);}else{const result=await commissionRebateApi.rebates(recordStatus,rebatePage*25,25);if(request!==recordLoadSequence.current)return;setRebates(result.items);setRebateHasMore(result.hasMore);}}catch(e){if(request===recordLoadSequence.current)setError(e instanceof Error?e.message:"Financial records could not be loaded.");}finally{if(request===recordLoadSequence.current)setRecordsLoading(false);}},[view,recordStatus,commissionPage,rebatePage]);
-  useEffect(()=>{if(user?.role!=="Admin"){navigate("/");return;}void load();},[user,navigate,load]);
-  useEffect(()=>{if(user?.role!=="Admin"||view!=="partners")return;const timer=window.setTimeout(()=>{void loadPartners().catch(e=>setError(e instanceof Error?e.message:"Partners could not be loaded."));},250);return()=>window.clearTimeout(timer);},[user,view,loadPartners]);
-  useEffect(()=>{if(user?.role==="Admin")void loadRecords();},[user,loadRecords]);
-  useEffect(()=>{if(user?.role==="Admin"&&view==="rules")void loadRules();},[user,view,loadRules]);
-  useEffect(()=>{if(user?.role==="Admin"&&ruleForm!==null)void loadPartnerOptions();},[user,ruleForm,loadPartnerOptions]);
+  useEffect(()=>{if(access==="wait")return;if(access==="deny"){navigate("/");return;}void load();},[access,navigate,load]);
+  useEffect(()=>{if(access!=="allow"||view!=="partners")return;const timer=window.setTimeout(()=>{void loadPartners().catch(e=>setError(e instanceof Error?e.message:"Partners could not be loaded."));},250);return()=>window.clearTimeout(timer);},[access,view,loadPartners]);
+  useEffect(()=>{if(access==="allow")void loadRecords();},[access,loadRecords]);
+  useEffect(()=>{if(access==="allow"&&view==="rules")void loadRules();},[access,view,loadRules]);
+  useEffect(()=>{if(access==="allow"&&ruleForm!==null)void loadPartnerOptions();},[access,ruleForm,loadPartnerOptions]);
   const shownPartners=partners;
   const shownCommissions=commissions;
   const shownRebates=rebates;
@@ -57,7 +59,7 @@ export default function CommissionRebatesPage({user}:{user:User|null}){
   const savePartner=async(e:FormEvent)=>{e.preventDefault();if(!partnerForm)return;setSaving(true);setFormError(null);try{await commissionRebateApi.savePartner({...partnerForm,contactPerson:partnerForm.contactPerson||null,phone:partnerForm.phone||null,email:partnerForm.email||null,cnic:partnerForm.cnic||null,ntn:partnerForm.ntn||null,registrationNumber:partnerForm.registrationNumber||null,address:partnerForm.address||null,bankName:partnerForm.bankName||null,accountTitle:partnerForm.accountTitle||null,accountNumber:partnerForm.accountNumber||null,iban:partnerForm.iban||null,notes:partnerForm.notes||null},partnerForm.id);partnerOptionsLoaded.current=false;setPartnerForm(null);await Promise.all([load(),loadPartners()]);}catch(x){setFormError(x instanceof Error?x.message:"Partner could not be saved.");}finally{setSaving(false);}};
   const saveRule=async(e:FormEvent)=>{e.preventDefault();if(!ruleForm)return;setSaving(true);setFormError(null);const n=(v:string)=>v===""?null:Number(v);try{await commissionRebateApi.saveRule({...ruleForm,effectiveTo:ruleForm.effectiveTo||null,partnerId:n(ruleForm.partnerId),partnerType:ruleForm.partnerType||null,projectId:n(ruleForm.projectId),unitCategory:ruleForm.unitCategory||null,bookingSource:ruleForm.bookingSource||null,bookingId:n(ruleForm.bookingId),percentageRate:ruleForm.calculationType==="Percentage"?n(ruleForm.percentageRate):null,fixedAmount:ruleForm.calculationType==="FixedAmount"?n(ruleForm.fixedAmount):null,minimumCommission:n(ruleForm.minimumCommission),maximumCommission:n(ruleForm.maximumCommission),priority:Number(ruleForm.priority)||0,notes:ruleForm.notes||null},ruleForm.id);setRuleForm(null);await loadRules();}catch(x){setFormError(x instanceof Error?x.message:"Rule could not be saved.");}finally{setSaving(false);}};
   const togglePartner=async(p:Partner)=>{const reason=p.isActive?window.prompt("Reason for deactivation:"):"Reactivated for new business";if(p.isActive&&!reason)return;try{await commissionRebateApi.partnerStatus(p.id,{isActive:!p.isActive,reason,concurrencyToken:p.concurrencyToken});partnerOptionsLoaded.current=false;await Promise.all([load(),loadPartners()]);}catch(x){setError(x instanceof Error?x.message:"Partner status could not be changed.");}};
-  if(user?.role!=="Admin")return null;
+  if(access!=="allow")return null;
   return <Container className="py-8">
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4"><div><Link to="/finance" className="text-sm text-[var(--accent)]">← Finance dashboard</Link><h1 className="mt-1 text-3xl font-bold text-[var(--text-heading)]">Commissions & Rebates</h1><p className="mt-1 text-sm text-[var(--text-muted)]">Partners, calculation rules, payouts, customer benefits, and immutable history.</p></div><div className="flex gap-2"><Button variant="outline" onClick={()=>navigate("/finance/accounts")}>Finance accounts</Button>{view==="partners"&&<Button onClick={()=>setPartnerForm(emptyPartner())}>Add partner</Button>}{view==="rules"&&<Button onClick={()=>setRuleForm(emptyRule())}>Add rule</Button>}</div></header>
     <nav aria-label="Commission workspace sections" className="mb-6 flex gap-2 overflow-x-auto border-b border-[var(--border)]">{(["overview","partners","rules","commissions","rebates"] as View[]).map(v=><button key={v} onClick={()=>{setView(v);setRecordStatus("");setCommissionPage(0);setRebatePage(0);setRulePage(0);}} className={`whitespace-nowrap border-b-2 px-4 py-3 text-sm font-semibold ${view===v?"border-[var(--accent)] text-[var(--accent)]":"border-transparent text-[var(--text-muted)]"}`}>{prettyEnum(v[0].toUpperCase()+v.slice(1))}</button>)}</nav>

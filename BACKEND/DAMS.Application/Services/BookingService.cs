@@ -63,12 +63,17 @@ namespace DAMS.Application.Services
             if (unit == null)
                 throw new InvalidOperationException("Unit not found.");
 
+            // A live booking comes first: a unit someone else just booked is Reserved, and "not
+            // available" would hide that the person only needs to pick another one.
+            if (await _context.Bookings.AnyAsync(b => b.UnitId == unit.Id && b.Status != BookingStatus.Cancelled, cancellationToken))
+                throw BookingConflictException.UnitTaken(unit.UnitNumber);
             if (unit.Status != UnitStatus.Available)
                 throw new InvalidOperationException("This unit is not available for booking.");
 
-            await EnsureNoActiveBookingAsync(unit.Id);
-
-            int customerId;
+            // An existing customer is checked here, with every other rule. A NEW customer is only
+            // created inside the transaction below, after every check has passed, so a booking that
+            // fails leaves no stray customer behind.
+            int? existingCustomerId = null;
             if (dto.CustomerId.HasValue)
             {
                 var customer = await _context.Customers.FirstOrDefaultAsync(c => c.Id == dto.CustomerId.Value);
@@ -76,27 +81,9 @@ namespace DAMS.Application.Services
                     throw new InvalidOperationException("Customer not found.");
                 if (customer.Status == CustomerStatus.Blocked)
                     throw new InvalidOperationException("This customer is blocked and cannot be booked.");
-                customerId = customer.Id;
+                existingCustomerId = customer.Id;
             }
-            else if (dto.NewCustomer != null)
-            {
-                var resolution = await _customerService.FindOrCreateCustomerAsync(
-                    dto.NewCustomer.FullName,
-                    dto.NewCustomer.Phone,
-                    dto.NewCustomer.CNIC,
-                    dto.NewCustomer.Email,
-                    dto.NewCustomer.Address,
-                    dto.Source,
-                    dto.NewCustomer.SourceNotes,
-                    adminUserId,
-                    dto.NewCustomer.FatherName,
-                    dto.NewCustomer.DateOfBirth,
-                    dto.NewCustomer.Nationality,
-                    dto.NewCustomer.Occupation,
-                    dto.NewCustomer.Whatsapp);
-                customerId = resolution.CustomerId;
-            }
-            else
+            else if (dto.NewCustomer == null)
             {
                 throw new InvalidOperationException("Provide an existing customer id or new customer details.");
             }
@@ -149,6 +136,8 @@ namespace DAMS.Application.Services
             {
                 if (!dto.ApplicationFinanceAccountId.HasValue)
                     throw new InvalidOperationException("Received In Account is required when an amount is received with the application.");
+                if (!dto.ApplicationPaymentMethod.HasValue || !Enum.IsDefined(dto.ApplicationPaymentMethod.Value))
+                    throw new InvalidOperationException("Payment method is required when an amount is received with the application.");
                 await _accountService.EnsureSelectableAsync(dto.ApplicationFinanceAccountId.Value, null, cancellationToken);
                 applicationPaidAt = await FinanceDateRules.ResolveInstantAsync(
                     _context, dto.ApplicationDate, "Application date", cancellationToken);
@@ -156,7 +145,7 @@ namespace DAMS.Application.Services
 
             var booking = new Booking
             {
-                CustomerId = customerId,
+                CustomerId = existingCustomerId ?? 0,
                 UnitId = unit.Id,
                 BookingRequestId = null,
                 Source = dto.Source,
@@ -199,49 +188,79 @@ namespace DAMS.Application.Services
             // never be part of what makes the booking succeed or fail.
             int? applicationPaymentId = null;
 
-            await RunInTransactionAsync(async () =>
+            try
             {
-                await PersistNewBookingAsync(booking, unit);
-
-                // Money collected with the application form is a real booking-amount payment —
-                // otherwise it never reaches Finance revenue, receipts, or booking progress.
-                if (applicationAmountReceived > 0m)
+                await RunInTransactionAsync(async () =>
                 {
-                    var payment = new Payment
+                    if (existingCustomerId == null)
                     {
-                        BookingId = booking.Id,
-                        InstallmentId = null,
-                        FinanceAccountId = dto.ApplicationFinanceAccountId,
-                        Type = PaymentType.BookingAmount,
-                        Amount = applicationAmountReceived,
-                        PaymentMethod = ParseApplicationPaymentMethod(dto.ApplicationPaymentType),
-                        PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
-                        Notes = "Received with the application form.",
-                        RecordedByUserId = adminUserId,
-                        PaidAt = applicationPaidAt,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    _context.Payments.Add(payment);
-
-                    booking.BookingAmountReceived = applicationAmountReceived;
-                    if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
-                    {
-                        booking.Status = BookingStatus.PaymentPlanActive;
-                        booking.BookingAmountConfirmedDate = PakistanTime.Now;
-                        booking.InstallmentPlanStartDate ??= PakistanTime.Now;
-                        unit.Status = UnitStatus.OnPaymentPlan;
-                        unit.UpdatedAt = DateTime.UtcNow;
+                        // Every check above has passed; from here a failure rolls this back with the booking.
+                        var resolution = await _customerService.FindOrCreateCustomerAsync(
+                            dto.NewCustomer!.FullName,
+                            dto.NewCustomer.Phone,
+                            dto.NewCustomer.CNIC,
+                            dto.NewCustomer.Email,
+                            dto.NewCustomer.Address,
+                            dto.Source,
+                            dto.NewCustomer.SourceNotes,
+                            adminUserId,
+                            dto.NewCustomer.FatherName,
+                            dto.NewCustomer.DateOfBirth,
+                            dto.NewCustomer.Nationality,
+                            dto.NewCustomer.Occupation,
+                            dto.NewCustomer.Whatsapp);
+                        booking.CustomerId = resolution.CustomerId;
                     }
+                    await PersistNewBookingAsync(booking, unit);
 
-                    await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
-                    applicationPaymentId = payment.Id;
-                }
-            }, cancellationToken);
+                    // Money collected with the application form is a real booking-amount payment —
+                    // otherwise it never reaches Finance revenue, receipts, or booking progress.
+                    if (applicationAmountReceived > 0m)
+                    {
+                        var payment = new Payment
+                        {
+                            BookingId = booking.Id,
+                            InstallmentId = null,
+                            FinanceAccountId = dto.ApplicationFinanceAccountId,
+                            Type = PaymentType.BookingAmount,
+                            Amount = applicationAmountReceived,
+                            PaymentMethod = dto.ApplicationPaymentMethod!.Value,
+                            PaymentReference = string.IsNullOrWhiteSpace(dto.PaymentThrough) ? null : dto.PaymentThrough.Trim(),
+                            Notes = "Received with the application form.",
+                            RecordedByUserId = adminUserId,
+                            PaidAt = applicationPaidAt,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.Payments.Add(payment);
+
+                        booking.BookingAmountReceived = applicationAmountReceived;
+                        if (booking.BookingAmountReceived >= booking.BookingAmountRequired)
+                        {
+                            booking.Status = BookingStatus.PaymentPlanActive;
+                            booking.BookingAmountConfirmedDate = PakistanTime.Now;
+                            booking.InstallmentPlanStartDate ??= PakistanTime.Now;
+                            unit.Status = UnitStatus.OnPaymentPlan;
+                            unit.UpdatedAt = DateTime.UtcNow;
+                        }
+
+                        await SaveWithUniqueReceiptNumberAsync(payment, cancellationToken);
+                        applicationPaymentId = payment.Id;
+                    }
+                }, cancellationToken);
+            }
+            catch (DbUpdateException ex) when (IsActiveUnitCollision(ex))
+            {
+                // Two people passed the checks above together and the database let only one through.
+                throw BookingConflictException.UnitTaken(unit.UnitNumber);
+            }
 
             if (applicationPaymentId.HasValue)
                 await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(applicationPaymentId.Value));
 
-            return await GetResponseAsync(booking.Id, cancellationToken);
+            var created = await GetResponseAsync(booking.Id, cancellationToken);
+            // So the Done screen can open the receipt of the money taken with the form.
+            created.RecordedPaymentId = applicationPaymentId;
+            return created;
         }
 
         /// <summary>
@@ -896,15 +915,6 @@ namespace DAMS.Application.Services
             };
         }
 
-        private async Task EnsureNoActiveBookingAsync(int unitId)
-        {
-            var hasActive = await _context.Bookings
-                .AnyAsync(b => b.UnitId == unitId && b.Status != BookingStatus.Cancelled);
-
-            if (hasActive)
-                throw new InvalidOperationException("This unit already has an active booking.");
-        }
-
         // Callers must wrap this in a transaction: the reference depends on the generated
         // id, so the row is saved twice, and a failure in between must roll back both.
         private async Task PersistNewBookingAsync(Booking booking, Unit unit)
@@ -1303,15 +1313,6 @@ namespace DAMS.Application.Services
                 .FirstOrDefault();
         }
 
-        private static PaymentMethod ParseApplicationPaymentMethod(string? applicationPaymentType)
-        {
-            if (string.IsNullOrWhiteSpace(applicationPaymentType))
-                return PaymentMethod.Cash;
-
-            var compact = applicationPaymentType.Replace(" ", "").Replace("-", "");
-            return Enum.TryParse<PaymentMethod>(compact, true, out var method) ? method : PaymentMethod.Cash;
-        }
-
         // Receipt numbers are read-max-then-insert; two concurrent payments can pick the
         // same number and the unique index rejects the loser with a raw 500. Retry the
         // save with a freshly generated number instead.
@@ -1331,6 +1332,16 @@ namespace DAMS.Application.Services
                     // Another payment claimed this number between read and insert; retry.
                 }
             }
+        }
+
+        /// <summary>
+        /// Only the one-live-booking-per-unit index. Any other write failure is a real fault and must
+        /// surface as one, not be dressed up as "someone else booked the unit".
+        /// </summary>
+        private static bool IsActiveUnitCollision(DbUpdateException ex)
+        {
+            return ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+                   && sql.Message.Contains("IX_Bookings_UnitId_Active", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsReceiptNumberCollision(DbUpdateException ex)

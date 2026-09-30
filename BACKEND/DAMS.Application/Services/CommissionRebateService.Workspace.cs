@@ -258,7 +258,7 @@ namespace DAMS.Application.Services
             return new BookingCommissionDto
             {
                 Id = c.Id, BookingId = c.BookingId, BookingReference = bookingReference ?? c.Booking.BookingReference,
-                PartnerId = c.PartnerId, PartnerName = c.PartnerNameSnapshot, AttributionId = c.AttributionId, RuleId = c.RuleId,
+                PartnerId = c.PartnerId, PartnerName = c.PartnerNameSnapshot, PartnerType = c.PartnerTypeSnapshot, AttributionId = c.AttributionId, RuleId = c.RuleId,
                 RuleRevisionId = c.RuleRevisionId, RuleRevisionNumber = c.RuleRevision != null ? c.RuleRevision.RevisionNumber : null,
                 RuleNameSnapshot = c.RuleNameSnapshot, RulePriority = c.RulePrioritySnapshot,
                 IsManual = c.IsManual, ManualReason = c.ManualReason,
@@ -276,7 +276,7 @@ namespace DAMS.Application.Services
                 {
                     Id = p.Id, FinanceAccountId = p.FinanceAccountId, FinanceAccountName = p.FinanceAccount?.Name,
                     Amount = p.Amount, ReversedAmount = p.Reversals.Sum(r => r.Amount), Date = p.PaymentDate,
-                    PaymentMethod = p.PaymentMethod, Reference = p.PaymentReference, Notes = p.Notes,
+                    PaymentMethod = p.PaymentMethod, Reference = p.PaymentReference, Notes = p.Notes, RecordedByName = p.RecordedByName,
                     Evidence = p.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList(),
                     ConcurrencyToken = Token(p.RowVersion)
                 }).ToList(), Evidence = c.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()
@@ -303,7 +303,7 @@ namespace DAMS.Application.Services
                         Id = d.Id, FinanceAccountId = d.FinanceAccountId, FinanceAccountName = d.FinanceAccount?.Name,
                         InstallmentId = d.InstallmentId, RebateMethod = d.Method, Amount = d.Amount,
                         ReversedAmount = d.Reversals.Sum(x => x.Amount), Date = d.AppliedAt,
-                        PaymentMethod = d.PaymentMethod, Reference = d.Reference, Notes = d.Notes,
+                        PaymentMethod = d.PaymentMethod, Reference = d.Reference, Notes = d.Notes, RecordedByName = d.RecordedByName,
                         Evidence = d.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList(),
                         ConcurrencyToken = Token(d.RowVersion)
                     }).ToList(), Evidence = r.Evidence.OrderByDescending(e => e.UploadedAt).Select(MapEvidence).ToList()

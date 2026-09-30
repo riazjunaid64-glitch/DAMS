@@ -170,10 +170,21 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string? AdjustmentReason { get; set; }
     }
 
+    /// <summary>What a rule would give a partner on a booking, worked out without saving anything.</summary>
+    public sealed class CommissionPreviewDto
+    {
+        public int PartnerId { get; set; }
+        public string? RuleName { get; set; }
+        public decimal Amount { get; set; }
+    }
+
     public sealed class UpdateBookingCommissionDto : CreateBookingCommissionDto
     {
         public string ConcurrencyToken { get; set; } = string.Empty;
-        public string ChangeReason { get; set; } = string.Empty;
+        // Nullable on purpose, like CreateCustomerRebateDto.Reason: the popup has no such field, and a
+        // non-nullable string would make [ApiController] refuse the request before the service could
+        // fall back to the notes.
+        public string? ChangeReason { get; set; }
     }
 
     public sealed class CommissionStatusChangeDto
@@ -224,7 +235,8 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
     public sealed class UpdateCustomerRebateDto : CreateCustomerRebateDto
     {
         public string ConcurrencyToken { get; set; } = string.Empty;
-        public string ChangeReason { get; set; } = string.Empty;
+        // Nullable for the same reason as UpdateBookingCommissionDto.ChangeReason.
+        public string? ChangeReason { get; set; }
     }
 
     public sealed class RebateStatusChangeDto
@@ -261,6 +273,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public PaymentMethod? PaymentMethod { get; set; }
         public string? Reference { get; set; }
         public string? Notes { get; set; }
+        public string? RecordedByName { get; set; }
         public List<FinancialEvidenceDto> Evidence { get; set; } = [];
         public string ConcurrencyToken { get; set; } = string.Empty;
     }
@@ -297,6 +310,7 @@ namespace DAMS.Application.DTOs.CommissionRebateDtos
         public string BookingReference { get; set; } = string.Empty;
         public int PartnerId { get; set; }
         public string PartnerName { get; set; } = string.Empty;
+        public string PartnerType { get; set; } = string.Empty;
         public int? AttributionId { get; set; }
         public int? RuleId { get; set; }
         public int? RuleRevisionId { get; set; }

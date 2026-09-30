@@ -24,7 +24,9 @@ namespace DAMS.Api.Controllers
             _installmentService = installmentService;
         }
 
-        // Admin creates a booking directly for a walk-in / phone customer.
+        // Admin creates a booking directly for a walk-in / phone customer. Safe to retry: the same
+        // Idempotency-Key never creates a second booking or a second payment.
+        [IdempotentMoneyOperation]
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CreateBookingDto dto)
         {
@@ -33,6 +35,10 @@ namespace DAMS.Api.Controllers
                 var adminUserId = GetUserId();
                 var result = await _bookingService.CreateBookingAsync(dto, adminUserId);
                 return Ok(result);
+            }
+            catch (BookingConflictException ex)
+            {
+                return Conflict(new { message = ex.Message });
             }
             catch (InvalidOperationException ex)
             {

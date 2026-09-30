@@ -86,6 +86,11 @@ namespace DAMS.Api.Controllers
         public Task<IActionResult> CreateCommission(int bookingId, [FromBody] CreateBookingCommissionDto dto,
             CancellationToken cancellationToken) => Run(() => _service.CreateCommissionAsync(bookingId, dto, Actor(), cancellationToken));
 
+        [HttpGet("bookings/{bookingId:int}/commission-preview")]
+        public Task<IActionResult> PreviewCommission(int bookingId, [FromQuery] int partnerId,
+            [FromQuery] int? commissionId, CancellationToken cancellationToken) =>
+            Run(() => _service.PreviewRuleCommissionAsync(bookingId, partnerId, commissionId, cancellationToken));
+
         [HttpPut("bookings/{bookingId:int}/commissions/{commissionId:int}")]
         public Task<IActionResult> UpdateCommission(int bookingId, int commissionId,
             [FromBody] UpdateBookingCommissionDto dto, CancellationToken cancellationToken) =>

@@ -190,7 +190,7 @@ public sealed class LeadConversionTests
 
         await h.Leads.ConvertAsync(first, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<BookingConflictException>(() =>
             h.Leads.ConvertAsync(second, new ConvertLeadDto { UnitId = h.UnitId }, h.Admin));
 
         Assert.Equal(1, await h.Db.Bookings.CountAsync());

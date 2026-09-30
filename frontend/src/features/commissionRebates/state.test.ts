@@ -11,13 +11,16 @@ describe("commission and rebate UI state", () => {
     expect(commissionActions("Cancelled").canPay).toBe(false);
   });
 
-  it("stops correcting and cancelling a commission once any of it has been paid", () => {
+  it("lets a live commission be edited after a payment, but not cancelled until the payments are reversed", () => {
     expect(commissionActions("Pending").canEdit).toBe(true);
     expect(commissionActions("Pending").canCancel).toBe(true);
     expect(commissionActions("Pending").canReverse).toBe(false);
-    // Part paid: the agreement is now history, and reversing is the way back.
-    expect(commissionActions("Pending", 500).canEdit).toBe(false);
+    // Part paid: still editable (not below what is paid); cancelling waits for the reversal.
+    expect(commissionActions("Pending", 500).canEdit).toBe(true);
     expect(commissionActions("Pending", 500).canCancel).toBe(false);
+    expect(commissionActions("Paid", 1000).canEdit).toBe(true);
+    expect(commissionActions("Cancelled").canEdit).toBe(false);
+    expect(commissionActions("ReversalRequired").canEdit).toBe(false);
     expect(commissionActions("Pending", 500).canReverse).toBe(true);
     expect(commissionActions("Paid", 1000).canReverse).toBe(true);
     expect(commissionActions("ReversalRequired").canReverse).toBe(true);
@@ -47,20 +50,20 @@ describe("commission and rebate UI state", () => {
     expect(money(1234.5)).toContain("1,234.50");
   });
 
-  // A payout that has been recorded and then fully reversed leaves a movement row behind and a net
-  // of zero. Editing is off — the server refuses it because the payout's figures were struck against
-  // the amount being rewritten — but cancelling is on, and the card used to hide both, leaving the
-  // commission with no way to be closed at all.
-  it("keeps Cancel available after a payout is fully reversed, and still refuses Edit", () => {
-    const afterFullReversal = commissionActions("Pending", 0, 1);
-    expect(afterFullReversal.canCancel).toBe(true);
-    expect(afterFullReversal.canEdit).toBe(false);
-    expect(commissionActions("Pending", 0, 0).canEdit).toBe(true);
+  // A payout that has been recorded and then fully reversed leaves a net of zero, so the commission can
+  // be cancelled again, and it can still be edited.
+  it("keeps Cancel and Edit available after a payout is fully reversed", () => {
+    expect(commissionActions("Pending", 0).canCancel).toBe(true);
+    expect(commissionActions("Pending", 0).canEdit).toBe(true);
+    expect(rebateActions("Pending", 0).canCancel).toBe(true);
+    expect(rebateActions("Pending", 0).canEdit).toBe(true);
+  });
 
-    const rebateAfterFullReversal = rebateActions("Pending", 0, 1);
-    expect(rebateAfterFullReversal.canCancel).toBe(true);
-    expect(rebateAfterFullReversal.canEdit).toBe(false);
-    expect(rebateActions("Pending", 0, 0).canEdit).toBe(true);
+  it("lets a rebate be edited once it is given, but not once it is cancelled or being unwound", () => {
+    expect(rebateActions("Applied").canEdit).toBe(true);
+    expect(rebateActions("Paid").canEdit).toBe(true);
+    expect(rebateActions("Cancelled").canEdit).toBe(false);
+    expect(rebateActions("ReversalRequired").canEdit).toBe(false);
   });
 });
 
@@ -72,7 +75,6 @@ describe("commission and rebate update bodies", () => {
     percentageRate: "",
     fixedAmount: "1000",
     notes: "Corrected note",
-    changeReason: "Note only",
   };
 
   const attributed = {
@@ -88,7 +90,8 @@ describe("commission and rebate update bodies", () => {
     expect(body.attributionId).toBe(11);
     expect(body.adjustmentAmount).toBe(-50);
     expect(body.adjustmentReason).toBe("Agreed haircut");
-    expect(body).toMatchObject({ concurrencyToken: "tok", changeReason: "Note only" });
+    expect(body).toMatchObject({ concurrencyToken: "tok", manualReason: "Corrected note" });
+    expect(body).not.toHaveProperty("changeReason");
   });
 
   it("does not rewrite a rule-driven commission as a manual one", () => {
@@ -132,7 +135,7 @@ describe("commission and rebate update bodies", () => {
     } as unknown as Rebate;
     const rebateForm = {
       calculationType: "Percentage" as const, calculationBasis: "AgreedSalePrice" as const,
-      percentageRate: "5", fixedAmount: "", reason: "Goodwill", changeReason: "Typo",
+      percentageRate: "5", fixedAmount: "", reason: "Goodwill", method: "CreditNote" as const,
     };
     const rebateBody = rebateRequestBody(rebateForm, manualRebate);
     expect(rebateBody.calculationBasis).toBe("ManuallyApprovedAmount");
@@ -209,7 +212,7 @@ describe("commission and rebate update bodies", () => {
     const rebateForm = {
       calculationType: "FixedAmount" as const,
       calculationBasis: "AgreedSalePrice" as const,
-      percentageRate: "", fixedAmount: "5000", reason: "Goodwill", changeReason: "Typo",
+      percentageRate: "", fixedAmount: "5000", reason: "Goodwill", method: "CreditNote" as const,
     };
     const existing = {
       adjustmentAmount: 250, adjustmentReason: "Agreed uplift", notes: "Approved by MD",
@@ -222,7 +225,8 @@ describe("commission and rebate update bodies", () => {
     expect(body.notes).toBe("Approved by MD");
     expect(body.method).toBe("CreditNote");
 
-    const created = rebateRequestBody(rebateForm, null);
+    // The way the customer gets it is what the form says, for a new rebate and for an edit.
+    const created = rebateRequestBody({ ...rebateForm, method: "OutstandingBalanceReduction" }, null);
     expect(created.adjustmentAmount).toBe(0);
     expect(created.notes).toBeNull();
     expect(created.method).toBe("OutstandingBalanceReduction");

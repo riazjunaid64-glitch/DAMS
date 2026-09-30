@@ -1,5 +1,5 @@
 import { api } from "../../api/api";
-import type { AuditEntry, BookingWorkspace, Commission, CommissionRebateSummary, CommissionRule, PagedResult, Partner, Rebate } from "./types";
+import type { AuditEntry, BookingWorkspace, Commission, CommissionPreview, CommissionRebateSummary, CommissionRule, PagedResult, Partner, Rebate } from "./types";
 
 const root = "/api/finance/commissions-rebates";
 
@@ -36,6 +36,8 @@ export const commissionRebateApi = {
   },
   attribution: (body:unknown, id?:number) => json<unknown>(id?`/attributions/${id}`:"/attributions", {method:id?"PUT":"POST",body:JSON.stringify(body)}),
   createCommission: (bookingId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions`, {method:"POST",body:JSON.stringify(body)}),
+  /** What the rules give this partner on the booking, without saving (the edit keeps the commission's own adjustment). */
+  previewCommission: (bookingId:number, partnerId:number, commissionId?:number) => json<CommissionPreview>(`/bookings/${bookingId}/commission-preview?partnerId=${partnerId}${commissionId?`&commissionId=${commissionId}`:""}`),
   updateCommission: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}`, {method:"PUT",body:JSON.stringify(body)}),
   commissionStatus: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/status`, {method:"POST",body:JSON.stringify(body)}),
   payout: (bookingId:number, commissionId:number, body:unknown) => json<BookingWorkspace>(`/bookings/${bookingId}/commissions/${commissionId}/payouts`, {method:"POST",body:JSON.stringify(body)}),

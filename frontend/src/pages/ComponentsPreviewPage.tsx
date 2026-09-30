@@ -307,6 +307,7 @@ function FieldsSection() {
       </div>
       <div className={row}>
         <ChoiceChips label="Label" options={OPTIONS} value={chip} onChange={setChip} />
+        <ChoiceChips label="Segmented" variant="segmented" options={OPTIONS.slice(0, 2)} value={chip} onChange={setChip} />
         <RadioGroup label="Radio" options={OPTIONS.slice(0, 2)} value={radio} onChange={setRadio} />
         <Sample label="Checkbox">
           <Checkbox label="Option 1" checked={check} onChange={setCheck} />

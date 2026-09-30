@@ -105,6 +105,35 @@ namespace DAMS.Application.Services
             return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
         }
 
+        /// <summary>
+        /// The amount the rules would give this partner on this booking, through the same calculation a
+        /// save runs and with the same attribution a partner change carries (none, so a full share).
+        /// Nothing is written. An agreed adjustment on the commission being edited is included, as the
+        /// edit keeps it.
+        /// </summary>
+        public async Task<CommissionPreviewDto> PreviewRuleCommissionAsync(int bookingId, int partnerId, int? commissionId,
+            CancellationToken cancellationToken = default)
+        {
+            var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
+            EnsureActiveBooking(booking);
+            var partner = await _context.ThirdPartyPartners.AsNoTracking()
+                .SingleOrDefaultAsync(p => p.Id == partnerId, cancellationToken)
+                ?? throw new InvalidOperationException("Partner not found.");
+            if (!partner.IsActive) throw new InvalidOperationException("Inactive partners cannot receive new commissions.");
+            decimal adjustment = 0m; string? adjustmentReason = null;
+            if (commissionId.HasValue)
+            {
+                var current = await _context.BookingCommissions.AsNoTracking()
+                    .SingleOrDefaultAsync(c => c.Id == commissionId.Value && c.BookingId == bookingId, cancellationToken)
+                    ?? throw new KeyNotFoundException("Commission not found for this booking.");
+                adjustment = current.AdjustmentAmount; adjustmentReason = current.AdjustmentReason;
+            }
+            var preview = new BookingCommission { BookingId = bookingId, PartnerId = partner.Id, AllocationPercentSnapshot = 100m };
+            await ApplyRuleCalculationAsync(preview, booking, partner, null, cancellationToken);
+            ApplyCommissionAdjustment(preview, adjustment, adjustmentReason, null, booking);
+            return new CommissionPreviewDto { PartnerId = partner.Id, RuleName = preview.RuleNameSnapshot, Amount = preview.FinalAmount };
+        }
+
         /// <summary>Serializable for the same reason as <see cref="CreateCommissionAsync"/>: it
         /// reads the booking's state and then moves the obligation against it.</summary>
         public Task<BookingCommissionRebateWorkspaceDto> UpdateCommissionAsync(int bookingId, int commissionId,
@@ -119,14 +148,23 @@ namespace DAMS.Application.Services
                 .SingleOrDefaultAsync(c => c.Id == commissionId && c.BookingId == bookingId, cancellationToken)
                 ?? throw new KeyNotFoundException("Commission not found for this booking.");
             ApplyToken(commission, dto.ConcurrencyToken, "commission");
-            // A pending commission is still just an agreement, so it can be corrected in place. Once
-            // any money has moved the figures are history: reverse the payout to unwind it instead.
-            if (commission.Status != BookingCommissionStatus.Pending)
-                throw new InvalidOperationException("Only a pending commission can be edited.");
-            if (commission.Payouts.Count != 0)
-                throw new InvalidOperationException("A commission with payout history cannot be edited.");
+            // A commission can be corrected while it is live, paid or not: what has already gone out stays
+            // as it is, and the new total only has to cover it. Once it is cancelled or being unwound
+            // (reversal required, reversed) the figures are history.
+            if (commission.Status is not (BookingCommissionStatus.Pending or BookingCommissionStatus.Paid))
+                throw new InvalidOperationException("Only a pending or fully paid commission can be edited.");
+            if (commission.Payouts.Count != 0 && dto.PartnerId != commission.PartnerId)
+                throw new InvalidOperationException("The partner cannot be changed once a payment has been made.");
+            // A rule-driven commission keeps the figures it was agreed on. Saving it again for the same
+            // partner changes nothing, and in particular does not re-run the rules: a newer rule or
+            // revision would otherwise rewrite the amount, status and accrual of a commission nobody
+            // edited. Only a different partner (who has their own rule) is recalculated.
+            if (!commission.IsManual && !dto.IsManual && dto.PartnerId == commission.PartnerId)
+                return await GetBookingWorkspaceAsync(bookingId, cancellationToken);
 
-            var changeReason = Required(dto.ChangeReason, "Change reason", 2000);
+            // Optional: the popup has no such field, so the notes stand in for it.
+            var changeReason = Limited(dto.ChangeReason, "Change reason", 2000)
+                ?? Limited(dto.ManualReason, "Notes", 2000) ?? "Commission corrected.";
             var booking = await LoadBookingForCalculationAsync(bookingId, cancellationToken);
             EnsureActiveBooking(booking);
             if (await _context.BookingCommissions.AnyAsync(c => c.Id != commissionId && c.BookingId == bookingId
@@ -140,6 +178,7 @@ namespace DAMS.Application.Services
             var attribution = await ResolveAttributionAsync(bookingId, dto.PartnerId, dto.AttributionId, cancellationToken);
 
             var previousAmount = commission.FinalAmount;
+            var previousStatus = commission.Status;
             // Captured before the reset below zeroes BasisAmount. Only meaningful when the commission
             // was ALREADY manual: a rule-driven record's basis belongs to the rule, not to an
             // operator's choice, so switching TO manual has nothing of this shape to freeze against.
@@ -162,9 +201,14 @@ namespace DAMS.Application.Services
                 dto.IsManual ? dto.ManualReason : null, booking);
             if (commission.FinalAmount <= 0m)
                 throw new InvalidOperationException("Final commission must be greater than zero.");
+            var alreadyPaid = NetPaid(commission);
+            if (commission.FinalAmount < alreadyPaid)
+                throw new InvalidOperationException($"The commission cannot be less than the {alreadyPaid:0.00} already paid.");
 
-            // A correction leaves the commission where it was — pending, for the corrected amount —
-            // so only the figures and the audit trail change.
+            // Fully paid stays Paid only while the new total is still exactly what was paid; any more and
+            // something remains to pay, so it is Pending again.
+            if (alreadyPaid > 0m)
+                commission.Status = commission.FinalAmount == alreadyPaid ? BookingCommissionStatus.Paid : BookingCommissionStatus.Pending;
             commission.UpdatedAt = DateTime.UtcNow;
 
             // The obligation moves by the DIFFERENCE, dated today. Restating the original accrual
@@ -174,7 +218,7 @@ namespace DAMS.Application.Services
                 CommissionAccrualKind.Adjustment, actor, changeReason);
 
             Audit(FinancialWorkflowAction.CommissionAdjusted, actor, partner.Id, booking.CustomerId, bookingId,
-                commission.Id, oldCommission: commission.Status, newCommission: commission.Status,
+                commission.Id, oldCommission: previousStatus, newCommission: commission.Status,
                 previousAmount: previousAmount, newAmount: commission.FinalAmount, reason: changeReason,
                 commissionRuleId: commission.RuleId, commissionRuleRevisionId: commission.RuleRevisionId);
             await _context.SaveChangesAsync(cancellationToken);
