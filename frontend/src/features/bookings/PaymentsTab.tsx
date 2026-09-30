@@ -15,7 +15,7 @@ type Props = {
   paymentsError: string | null;
   onOpenReceipt: (payment: BookingPayment) => void;
   /** Reloads the list once a proof has been attached from a row. */
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
   onRetry: () => void;
 };
 

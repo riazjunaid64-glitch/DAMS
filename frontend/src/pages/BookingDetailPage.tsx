@@ -330,7 +330,7 @@ export default function BookingDetailPage({ user }: Props) {
           payments={payments}
           paymentsError={paymentsError}
           onOpenReceipt={openReceipt}
-          onChanged={() => void load(false)}
+          onChanged={() => load(false)}
           onRetry={() => void reload()}
         />
       </TabPanel>

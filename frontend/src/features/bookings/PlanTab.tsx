@@ -29,7 +29,9 @@ type Props = {
 /** The Installment plan tab: no plan yet, a plan with nothing paid, a plan with payments, or one that no longer covers the balance. */
 export function PlanTab({ booking, schedule, scheduleError, fresh, onCreate, onChange, onRecord, onRetry }: Props) {
   if (schedule?.hasSchedule && schedule.items.length > 0) {
-    return <Plan booking={booking} schedule={schedule} fresh={fresh} onChange={onChange} onRecord={onRecord} />;
+    // Keyed by when the plan was built: a changed plan is a different list, so the page and the
+    // phone's "Show all" start over instead of pointing past the end of a shorter schedule.
+    return <Plan key={schedule.generatedAt ?? ""} booking={booking} schedule={schedule} fresh={fresh} onChange={onChange} onRecord={onRecord} />;
   }
   if (scheduleError) {
     return (
@@ -77,9 +79,10 @@ function Plan({ booking, schedule, fresh, onChange, onRecord }: PlanProps) {
 
   const ordered = orderInstallments(schedule.items);
   const paged = ordered.length > PAGE_SIZE;
+  const currentPage = Math.min(page, Math.max(1, Math.ceil(ordered.length / PAGE_SIZE)));
   const rows = isPhone
     ? (showAll ? ordered : phoneInstallments(ordered))
-    : (paged ? ordered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) : ordered);
+    : (paged ? ordered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE) : ordered);
 
   const noPaymentYet = stats.paid <= 0 && stats.overdueCount === 0;
   const heading = schedule.numberOfInstallments
@@ -193,7 +196,7 @@ function Plan({ booking, schedule, fresh, onChange, onRecord }: PlanProps) {
           <Button variant="outline" size="lg" fullWidth onClick={() => setShowAll(true)}>Show all {ordered.length}</Button>
         )}
         {!isPhone && paged && (
-          <Pagination page={page} onPageChange={setPage} totalCount={ordered.length} pageSize={PAGE_SIZE} itemLabel="installments" />
+          <Pagination page={currentPage} onPageChange={setPage} totalCount={ordered.length} pageSize={PAGE_SIZE} itemLabel="installments" />
         )}
       </section>
     </div>

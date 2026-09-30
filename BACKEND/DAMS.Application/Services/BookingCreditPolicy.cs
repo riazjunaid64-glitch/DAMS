@@ -67,13 +67,13 @@ internal static class BookingCreditPolicy
     /// <summary>
     /// How much of <see cref="UncollectableShortfall"/> a REVERSED credit is responsible for.
     /// <para>
-    /// This is the number the reversal guard and the payment guard act on, and it is deliberately
-    /// narrower than the raw shortfall. A schedule can fail to total the balance for reasons that
-    /// have nothing to do with a rebate — a plan imported from another system, or one built by hand
-    /// against part of the balance — and refusing to collect on those would break bookings this
-    /// change has no business touching. Reversing a credit is the one thing that ADDS uncollectable
+    /// This is the number the reversal guard acts on, and it is deliberately narrower than the raw
+    /// shortfall: refusing to reverse a credit because of a shortfall the reversal did not cause
+    /// would block a legitimate reversal. Reversing a credit is the one thing that ADDS uncollectable
     /// principal to a plan, so the responsibility is capped at what has been reversed: exactly the
     /// shortfall when the plan was sound before, and only the reversal's own share when it was not.
+    /// Collecting is stricter — <see cref="UnscheduledBalanceAsync"/> refuses a receipt while ANY
+    /// money is outside the plan, whatever put it there.
     /// </para>
     /// <para><paramref name="pendingReversal"/> is a reversal about to be written but not yet saved,
     /// so the guard that decides whether to allow it can count it.</para>

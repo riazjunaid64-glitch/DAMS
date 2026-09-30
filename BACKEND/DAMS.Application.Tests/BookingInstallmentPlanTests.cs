@@ -150,6 +150,68 @@ public sealed class BookingInstallmentPlanTests
     }
 
     [Fact]
+    public async Task ReplayingOneAttemptToBuildAFirstPlan_ReportsThePlanItBuilt_InsteadOfFailingBecauseItExists()
+    {
+        await using var h = await Harness.Create();
+        var stamp = DateTime.UtcNow;
+        var dto = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
+
+        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, stamp);
+        // The execution strategy re-running the delegate after a commit whose acknowledgement was lost.
+        var replayed = await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, stamp);
+
+        Assert.Equal(3, replayed.Items.Count);
+        Assert.Equal(3, h.Context.Installments.Count());
+    }
+
+    [Fact]
+    public async Task ASecondDeliberateAttempt_IsStillRefusedWhileAPlanExists()
+    {
+        await using var h = await Harness.Create();
+        var dto = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
+        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, DateTime.UtcNow);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, DateTime.UtcNow.AddSeconds(1)));
+
+        Assert.Contains("already exists", error.Message);
+    }
+
+    [Fact]
+    public void AnOmittedFrequencyOrFirstDueDate_IsRejectedByTheRequestValidation_NotDefaultedToMonthlyOrYearOne()
+    {
+        var results = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+        var body = new GenerateInstallmentPlanDto { AgreedSalePrice = 1m, NumberOfInstallments = 1 };
+
+        System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            body, new System.ComponentModel.DataAnnotations.ValidationContext(body), results, validateAllProperties: true);
+
+        Assert.Contains(results, r => r.MemberNames.Contains(nameof(GenerateInstallmentPlanDto.Frequency)));
+        Assert.Contains(results, r => r.MemberNames.Contains(nameof(GenerateInstallmentPlanDto.InstallmentStartDate)));
+    }
+
+    [Fact]
+    public async Task AnUndefinedFrequencyOrAMissingFirstDueDate_IsRefusedByTheService()
+    {
+        await using var h = await Harness.Create();
+
+        var badFrequency = h.Plan(3, (InstallmentFrequency)99, Oct26);
+        Assert.Contains("how often", (await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Installments.GenerateScheduleAsync(h.BookingId, badFrequency, 1))).Message);
+
+        var noFrequency = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
+        noFrequency.Frequency = null;
+        Assert.Contains("how often", (await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Installments.GenerateScheduleAsync(h.BookingId, noFrequency, 1))).Message);
+
+        var noDate = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
+        noDate.InstallmentStartDate = null;
+        Assert.Contains("First due date is required", (await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            h.Installments.GenerateScheduleAsync(h.BookingId, noDate, 1))).Message);
+        Assert.Empty(h.Context.Installments);
+    }
+
+    [Fact]
     public void CreatingOrChangingThePlan_IsRetryKeyed()
     {
         var action = typeof(BookingController).GetMethod(nameof(BookingController.GenerateInstallmentPlan))!;

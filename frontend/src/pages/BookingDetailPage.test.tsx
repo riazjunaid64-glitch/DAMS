@@ -708,6 +708,25 @@ describe("Installment plan: with payments", () => {
     expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(5);
   });
 
+  it("starts again on page 1 when a changed plan is shorter than the page being viewed", async () => {
+    const rows = (count: number) => Array.from({ length: count }, (_, index) => installment(index + 1));
+    answers["POST /api/Booking/13/installment-plan/generate"] = () => ({ body: planOf(rows(21)) });
+    await openPlan(planOf(rows(45), { numberOfInstallments: 45, generatedAt: "2026-09-01T00:00:00" }));
+    await screen.findByText("45 monthly installments from Oct 26, 2026");
+    fireEvent.click(screen.getByRole("button", { name: "Page 3" }));
+    expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(5);
+
+    // The server now holds the shorter plan, built later.
+    answers["GET /api/Booking/13/installments"] = () => ({ body: planOf(rows(21), { numberOfInstallments: 21, generatedAt: "2026-09-02T00:00:00" }) });
+    fireEvent.click(screen.getByRole("button", { name: "Change plan" }));
+    const dialog = await screen.findByRole("dialog", { name: /Change plan/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change plan" }));
+
+    expect(await screen.findByText("21 monthly installments from Oct 26, 2026")).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Record payment" })).toHaveLength(20));
+    expect(screen.getByRole("button", { name: "Page 1" }).getAttribute("aria-current")).toBe("page");
+  });
+
   it("phone: the last two paid and the next unpaid ones, then Show all", async () => {
     phone(true);
     await openPlan(withPayments());

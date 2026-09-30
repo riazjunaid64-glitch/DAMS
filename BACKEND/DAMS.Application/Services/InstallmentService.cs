@@ -315,6 +315,20 @@ namespace DAMS.Application.Services
         }
 
         public Task<InstallmentScheduleDto> GenerateScheduleAsync(int bookingId, GenerateInstallmentPlanDto dto, int adminUserId) =>
+            GenerateScheduleAsync(bookingId, dto, adminUserId, DateTime.UtcNow);
+
+        /// <summary>
+        /// <paramref name="attemptStamp"/> names this ONE attempt to build the plan, and is taken before
+        /// <see cref="SerializableAsync"/> is entered so every re-execution of the delegate carries the
+        /// same value — the same principle as the attempt key on a payment. A commit whose acknowledgement
+        /// was lost is indistinguishable, from here, from one that never happened, so the strategy replays
+        /// the delegate; a first-time plan would then fail with "a schedule already exists" although the
+        /// first execution built it. The attempt leaves its stamp (with the user) on the booking as the
+        /// plan's generated-at, and looks for that stamp before doing anything: finding it means the
+        /// first execution did commit, and the only thing left to do is report the schedule it built.
+        /// </summary>
+        internal Task<InstallmentScheduleDto> GenerateScheduleAsync(
+            int bookingId, GenerateInstallmentPlanDto dto, int adminUserId, DateTime attemptStamp) =>
             // Serializable: this reads the current balance/credits and rebuilds the whole schedule
             // from them in two SaveChanges calls (installments, then credit reallocation) — both
             // needed to be one atomic unit even before concurrency was a concern, since a failure
@@ -323,6 +337,11 @@ namespace DAMS.Application.Services
             // reason as RecordInstallmentPaymentAsync above.
             SerializableAsync(async () =>
             {
+                var alreadyBuilt = await _context.Bookings.AsNoTracking().AnyAsync(b => b.Id == bookingId
+                    && b.InstallmentPlanGeneratedAt == attemptStamp && b.InstallmentPlanGeneratedByUserId == adminUserId);
+                if (alreadyBuilt)
+                    return await GetScheduleAsync(bookingId);
+
                 ValidatePlanInput(dto);
 
                 var booking = await _context.Bookings
@@ -441,12 +460,12 @@ namespace DAMS.Application.Services
                     booking.DiscountAmount = discountAmount;
                     booking.DiscountReason = discountReason;
                 }
-                booking.InstallmentFrequency = dto.Frequency;
+                booking.InstallmentFrequency = dto.Frequency!.Value;
                 booking.NumberOfInstallments = dto.NumberOfInstallments;
-                booking.InstallmentPlanStartDate = dto.InstallmentStartDate.Date;
+                booking.InstallmentPlanStartDate = dto.InstallmentStartDate!.Value.Date;
                 booking.PossessionAmount = possessionAmount;
                 booking.PossessionDueDate = possessionAmount > 0m ? dto.PossessionDueDate?.Date : null;
-                booking.InstallmentPlanGeneratedAt = DateTime.UtcNow;
+                booking.InstallmentPlanGeneratedAt = attemptStamp;
                 booking.InstallmentPlanGeneratedByUserId = adminUserId;
                 booking.UpdatedAt = DateTime.UtcNow;
 
@@ -476,6 +495,12 @@ namespace DAMS.Application.Services
         {
             if (dto.AgreedSalePrice <= 0m)
                 throw new InvalidOperationException("Agreed sale price must be greater than zero.");
+
+            if (dto.Frequency is not { } frequency || !Enum.IsDefined(frequency))
+                throw new InvalidOperationException("Choose how often the installments fall due.");
+
+            if (dto.InstallmentStartDate is not { } firstDue || firstDue.Year < 2000)
+                throw new InvalidOperationException("First due date is required.");
 
             if (dto.NumberOfInstallments < 1)
                 throw new InvalidOperationException("Number of installments must be at least 1.");
@@ -529,7 +554,7 @@ namespace DAMS.Application.Services
                     BookingId = bookingId,
                     SequenceNumber = i,
                     Type = InstallmentType.Regular,
-                    DueDate = CalculateDueDate(dto.InstallmentStartDate, dto.Frequency, i),
+                    DueDate = CalculateDueDate(dto.InstallmentStartDate!.Value, dto.Frequency!.Value, i),
                     Amount = amount,
                     Status = InstallmentStatus.Pending
                 });

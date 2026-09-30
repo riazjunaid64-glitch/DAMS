@@ -15,15 +15,17 @@ namespace DAMS.Application.DTOs.InstallmentDtos
         [StringLength(500)]
         public string? DiscountReason { get; set; }
 
-        [Required]
-        public InstallmentFrequency Frequency { get; set; }
+        // Nullable on the wire so [Required] can tell "left out" from a value: a non-nullable enum
+        // or date that was omitted arrives as its default (Monthly, 0001-01-01) and passes.
+        [Required(ErrorMessage = "Frequency is required.")]
+        public InstallmentFrequency? Frequency { get; set; }
 
         [Range(1, 600)]
         public int NumberOfInstallments { get; set; }
 
         // The due date of installment 1.
-        [Required]
-        public DateTime InstallmentStartDate { get; set; }
+        [Required(ErrorMessage = "First due date is required.")]
+        public DateTime? InstallmentStartDate { get; set; }
 
         [Range(0, double.MaxValue)]
         public decimal PossessionAmount { get; set; }
