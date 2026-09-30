@@ -69,7 +69,8 @@ describe("Pay refund", () => {
     vi.mocked(uploadProof).mockRejectedValue(new Error("Network down"));
     fireEvent.click(payButton());
 
-    expect(await screen.findByText("Refund paid, but the proof did not upload. Attach it from the refund.")).toBeTruthy();
+    expect(await screen.findByText("Refund paid.")).toBeTruthy();
+    expect(await screen.findByText("The refund was saved, but its proof did not upload. Attach it from the refund.")).toBeTruthy();
     await waitFor(() => expect(onPaid).toHaveBeenCalledTimes(1));
     expect(onClose).toHaveBeenCalled();
     expect(bookingCancellationApi.payRefund).toHaveBeenCalledTimes(1);
@@ -98,5 +99,17 @@ describe("Pay refund", () => {
     fireEvent.click(payButton());
     expect(screen.getByText("Choose the account the refund is paid from.")).toBeTruthy();
     expect(bookingCancellationApi.payRefund).not.toHaveBeenCalled();
+  });
+
+  it("drops the missing-reference message once the method is changed to Cash", () => {
+    show();
+    fireEvent.click(screen.getByRole("combobox", { name: /Payment method/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Bank transfer" }));
+    fireEvent.click(payButton());
+    expect(screen.getByText("Enter the cheque or transfer number.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("combobox", { name: /Payment method/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Cash" }));
+    expect(screen.queryByText("Enter the cheque or transfer number.")).toBeNull();
   });
 });

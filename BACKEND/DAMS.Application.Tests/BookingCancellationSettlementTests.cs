@@ -454,10 +454,17 @@ public sealed class BookingCancellationSettlementTests
     {
         // Cancelled well before go-live, so the refund date passes the cancellation check and only the
         // committed opening-balance date can refuse it.
+        // Settlements are append-only, so the historical one is inserted as it would have been
+        // recorded back then rather than edited after the fact.
         var h = await Harness.Create(paid: 500_000m);
-        await h.Service.CancelBookingAsync(h.BookingId,
-            h.CancelDto(500_000m, 450_000m, CancellationRefundDecision.PayLater), Actor);
-        (await h.Context.BookingCancellationSettlements.SingleAsync()).CancellationDate = PakistanTime.Today.AddDays(-5);
+        (await h.Context.Bookings.SingleAsync()).Status = BookingStatus.Cancelled;
+        h.Context.BookingCancellationSettlements.Add(new BookingCancellationSettlement
+        {
+            BookingId = h.BookingId, CustomerCashReceivedSnapshot = 500_000m, RefundAmount = 450_000m, RetainedAmount = 50_000m,
+            RefundDecision = CancellationRefundDecision.PayLater, Reason = "Customer requested cancellation",
+            IdempotencyKey = "historical-cancel", CancelledByUserId = 42, CancelledByName = "Finance Admin",
+            CancelledAt = DateTime.UtcNow.AddDays(-5), CancellationDate = PakistanTime.Today.AddDays(-5)
+        });
         h.Context.OpeningBalanceSets.Add(new OpeningBalanceSet
         {
             AsAtDate = PakistanTime.Today.AddDays(-2), IsCommitted = true, CommittedAt = DateTime.UtcNow, CommittedByUserId = 1

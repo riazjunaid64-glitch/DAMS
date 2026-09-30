@@ -46,6 +46,8 @@ export function PayRefundDialog({ booking, refundAmount, financeAccounts, accoun
     setShown((current) => {
       const next = { ...current };
       for (const key of Object.keys(change)) delete next[key as keyof PayoutFields];
+      // Cash needs no reference, so a missing-reference message must not outlive the method that asked for it.
+      if (change.method !== undefined) delete next.reference;
       return next;
     });
   };
@@ -77,8 +79,10 @@ export function PayRefundDialog({ booking, refundAmount, financeAccounts, accoun
       const refundId = saved.cancellationSettlement?.refund?.id ?? null;
       // A failed proof never undoes the refund: the popup closes with a warning and the file is
       // attached later from the saved refund.
-      if (!proof.hasFile || (refundId !== null && await proof.upload("CancellationRefund", refundId))) toast.success("Refund paid.");
-      else toast.error("Refund paid, but the proof did not upload. Attach it from the refund.");
+      toast.success("Refund paid.");
+      if (proof.hasFile && !(refundId !== null && await proof.upload("CancellationRefund", refundId))) {
+        toast.error("The refund was saved, but its proof did not upload. Attach it from the refund.");
+      }
       try {
         await onPaid();
       } finally {
