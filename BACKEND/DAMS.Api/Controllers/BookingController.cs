@@ -63,6 +63,20 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("summary")]
+        public async Task<IActionResult> GetStatusCounts(
+            [FromQuery] int? projectId,
+            [FromQuery] string? search)
+        {
+            // Deliberately no status: the cards count every status for the same search and project.
+            var result = await _bookingService.GetBookingStatusCountsAsync(new BookingFilterDto
+            {
+                ProjectId = projectId,
+                SearchTerm = search
+            });
+            return Ok(result);
+        }
+
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {

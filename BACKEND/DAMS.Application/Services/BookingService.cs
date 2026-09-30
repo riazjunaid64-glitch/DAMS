@@ -278,31 +278,14 @@ namespace DAMS.Application.Services
 
         public async Task<BookingListDto> GetBookingsAsync(BookingFilterDto filter)
         {
-            var query = _context.Bookings
+            var query = ApplyBookingFilters(_context.Bookings
                 .AsNoTracking()
                 .Include(b => b.Customer)
                 .Include(b => b.Unit).ThenInclude(u => u.Project)
-                .AsQueryable();
+                .AsQueryable(), filter);
 
             if (filter.Status.HasValue)
                 query = query.Where(b => b.Status == filter.Status.Value);
-
-            if (filter.ProjectId.HasValue)
-                query = query.Where(b => b.Unit.ProjectId == filter.ProjectId.Value);
-
-            if (filter.CustomerId.HasValue)
-                query = query.Where(b => b.CustomerId == filter.CustomerId.Value);
-
-            if (!string.IsNullOrWhiteSpace(filter.SearchTerm))
-            {
-                var term = filter.SearchTerm.Trim().ToLower();
-                query = query.Where(b =>
-                    b.BookingReference.ToLower().Contains(term) ||
-                    b.Customer.FullName.ToLower().Contains(term) ||
-                    b.Customer.Phone.Contains(term) ||
-                    b.Unit.UnitNumber.ToLower().Contains(term) ||
-                    b.Unit.Project.ProjectName.ToLower().Contains(term));
-            }
 
             var totalCount = await query.CountAsync();
 
@@ -331,6 +314,63 @@ namespace DAMS.Application.Services
                 TotalCount = totalCount,
                 Page = page,
                 PageSize = pageSize
+            };
+        }
+
+        /// <summary>
+        /// The filters the summary cards share with the list — search, project and customer, but
+        /// not status, so choosing a status card never changes the other cards' numbers.
+        /// </summary>
+        private static IQueryable<Booking> ApplyBookingFilters(IQueryable<Booking> query, BookingFilterDto filter)
+        {
+            if (filter.ProjectId.HasValue)
+                query = query.Where(b => b.Unit.ProjectId == filter.ProjectId.Value);
+
+            if (filter.CustomerId.HasValue)
+                query = query.Where(b => b.CustomerId == filter.CustomerId.Value);
+
+            if (string.IsNullOrWhiteSpace(filter.SearchTerm))
+                return query;
+
+            var search = filter.SearchTerm.Trim();
+            var term = search.ToLower();
+            // Something a person typed as a phone number or CNIC: digits with spaces, dashes,
+            // brackets or a plus. "0300-1234567", "0300 1234567", "03001234567" and "+92 300 1234567"
+            // all reduce to the same national number, and a CNIC matches with or without dashes.
+            var numeric = search.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')');
+            var phoneDigits = numeric ? LeadContactNormalizer.NormalizePhone(search) : string.Empty;
+            var cnicDigits = numeric ? new string(search.Where(char.IsDigit).ToArray()) : string.Empty;
+            var matchPhone = phoneDigits.Length >= LeadContactNormalizer.MinUsablePhoneDigits;
+            var matchCnic = cnicDigits.Length >= MinCnicSearchDigits;
+
+            return query.Where(b =>
+                b.BookingReference.ToLower().Contains(term) ||
+                b.Customer.FullName.ToLower().Contains(term) ||
+                b.Customer.Phone.Contains(term) ||
+                b.Unit.UnitNumber.ToLower().Contains(term) ||
+                b.Unit.Project.ProjectName.ToLower().Contains(term) ||
+                (matchPhone && b.Customer.Phone.Replace("-", "").Replace(" ", "").Replace("(", "").Replace(")", "").Contains(phoneDigits)) ||
+                (matchCnic && b.Customer.CNIC != null && b.Customer.CNIC.Replace("-", "").Replace(" ", "").Contains(cnicDigits)));
+        }
+
+        private const int MinCnicSearchDigits = 5;
+
+        public async Task<BookingStatusCountsDto> GetBookingStatusCountsAsync(BookingFilterDto filter)
+        {
+            var rows = await ApplyBookingFilters(_context.Bookings.AsNoTracking(), filter)
+                .GroupBy(b => b.Status)
+                .Select(g => new { Status = g.Key, Count = g.Count() })
+                .ToListAsync();
+            int Of(BookingStatus status) => rows.FirstOrDefault(r => r.Status == status)?.Count ?? 0;
+            return new BookingStatusCountsDto
+            {
+                AwaitingBookingAmount = Of(BookingStatus.AwaitingBookingAmount),
+                PaymentPlanActive = Of(BookingStatus.PaymentPlanActive),
+                PossessionGiven = Of(BookingStatus.PossessionGiven),
+                SaleCompleted = Of(BookingStatus.SaleCompleted),
+                Cancelled = Of(BookingStatus.Cancelled),
+                // Cancelled bookings are part of the total even though the screen has no card for them.
+                Total = rows.Sum(r => r.Count)
             };
         }
 

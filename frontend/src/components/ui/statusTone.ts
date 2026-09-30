@@ -27,6 +27,27 @@ const TONES: Record<string, StatusTone> = {
   inactive: "grey",
   cover: "gold",
   highlight: "gold",
+  // Bookings: the booking, its installments, commission, rebate and refund (see features/bookings/statusNames.ts).
+  awaitingbookingamount: "orange",
+  paymentplanactive: "blue",
+  possessiongiven: "grey",
+  salecompleted: "green",
+  paid: "green",
+  partlypaid: "orange",
+  overdue: "red",
+  reversalrequired: "red",
+  reversed: "red",
+  partlygiven: "orange",
+  given: "green",
+  applied: "green",
+  refundtopay: "orange",
+  refundpaid: "green",
+  norefund: "grey",
+};
+
+/** Words that differ from the plain sentence-case of the status. */
+const LABELS: Record<string, string> = {
+  paymentplanactive: "Payment plan",
 };
 
 const normalise = (status: string) => status.toLowerCase().replace(/[\s_-]+/g, "");
@@ -37,6 +58,8 @@ export function statusTone(status: string): StatusTone {
 
 /** "InProgress" / "in_progress" → "In progress" for display. */
 export function statusLabel(status: string): string {
+  const named = LABELS[normalise(status)];
+  if (named) return named;
   const words = status.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim().toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }

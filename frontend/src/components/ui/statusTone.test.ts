@@ -25,6 +25,24 @@ describe("statusTone", () => {
   });
 });
 
+describe("booking statuses", () => {
+  it("colours every booking, installment, commission, rebate and refund status", () => {
+    const expected: Record<string, string> = {
+      AwaitingBookingAmount: "orange", PaymentPlanActive: "blue", PossessionGiven: "grey", SaleCompleted: "green", Cancelled: "red",
+      Paid: "green", Pending: "orange", "Partly paid": "orange", Overdue: "red",
+      "Reversal required": "red", "Partly given": "orange", Given: "green", Applied: "green",
+      "Refund to pay": "orange", "Refund paid": "green", "No refund": "grey",
+    };
+    for (const [status, tone] of Object.entries(expected)) expect([status, statusTone(status)]).toEqual([status, tone]);
+  });
+  it("writes a payment plan as 'Payment plan'", () => {
+    expect(statusLabel("PaymentPlanActive")).toBe("Payment plan");
+    expect(statusLabel("AwaitingBookingAmount")).toBe("Awaiting booking amount");
+    expect(statusLabel("PossessionGiven")).toBe("Possession given");
+    expect(statusLabel("SaleCompleted")).toBe("Sale completed");
+  });
+});
+
 describe("statusLabel", () => {
   it("turns codes into sentence case", () => {
     expect(statusLabel("InProgress")).toBe("In progress");

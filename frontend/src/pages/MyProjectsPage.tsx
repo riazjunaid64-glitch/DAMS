@@ -32,25 +32,9 @@ interface MyBooking {
   customerName: string;
 }
 
-interface MyRequest {
-  id: number;
-  unitId: number;
-  unitNumber: string;
-  unitType: string;
-  unitPrice: number;
-  projectName: string;
-  projectLocation: string;
-  status: "Pending" | "Approved" | "Rejected" | "Cancelled";
-  requestedAt: string;
-  reviewedAt: string | null;
-  rejectionReason: string | null;
-  notes: string | null;
-}
-
-/** A normalised entry in the customer journey, built from either a request or a booking. */
+/** A normalised entry in the customer journey, built from a booking. */
 interface JourneyItem {
   key: string;
-  kind: "request" | "booking";
   /** sort weight — lower shows first */
   rank: number;
   title: string; // project name
@@ -58,13 +42,12 @@ interface JourneyItem {
   price: number;
   date: string;
   reference?: string;
-  /** index of the active step in JOURNEY_STEPS; -1 when declined/cancelled */
+  /** index of the active step in JOURNEY_STEPS; -1 when cancelled */
   currentStep: number;
   badgeLabel: string;
   badgeClass: string;
-  declined?: { reason: string | null };
-  booking?: MyBooking;
-  request?: MyRequest;
+  cancelled?: boolean;
+  booking: MyBooking;
 }
 
 /* ------------------------------------------------------------------ */
@@ -72,8 +55,6 @@ interface JourneyItem {
 /* ------------------------------------------------------------------ */
 
 const JOURNEY_STEPS = [
-  "Requested",
-  "Approved",
   "Booking Amount",
   "Installments",
   "Possession",
@@ -91,74 +72,36 @@ function formatDate(iso: string) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Mapping requests + bookings → journey items                         */
+/* Mapping bookings → journey items                                    */
 /* ------------------------------------------------------------------ */
 
-function requestToJourney(r: MyRequest): JourneyItem | null {
-  // Approved requests already surface as confirmed bookings — avoid duplicates.
-  // Requests the customer cancelled themselves are not shown either.
-  if (r.status === "Approved" || r.status === "Cancelled") return null;
-
-  if (r.status === "Rejected") {
-    return {
-      key: `req-${r.id}`,
-      kind: "request",
-      rank: 40,
-      title: r.projectName,
-      subtitle: `${r.unitType} · Unit ${r.unitNumber}`,
-      price: r.unitPrice,
-      date: r.reviewedAt ?? r.requestedAt,
-      currentStep: -1,
-      badgeLabel: "Declined",
-      badgeClass: "text-rose-400 bg-rose-500/10 border-rose-500/20",
-      declined: { reason: r.rejectionReason },
-      request: r,
-    };
-  }
-
-  // Pending
-  return {
-    key: `req-${r.id}`,
-    kind: "request",
-    rank: 0,
-    title: r.projectName,
-    subtitle: `${r.unitType} · Unit ${r.unitNumber}`,
-    price: r.unitPrice,
-    date: r.requestedAt,
-    currentStep: 0,
-    badgeLabel: "Under Review",
-    badgeClass: "text-amber-400 bg-amber-500/10 border-amber-500/20",
-    request: r,
-  };
-}
-
 function bookingToJourney(b: MyBooking): JourneyItem {
-  let currentStep = 2;
+  let currentStep = 0;
   let badgeLabel = "Awaiting Booking Amount";
   let badgeClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
   let rank = 10;
 
   switch (b.status) {
     case "AwaitingBookingAmount":
-      currentStep = 2;
+      currentStep = 0;
       badgeLabel = "Awaiting Booking Amount";
       badgeClass = "text-amber-400 bg-amber-500/10 border-amber-500/20";
       rank = 10;
       break;
     case "PaymentPlanActive":
-      currentStep = 3;
+      currentStep = 1;
       badgeLabel = "Installments Active";
       badgeClass = "text-indigo-400 bg-indigo-500/10 border-indigo-500/20";
       rank = 11;
       break;
     case "PossessionGiven":
-      currentStep = 4;
+      currentStep = 2;
       badgeLabel = "Possession Given";
       badgeClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
       rank = 20;
       break;
     case "SaleCompleted":
-      currentStep = 5; // all done
+      currentStep = 3; // all done
       badgeLabel = "Sale Completed";
       badgeClass = "text-emerald-400 bg-emerald-500/10 border-emerald-500/20";
       rank = 21;
@@ -173,7 +116,6 @@ function bookingToJourney(b: MyBooking): JourneyItem {
 
   return {
     key: `book-${b.id}`,
-    kind: "booking",
     rank,
     title: b.projectName,
     subtitle: `${b.unitType} · Unit ${b.unitNumber}`,
@@ -183,7 +125,7 @@ function bookingToJourney(b: MyBooking): JourneyItem {
     currentStep,
     badgeLabel,
     badgeClass,
-    declined: b.status === "Cancelled" ? { reason: null } : undefined,
+    cancelled: b.status === "Cancelled",
     booking: b,
   };
 }
@@ -269,62 +211,7 @@ function CardShell({ item, children, to }: { item: JourneyItem; children: React.
   return <div className={base}>{inner}</div>;
 }
 
-function PendingCard({ item, onCancelled }: { item: JourneyItem; onCancelled: () => void }) {
-  const [cancelling, setCancelling] = useState(false);
-  const [cancelError, setCancelError] = useState<string | null>(null);
-
-  const handleCancel = async () => {
-    if (!item.request) return;
-    if (!window.confirm("Withdraw this property inquiry? This will not change the unit's availability.")) return;
-    setCancelling(true);
-    setCancelError(null);
-    try {
-      const res = await api(`/api/BookingRequest/${item.request.id}/cancel`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || "Failed to cancel the request.");
-      onCancelled();
-    } catch (err) {
-      setCancelError(err instanceof Error ? err.message : "Failed to cancel the request.");
-      setCancelling(false);
-    }
-  };
-
-  return (
-    <CardShell item={item}>
-      <div className="mb-5 grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <p className="text-xs text-[var(--text-muted)]">Unit Price</p>
-          <p className="font-semibold text-[var(--text-primary)]">{formatMoney(item.price)}</p>
-        </div>
-        <div>
-          <p className="text-xs text-[var(--text-muted)]">Requested On</p>
-          <p className="font-medium text-[var(--text-secondary)]">{formatDate(item.date)}</p>
-        </div>
-      </div>
-
-      <div className="mb-4">
-        <JourneyStepper currentStep={item.currentStep} />
-      </div>
-
-      <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3.5 py-3">
-        <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-amber-400 animate-pulse" />
-        <p className="text-xs leading-relaxed text-amber-200/90">
-          Your request has been received and is being reviewed by our team. We&apos;ll notify you as soon as it&apos;s
-          approved, and your booking details will appear here.
-        </p>
-      </div>
-
-      {cancelError && (
-        <p className="mb-3 text-xs text-rose-400">{cancelError}</p>
-      )}
-      <Button variant="outline" size="sm" onClick={handleCancel} disabled={cancelling}>
-        {cancelling ? "Withdrawing..." : "Withdraw Request"}
-      </Button>
-    </CardShell>
-  );
-}
-
-function DeclinedCard({ item }: { item: JourneyItem }) {
+function CancelledCard({ item }: { item: JourneyItem }) {
   const navigate = useNavigate();
   return (
     <CardShell item={item}>
@@ -334,16 +221,10 @@ function DeclinedCard({ item }: { item: JourneyItem }) {
           <p className="font-semibold text-[var(--text-primary)]">{formatMoney(item.price)}</p>
         </div>
         <div>
-          <p className="text-xs text-[var(--text-muted)]">Reviewed On</p>
+          <p className="text-xs text-[var(--text-muted)]">Booked On</p>
           <p className="font-medium text-[var(--text-secondary)]">{formatDate(item.date)}</p>
         </div>
       </div>
-      {item.declined?.reason && (
-        <div className="mb-4 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-3.5 py-3">
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-rose-400">Reason</p>
-          <p className="text-xs leading-relaxed text-rose-200/90">{item.declined.reason}</p>
-        </div>
-      )}
       <Button variant="outline" size="sm" onClick={() => navigate("/projects")}>
         Browse Other Units
       </Button>
@@ -352,7 +233,7 @@ function DeclinedCard({ item }: { item: JourneyItem }) {
 }
 
 /** Stage-specific banner telling the customer exactly what happens next. */
-function bookingActionBanner(b: MyBooking): { tone: "approved" | "info" | "success"; title: string; body: string } {
+function bookingActionBanner(b: MyBooking): { tone: "due" | "info" | "success"; title: string; body: string } {
   // ?? not ||: the server figure is credit-aware and is legitimately ZERO when a rebate has covered
   // the booking amount, which a falsy check would discard in favour of the raw cash difference.
   const bookingRemaining =
@@ -362,8 +243,8 @@ function bookingActionBanner(b: MyBooking): { tone: "approved" | "info" | "succe
     case "AwaitingBookingAmount":
       if (b.bookingAmountReceived <= 0) {
         return {
-          tone: "approved",
-          title: "🎉 Your request has been approved!",
+          tone: "due",
+          title: "Booking amount due",
           body:
             b.bookingAmountRequired > 0
               ? `Please pay the booking amount of ${formatMoney(b.bookingAmountRequired)} to confirm your unit. Our team will guide you through the payment.`
@@ -393,13 +274,13 @@ function bookingActionBanner(b: MyBooking): { tone: "approved" | "info" | "succe
 }
 
 const bannerTone: Record<string, string> = {
-  approved: "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-200/90",
+  due: "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-200/90",
   info: "border-indigo-500/20 bg-indigo-500/[0.06] text-indigo-200/90",
   success: "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-200/90",
 };
 
 function BookingCard({ item }: { item: JourneyItem }) {
-  const b = item.booking!;
+  const b = item.booking;
   const bookingRemaining =
     b.bookingAmountRemaining ?? Math.max(0, b.bookingAmountRequired - b.bookingAmountReceived);
   const banner = bookingActionBanner(b);
@@ -461,7 +342,6 @@ export default function MyProjectsPage({ user }: Props) {
   const [items, setItems] = useState<JourneyItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
 
   const isClient = user?.role === "Client";
 
@@ -477,10 +357,7 @@ export default function MyProjectsPage({ user }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const [bookRes, reqRes] = await Promise.all([
-          api("/api/MyProjects"),
-          api("/api/BookingRequest/my-requests"),
-        ]);
+        const bookRes = await api("/api/MyProjects");
 
         // A 403 here means a session that predates email confirmation — the token is validly
         // signed but carries no proof the address was ever verified, so the portal refuses it.
@@ -494,18 +371,13 @@ export default function MyProjectsPage({ user }: Props) {
           return;
         }
 
-        if (!bookRes.ok && !reqRes.ok) {
+        if (!bookRes.ok) {
           setError("Failed to load your projects.");
           return;
         }
 
-        const bookings: MyBooking[] = bookRes.ok ? await bookRes.json() : [];
-        const requests: MyRequest[] = reqRes.ok ? await reqRes.json() : [];
-
-        const journey: JourneyItem[] = [
-          ...bookings.map(bookingToJourney),
-          ...requests.map(requestToJourney).filter((x): x is JourneyItem => x !== null),
-        ];
+        const bookings: MyBooking[] = await bookRes.json();
+        const journey: JourneyItem[] = bookings.map(bookingToJourney);
 
         journey.sort((a, b) => {
           if (a.rank !== b.rank) return a.rank - b.rank;
@@ -520,7 +392,7 @@ export default function MyProjectsPage({ user }: Props) {
       }
     };
     load();
-  }, [isClient, reloadKey]);
+  }, [isClient]);
 
   if (user && !isClient) return null;
 
@@ -530,7 +402,7 @@ export default function MyProjectsPage({ user }: Props) {
         <div className="mx-auto max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--surface-glass)] px-6 py-12 text-center">
           <h1 className="text-xl font-semibold text-[var(--text-heading)]">My Projects</h1>
           <p className="mt-3 text-sm text-[var(--text-muted)]">
-            Please log in to view the properties you have requested or purchased.
+            Please log in to view your bookings.
           </p>
           <Button className="mt-6" onClick={() => navigate("/projects")}>
             Browse Projects
@@ -540,9 +412,8 @@ export default function MyProjectsPage({ user }: Props) {
     );
   }
 
-  const pendingCount = items.filter((i) => i.kind === "request" && i.currentStep === 0).length;
-  const activeCount = items.filter((i) => i.kind === "booking" && i.currentStep >= 0 && i.currentStep < 5).length;
-  const completedCount = items.filter((i) => i.currentStep >= 5).length;
+  const activeCount = items.filter((i) => i.currentStep >= 0 && i.currentStep < 3).length;
+  const completedCount = items.filter((i) => i.currentStep >= 3).length;
 
   return (
     <>
@@ -555,14 +426,13 @@ export default function MyProjectsPage({ user }: Props) {
           </div>
           <h1 className="text-2xl font-bold text-[var(--text-heading)] sm:text-3xl">My Projects</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
-            Track every property from initial inquiry to confirmed booking and possession ·{" "}
+            Track every booking from booking amount to possession ·{" "}
             <span className="text-[var(--text-secondary)]">{user.email}</span>
           </p>
 
           {!loading && items.length > 0 && (
-            <div className="mt-6 grid max-w-2xl grid-cols-3 gap-3">
+            <div className="mt-6 grid max-w-md grid-cols-2 gap-3">
               {[
-                { label: "Under Review", value: pendingCount, color: "text-amber-400" },
                 { label: "Active", value: activeCount, color: "text-indigo-400" },
                 { label: "Completed", value: completedCount, color: "text-emerald-400" },
               ].map((s) => (
@@ -601,8 +471,8 @@ export default function MyProjectsPage({ user }: Props) {
             </div>
             <h3 className="text-lg font-semibold text-[var(--text-heading)]">No projects yet</h3>
             <p className="mx-auto mt-2 max-w-md text-sm text-[var(--text-muted)]">
-              You haven&apos;t made any property inquiries yet. Browse available properties and ask our sales team for details — it
-              will appear here and you can track it all the way to possession.
+              You have no bookings yet. Browse available properties and ask our sales team for details. Once you book, it will
+              appear here and you can track it all the way to possession.
             </p>
             <Button className="mt-6" onClick={() => navigate("/projects")}>
               Browse Projects
@@ -619,9 +489,9 @@ export default function MyProjectsPage({ user }: Props) {
             }
           >
             {items.map((item) => {
-              if (item.kind === "booking" && !item.declined) return <BookingCard key={item.key} item={item} />;
-              if (item.declined) return <DeclinedCard key={item.key} item={item} />;
-              return <PendingCard key={item.key} item={item} onCancelled={() => setReloadKey((k) => k + 1)} />;
+              return item.cancelled
+                ? <CancelledCard key={item.key} item={item} />
+                : <BookingCard key={item.key} item={item} />;
             })}
           </div>
         )}

@@ -1,5 +1,11 @@
 # Unreleased
 
+## Bookings list redesign and Requests removed (KAN-72)
+
+The Bookings list is rebuilt on the shared components for desktop and phone: summary cards that filter (Total includes cancelled bookings; there is no Cancelled card), a Status and Project filter, 20 per page with "Showing 1–20 of 46 bookings", and Load more on phone. The counts come from a new `GET /api/Booking/summary` call that follows the search and project filters but not the status filter. Bookings search now finds a customer by any phone format (`0300-1234567`, `0300 1234567`, `03001234567`, `+92 300 1234567`) and by CNIC with or without dashes. Booking, installment, commission, rebate and refund status names and colours come from one module (`features/bookings/statusNames.ts`) and the shared status badge.
+
+The website booking Requests pages are removed for every role, along with the request cards, "Withdraw request" and the "Under review" count in the client portal. `/bookings` and old notification links now open the Bookings list. `POST /api/BookingRequest` now answers "Booking requests are closed. Please contact our sales team." Old request data, and the links from old bookings and leads to it, are untouched, and Lead Convert works as before. No migration.
+
 ## Shared date and time pickers (KAN-70)
 
 Every built-in date, time and date-time input in the app is replaced by one shared date picker and one shared time picker. Dates show as "Sep 29, 2026" and times as "11:30 AM" on desktop and phone; forms still send `YYYY-MM-DD` and `HH:mm`, so no server change is needed. "Today" is today in Pakistan. Payment, refund, date-of-birth and other finance dates cannot be picked in the future, and the cancellation refund date is locked to today, which is the only date the server accepts for it. The notification admin's send time now uses the date and time pair. The salary month selector is unchanged.
