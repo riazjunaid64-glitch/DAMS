@@ -49,6 +49,8 @@ interface BookingRow {
   agreedSalePrice: number;
   bookingAmountReceived: number;
   bookingAmountRequired: number;
+  /** Cash still due, after rebate credits: the server's figure, since a credit settles part of it without cash. */
+  bookingAmountRemaining: number;
   bookingDate: string;
 }
 
@@ -309,9 +311,9 @@ function agreedPrice(booking: BookingRow): ReactNode {
  * part received (progress bar and what is still due, which a cancelled booking no longer owes).
  */
 function BookingAmount({ booking }: { booking: BookingRow }) {
-  const { bookingAmountReceived: received, bookingAmountRequired: required } = booking;
+  const { bookingAmountReceived: received, bookingAmountRequired: required, bookingAmountRemaining: due } = booking;
   if (termsNotSet(booking) || (required === 0 && received === 0)) return NOT_SET;
-  if (required === 0 || received >= required) {
+  if (required === 0 || due <= 0) {
     return (
       <>
         <span className="block font-extrabold text-ink">{formatPkr(received)}</span>
@@ -321,7 +323,6 @@ function BookingAmount({ booking }: { booking: BookingRow }) {
       </>
     );
   }
-  const due = required - received;
   return (
     <>
       <span className="block font-extrabold text-ink">{formatPkr(received)} <span className="font-normal text-ink-muted">of {formatPkr(required)}</span></span>

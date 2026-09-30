@@ -441,11 +441,15 @@ namespace DAMS.Application.Services
                     + "on this booking in payments and rebate credits. Reverse or adjust the rebate credit before "
                     + "reducing the price — a rebate already granted as a credit cannot be granted again as a discount.");
 
-            // Written before the booking is touched, so the row can read "from" off it.
+            // Only when something changed, and written before the booking is touched so the row can read "from" off it.
             var discountReason = BookingTermsRules.ResolveDiscountReason(booking.DiscountReason, dto.DiscountReason);
-            _context.BookingTermsHistories.Add(BookingTermsRules.History(
-                booking, BookingTermsChangeSource.Terms, adminUserId, agreedSalePrice, discountPercent,
-                discountReason, bookingAmountRequired, dto.BookingAmountDueDate));
+            if (BookingTermsRules.Changed(booking, agreedSalePrice, discountPercent, discountReason,
+                    bookingAmountRequired, dto.BookingAmountDueDate))
+            {
+                _context.BookingTermsHistories.Add(BookingTermsRules.History(
+                    booking, BookingTermsChangeSource.Terms, adminUserId, agreedSalePrice, discountPercent,
+                    discountReason, bookingAmountRequired, dto.BookingAmountDueDate));
+            }
 
             booking.AgreedSalePrice = agreedSalePrice;
             booking.DiscountPercent = discountPercent;
@@ -629,7 +633,10 @@ namespace DAMS.Application.Services
             // back attempt can never send a receipt for a payment that was not durably recorded.
             await NotifyQuietlyAsync(n => n.NotifyPaymentRecordedAsync(paymentId));
 
-            return await GetResponseAsync(bookingId, cancellationToken);
+            var response = await GetResponseAsync(bookingId, cancellationToken);
+            // The exact payment this call recorded, so a proof file goes on it and not on a look-alike.
+            response.RecordedPaymentId = paymentId;
+            return response;
         }
 
         /// <summary>

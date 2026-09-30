@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newPaymentId, paymentErrors, referenceRequired } from "./paymentForm.ts";
+import { paymentErrors, referenceRequired } from "./paymentForm.ts";
 
 const valid = { amount: "350000", method: "Cash", accountId: "3", reference: "", paidAt: "2026-09-29" };
 
@@ -23,19 +23,5 @@ describe("paymentErrors", () => {
     expect(paymentErrors({ ...valid, amount: "0" }, 350_000).amount).toBeDefined();
     expect(paymentErrors({ ...valid, accountId: "" }, 350_000).accountId).toBeDefined();
     expect(paymentErrors({ ...valid, paidAt: "" }, 350_000).paidAt).toBeDefined();
-  });
-});
-
-describe("newPaymentId", () => {
-  it("finds the payment that was not there before", () => {
-    expect(newPaymentId([1, 2], [{ id: 3, amount: 500 }, { id: 2, amount: 100 }, { id: 1, amount: 100 }], 500)).toBe(3);
-  });
-
-  it("prefers the one with the amount that was sent when two appeared at once", () => {
-    expect(newPaymentId([1], [{ id: 2, amount: 900 }, { id: 3, amount: 500 }, { id: 1, amount: 100 }], 500)).toBe(3);
-  });
-
-  it("is null when nothing new is there", () => {
-    expect(newPaymentId([1], [{ id: 1, amount: 100 }], 100)).toBeNull();
   });
 });

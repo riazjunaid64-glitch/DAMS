@@ -1704,6 +1704,9 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<FinanceRecordAudit>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Finance record audit entries are append-only.");
+            if (ChangeTracker.Entries<BookingTermsHistory>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking terms history is append-only.");
         }
 
         /// <summary>

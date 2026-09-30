@@ -220,6 +220,54 @@ public sealed class BookingPageFiguresAndTermsTests
         Assert.Equal("Early payment", h.Context.Bookings.AsNoTracking().Single().DiscountReason);
     }
 
+    [Fact]
+    public async Task SavingTheSameTermsAgain_LeavesNoHistory_AndExistingHistoryCannotBeChanged()
+    {
+        await using var h = await Harness.Create(BookingStatus.AwaitingBookingAmount);
+        var terms = new UpdateBookingFinancialsDto { AgreedSalePrice = 900_000m, DiscountPercent = 0m, BookingAmountRequired = 200_000m };
+
+        await h.Bookings.UpdateBookingFinancialsAsync(h.BookingId, terms, 9);
+        await h.Bookings.UpdateBookingFinancialsAsync(h.BookingId, terms, 9);
+        Assert.Single(h.Context.BookingTermsHistories);
+
+        var row = h.Context.BookingTermsHistories.Single();
+        row.NewAgreedSalePrice = 1m;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Context.SaveChangesAsync());
+        h.Context.ChangeTracker.Clear();
+
+        h.Context.BookingTermsHistories.Remove(h.Context.BookingTermsHistories.Single());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Context.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task RecordingAPayment_ReturnsTheExactPaymentItCreated()
+    {
+        await using var h = await Harness.Create(BookingStatus.AwaitingBookingAmount);
+        var first = await h.Bookings.RecordBookingAmountPaymentAsync(h.BookingId,
+            new RecordBookingAmountPaymentDto { Amount = 10_000m, PaymentMethod = PaymentMethod.Cash, FinanceAccountId = h.AccountId }, 9);
+        var second = await h.Bookings.RecordBookingAmountPaymentAsync(h.BookingId,
+            new RecordBookingAmountPaymentDto { Amount = 10_000m, PaymentMethod = PaymentMethod.Cash, FinanceAccountId = h.AccountId }, 9);
+
+        Assert.NotNull(first.RecordedPaymentId);
+        Assert.NotEqual(first.RecordedPaymentId, second.RecordedPaymentId);
+        Assert.Equal(second.RecordedPaymentId, h.Context.Payments.Max(p => p.Id));
+        Assert.Null((await h.Bookings.GetBookingByIdAsync(h.BookingId))!.RecordedPaymentId);
+    }
+
+    [Fact]
+    public async Task RecordingAnInstallmentPayment_ReturnsTheExactPaymentItCreated()
+    {
+        await using var h = await Harness.Create(BookingStatus.PaymentPlanActive);
+        await h.AddPlan(paidCount: 0, unpaidCount: 2, unpaidStartsDaysFromToday: 5);
+        var installmentId = h.Context.Installments.OrderBy(i => i.DueDate).First().Id;
+        var service = new InstallmentService(h.Context, new FinanceAccountService(h.Context));
+
+        var schedule = await service.RecordInstallmentPaymentAsync(h.BookingId, installmentId,
+            new RecordInstallmentPaymentDto { Amount = 10_000m, PaymentMethod = PaymentMethod.Cash, FinanceAccountId = h.AccountId }, 9);
+
+        Assert.Equal(h.Context.Payments.Max(p => p.Id), schedule.RecordedPaymentId);
+    }
+
     // ── Payment input rules ───────────────────────────────────────────────────────────────────
 
     [Fact]

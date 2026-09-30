@@ -236,6 +236,7 @@ namespace DAMS.Application.Services
                 }
             }
 
+            schedule.RecordedPaymentId = paymentId;
             return schedule;
         }
 
@@ -428,9 +429,8 @@ namespace DAMS.Application.Services
                     // Kept when the form does not send one (the plan form never does): a regeneration
                     // must not erase the reason the discount was given.
                     var discountReason = BookingTermsRules.ResolveDiscountReason(booking.DiscountReason, dto.DiscountReason);
-                    if (agreedSalePrice != booking.AgreedSalePrice
-                        || dto.DiscountPercent != (booking.DiscountPercent ?? 0m)
-                        || discountReason != booking.DiscountReason)
+                    if (BookingTermsRules.Changed(booking, agreedSalePrice, dto.DiscountPercent, discountReason,
+                            booking.BookingAmountRequired, booking.BookingAmountDueDate))
                     {
                         _context.BookingTermsHistories.Add(BookingTermsRules.History(
                             booking, BookingTermsChangeSource.Plan, adminUserId, agreedSalePrice, dto.DiscountPercent,

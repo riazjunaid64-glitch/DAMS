@@ -23,6 +23,16 @@ namespace DAMS.Application.Common
                 throw new InvalidOperationException("The due-by date must be today or later.");
         }
 
+        /// <summary>Whether any tracked commercial term differs from what is on the booking now, so an unchanged save leaves no history.</summary>
+        public static bool Changed(
+            Booking booking, decimal newAgreedSalePrice, decimal? newDiscountPercent, string? newDiscountReason,
+            decimal newBookingAmountRequired, DateTime? newBookingAmountDueDate) =>
+            newAgreedSalePrice != booking.AgreedSalePrice
+            || (newDiscountPercent ?? 0m) != (booking.DiscountPercent ?? 0m)
+            || newDiscountReason != booking.DiscountReason
+            || newBookingAmountRequired != booking.BookingAmountRequired
+            || newBookingAmountDueDate?.Date != booking.BookingAmountDueDate?.Date;
+
         /// <summary>The audit row for a change from the terms currently on <paramref name="booking"/> to the new ones.</summary>
         public static BookingTermsHistory History(
             Booking booking, BookingTermsChangeSource source, int? changedByUserId,

@@ -27,6 +27,7 @@ const row = (id: number, over: Record<string, unknown> = {}) => ({
   agreedSalePrice: 12_800_000,
   bookingAmountReceived: 500_000,
   bookingAmountRequired: 500_000,
+  bookingAmountRemaining: 0,
   bookingDate: "2026-09-28T07:00:00Z",
   ...over,
 });
@@ -58,7 +59,7 @@ beforeEach(() => {
   phone(false);
   respond = (url) => url.includes("/summary")
     ? { body: counts }
-    : { body: { items: [row(1), row(2, { status: "AwaitingBookingAmount", bookingAmountReceived: 150_000, bookingAmountRequired: 500_000 })], totalCount: 46, page: 1, pageSize: 20, totalPages: 3 } };
+    : { body: { items: [row(1), row(2, { status: "AwaitingBookingAmount", bookingAmountReceived: 150_000, bookingAmountRequired: 500_000, bookingAmountRemaining: 350_000 })], totalCount: 46, page: 1, pageSize: 20, totalPages: 3 } };
 });
 afterEach(() => {
   cleanup();
@@ -91,13 +92,23 @@ describe("Bookings list", () => {
       ? { body: counts }
       : { body: { items: [
         row(1, { status: "AwaitingBookingAmount", agreedSalePrice: 0, bookingAmountRequired: 0, bookingAmountReceived: 0 }),
-        row(2, { status: "Cancelled", bookingAmountReceived: 150_000, bookingAmountRequired: 500_000 }),
+        row(2, { status: "Cancelled", bookingAmountReceived: 150_000, bookingAmountRequired: 500_000, bookingAmountRemaining: 350_000 }),
       ], totalCount: 2, page: 1, pageSize: 20, totalPages: 1 } };
     show();
     await screen.findAllByText("BK-000001");
     // Agreed price and booking amount, in the table and in the phone card.
     expect(screen.getAllByText("Not set")).toHaveLength(4);
     expect(screen.queryByText("Rs 350,000 due")).toBeNull();
+  });
+
+  it("shows no amount due when a rebate credit has settled the rest of the booking amount", async () => {
+    respond = (url) => url.includes("/summary")
+      ? { body: counts }
+      : { body: { items: [row(1, { bookingAmountReceived: 300_000, bookingAmountRequired: 500_000, bookingAmountRemaining: 0 })], totalCount: 1, page: 1, pageSize: 20, totalPages: 1 } };
+    show();
+    await screen.findAllByText("BK-000001");
+    expect(screen.queryByText(/due$/)).toBeNull();
+    expect(screen.getAllByText("Received").length).toBeGreaterThan(0);
   });
 
   it("filters by a status card, keeps the counts on search and project only, and clears on a second click or Total", async () => {

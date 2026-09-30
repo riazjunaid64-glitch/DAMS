@@ -3,7 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../components/ui/Toast.tsx";
+import { uploadProof } from "../features/proof/proofApi.ts";
 import BookingDetailPage from "./BookingDetailPage.tsx";
+
+vi.mock("../features/proof/proofApi.ts", () => ({ uploadProof: vi.fn(), openProof: vi.fn() }));
 
 type Call = { url: string; method: string; headers: Headers; body: unknown };
 let calls: Call[];
@@ -95,6 +98,7 @@ function phone(on: boolean) {
 const requested = (method: string, url: string) => calls.filter((c) => c.method === method && c.url === url);
 
 beforeEach(() => {
+  vi.mocked(uploadProof).mockReset();
   calls = [];
   answers = { "GET /api/finance/accounts/options": () => ({ body: accounts }) };
   phone(false);
@@ -398,6 +402,48 @@ describe("Record booking amount", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
     expect(await within(dialog).findByText("Payment exceeds the remaining booking amount. Remaining is 300000.00.")).toBeTruthy();
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+});
+
+describe("proof on a recorded payment", () => {
+  const awaiting = { status: "AwaitingBookingAmount", bookingAmountRequired: 500_000, bookingAmountReceived: 150_000, bookingAmountRemaining: 350_000, hasInstallmentSchedule: false, installmentsTotal: 0, nextInstallment: null, bookingReference: "BK-000044", payments: [{ id: 1, amount: 150_000 }] };
+  const slip = new File(["x"], "slip.pdf", { type: "application/pdf" });
+
+  async function openWithFile() {
+    show(awaiting);
+    fireEvent.click(await screen.findByRole("button", { name: "Record payment" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = dialog.querySelector("input[type=file]") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [slip] } });
+    return dialog;
+  }
+
+  it("goes onto the payment the server says it created, not one guessed from the list", async () => {
+    answers["POST /api/Booking/13/booking-amount-payment"] = () => ({ body: { ...base, ...awaiting, recordedPaymentId: 77 } });
+    vi.mocked(uploadProof).mockResolvedValue();
+    const dialog = await openWithFile();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
+
+    await waitFor(() => expect(uploadProof).toHaveBeenCalledWith("CustomerPayment", 77, slip, expect.any(Function), expect.any(AbortSignal)));
+    expect(await screen.findByText("Payment recorded.")).toBeTruthy();
+    expect(calls.map((c) => c.url)).not.toContain("/api/Booking/13/payments");
+  });
+
+  it("keeps the popup open on the proof when the upload fails, and sends the same file again on Retry", async () => {
+    answers["POST /api/Booking/13/booking-amount-payment"] = () => ({ body: { ...base, ...awaiting, recordedPaymentId: 77 } });
+    vi.mocked(uploadProof).mockRejectedValueOnce(new Error("Network down")).mockResolvedValueOnce();
+    const dialog = await openWithFile();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
+
+    expect(await within(dialog).findByText("Payment recorded, but the proof did not upload.")).toBeTruthy();
+    expect(requested("POST", "/api/Booking/13/booking-amount-payment")).toHaveLength(1);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry upload" }));
+    await waitFor(() => expect(uploadProof).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(uploadProof).mock.calls[1]!.slice(0, 3)).toEqual(["CustomerPayment", 77, slip]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The payment itself was never sent a second time.
+    expect(requested("POST", "/api/Booking/13/booking-amount-payment")).toHaveLength(1);
   });
 });
 

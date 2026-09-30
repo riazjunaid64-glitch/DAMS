@@ -31,15 +31,3 @@ export function paymentErrors(fields: PaymentFields, limit: number): PaymentErro
   if (!fields.paidAt) errors.paidAt = "Choose the payment date.";
   return errors;
 }
-
-/**
- * The payment that a save just created: the one on the booking now that was not there before, with
- * the amount that was sent. Payments carry no id in the save's response, and the proof has to be
- * attached to a saved payment, so it is found by comparing the list before and after.
- */
-export function newPaymentId(before: readonly number[], after: readonly { id: number; amount: number }[], amount: number): number | null {
-  const known = new Set(before);
-  const created = after.filter((payment) => !known.has(payment.id));
-  const match = created.filter((payment) => payment.amount === amount);
-  return (match.length ? match : created).reduce<number | null>((latest, payment) => (latest === null || payment.id > latest ? payment.id : latest), null);
-}

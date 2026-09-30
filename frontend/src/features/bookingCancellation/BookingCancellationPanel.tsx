@@ -2,7 +2,8 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
-import { DatePicker } from "../../components/ui";
+import { AttachProof, DatePicker } from "../../components/ui";
+import { useProofUpload } from "../proof/useProofUpload";
 import { bookingCancellationApi } from "./api";
 import { idempotencyKey, money, pakistanToday, refundDecisionLabel, refundStatusLabel, trapDialogKeys } from "./state";
 import type { CancellationSettlement, PayCancellationRefundRequest, RefundPaymentMethod } from "./types";
@@ -38,6 +39,9 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
   const [paymentReference, setPaymentReference] = useState("");
   const [paidAt, setPaidAt] = useState(pakistanToday());
   const [notes, setNotes] = useState("");
+  const proof = useProofUpload();
+  // Set once the refund is recorded but its proof did not go up: the popup stays for a retry.
+  const [paidRefundId, setPaidRefundId] = useState<number | null>(null);
 
   if (status !== "Cancelled") return null;
 
@@ -49,13 +53,32 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
     setPaymentReference("");
     setPaidAt(pakistanToday());
     setNotes("");
+    proof.reset();
+    setPaidRefundId(null);
     setShowPay(true);
   };
 
-  const close = () => { if (!submitting) setShowPay(false); };
+  const finish = async () => {
+    setShowPay(false);
+    setPaidRefundId(null);
+    await onChanged();
+  };
+
+  // Closing after the refund was recorded still refreshes the page: the money has moved.
+  const close = () => {
+    if (submitting) return;
+    if (paidRefundId !== null) void finish();
+    else setShowPay(false);
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (paidRefundId !== null) {
+      setSubmitting(true);
+      if (await proof.upload("CancellationRefund", paidRefundId)) await finish();
+      setSubmitting(false);
+      return;
+    }
     if (!financeAccountId) { setError("Select the account the refund is paid from."); return; }
     setSubmitting(true);
     setError(null);
@@ -68,9 +91,14 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
         notes: notes.trim() || null,
         idempotencyKey: key,
       };
-      await bookingCancellationApi.payRefund(bookingId, body);
-      setShowPay(false);
-      await onChanged();
+      const saved = await bookingCancellationApi.payRefund(bookingId, body);
+      const refundId = saved.cancellationSettlement?.refund?.id ?? null;
+      if (proof.hasFile && !(refundId !== null && await proof.upload("CancellationRefund", refundId))) {
+        setPaidRefundId(refundId ?? 0);
+        setError("Refund recorded, but the proof did not upload. Retry, or close to continue without it.");
+        return;
+      }
+      await finish();
     } catch (x) {
       setError(x instanceof Error ? x.message : "Failed to pay the refund.");
     } finally {
@@ -163,10 +191,11 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
               <Field label="Payment Reference" required={paymentMethod !== "Cash"} value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)} />
               <DatePicker label="Refund Date" required max={pakistanToday()} value={paidAt} onChange={setPaidAt} />
+              <AttachProof label="Proof" disabled={submitting} {...proof.fieldProps} />
               <Field as="textarea" label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={submitting}>{submitting ? "Paying…" : "Confirm Payment"}</Button>
+                <Button type="submit" disabled={submitting}>{submitting ? "Paying…" : paidRefundId !== null ? "Retry upload" : "Confirm Payment"}</Button>
                 <Button type="button" variant="ghost" onClick={close} disabled={submitting}>Cancel</Button>
               </div>
             </form>
