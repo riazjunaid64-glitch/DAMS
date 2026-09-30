@@ -621,22 +621,27 @@ public sealed class SqlServerProductionInvariantTests
             bookingId = booking.Id;
         }
 
-        var stamp = DateTime.UtcNow;
-        var dto = new GenerateInstallmentPlanDto
+        GenerateInstallmentPlanDto Plan(int count, bool regenerate) => new()
         {
             AgreedSalePrice = 1_000_000m, DiscountPercent = 0m, Frequency = InstallmentFrequency.Monthly,
-            NumberOfInstallments = 3, InstallmentStartDate = DateTime.UtcNow.Date.AddMonths(1)
+            NumberOfInstallments = count, InstallmentStartDate = DateTime.UtcNow.Date.AddMonths(1), Regenerate = regenerate
         };
         await using (var context = new AppDbContext(options))
         {
             var installments = new InstallmentService(context, new FinanceAccountService(context));
-            await installments.GenerateScheduleAsync(bookingId, dto, 901, stamp);
-            var replayed = await installments.GenerateScheduleAsync(bookingId, dto, 901, stamp);
+            await installments.GenerateScheduleAsync(bookingId, Plan(3, false), 901, "plan-replay-a");
+            var replayed = await installments.GenerateScheduleAsync(bookingId, Plan(3, false), 901, "plan-replay-a");
             Assert.Equal(3, replayed.Items.Count);
+
+            // Someone changes the plan; the old attempt arriving late must not put its plan back.
+            await installments.GenerateScheduleAsync(bookingId, Plan(2, true), 902, "plan-replay-b");
+            var late = await installments.GenerateScheduleAsync(bookingId, Plan(3, true), 901, "plan-replay-a");
+            Assert.Equal(2, late.Items.Count);
         }
 
         await using var verify = new AppDbContext(options);
-        Assert.Equal(3, await verify.Installments.CountAsync(i => i.BookingId == bookingId));
+        Assert.Equal(2, await verify.Installments.CountAsync(i => i.BookingId == bookingId));
+        Assert.Equal(2, await verify.InstallmentPlanAttempts.CountAsync(a => a.BookingId == bookingId));
     }
 
     /// <summary>

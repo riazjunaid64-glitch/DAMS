@@ -40,6 +40,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Payment> Payments { get; set; }
         public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
         public DbSet<BookingTermsHistory> BookingTermsHistories { get; set; }
+        public DbSet<InstallmentPlanAttempt> InstallmentPlanAttempts { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -698,6 +699,17 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(h => h.Booking)
                       .WithMany()
                       .HasForeignKey(h => h.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<InstallmentPlanAttempt>(entity =>
+            {
+                entity.Property(a => a.AttemptKey).IsRequired().HasMaxLength(100);
+                entity.HasIndex(a => a.AttemptKey).IsUnique();
+
+                entity.HasOne(a => a.Booking)
+                      .WithMany()
+                      .HasForeignKey(a => a.BookingId)
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -1707,6 +1719,9 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<BookingTermsHistory>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking terms history is append-only.");
+            if (ChangeTracker.Entries<InstallmentPlanAttempt>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Installment plan attempts are append-only.");
         }
 
         /// <summary>

@@ -153,15 +153,33 @@ public sealed class BookingInstallmentPlanTests
     public async Task ReplayingOneAttemptToBuildAFirstPlan_ReportsThePlanItBuilt_InsteadOfFailingBecauseItExists()
     {
         await using var h = await Harness.Create();
-        var stamp = DateTime.UtcNow;
         var dto = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
 
-        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, stamp);
+        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, "attempt-a");
         // The execution strategy re-running the delegate after a commit whose acknowledgement was lost.
-        var replayed = await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, stamp);
+        var replayed = await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, "attempt-a");
 
         Assert.Equal(3, replayed.Items.Count);
         Assert.Equal(3, h.Context.Installments.Count());
+        Assert.Single(h.Context.InstallmentPlanAttempts);
+    }
+
+    [Fact]
+    public async Task AnOldAttemptReplayedAfterSomeoneChangedThePlan_CannotOverwriteTheNewerPlan()
+    {
+        await using var h = await Harness.Create();
+        // A builds the plan and its acknowledgement is lost; B then changes it to 2 quarterly installments.
+        await h.Installments.GenerateScheduleAsync(h.BookingId, h.Plan(3, InstallmentFrequency.Monthly, Oct26), 1, "attempt-a");
+        await h.Installments.GenerateScheduleAsync(h.BookingId, h.Plan(2, InstallmentFrequency.Quarterly, Oct26, regenerate: true), 2, "attempt-b");
+
+        // A's retry arrives now, asking to replace the plan again.
+        var replayed = await h.Installments.GenerateScheduleAsync(
+            h.BookingId, h.Plan(3, InstallmentFrequency.Monthly, Oct26, regenerate: true), 1, "attempt-a");
+
+        Assert.Equal(2, replayed.Items.Count);
+        Assert.Equal(InstallmentFrequency.Quarterly, replayed.Frequency);
+        Assert.Equal(2, h.Context.Installments.Count());
+        Assert.Equal(2, h.Context.InstallmentPlanAttempts.Count());
     }
 
     [Fact]
@@ -169,10 +187,10 @@ public sealed class BookingInstallmentPlanTests
     {
         await using var h = await Harness.Create();
         var dto = h.Plan(3, InstallmentFrequency.Monthly, Oct26);
-        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, DateTime.UtcNow);
+        await h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, "attempt-a");
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, DateTime.UtcNow.AddSeconds(1)));
+            h.Installments.GenerateScheduleAsync(h.BookingId, dto, 1, "attempt-b"));
 
         Assert.Contains("already exists", error.Message);
     }

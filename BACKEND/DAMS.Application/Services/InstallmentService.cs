@@ -315,20 +315,21 @@ namespace DAMS.Application.Services
         }
 
         public Task<InstallmentScheduleDto> GenerateScheduleAsync(int bookingId, GenerateInstallmentPlanDto dto, int adminUserId) =>
-            GenerateScheduleAsync(bookingId, dto, adminUserId, DateTime.UtcNow);
+            GenerateScheduleAsync(bookingId, dto, adminUserId, $"installment-plan:{Guid.NewGuid():N}");
 
         /// <summary>
-        /// <paramref name="attemptStamp"/> names this ONE attempt to build the plan, and is taken before
+        /// <paramref name="attemptKey"/> names this ONE attempt to build the plan, and is created before
         /// <see cref="SerializableAsync"/> is entered so every re-execution of the delegate carries the
         /// same value — the same principle as the attempt key on a payment. A commit whose acknowledgement
         /// was lost is indistinguishable, from here, from one that never happened, so the strategy replays
-        /// the delegate; a first-time plan would then fail with "a schedule already exists" although the
-        /// first execution built it. The attempt leaves its stamp (with the user) on the booking as the
-        /// plan's generated-at, and looks for that stamp before doing anything: finding it means the
-        /// first execution did commit, and the only thing left to do is report the schedule it built.
+        /// the delegate. Replaying blind would fail a first plan with "a schedule already exists", or —
+        /// after someone else has changed the plan in between — overwrite THEIR newer plan with this
+        /// older request. The attempt therefore writes its key as a row of its own in the same
+        /// transaction and looks for it first: finding it means the first execution did commit, and the
+        /// only thing left to do is report the schedule as it stands.
         /// </summary>
         internal Task<InstallmentScheduleDto> GenerateScheduleAsync(
-            int bookingId, GenerateInstallmentPlanDto dto, int adminUserId, DateTime attemptStamp) =>
+            int bookingId, GenerateInstallmentPlanDto dto, int adminUserId, string attemptKey) =>
             // Serializable: this reads the current balance/credits and rebuilds the whole schedule
             // from them in two SaveChanges calls (installments, then credit reallocation) — both
             // needed to be one atomic unit even before concurrency was a concern, since a failure
@@ -337,8 +338,8 @@ namespace DAMS.Application.Services
             // reason as RecordInstallmentPaymentAsync above.
             SerializableAsync(async () =>
             {
-                var alreadyBuilt = await _context.Bookings.AsNoTracking().AnyAsync(b => b.Id == bookingId
-                    && b.InstallmentPlanGeneratedAt == attemptStamp && b.InstallmentPlanGeneratedByUserId == adminUserId);
+                var alreadyBuilt = await _context.InstallmentPlanAttempts.AsNoTracking()
+                    .AnyAsync(a => a.AttemptKey == attemptKey);
                 if (alreadyBuilt)
                     return await GetScheduleAsync(bookingId);
 
@@ -465,7 +466,8 @@ namespace DAMS.Application.Services
                 booking.InstallmentPlanStartDate = dto.InstallmentStartDate!.Value.Date;
                 booking.PossessionAmount = possessionAmount;
                 booking.PossessionDueDate = possessionAmount > 0m ? dto.PossessionDueDate?.Date : null;
-                booking.InstallmentPlanGeneratedAt = attemptStamp;
+                booking.InstallmentPlanGeneratedAt = DateTime.UtcNow;
+                _context.InstallmentPlanAttempts.Add(new InstallmentPlanAttempt { BookingId = booking.Id, AttemptKey = attemptKey });
                 booking.InstallmentPlanGeneratedByUserId = adminUserId;
                 booking.UpdatedAt = DateTime.UtcNow;
 
