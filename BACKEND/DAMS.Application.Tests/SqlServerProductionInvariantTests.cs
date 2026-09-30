@@ -1488,6 +1488,7 @@ public sealed class SqlServerProductionInvariantTests
         await using var database = await SqlTestDatabase.CreateAsync();
         await using var db = new AppDbContext(Options(database.ConnectionString));
         await db.GetService<IMigrator>().MigrateAsync(BeforeRecognition);
+        await AddLaterCustomerColumnsAsync(database.ConnectionString);
 
         // A completed sale carrying real cash, with neither a possession nor a completion date to
         // recognise it by — the shape imported or hand-edited data takes. Skipping it would leave
@@ -1504,6 +1505,7 @@ public sealed class SqlServerProductionInvariantTests
         });
         await db.SaveChangesAsync();
 
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         var error = await Assert.ThrowsAnyAsync<Exception>(() => db.Database.MigrateAsync());
         Assert.Contains("Revenue recognition cannot be backfilled", Flatten(error));
         Assert.Contains("BK-LEGACY", await ScalarAsync<string>(database.ConnectionString,
@@ -1874,6 +1876,7 @@ public sealed class SqlServerProductionInvariantTests
         // exists, the allocations do not.
         await using (var db = new AppDbContext(options))
             await db.GetService<IMigrator>().MigrateAsync("20260823225954_AddMovementAttachments");
+        await AddLaterCustomerColumnsAsync(database.ConnectionString);
 
         int bookingId, firstId, secondId, thirdId, spillBookingId;
         int[] spillIds;
@@ -1975,6 +1978,7 @@ public sealed class SqlServerProductionInvariantTests
             await db.SaveChangesAsync();
         }
 
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.Database.MigrateAsync();
 
@@ -2131,6 +2135,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             await db.GetService<IMigrator>().MigrateAsync(BeforeHoldEventLinks);
             await AddLaterLeadColumnsAsync(database.ConnectionString);
+            await AddLaterCustomerColumnsAsync(database.ConnectionString);
             using var dispatcher = SqlLeadDispatcher(db);
             var leads = SqlLeadService(db, dispatcher);
             leadA = (await leads.IngestAsync(new LeadIntakeDto
@@ -2167,6 +2172,7 @@ public sealed class SqlServerProductionInvariantTests
                 leadA);
 
         await DropLaterLeadColumnsAsync(database.ConnectionString);
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
         {
             await db.Database.MigrateAsync();
@@ -6765,6 +6771,22 @@ public sealed class SqlServerProductionInvariantTests
         END
         """);
 
+    /// <summary>
+    /// Customer columns added by migrations after the point a data-migration test starts from. Those
+    /// tests seed customers through today's model (or run today's lead service, which looks customers
+    /// up by them), and the column must exist while they do; it is dropped again before migrating
+    /// forward, which then adds it for real.
+    /// </summary>
+    private static Task AddLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
+        IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NULL
+            ALTER TABLE [Customers] ADD [NormalizedPhone] nvarchar(50) NULL;
+        """);
+
+    private static Task DropLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
+        IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NOT NULL
+            ALTER TABLE [Customers] DROP COLUMN [NormalizedPhone];
+        """);
+
     private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         ALTER TABLE [Leads] DROP CONSTRAINT [DF_Test_Leads_PaymentPreference]; ALTER TABLE [Leads] DROP COLUMN [PaymentPreference];
         IF OBJECT_ID(N'[DF_Test_Users_TokenVersion]') IS NOT NULL
@@ -6810,6 +6832,7 @@ public sealed class SqlServerProductionInvariantTests
         {
             db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
             await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+            await AddLaterCustomerColumnsAsync(database.ConnectionString);
         }
 
         // Three commissions on one booking, written into the OLD schema: one raised in September,
@@ -6869,6 +6892,7 @@ public sealed class SqlServerProductionInvariantTests
             await seed.SaveChangesAsync();
         }
 
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
         {
             db.Database.SetCommandTimeout(TimeSpan.FromMinutes(3));
@@ -6914,6 +6938,7 @@ public sealed class SqlServerProductionInvariantTests
         var options = Options(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        await AddLaterCustomerColumnsAsync(database.ConnectionString);
 
         int bookingId, underApprovedId, overApprovedId, alreadyCorrectId, neverPaidId, rebateId;
         await using (var seed = new AppDbContext(options))
@@ -6997,6 +7022,7 @@ public sealed class SqlServerProductionInvariantTests
             await seed.SaveChangesAsync();
         }
 
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.Database.MigrateAsync();
 
@@ -7066,6 +7092,7 @@ public sealed class SqlServerProductionInvariantTests
         var options = Options(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.GetService<IMigrator>().MigrateAsync(BeforeCommissionAccruals);
+        await AddLaterCustomerColumnsAsync(database.ConnectionString);
 
         var agreed = new DateTime(2026, 7, 5, 9, 0, 0);
         var approved = new DateTime(2026, 7, 20, 9, 0, 0);
@@ -7201,6 +7228,7 @@ public sealed class SqlServerProductionInvariantTests
             await seed.SaveChangesAsync();
         }
 
+        await DropLaterCustomerColumnsAsync(database.ConnectionString);
         await using (var db = new AppDbContext(options))
             await db.Database.MigrateAsync();
 
