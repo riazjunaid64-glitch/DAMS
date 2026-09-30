@@ -25,6 +25,7 @@ import type { MainActionKind } from "../features/bookings/headerActions.ts";
 import { PossessionDialog } from "../features/bookings/PossessionDialog.tsx";
 import { RecordPaymentDialog, type PaymentTarget } from "../features/bookings/RecordPaymentDialog.tsx";
 import { TermsDialog } from "../features/bookings/TermsDialog.tsx";
+import { SavedProof } from "../features/proof/SavedProof.tsx";
 import { pakistanToday } from "../lib/financePeriods.ts";
 
 type Props = { user: User | null };
@@ -685,7 +686,7 @@ export default function BookingDetailPage({ user }: Props) {
                 <table className="data-table w-full min-w-[900px] text-left text-sm">
                   <thead className="border-b border-[var(--border)] bg-[var(--surface-glass-hover)]">
                     <tr>
-                      {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", "Actions"].map((h, i) => (
+                      {["Receipt #", "Date", "Type", "For", "Amount", "Method", "Reference", "Proof", "Actions"].map((h, i) => (
                         <th key={h || `col-${i}`} className={`${th} ${h === "Actions" ? "text-right" : ""}`}>{h}</th>
                       ))}
                     </tr>
@@ -707,6 +708,9 @@ export default function BookingDetailPage({ user }: Props) {
                           <td className="px-5 py-3.5 font-semibold tabular-nums text-[var(--text-heading)]">{formatMoney(p.amount)}</td>
                           <td className="px-5 py-3.5 text-[var(--text-secondary)]">{prettyStatus(p.paymentMethod)}</td>
                           <td className="max-w-[160px] truncate px-5 py-3.5 text-xs text-[var(--text-muted)]">{p.paymentReference ?? "—"}</td>
+                          <td className="px-5 py-3.5">
+                            <SavedProof ownerType="CustomerPayment" ownerId={p.id} proof={p.proof} onChanged={() => load(false)} />
+                          </td>
                           <td className="px-5 py-3.5 text-right">
                             <Button size="sm" variant="outline" onClick={() => window.open(`/receipt/${bookingId}/${p.id}`, "_blank")}>
                               <Icons.doc className="h-4 w-4" />

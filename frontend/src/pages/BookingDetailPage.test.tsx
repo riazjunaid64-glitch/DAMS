@@ -405,6 +405,19 @@ describe("Record booking amount", () => {
   });
 });
 
+describe("proof on saved payments", () => {
+  it("Payment History shows the proof file name where there is one and Attach proof where there is not", async () => {
+    answers["GET /api/Booking/13/payments"] = () => ({ body: [
+      { id: 1, type: "BookingAmount", amount: 500_000, paymentMethod: "Cash", receiptNumber: "RCP-000001", paidAt: "2026-04-20T07:00:00", proof: { id: 8, fileName: "cash-slip.pdf", fileSize: 10 } },
+      { id: 2, type: "BookingAmount", amount: 100_000, paymentMethod: "Cash", receiptNumber: "RCP-000002", paidAt: "2026-04-21T07:00:00", proof: null },
+    ] });
+    show();
+    fireEvent.click(await screen.findByRole("tab", { name: /Payments/ }));
+    expect(await screen.findByRole("button", { name: "cash-slip.pdf" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Attach proof" })).toHaveLength(1);
+  });
+});
+
 describe("proof on a recorded payment", () => {
   const awaiting = { status: "AwaitingBookingAmount", bookingAmountRequired: 500_000, bookingAmountReceived: 150_000, bookingAmountRemaining: 350_000, hasInstallmentSchedule: false, installmentsTotal: 0, nextInstallment: null, bookingReference: "BK-000044", payments: [{ id: 1, amount: 150_000 }] };
   const slip = new File(["x"], "slip.pdf", { type: "application/pdf" });

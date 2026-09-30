@@ -66,3 +66,13 @@ describe("proof on a pending refund", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
   });
 });
+
+describe("proof on a paid refund", () => {
+  it("shows the stored file name, or Attach proof when the upload never went through", () => {
+    const paid = (proof: unknown) => ({ ...settlement, refundStatus: "Paid", refund: { id: 31, financeAccountName: "Cash", paymentMethod: "Cash", paidAt: "2026-09-29T07:00:00", proof } }) as never;
+    const view = render(<BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid({ id: 4, fileName: "refund-slip.pdf", fileSize: 9 })} financeAccounts={[]} onChanged={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "refund-slip.pdf" })).toBeTruthy();
+    view.rerender(<BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid(null)} financeAccounts={[]} onChanged={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Attach proof" })).toBeTruthy();
+  });
+});

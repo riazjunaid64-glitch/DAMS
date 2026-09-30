@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
 import { AttachProof, DatePicker } from "../../components/ui";
+import { SavedProof } from "../proof/SavedProof";
 import { useProofUpload } from "../proof/useProofUpload";
 import { bookingCancellationApi } from "./api";
 import { idempotencyKey, money, pakistanToday, refundDecisionLabel, refundStatusLabel, trapDialogKeys } from "./state";
@@ -150,6 +151,10 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
           <Metric label="Method" value={refund.paymentMethod} />
           <Metric label="Reference" value={refund.paymentReference ?? "—"} />
           <Metric label="Paid on" value={new Date(refund.paidAt).toLocaleDateString()} />
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+            <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Proof</p>
+            <div className="mt-1"><SavedProof ownerType="CancellationRefund" ownerId={refund.id} proof={refund.proof} onChanged={onChanged} /></div>
+          </div>
         </div>
       ) : settlement.refundStatus === "Pending" ? (
         <div className="mt-4">
