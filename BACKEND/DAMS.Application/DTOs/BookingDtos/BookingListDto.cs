@@ -15,6 +15,22 @@ namespace DAMS.Application.DTOs.BookingDtos
         public int TotalPages => PageSize > 0 ? (int)Math.Ceiling((double)TotalCount / PageSize) : 0;
     }
 
+    /// <summary>How many bookings are in each status for the current search and project.</summary>
+    public class BookingStatusCountsDto
+    {
+        public int Total { get; set; }
+
+        public int AwaitingBookingAmount { get; set; }
+
+        public int PaymentPlanActive { get; set; }
+
+        public int PossessionGiven { get; set; }
+
+        public int SaleCompleted { get; set; }
+
+        public int Cancelled { get; set; }
+    }
+
     public class BookingFilterDto
     {
         public BookingStatus? Status { get; set; }

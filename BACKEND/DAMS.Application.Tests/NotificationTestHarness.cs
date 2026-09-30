@@ -251,7 +251,7 @@ internal sealed class NotificationTestHarness : IAsyncDisposable
             new DTOs.BookingDtos.RecordBookingAmountPaymentDto
             {
                 Amount = amount,
-                PaymentMethod = PaymentMethod.BankTransfer,
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-HARNESS-1",
                 FinanceAccountId = FinanceAccountId
             }, AdminUserId);
 

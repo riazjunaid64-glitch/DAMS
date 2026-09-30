@@ -72,7 +72,7 @@ export function InfoCard({ label, value, detail, highlight = false, className }:
 
 export type StatSummaryProps = {
   /** The headline count: a StatCard on desktop, the navy Total bar on phone. */
-  total: { label: ReactNode; value: ReactNode };
+  total: { label: ReactNode; value: ReactNode; /** Makes Total a button, e.g. to clear a status filter. */ onClick?: () => void; selected?: boolean };
   items: StatCardProps[];
   /** Phone grid under the Total bar. */
   phoneColumns?: 2 | 3;
@@ -86,15 +86,27 @@ export type StatSummaryProps = {
 export function StatSummary({ total, items, phoneColumns = 2, className }: StatSummaryProps) {
   return (
     <section className={cx("font-ui", className)}>
-      <div className="flex items-center justify-between rounded-btn-phone bg-primary px-4 py-3 text-white md:hidden">
-        <span className="text-sm font-bold">{total.label}</span>
-        <span className="text-[22px] font-extrabold tabular-nums">{total.value}</span>
-      </div>
+      {total.onClick ? (
+        <button
+          type="button"
+          aria-pressed={total.selected}
+          onClick={total.onClick}
+          className="flex w-full cursor-pointer items-center justify-between rounded-btn-phone border-0 bg-primary px-4 py-3 text-left text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:hidden"
+        >
+          <span className="text-sm font-bold">{total.label}</span>
+          <span className="text-[22px] font-extrabold tabular-nums">{total.value}</span>
+        </button>
+      ) : (
+        <div className="flex items-center justify-between rounded-btn-phone bg-primary px-4 py-3 text-white md:hidden">
+          <span className="text-sm font-bold">{total.label}</span>
+          <span className="text-[22px] font-extrabold tabular-nums">{total.value}</span>
+        </div>
+      )}
       <div
         className={cx("mt-2.5 grid gap-2.5 md:mt-0 md:gap-4", phoneColumns === 3 ? "grid-cols-3" : "grid-cols-2", "md:[grid-template-columns:repeat(var(--stat-cols),minmax(0,1fr))]")}
         style={{ ["--stat-cols" as string]: items.length + 1 }}
       >
-        <StatCard label={total.label} value={total.value} className="max-md:hidden" />
+        <StatCard label={total.label} value={total.value} selected={total.selected} onClick={total.onClick} className="max-md:hidden" />
         {items.map((item, index) => <StatCard key={index} {...item} />)}
       </div>
     </section>

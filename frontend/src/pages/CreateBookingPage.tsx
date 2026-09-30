@@ -7,6 +7,8 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import { DatePicker } from "../components/ui";
+import { pakistanToday } from "../lib/financePeriods.ts";
 import { floorName } from "../lib/floors.ts";
 import { bookingToApplicationForm } from "../utils/bookingToApplicationForm.ts";
 import {
@@ -180,6 +182,11 @@ export default function CreateBookingPage({ user }: Props) {
       setForm((prev) => ({ ...prev, [field]: value }));
       setError(null);
     };
+
+  const setDate = (field: "dob" | "kinDob" | "officeDate") => (value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    setError(null);
+  };
 
   // Inline, per-field validation messages (shown only once the field has a value).
   const fieldError = (field: "cnic" | "email" | "contact" | "kinContact" | "kinCnic"): string | undefined => {
@@ -369,7 +376,7 @@ export default function CreateBookingPage({ user }: Props) {
                 <Field label="Full Name" value={form.fullName} onChange={set("fullName")} required />
                 <Field label="S/o, W/o, D/o" value={form.guardianName} onChange={set("guardianName")} />
                 <Field label="CNIC / NICOP / Passport #" value={form.cnic} onChange={set("cnic")} placeholder={PLACEHOLDERS.cnic} error={fieldError("cnic")} />
-                <Field label="Date of Birth" type="date" value={form.dob} onChange={set("dob")} />
+                <DatePicker label="Date of Birth" max={pakistanToday()} value={form.dob} onChange={setDate("dob")} />
                 <Field label="Nationality" value={form.nationality} onChange={set("nationality")} />
                 <Field label="Occupation" value={form.occupation} onChange={set("occupation")} />
                 <Field label="Contact #" value={form.contact} onChange={set("contact")} placeholder={PLACEHOLDERS.mobile} inputMode="tel" error={fieldError("contact")} required />
@@ -388,7 +395,7 @@ export default function CreateBookingPage({ user }: Props) {
             <Field label="Relation" value={form.kinRelation} onChange={set("kinRelation")} />
             <Field label="Nominee Contact #" value={form.kinContact} onChange={set("kinContact")} placeholder={PLACEHOLDERS.mobile} inputMode="tel" error={fieldError("kinContact")} />
             <Field label="CNIC #" value={form.kinCnic} onChange={set("kinCnic")} placeholder={PLACEHOLDERS.cnic} inputMode="numeric" error={fieldError("kinCnic")} />
-            <Field label="Date of Birth" type="date" value={form.kinDob} onChange={set("kinDob")} />
+            <DatePicker label="Date of Birth" max={pakistanToday()} value={form.kinDob} onChange={setDate("kinDob")} />
           </div>
           <Field label="Mailing Address" value={form.kinAddress} onChange={set("kinAddress")} />
         </SectionCard>
@@ -422,7 +429,7 @@ export default function CreateBookingPage({ user }: Props) {
               </AppSelect>
             </label>
             <Field label="Through" value={form.through} onChange={set("through")} />
-            <Field label="Date" type="date" value={form.officeDate} onChange={set("officeDate")} />
+            <DatePicker label="Date" value={form.officeDate} onChange={setDate("officeDate")} />
             <label className={labelClass}>
               <span>Source</span>
               <AppSelect className={inputClass} value={form.source} onChange={set("source")}>

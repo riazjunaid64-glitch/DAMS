@@ -46,5 +46,8 @@ namespace DAMS.Domain.Entities
         public Installment? Installment { get; set; }
 
         public FinanceAccount? FinanceAccount { get; set; }
+
+        // Proof of the money received (bank slip, cheque scan, transfer screenshot). At most one file.
+        public ICollection<FinancialEvidence> Evidence { get; set; } = new List<FinancialEvidence>();
     }
 }

@@ -6,6 +6,9 @@ namespace DAMS.Application.DTOs.InstallmentDtos
     {
         public int BookingId { get; set; }
 
+        /// <summary>Set only on the answer to recording a payment: the exact payment that call created.</summary>
+        public int? RecordedPaymentId { get; set; }
+
         public string BookingReference { get; set; } = string.Empty;
 
         public BookingStatus BookingStatus { get; set; }

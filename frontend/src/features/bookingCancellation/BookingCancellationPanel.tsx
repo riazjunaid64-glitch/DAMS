@@ -2,6 +2,9 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
+import { AttachProof, DatePicker, useToast } from "../../components/ui";
+import { SavedProof } from "../proof/SavedProof";
+import { useProofUpload } from "../proof/useProofUpload";
 import { bookingCancellationApi } from "./api";
 import { idempotencyKey, money, pakistanToday, refundDecisionLabel, refundStatusLabel, trapDialogKeys } from "./state";
 import type { CancellationSettlement, PayCancellationRefundRequest, RefundPaymentMethod } from "./types";
@@ -37,6 +40,8 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
   const [paymentReference, setPaymentReference] = useState("");
   const [paidAt, setPaidAt] = useState(pakistanToday());
   const [notes, setNotes] = useState("");
+  const proof = useProofUpload();
+  const toast = useToast();
 
   if (status !== "Cancelled") return null;
 
@@ -48,6 +53,7 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
     setPaymentReference("");
     setPaidAt(pakistanToday());
     setNotes("");
+    proof.reset();
     setShowPay(true);
   };
 
@@ -67,7 +73,13 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
         notes: notes.trim() || null,
         idempotencyKey: key,
       };
-      await bookingCancellationApi.payRefund(bookingId, body);
+      const saved = await bookingCancellationApi.payRefund(bookingId, body);
+      const refundId = saved.cancellationSettlement?.refund?.id ?? null;
+      // A failed proof never undoes the refund: the popup closes with a warning and the file is
+      // attached later from the saved refund.
+      if (proof.hasFile && !(refundId !== null && await proof.upload("CancellationRefund", refundId))) {
+        toast.error("Refund recorded, but the proof did not upload. Attach it from the refund.");
+      }
       setShowPay(false);
       await onChanged();
     } catch (x) {
@@ -121,6 +133,10 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
           <Metric label="Method" value={refund.paymentMethod} />
           <Metric label="Reference" value={refund.paymentReference ?? "—"} />
           <Metric label="Paid on" value={new Date(refund.paidAt).toLocaleDateString()} />
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+            <p className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Proof</p>
+            <div className="mt-1"><SavedProof ownerType="CancellationRefund" ownerId={refund.id} proof={refund.proof} onChanged={onChanged} /></div>
+          </div>
         </div>
       ) : settlement.refundStatus === "Pending" ? (
         <div className="mt-4">
@@ -161,7 +177,8 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
               </label>
               <Field label="Payment Reference" required={paymentMethod !== "Cash"} value={paymentReference}
                 onChange={(e) => setPaymentReference(e.target.value)} />
-              <Field label="Refund Date" type="date" required value={paidAt} onChange={(e) => setPaidAt(e.target.value)} />
+              <DatePicker label="Refund Date" required max={pakistanToday()} value={paidAt} onChange={setPaidAt} />
+              <AttachProof label="Proof" disabled={submitting} {...proof.fieldProps} />
               <Field as="textarea" label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
               <div className="flex gap-2">

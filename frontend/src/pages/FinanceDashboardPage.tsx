@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/api.ts";
 import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
+import { DatePicker } from "../components/ui";
 import AppSelect from "../lib/AppSelect.tsx";
 import VirtualInfiniteTable from "../lib/VirtualInfiniteTable.tsx";
 import type { Column } from "../lib/VirtualInfiniteTable.tsx";
@@ -1535,11 +1536,11 @@ export default function FinanceDashboardPage({ user }: Props) {
               </div>
               <div className="fin-field">
                 <span className="fin-field__label">From</span>
-                <input type="date" value={draftFromDate} onChange={(e) => setDraftFromDate(e.target.value)} className="fin-control fin-control--date" />
+                <DatePicker aria-label="From" value={draftFromDate} onChange={setDraftFromDate} />
               </div>
               <div className="fin-field">
                 <span className="fin-field__label">To</span>
-                <input type="date" value={draftToDate} onChange={(e) => setDraftToDate(e.target.value)} className="fin-control fin-control--date" />
+                <DatePicker aria-label="To" value={draftToDate} onChange={setDraftToDate} />
               </div>
               {/* One grid cell, so the optional Clear never spills into a column of its own. */}
               <div className="fin-actions">
@@ -1828,7 +1829,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 </p>
               )}
               <FormInput label="Amount (Rs)" type="number" value={revenueForm.amount} onChange={(v) => setRevenueForm({ ...revenueForm, amount: v })} />
-              <FormInput label="Date" type="date" value={revenueForm.date} onChange={(v) => setRevenueForm({ ...revenueForm, date: v })} />
+              <DatePicker label="Date" required max={pakistanToday()} value={revenueForm.date} onChange={(date) => setRevenueForm({ ...revenueForm, date })} />
               <FormInput label="Reference (optional)" value={revenueForm.reference} onChange={(v) => setRevenueForm({ ...revenueForm, reference: v })} />
               <FormInput label="Description (optional)" value={revenueForm.description} onChange={(v) => setRevenueForm({ ...revenueForm, description: v })} />
               <FinanceAttachmentField
@@ -1944,7 +1945,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 />
               )}
               <FormInput label="Cost (Rs)" type="number" value={assetForm.amount} onChange={(v) => setAssetForm({ ...assetForm, amount: v })} />
-              <FormInput label="Date" type="date" value={assetForm.date} onChange={(v) => setAssetForm({ ...assetForm, date: v })} />
+              <DatePicker label="Date" required max={pakistanToday()} value={assetForm.date} onChange={(date) => setAssetForm({ ...assetForm, date })} />
 
               <ExpenseWhtFields
                 categoryId={assetForm.categoryId}
@@ -2070,7 +2071,7 @@ export default function FinanceDashboardPage({ user }: Props) {
                 />
               )}
               <FormInput label="Gross Amount (Rs)" type="number" value={expenseForm.amount} onChange={(v) => setExpenseForm({ ...expenseForm, amount: v })} />
-              <FormInput label="Date" type="date" value={expenseForm.date} onChange={(v) => setExpenseForm({ ...expenseForm, date: v })} />
+              <DatePicker label="Date" required max={pakistanToday()} value={expenseForm.date} onChange={(date) => setExpenseForm({ ...expenseForm, date })} />
 
               <ExpenseWhtFields
                 categoryId={expenseForm.categoryId}

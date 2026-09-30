@@ -79,14 +79,3 @@ export function NumberField({ value, onChange, decimals = 2, ...rest }: NumberFi
     />
   );
 }
-
-type DateTimeFieldProps = Omit<TextFieldProps, "type">;
-
-/** The platform's own date picker (phone pickers included) in the shared field frame. */
-export function DateField(props: DateTimeFieldProps) {
-  return <TextField {...props} type="date" />;
-}
-
-export function TimeField(props: DateTimeFieldProps) {
-  return <TextField {...props} type="time" />;
-}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { RECEIPT_CONFIG } from "../config/receiptConfig.ts";
 import { amountInWords } from "../utils/amountInWords.ts";
 import { ReceiptBrandHeader } from "./BrandLogos.tsx";
+import { DatePicker } from "./ui";
 
 export interface SalarySlipData {
   employeeName: string;
@@ -57,14 +58,15 @@ function EditableField({
   editing,
   onStartEdit,
   onSave,
-  type = "text",
+  kind = "text",
 }: {
   label: string;
   value: string;
   editing: boolean;
   onStartEdit: () => void;
   onSave: (v: string) => void;
-  type?: "text" | "date" | "number";
+  /** `date` edits with the shared date picker; the others use a plain input. */
+  kind?: "text" | "date" | "number";
 }) {
   const [draft, setDraft] = useState(value);
 
@@ -75,9 +77,12 @@ function EditableField({
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: "6px", flex: 1, minWidth: 0 }}>
       <span style={{ fontWeight: 600, whiteSpace: "nowrap", fontSize: "12.5px" }}>{label}</span>
-      {editing ? (
+      {editing && kind === "date" ? (
+        // Picking a day is the save, so the picker opens straight away and there is no blur to wait for.
+        <DatePicker aria-label={label} required defaultOpen value={draft} onChange={onSave} className="flex-1" />
+      ) : editing ? (
         <input
-          type={type}
+          type={kind}
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onBlur={commit}
@@ -109,9 +114,9 @@ function EditableField({
           }}
         >
           <span style={{ flex: 1 }}>
-            {type === "number"
+            {kind === "number"
               ? formatMoney(Number(value)) + " /-"
-              : type === "date"
+              : kind === "date"
                 ? formatDate(value)
                 : value}
           </span>
@@ -194,7 +199,7 @@ export default function SalarySlip({ data, editable, onAmountChange, onDateChang
                 setEditingDate(false);
                 onDateChange?.(v);
               }}
-              type="date"
+              kind="date"
             />
           ) : (
             <FillField label="Pay Date:" value={formatDate(data.payDate)} />
@@ -222,7 +227,7 @@ export default function SalarySlip({ data, editable, onAmountChange, onDateChang
                 const n = Number(v);
                 if (Number.isFinite(n)) onAmountChange?.(n);
               }}
-              type="number"
+              kind="number"
             />
           ) : (
             <FillField label="Salary Amount:" value={formatMoney(data.amount) + " /-"} flex={2} />

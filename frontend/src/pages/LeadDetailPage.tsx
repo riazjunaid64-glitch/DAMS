@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { User } from "../App.tsx";
 import {
@@ -100,25 +100,26 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
 
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [submissions, setSubmissions] = useState<ExternalSubmission[]>([]);
+  const [submissionsError, setSubmissionsError] = useState<string | null>(null);
+  const [submissionsAttempt, setSubmissionsAttempt] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const partGeneration = useRef<Record<Part, number>>({ timeline: 0, communications: 0, followUps: 0, visits: 0 });
+  const leadGeneration = useRef(0);
+  const submissionsGeneration = useRef(0);
   const [parts, setParts] = useState<Partial<Parts>>({});
   const [partErrors, setPartErrors] = useState<Partial<Record<Part, string>>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [lookups, setLookups] = useState<CrmLookups | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
 
-  // Opening a lead reads the lead (header, cards, counts) and where it came from (Overview), nothing else.
+  // Opening a lead reads the lead (header, cards, counts). Source details load separately.
   useEffect(() => {
     if (!Number.isFinite(leadId) || leadId <= 0) return;
     const controller = new AbortController();
-    Promise.all([
-      apiJson<LeadDetail>(`/api/leads/${leadId}`, { signal: controller.signal }),
-      apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`, { signal: controller.signal }),
-    ])
-      .then(([nextLead, nextSubmissions]) => {
+    apiJson<LeadDetail>(`/api/leads/${leadId}`, { signal: controller.signal })
+      .then((nextLead) => {
         setLead(nextLead);
-        setSubmissions(nextSubmissions);
         setLoadError(null);
       })
       .catch((caught) => {
@@ -127,24 +128,46 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
     return () => controller.abort();
   }, [leadId, attempt]);
 
-  const fetchPart = useCallback(async (part: Part): Promise<Parts[Part]> => {
+  const loadedLeadId = lead?.id;
+
+  useEffect(() => {
+    if (!loadedLeadId || !Number.isFinite(leadId) || leadId <= 0) return;
+    const controller = new AbortController();
+    const generation = ++submissionsGeneration.current;
+    apiJson<ExternalSubmission[]>(`/api/leads/${leadId}/external-submissions`, { signal: controller.signal })
+      .then((nextSubmissions) => {
+        if (generation !== submissionsGeneration.current) return;
+        setSubmissions(nextSubmissions);
+        setSubmissionsError(null);
+      })
+      .catch((caught) => {
+        if (controller.signal.aborted || generation !== submissionsGeneration.current) return;
+        setSubmissionsError(caught instanceof Error ? caught.message : "Source details could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [loadedLeadId, leadId, submissionsAttempt]);
+
+  const fetchPart = useCallback(async (part: Part, signal?: AbortSignal): Promise<Parts[Part]> => {
     switch (part) {
       case "timeline": {
-        const items = await apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline?take=${TIMELINE_PAGE}`);
+        const items = await apiJson<TimelineItem[]>(`/api/leads/${leadId}/timeline?take=${TIMELINE_PAGE}`, { signal });
         return { items, hasMore: items.length === TIMELINE_PAGE };
       }
-      case "communications": return apiJson<Communication[]>(`/api/leads/${leadId}/communications`);
-      case "followUps": return apiJson<FollowUp[]>(`/api/leads/${leadId}/follow-ups`);
-      case "visits": return apiJson<SiteVisit[]>(`/api/leads/${leadId}/site-visits`);
+      case "communications": return apiJson<Communication[]>(`/api/leads/${leadId}/communications`, { signal });
+      case "followUps": return apiJson<FollowUp[]>(`/api/leads/${leadId}/follow-ups`, { signal });
+      case "visits": return apiJson<SiteVisit[]>(`/api/leads/${leadId}/site-visits`, { signal });
     }
   }, [leadId]);
 
   const loadPart = useCallback(async (part: Part) => {
+    const generation = ++partGeneration.current[part];
     try {
       const data = await fetchPart(part);
+      if (generation !== partGeneration.current[part]) return;
       setParts((current) => ({ ...current, [part]: data }));
       setPartErrors((current) => ({ ...current, [part]: undefined }));
     } catch (caught) {
+      if (generation !== partGeneration.current[part]) return;
       setPartErrors((current) => ({ ...current, [part]: caught instanceof Error ? caught.message : "This could not be loaded." }));
     }
   }, [fetchPart]);
@@ -172,6 +195,12 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
     }
   };
 
+  const invalidatePart = (part: Part) => {
+    ++partGeneration.current[part];
+    setParts((current) => ({ ...current, [part]: undefined }));
+    setPartErrors((current) => ({ ...current, [part]: undefined }));
+  };
+
   /**
    * After an action: the lead (header, cards, counts) and the section it changed. The section on
    * screen reloads now with the old copy kept meanwhile; one not on screen is dropped and loads
@@ -179,12 +208,19 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
    */
   const refresh = (changed: Part[]) => {
     setDialog(null);
+    const generation = ++leadGeneration.current;
     apiJson<LeadDetail>(`/api/leads/${leadId}`)
-      .then(setLead)
-      .catch((caught) => toast.error(caught instanceof Error ? caught.message : "The lead could not be refreshed."));
+      .then((nextLead) => {
+        if (generation !== leadGeneration.current) return;
+        setLead(nextLead);
+      })
+      .catch((caught) => {
+        if (generation !== leadGeneration.current) return;
+        toast.error(caught instanceof Error ? caught.message : "The lead could not be refreshed.");
+      });
     for (const part of new Set<Part>([...changed, "timeline"])) {
       if (part === openPart) void loadPart(part);
-      else setParts((current) => ({ ...current, [part]: undefined }));
+      else invalidatePart(part);
     }
   };
 
@@ -334,10 +370,17 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
 
       <Tabs items={tabs} value={tab} onChange={setTab} aria-label="Lead sections" />
 
-      {tab === "overview" && <LeadOverview lead={lead} submissions={submissions} />}
+      {tab === "overview" && (
+        <LeadOverview
+          lead={lead}
+          submissions={submissions}
+          submissionsError={submissionsError}
+          onRetrySubmissions={() => setSubmissionsAttempt((n) => n + 1)}
+        />
+      )}
 
       {tab !== "overview" && (
-        <PartView data={parts[tab]} error={partErrors[tab]} onRetry={() => { setPartErrors((current) => ({ ...current, [tab]: undefined })); }}>
+        <PartView data={parts[tab]} error={partErrors[tab]} onRetry={() => void loadPart(tab)}>
           {tab === "timeline" && parts.timeline && (
             <>
               <SectionHeader title="Timeline" />
@@ -365,6 +408,7 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
               items={parts.followUps}
               isPhone={isPhone}
               closed={closed}
+              stale={!!partErrors.followUps}
               onNew={() => open({ type: "followUp" })}
               onDone={(item) => open({ type: "markDone", item })}
               onReschedule={(item) => open({ type: "rescheduleFollowUp", item })}
@@ -377,6 +421,7 @@ function LeadWorkspace({ user, leadId }: { user: User; leadId: number }) {
               items={parts.visits}
               isPhone={isPhone}
               closed={closed}
+              stale={!!partErrors.visits}
               onNew={() => open({ type: "visit" })}
               onAction={(type, item) => open({ type, item })}
             />
@@ -532,13 +577,26 @@ function PartView({ data, error, onRetry, children }: { data: unknown; error?: s
       </div>
     );
   }
-  return <div className="flex flex-col gap-3">{children}</div>;
+  const stale = !!error;
+  return (
+    <div className="flex flex-col gap-3">
+      {stale && (
+        <Notice
+          tone="orange"
+          title="Couldn't refresh — showing older data"
+          action={<Button variant="outline" onClick={onRetry}>Try again</Button>}
+        />
+      )}
+      {children}
+    </div>
+  );
 }
 
-function FollowUpsSection({ items, isPhone, closed, onNew, onDone, onReschedule, onCancel }: {
+function FollowUpsSection({ items, isPhone, closed, stale, onNew, onDone, onReschedule, onCancel }: {
   items: FollowUp[];
   isPhone: boolean;
   closed: boolean;
+  stale?: boolean;
   onNew: () => void;
   onDone: (item: FollowUp) => void;
   onReschedule: (item: FollowUp) => void;
@@ -554,9 +612,9 @@ function FollowUpsSection({ items, isPhone, closed, onNew, onDone, onReschedule,
         <FollowUpItem
           key={item.id}
           item={item}
-          onDone={closed ? undefined : () => onDone(item)}
-          onReschedule={() => onReschedule(item)}
-          onCancel={() => onCancel(item)}
+          onDone={closed || stale ? undefined : () => onDone(item)}
+          onReschedule={stale ? undefined : () => onReschedule(item)}
+          onCancel={stale ? undefined : () => onCancel(item)}
         />
       ))}
       {done.length > 0 && <GroupHeading>Done · {done.length}</GroupHeading>}
@@ -565,15 +623,16 @@ function FollowUpsSection({ items, isPhone, closed, onNew, onDone, onReschedule,
   );
 }
 
-function VisitsSection({ items, isPhone, closed, onNew, onAction }: {
+function VisitsSection({ items, isPhone, closed, stale, onNew, onAction }: {
   items: SiteVisit[];
   isPhone: boolean;
   closed: boolean;
+  stale?: boolean;
   onNew: () => void;
   onAction: (type: "visitDone" | "rescheduleVisit" | "missed" | "cancelVisit", item: SiteVisit) => void;
 }) {
   const { upcoming, past } = visitGroups(items);
-  const actionsFor = (item: SiteVisit) => closed ? undefined : {
+  const actionsFor = (item: SiteVisit) => closed || stale ? undefined : {
     onDone: () => onAction("visitDone", item),
     onReschedule: () => onAction("rescheduleVisit", item),
     onMissed: () => onAction("missed", item),

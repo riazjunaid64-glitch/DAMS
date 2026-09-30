@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import {
   ActionsMenu,
+  AttachProof,
   Avatar,
   BottomSheet,
   Button,
@@ -9,7 +10,7 @@ import {
   ChoiceChips,
   ConfirmDialog,
   DataTable,
-  DateField,
+  DatePicker,
   Dropdown,
   EmptyState,
   FilterBar,
@@ -37,7 +38,7 @@ import {
   Tabs,
   TextArea,
   TextField,
-  TimeField,
+  TimePicker,
   Toggle,
   useToast,
   type FilterValues,
@@ -242,6 +243,43 @@ function PaginationSection() {
   );
 }
 
+function DatePickerStates() {
+  const [payment, setPayment] = useState("2026-09-29");
+  const [birth, setBirth] = useState("1988-03-14");
+  const [optional, setOptional] = useState("");
+  return (
+    <>
+      <DatePicker label="Payment date" required value={payment} onChange={setPayment} max="2026-09-29" helper="Past dates only" />
+      <DatePicker label="Date of birth" value={birth} onChange={setBirth} />
+      <DatePicker label="Follow-up date" value={optional} onChange={setOptional} />
+      <DatePicker label="Refund date" value="2026-09-29" onChange={() => {}} locked />
+    </>
+  );
+}
+
+function TimePickerStates() {
+  const [time, setTime] = useState("11:30");
+  const [empty, setEmpty] = useState("");
+  return (
+    <>
+      <TimePicker label="Time" required value={time} onChange={setTime} />
+      <TimePicker label="Time" value={empty} onChange={setEmpty} />
+    </>
+  );
+}
+
+function AttachProofStates() {
+  const [file, setFile] = useState<File | null>(null);
+  return (
+    <>
+      <AttachProof file={file && { name: file.name, size: file.size, uploaded: false }} onPick={setFile} onRemove={() => setFile(null)} />
+      <AttachProof file={null} error="That file is over 15 MB. Choose a smaller one." onPick={() => {}} />
+      <AttachProof file={{ name: "transfer-slip.jpg", size: 1000 }} progress={60} onPick={() => {}} onRemove={() => {}} />
+      <AttachProof file={{ name: "transfer-slip-from-the-bank-on-the-first-of-the-month.jpg", size: 240 * 1024, uploaded: true, onOpen: () => {} }} onPick={() => {}} onRemove={() => {}} />
+    </>
+  );
+}
+
 function FieldsSection() {
   const [amount, setAmount] = useState("1000000");
   const [size, setSize] = useState("100");
@@ -260,9 +298,12 @@ function FieldsSection() {
         <TextField label="Label" defaultValue="Dummy value" disabled />
         <NumberField label="Amount" prefix="Rs" value={amount} onChange={setAmount} />
         <NumberField label="Size" suffix="sq ft" value={size} onChange={setSize} decimals={0} />
-        <DateField label="Date" defaultValue="2026-01-01" />
-        <TimeField label="Time" defaultValue="10:30" />
+        <DatePickerStates />
+        <TimePickerStates />
         <TextArea label="Notes" placeholder="Write something…" className="sm:col-span-2" />
+      </div>
+      <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <AttachProofStates />
       </div>
       <div className={row}>
         <ChoiceChips label="Label" options={OPTIONS} value={chip} onChange={setChip} />

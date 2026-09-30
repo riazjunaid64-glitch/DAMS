@@ -1,7 +1,9 @@
 import AppSelect from "../../lib/AppSelect.tsx";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useImperativeHandle, useState, type FormEvent, type ReactNode, type Ref } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
+import { AttachProof, DatePicker, useToast } from "../../components/ui";
+import { useProofUpload } from "../proof/useProofUpload";
 import { bookingCancellationApi } from "./api";
 import { computeRetained, idempotencyKey, isStaleCancellationError, money, pakistanToday, trapDialogKeys, validateCancellationDecision } from "./state";
 import type { CancelBookingRequest, CancellationRefundDecision, RefundPaymentMethod } from "./types";
@@ -12,7 +14,13 @@ interface FinanceAccountOption {
   accountHolderName: string;
 }
 
+/** What the page can ask of the dialog: open it from the header, where its button now lives. */
+export interface CancellationDialogHandle {
+  open: () => void;
+}
+
 interface Props {
+  ref?: Ref<CancellationDialogHandle>;
   bookingId: number;
   status: string;
   unitNumber: string;
@@ -27,7 +35,7 @@ const PAYMENT_METHODS: { value: RefundPaymentMethod; label: string }[] = [
   { value: "Online", label: "Online" },
 ];
 
-export default function CancellationDialog({ bookingId, status, unitNumber, financeAccounts, onCancelled }: Props) {
+export default function CancellationDialog({ ref, bookingId, status, unitNumber, financeAccounts, onCancelled }: Props) {
   const [open, setOpen] = useState(false);
   const [preparing, setPreparing] = useState(false);
   // True only after a fresh booking fetch has actually SUCCEEDED for this dialog-open. The
@@ -54,9 +62,10 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
   const [refundPaymentReference, setRefundPaymentReference] = useState("");
   const [refundPaidAt, setRefundPaidAt] = useState(pakistanToday());
   const [refundNotes, setRefundNotes] = useState("");
+  const proof = useProofUpload();
+  const toast = useToast();
 
   const canCancel = status !== "Cancelled" && status !== "PossessionGiven" && status !== "SaleCompleted";
-  if (!canCancel) return null;
 
   const openDialog = () => {
     setError(null);
@@ -79,8 +88,11 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     setRefundPaymentReference("");
     setRefundPaidAt(pakistanToday());
     setRefundNotes("");
+    proof.reset();
     void loadFreshBooking();
   };
+
+  useImperativeHandle(ref, () => ({ open: openDialog }));
 
   const loadFreshBooking = async () => {
     setError(null);
@@ -143,7 +155,13 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
         // note, so it must not be silently dropped just because there's no payout to attach it to.
         refundNotes: refundNotes.trim() || null,
       };
-      await bookingCancellationApi.cancel(bookingId, body);
+      const saved = await bookingCancellationApi.cancel(bookingId, body);
+      const refundId = saved.cancellationSettlement?.refund?.id ?? null;
+      // A failed proof never undoes the cancellation: the popup closes with a warning and the file is
+      // attached later from the saved refund.
+      if (payNow && refundValue > 0 && proof.hasFile && !(refundId !== null && await proof.upload("CancellationRefund", refundId))) {
+        toast.error("Booking cancelled and refund recorded, but the proof did not upload. Attach it from the refund.");
+      }
       setOpen(false);
       await onCancelled();
     } catch (x) {
@@ -155,9 +173,10 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
     }
   };
 
+  if (!canCancel) return null;
+
   return (
     <>
-      <Button variant="danger" size="sm" onClick={() => void openDialog()}>Cancel Booking</Button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button aria-label="Close dialog" className="absolute inset-0 bg-black/70" onClick={close} />
@@ -251,8 +270,8 @@ export default function CancellationDialog({ bookingId, status, unitNumber, fina
                         </label>
                         <Field label="Payment Reference" required={refundPaymentMethod !== "Cash"} value={refundPaymentReference}
                           onChange={(e) => setRefundPaymentReference(e.target.value)} />
-                        <Field label="Refund Date" type="date" required value={refundPaidAt}
-                          onChange={(e) => setRefundPaidAt(e.target.value)} />
+                        <DatePicker label="Refund Date" locked value={refundPaidAt} onChange={setRefundPaidAt} />
+                        <AttachProof label="Proof" disabled={submitting} {...proof.fieldProps} />
                       </>
                     )}
 

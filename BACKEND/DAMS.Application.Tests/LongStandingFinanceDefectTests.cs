@@ -286,7 +286,7 @@ public sealed class LongStandingFinanceDefectTests
             new RecordInstallmentPaymentDto
             {
                 Amount = 500_000m, FinanceAccountId = world.Bank.Id,
-                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
             }, 1);
         await ApplyCreditAsync(context, world.BookingId, 900_000m);
 
@@ -366,7 +366,7 @@ public sealed class LongStandingFinanceDefectTests
             new RecordInstallmentPaymentDto
             {
                 Amount = 100_000m, FinanceAccountId = world.Bank.Id,
-                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
             }, 1);
 
         var refusal = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -438,7 +438,7 @@ public sealed class LongStandingFinanceDefectTests
                 new RecordInstallmentPaymentDto
                 {
                     Amount = 100_000m, FinanceAccountId = world.Bank.Id,
-                    PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                    PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
                 }, 1));
         Assert.Contains("Regenerate the installment plan", refusal.Message);
         Assert.Empty(context.Payments.Where(p => p.Type == PaymentType.Installment).ToList());
@@ -452,7 +452,7 @@ public sealed class LongStandingFinanceDefectTests
             new RecordInstallmentPaymentDto
             {
                 Amount = 100_000m, FinanceAccountId = world.Bank.Id,
-                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
             }, 1);
 
         // What the customer owes and what the plan can collect are the same number again.
@@ -485,7 +485,7 @@ public sealed class LongStandingFinanceDefectTests
             new RecordInstallmentPaymentDto
             {
                 Amount = 100_000m, FinanceAccountId = world.Bank.Id,
-                PaymentMethod = PaymentMethod.BankTransfer, PaidAt = Feb
+                PaymentMethod = PaymentMethod.BankTransfer, PaymentReference = "TT-DEFECT-1", PaidAt = Feb
             }, 1);
 
         // Cancel through the lifecycle the booking service uses, so the rebate reaches the state a

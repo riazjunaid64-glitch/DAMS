@@ -60,7 +60,7 @@ export function isSalesRole(role: string | null | undefined): boolean {
 /** Where a role lands after login, and where the logo goes. */
 export function homePathFor(role: string | null | undefined): string {
   if (isSalesRole(role)) return "/crm";
-  // Confirmed bookings, not the requests inbox: working a request happens in the Lead CRM.
+  // Accountants start on the Bookings list.
   if (role === "Accountant") return "/confirmed-bookings";
   return "/";
 }

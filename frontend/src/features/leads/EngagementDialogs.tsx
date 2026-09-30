@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ChoiceChips, DateField, Dropdown, FieldShell, Modal, TextArea, TextField, TimeField } from "../../components/ui";
+import { ChoiceChips, DatePicker, Dropdown, FieldShell, Modal, TextArea, TextField, TimePicker } from "../../components/ui";
 import { formatAppointment, formatWhen, karachiDateInput, toKarachiInputs } from "../../lib/dates.ts";
 import { channelLabel, reachQuestion } from "./labels.ts";
 import { apiJson, jsonRequest } from "./leadApi.ts";
@@ -111,8 +111,8 @@ function WhenFields({ label, value, onChange }: { label: string; value: When; on
   return (
     <FieldShell as="fieldset" label={label}>
       <div className="grid grid-cols-2 gap-2.5">
-        <DateField aria-label="Date" max={karachiDateInput(0)} value={value.date} onChange={(e) => onChange({ ...value, date: e.target.value })} />
-        <TimeField aria-label="Time" value={value.time} onChange={(e) => onChange({ ...value, time: e.target.value })} />
+        <DatePicker aria-label="Date" max={karachiDateInput(0)} value={value.date} onChange={(date) => onChange({ ...value, date })} />
+        <TimePicker aria-label="Time" value={value.time} onChange={(time) => onChange({ ...value, time })} />
       </div>
     </FieldShell>
   );

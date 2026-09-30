@@ -6,6 +6,9 @@ namespace DAMS.Application.DTOs.BookingDtos
     {
         public int Id { get; set; }
 
+        /// <summary>Set only on the answer to recording a booking-amount payment: the exact payment that call created.</summary>
+        public int? RecordedPaymentId { get; set; }
+
         public string BookingReference { get; set; } = string.Empty;
 
         public int CustomerId { get; set; }
@@ -106,6 +109,30 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         public bool HasInstallmentSchedule { get; set; }
 
+        /// <summary>Cash actually received on this booking: every payment, before any rebate credit.</summary>
+        public decimal Collected { get; set; }
+
+        /// <summary>
+        /// What the customer still owes: net sale price − <see cref="Collected"/> − <see cref="RebateCredits"/>,
+        /// never below zero. Zero for a cancelled booking, whose remaining balance is the cancellation
+        /// settlement rather than a debt.
+        /// </summary>
+        public decimal Outstanding { get; set; }
+
+        /// <summary>How many installments are fully paid, and how many there are in all (possession included).</summary>
+        public int InstallmentsPaid { get; set; }
+
+        public int InstallmentsTotal { get; set; }
+
+        /// <summary>The unpaid installment falling due first, or null when there is no plan or nothing is left to pay.</summary>
+        public NextInstallmentDto? NextInstallment { get; set; }
+
+        /// <summary>
+        /// The lead this booking was converted from, or null for a booking made any other way.
+        /// Internal: never sent to the customer.
+        /// </summary>
+        public BookingLeadDto? ConvertedFromLead { get; set; }
+
         public DateTime BookingDate { get; set; }
 
         public DateTime? BookingAmountDueDate { get; set; }
@@ -167,5 +194,29 @@ namespace DAMS.Application.DTOs.BookingDtos
 
         // Null for a Cancelled booking predating this feature — legacy rows are never backfilled.
         public BookingCancellationSettlementDto? CancellationSettlement { get; set; }
+    }
+
+    public class NextInstallmentDto
+    {
+        public int Id { get; set; }
+
+        /// <summary>The installment's number in the plan; meaningless for the possession installment (see <see cref="IsPossession"/>).</summary>
+        public int Number { get; set; }
+
+        public bool IsPossession { get; set; }
+
+        /// <summary>What is still to collect on it: its amount less cash received and credits applied.</summary>
+        public decimal Amount { get; set; }
+
+        public DateTime DueDate { get; set; }
+
+        public bool IsOverdue { get; set; }
+    }
+
+    public class BookingLeadDto
+    {
+        public int LeadId { get; set; }
+
+        public string LeadReference { get; set; } = string.Empty;
     }
 }

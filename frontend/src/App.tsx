@@ -16,11 +16,10 @@ const HomePage = lazy(() => import("./pages/HomePage.tsx"));
 const LandingPage = lazy(() => import("./pages/LandingPage.tsx"));
 const EmployeesPage = lazy(() => import("./pages/EmployeesPage.tsx"));
 const EmployeeDetailPage = lazy(() => import("./pages/EmployeeDetailPage.tsx"));
-const BookingRequestsPage = lazy(() => import("./pages/BookingRequestsPage.tsx"));
 const CustomersPage = lazy(() => import("./pages/CustomersPage.tsx"));
 const CustomerDetailPage = lazy(() => import("./pages/CustomerDetailPage.tsx"));
 const CustomerDocumentCategoriesPage = lazy(() => import("./pages/CustomerDocumentCategoriesPage.tsx"));
-const ConfirmedBookingsPage = lazy(() => import("./pages/ConfirmedBookingsPage.tsx"));
+const BookingsPage = lazy(() => import("./pages/BookingsPage.tsx"));
 const CreateBookingPage = lazy(() => import("./pages/CreateBookingPage.tsx"));
 const ApplicationFormPage = lazy(() => import("./pages/ApplicationFormPage.tsx"));
 const FinanceDashboardPage = lazy(() => import("./pages/FinanceDashboardPage.tsx"));
@@ -194,8 +193,9 @@ function App() {
             <Route path="/contact" element={<ContactPage />} />
             <Route path="/my-projects" element={<MyProjectsPage user={user} />} />
             <Route path="/my-projects/:id" element={<MyProjectDetailPage user={user} />} />
-            <Route path="/bookings" element={<BookingRequestsPage user={user} />} />
-            <Route path="/confirmed-bookings" element={<ConfirmedBookingsPage user={user} />} />
+            {/* The Requests page is gone; old links to it (old notifications) land on the Bookings list. */}
+            <Route path="/bookings" element={<Navigate to="/confirmed-bookings" replace />} />
+            <Route path="/confirmed-bookings" element={<BookingsPage user={user} />} />
             <Route path="/confirmed-bookings/new" element={<CreateBookingPage user={user} />} />
             <Route path="/confirmed-bookings/:id" element={<BookingDetailPage user={user} />} />
             <Route path="/application-form" element={<ApplicationFormPage user={user} />} />

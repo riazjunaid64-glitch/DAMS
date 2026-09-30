@@ -39,6 +39,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<Installment> Installments { get; set; }
         public DbSet<Payment> Payments { get; set; }
         public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
+        public DbSet<BookingTermsHistory> BookingTermsHistories { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -677,6 +678,29 @@ namespace DAMS.Infrastructure.Data
 
                 entity.ToTable(t => t.HasCheckConstraint(
                     "CK_BookingSaleRecognitions_NetSaleValue", "[NetSaleValue] >= 0"));
+            });
+
+            modelBuilder.Entity<BookingTermsHistory>(entity =>
+            {
+                entity.Property(h => h.Source).HasConversion<int>();
+                entity.Property(h => h.OldAgreedSalePrice).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.NewAgreedSalePrice).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.OldDiscountPercent).HasColumnType("decimal(5,2)");
+                entity.Property(h => h.NewDiscountPercent).HasColumnType("decimal(5,2)");
+                entity.Property(h => h.OldDiscountReason).HasMaxLength(500);
+                entity.Property(h => h.NewDiscountReason).HasMaxLength(500);
+                entity.Property(h => h.OldBookingAmountRequired).HasColumnType("decimal(18,2)");
+                entity.Property(h => h.NewBookingAmountRequired).HasColumnType("decimal(18,2)");
+                // Dates, not timestamps: the due-by date is a business date.
+                entity.Property(h => h.OldBookingAmountDueDate).HasColumnType("date");
+                entity.Property(h => h.NewBookingAmountDueDate).HasColumnType("date");
+
+                entity.HasIndex(h => new { h.BookingId, h.ChangedAt });
+
+                entity.HasOne(h => h.Booking)
+                      .WithMany()
+                      .HasForeignKey(h => h.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<BookingCancellationSettlement>(entity =>
@@ -1600,16 +1624,23 @@ namespace DAMS.Infrastructure.Data
                     "(CASE WHEN [CommissionId] IS NULL THEN 0 ELSE 1 END + " +
                     "CASE WHEN [PayoutId] IS NULL THEN 0 ELSE 1 END + " +
                     "CASE WHEN [RebateId] IS NULL THEN 0 ELSE 1 END + " +
-                    "CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END) = 1"));
+                    "CASE WHEN [RebateDisbursementId] IS NULL THEN 0 ELSE 1 END + " +
+                    "CASE WHEN [CustomerPaymentId] IS NULL THEN 0 ELSE 1 END + " +
+                    "CASE WHEN [CancellationRefundId] IS NULL THEN 0 ELSE 1 END) = 1"));
                 entity.HasIndex(e => e.StoredFileName).IsUnique();
                 entity.HasIndex(e => e.CommissionId);
                 entity.HasIndex(e => e.PayoutId);
                 entity.HasIndex(e => e.RebateId);
                 entity.HasIndex(e => e.RebateDisbursementId);
+                // One proof file per customer payment / refund, held by the database as well as the service.
+                entity.HasIndex(e => e.CustomerPaymentId).IsUnique().HasFilter("[CustomerPaymentId] IS NOT NULL");
+                entity.HasIndex(e => e.CancellationRefundId).IsUnique().HasFilter("[CancellationRefundId] IS NOT NULL");
                 entity.HasOne(e => e.Commission).WithMany(c => c.Evidence).HasForeignKey(e => e.CommissionId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(e => e.Payout).WithMany(p => p.Evidence).HasForeignKey(e => e.PayoutId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(e => e.Rebate).WithMany(r => r.Evidence).HasForeignKey(e => e.RebateId).OnDelete(DeleteBehavior.Restrict);
                 entity.HasOne(e => e.RebateDisbursement).WithMany(d => d.Evidence).HasForeignKey(e => e.RebateDisbursementId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.CustomerPayment).WithMany(p => p.Evidence).HasForeignKey(e => e.CustomerPaymentId).OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(e => e.CancellationRefund).WithMany(r => r.Evidence).HasForeignKey(e => e.CancellationRefundId).OnDelete(DeleteBehavior.Restrict);
             });
 
             modelBuilder.Entity<FinancialWorkflowAuditEntry>(entity =>
@@ -1675,6 +1706,9 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<FinanceRecordAudit>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Finance record audit entries are append-only.");
+            if (ChangeTracker.Entries<BookingTermsHistory>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Booking terms history is append-only.");
         }
 
         /// <summary>

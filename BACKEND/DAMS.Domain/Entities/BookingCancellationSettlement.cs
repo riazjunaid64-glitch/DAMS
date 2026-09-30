@@ -75,5 +75,8 @@ namespace DAMS.Domain.Entities
 
         public BookingCancellationSettlement Settlement { get; set; } = null!;
         public FinanceAccount FinanceAccount { get; set; } = null!;
+
+        // Proof of the refund paid out. At most one file.
+        public ICollection<FinancialEvidence> Evidence { get; set; } = new List<FinancialEvidence>();
     }
 }

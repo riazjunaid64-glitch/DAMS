@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import type { User } from "../App";
 import { api } from "../api/api";
 import Button from "../lib/Button";
+import { DatePicker } from "../components/ui";
 import ModalPortal from "../lib/ModalPortal";
 import FinanceAttachmentField from "../components/FinanceAttachmentField";
 import { financeApiError, openAttachmentAt, type FinanceAttachmentInfo } from "../api/financeAttachments";
@@ -516,7 +517,7 @@ export default function FinanceLoansPage({user}:{user:User|null}) {
           </div>
           <strong className="text-xl tabular-nums">{money(totalLeaving)}</strong>
         </div>}
-        <Field label="Date" type="date" value={transactionForm.date} set={value=>setTransactionForm({...transactionForm,date:value})}/>
+        <DatePicker label="Date" required max={pakistanToday()} value={transactionForm.date} onChange={date=>setTransactionForm({...transactionForm,date})}/>
         <Select label={transactionForm.type==="Drawdown"?"Received in account":"Paid from account"} value={transactionForm.financeAccountId}
           set={value=>setTransactionForm({...transactionForm,financeAccountId:value})}>
           <option value="">Select cash or bank account</option>

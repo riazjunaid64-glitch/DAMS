@@ -7,6 +7,7 @@ import type { User } from "../App.tsx";
 import Button from "../lib/Button.tsx";
 import Container from "../lib/Container.tsx";
 import Field from "../lib/Field.tsx";
+import { DatePicker } from "../components/ui";
 import TabLayout from "../lib/TabLayout.tsx";
 import EmployeesAttendancePanel from "../components/employee/EmployeesAttendancePanel.tsx";
 import EmployeesSalaryPanel from "../components/employee/EmployeesSalaryPanel.tsx";
@@ -259,7 +260,7 @@ export default function EmployeesPage({ user }: Props) {
               <Field label="Email" type="email" value={form.email} placeholder={PLACEHOLDERS.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} error={form.email.trim() && !isValidEmail(form.email) ? "Enter a valid email address (e.g. name@example.com)." : undefined} hint="Optional" />
               <Field label="Address" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} hint="Optional" />
               <Field label="Salary" value={form.salary} onChange={e => setForm(f => ({ ...f, salary: e.target.value }))} placeholder="0" hint="Optional" />
-              <Field label="Join Date" type="date" value={form.joinDate} onChange={e => setForm(f => ({ ...f, joinDate: e.target.value }))} required />
+              <DatePicker label="Join Date" value={form.joinDate} onChange={joinDate => setForm(f => ({ ...f, joinDate }))} required />
               <label className="flex flex-col gap-1.5 text-sm font-medium text-[var(--text-secondary)] sm:col-span-2">
                 Status
                 <AppSelect className="rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-4 py-3 text-sm text-[var(--text-primary)] transition-all focus:border-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-glow)]" value={form.status} onChange={e => setForm(f => ({ ...f, status: Number(e.target.value) }))}>

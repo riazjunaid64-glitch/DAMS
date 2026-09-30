@@ -63,6 +63,20 @@ namespace DAMS.Api.Controllers
             return Ok(result);
         }
 
+        [HttpGet("summary")]
+        public async Task<IActionResult> GetStatusCounts(
+            [FromQuery] int? projectId,
+            [FromQuery] string? search)
+        {
+            // Deliberately no status: the cards count every status for the same search and project.
+            var result = await _bookingService.GetBookingStatusCountsAsync(new BookingFilterDto
+            {
+                ProjectId = projectId,
+                SearchTerm = search
+            });
+            return Ok(result);
+        }
+
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -110,6 +124,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Mark possession as handed over (payment plan must be active).
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/possession")]
         public async Task<IActionResult> GivePossession(int id, [FromBody] GivePossessionDto? dto)
         {
@@ -126,6 +141,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Complete the sale once everything is paid; moves the unit to Sold.
+        [IdempotentMoneyOperation]
         [HttpPost("{id:int}/complete")]
         public async Task<IActionResult> CompleteSale(int id)
         {
@@ -142,6 +158,7 @@ namespace DAMS.Api.Controllers
         }
 
         // Set negotiated terms (sale price, discount, booking amount required) before taking payments.
+        [IdempotentMoneyOperation]
         [HttpPut("{id:int}/financials")]
         public async Task<IActionResult> UpdateFinancials(int id, [FromBody] UpdateBookingFinancialsDto dto)
         {
