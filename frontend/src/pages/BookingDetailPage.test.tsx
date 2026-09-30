@@ -442,20 +442,14 @@ describe("proof on a recorded payment", () => {
     expect(calls.map((c) => c.url)).not.toContain("/api/Booking/13/payments");
   });
 
-  it("keeps the popup open on the proof when the upload fails, and sends the same file again on Retry", async () => {
+  it("closes with a warning when the upload fails, having recorded the payment once", async () => {
     answers["POST /api/Booking/13/booking-amount-payment"] = () => ({ body: { ...base, ...awaiting, recordedPaymentId: 77 } });
-    vi.mocked(uploadProof).mockRejectedValueOnce(new Error("Network down")).mockResolvedValueOnce();
+    vi.mocked(uploadProof).mockRejectedValue(new Error("Network down"));
     const dialog = await openWithFile();
     fireEvent.click(within(dialog).getByRole("button", { name: "Record payment" }));
 
-    expect(await within(dialog).findByText("Payment recorded, but the proof did not upload.")).toBeTruthy();
-    expect(requested("POST", "/api/Booking/13/booking-amount-payment")).toHaveLength(1);
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Retry upload" }));
-    await waitFor(() => expect(uploadProof).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(uploadProof).mock.calls[1]!.slice(0, 3)).toEqual(["CustomerPayment", 77, slip]);
+    expect(await screen.findByText("Payment recorded, but the proof did not upload. Attach it from Payment History.")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    // The payment itself was never sent a second time.
     expect(requested("POST", "/api/Booking/13/booking-amount-payment")).toHaveLength(1);
   });
 });

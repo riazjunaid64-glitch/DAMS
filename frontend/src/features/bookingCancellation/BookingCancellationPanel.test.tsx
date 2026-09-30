@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ToastProvider } from "../../components/ui/Toast.tsx";
 import { uploadProof } from "../proof/proofApi";
 import BookingCancellationPanel from "./BookingCancellationPanel";
 import { bookingCancellationApi } from "./api";
@@ -16,7 +17,7 @@ const settlement = {
 const slip = new File(["x"], "refund-slip.pdf", { type: "application/pdf" });
 
 function show(onChanged = vi.fn()) {
-  render(<BookingCancellationPanel bookingId={13} status="Cancelled" settlement={settlement} financeAccounts={[{ id: 1, name: "Cash", accountHolderName: "Head office" }]} onChanged={onChanged} />);
+  render(<ToastProvider><BookingCancellationPanel bookingId={13} status="Cancelled" settlement={settlement} financeAccounts={[{ id: 1, name: "Cash", accountHolderName: "Head office" }]} onChanged={onChanged} /></ToastProvider>);
   return onChanged;
 }
 
@@ -45,34 +46,24 @@ describe("proof on a pending refund", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("stays open for a retry when the upload fails, and never pays the refund twice", async () => {
-    vi.mocked(uploadProof).mockRejectedValueOnce(new Error("Network down")).mockResolvedValueOnce();
-    const onChanged = show();
-    const dialog = await payWithProof();
-
-    fireEvent.click(await within(dialog).findByRole("button", { name: "Retry upload" }));
-    await waitFor(() => expect(uploadProof).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-    expect(bookingCancellationApi.payRefund).toHaveBeenCalledTimes(1);
-  });
-
-  it("refreshes the page when the popup is closed after the refund was recorded without its proof", async () => {
+  it("closes with a warning when the upload fails, refreshing the page and paying only once", async () => {
     vi.mocked(uploadProof).mockRejectedValue(new Error("Network down"));
     const onChanged = show();
-    const dialog = await payWithProof();
-    await within(dialog).findByRole("button", { name: "Retry upload" });
+    await payWithProof();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByText("Refund recorded, but the proof did not upload. Attach it from the refund.")).toBeTruthy();
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(bookingCancellationApi.payRefund).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("proof on a paid refund", () => {
   it("shows the stored file name, or Attach proof when the upload never went through", () => {
     const paid = (proof: unknown) => ({ ...settlement, refundStatus: "Paid", refund: { id: 31, financeAccountName: "Cash", paymentMethod: "Cash", paidAt: "2026-09-29T07:00:00", proof } }) as never;
-    const view = render(<BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid({ id: 4, fileName: "refund-slip.pdf", fileSize: 9 })} financeAccounts={[]} onChanged={vi.fn()} />);
+    const view = render(<ToastProvider><BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid({ id: 4, fileName: "refund-slip.pdf", fileSize: 9 })} financeAccounts={[]} onChanged={vi.fn()} /></ToastProvider>);
     expect(screen.getByRole("button", { name: "refund-slip.pdf" })).toBeTruthy();
-    view.rerender(<BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid(null)} financeAccounts={[]} onChanged={vi.fn()} />);
+    view.rerender(<ToastProvider><BookingCancellationPanel bookingId={13} status="Cancelled" settlement={paid(null)} financeAccounts={[]} onChanged={vi.fn()} /></ToastProvider>);
     expect(screen.getByRole("button", { name: "Attach proof" })).toBeTruthy();
   });
 });

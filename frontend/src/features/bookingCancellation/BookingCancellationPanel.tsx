@@ -2,7 +2,7 @@ import AppSelect from "../../lib/AppSelect.tsx";
 import { useState, type FormEvent } from "react";
 import Button from "../../lib/Button";
 import Field from "../../lib/Field";
-import { AttachProof, DatePicker } from "../../components/ui";
+import { AttachProof, DatePicker, useToast } from "../../components/ui";
 import { SavedProof } from "../proof/SavedProof";
 import { useProofUpload } from "../proof/useProofUpload";
 import { bookingCancellationApi } from "./api";
@@ -41,8 +41,7 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
   const [paidAt, setPaidAt] = useState(pakistanToday());
   const [notes, setNotes] = useState("");
   const proof = useProofUpload();
-  // Set once the refund is recorded but its proof did not go up: the popup stays for a retry.
-  const [paidRefundId, setPaidRefundId] = useState<number | null>(null);
+  const toast = useToast();
 
   if (status !== "Cancelled") return null;
 
@@ -55,31 +54,13 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
     setPaidAt(pakistanToday());
     setNotes("");
     proof.reset();
-    setPaidRefundId(null);
     setShowPay(true);
   };
 
-  const finish = async () => {
-    setShowPay(false);
-    setPaidRefundId(null);
-    await onChanged();
-  };
-
-  // Closing after the refund was recorded still refreshes the page: the money has moved.
-  const close = () => {
-    if (submitting) return;
-    if (paidRefundId !== null) void finish();
-    else setShowPay(false);
-  };
+  const close = () => { if (!submitting) setShowPay(false); };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (paidRefundId !== null) {
-      setSubmitting(true);
-      if (await proof.upload("CancellationRefund", paidRefundId)) await finish();
-      setSubmitting(false);
-      return;
-    }
     if (!financeAccountId) { setError("Select the account the refund is paid from."); return; }
     setSubmitting(true);
     setError(null);
@@ -94,12 +75,13 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
       };
       const saved = await bookingCancellationApi.payRefund(bookingId, body);
       const refundId = saved.cancellationSettlement?.refund?.id ?? null;
+      // A failed proof never undoes the refund: the popup closes with a warning and the file is
+      // attached later from the saved refund.
       if (proof.hasFile && !(refundId !== null && await proof.upload("CancellationRefund", refundId))) {
-        setPaidRefundId(refundId ?? 0);
-        setError("Refund recorded, but the proof did not upload. Retry, or close to continue without it.");
-        return;
+        toast.error("Refund recorded, but the proof did not upload. Attach it from the refund.");
       }
-      await finish();
+      setShowPay(false);
+      await onChanged();
     } catch (x) {
       setError(x instanceof Error ? x.message : "Failed to pay the refund.");
     } finally {
@@ -200,7 +182,7 @@ export default function BookingCancellationPanel({ bookingId, status, settlement
               <Field as="textarea" label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
 
               <div className="flex gap-2">
-                <Button type="submit" disabled={submitting}>{submitting ? "Paying…" : paidRefundId !== null ? "Retry upload" : "Confirm Payment"}</Button>
+                <Button type="submit" disabled={submitting}>{submitting ? "Paying…" : "Confirm Payment"}</Button>
                 <Button type="button" variant="ghost" onClick={close} disabled={submitting}>Cancel</Button>
               </div>
             </form>

@@ -51,10 +51,6 @@ export function RecordPaymentDialog({ booking, target, financeAccounts, accounts
   const [shown, setShown] = useState<PaymentErrors>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Set once the payment is saved but its proof did not go up: the popup stays open on the proof alone
-  // so the file can be sent again, and nothing else can be submitted a second time.
-  const [savedPaymentId, setSavedPaymentId] = useState<number | null | undefined>(undefined);
-  const proofPending = savedPaymentId !== undefined;
   const set = (change: Partial<typeof fields>) => {
     setFields((current) => ({ ...current, ...change }));
     // A field's message goes as soon as it is edited, so it never lingers beside a fixed value.
@@ -79,16 +75,6 @@ export function RecordPaymentDialog({ booking, target, financeAccounts, accounts
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (saving) return;
-
-    if (proofPending) {
-      setSaving(true);
-      if (await sendProof(savedPaymentId ?? null)) {
-        toast.success("Payment recorded.");
-        onClose();
-      }
-      setSaving(false);
-      return;
-    }
 
     const problems = paymentErrors(fields, limit);
     setShown(problems);
@@ -128,13 +114,11 @@ export function RecordPaymentDialog({ booking, target, financeAccounts, accounts
     } catch {
       // The reload reports its own failure on the page.
     }
-    if (!proof.hasFile || await sendProof(paymentId)) {
-      toast.success("Payment recorded.");
-      onClose();
-      return;
-    }
-    setSavedPaymentId(paymentId);
-    setSaving(false);
+    // A proof that fails never undoes the payment: the popup closes with a warning, and the file is
+    // attached later from the saved payment in Payment History.
+    if (!proof.hasFile || await sendProof(paymentId)) toast.success("Payment recorded.");
+    else toast.error("Payment recorded, but the proof did not upload. Attach it from Payment History.");
+    onClose();
   };
 
   return (
@@ -145,75 +129,64 @@ export function RecordPaymentDialog({ booking, target, financeAccounts, accounts
       size="md"
       phoneLayout="fullscreen"
       title={<DialogTitle title={title} subtitle={subtitle} />}
-      cancelLabel={proofPending ? "Close" : "Cancel"}
-      primaryAction={{ label: proofPending ? "Retry upload" : "Record payment", form: formId, loading: saving }}
+      primaryAction={{ label: "Record payment", form: formId, loading: saving }}
     >
       <form id={formId} noValidate onSubmit={(event) => void submit(event)} className="flex flex-col gap-4">
-        {proofPending ? (
-          <>
-            <Notice tone="orange" role="alert" title="Payment recorded, but the proof did not upload." message="Try again, or close to continue without it." />
-            <AttachProof label="Proof" disabled={saving} {...proof.fieldProps} />
-          </>
-        ) : (
-          <>
-            {error && <Notice tone="red" role="alert" title={error} />}
-            {accountsError && <Notice tone="orange" role="alert" title={accountsError} />}
+        {error && <Notice tone="red" role="alert" title={error} />}
+        {accountsError && <Notice tone="orange" role="alert" title={accountsError} />}
 
-            <NumberField
-              label="Amount"
-              required
-              prefix="Rs"
-              helper={amountHelper}
-              error={shown.amount}
-              value={fields.amount}
-              onChange={(amount) => set({ amount })}
-            />
+        <NumberField
+          label="Amount"
+          required
+          prefix="Rs"
+          helper={amountHelper}
+          error={shown.amount}
+          value={fields.amount}
+          onChange={(amount) => set({ amount })}
+        />
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <Dropdown
-                label="Payment method"
-                required
-                options={PAYMENT_METHODS}
-                value={fields.method}
-                onChange={(method) => set({ method })}
-              />
-              <Dropdown
-                label="Received in account"
-                required
-                placeholder="Select an account"
-                error={shown.accountId}
-                options={financeAccounts.map((account) => ({ value: String(account.id), label: `${account.name} — ${account.accountHolderName}` }))}
-                value={fields.accountId}
-                onChange={(accountId) => set({ accountId })}
-              />
-            </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Dropdown
+            label="Payment method"
+            required
+            options={PAYMENT_METHODS}
+            value={fields.method}
+            onChange={(method) => set({ method })}
+          />
+          <Dropdown
+            label="Received in account"
+            required
+            placeholder="Select an account"
+            error={shown.accountId}
+            options={financeAccounts.map((account) => ({ value: String(account.id), label: `${account.name} — ${account.accountHolderName}` }))}
+            value={fields.accountId}
+            onChange={(accountId) => set({ accountId })}
+          />
+        </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <TextField
-                label="Reference"
-                required={referenceRequired(fields.method)}
-                placeholder="Cheque / transfer no."
-                maxLength={500}
-                error={shown.reference}
-                value={fields.reference}
-                onChange={(event) => set({ reference: event.target.value })}
-              />
-              <DatePicker
-                label="Payment date"
-                required
-                max={pakistanToday()}
-                error={shown.paidAt}
-                value={fields.paidAt}
-                onChange={(paidAt) => set({ paidAt })}
-              />
-            </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <TextField
+            label="Reference"
+            required={referenceRequired(fields.method)}
+            placeholder="Cheque / transfer no."
+            maxLength={500}
+            error={shown.reference}
+            value={fields.reference}
+            onChange={(event) => set({ reference: event.target.value })}
+          />
+          <DatePicker
+            label="Payment date"
+            required
+            max={pakistanToday()}
+            error={shown.paidAt}
+            value={fields.paidAt}
+            onChange={(paidAt) => set({ paidAt })}
+          />
+        </div>
 
-            <AttachProof label="Proof" disabled={saving} {...proof.fieldProps} />
+        <AttachProof label="Proof" disabled={saving} {...proof.fieldProps} />
 
-            <TextArea label="Notes" rows={3} maxLength={1000} value={notes} onChange={(event) => setNotes(event.target.value)} />
-
-          </>
-        )}
+        <TextArea label="Notes" rows={3} maxLength={1000} value={notes} onChange={(event) => setNotes(event.target.value)} />
       </form>
     </Modal>
   );
