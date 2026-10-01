@@ -13,25 +13,30 @@ const toneStyles: Record<CompanyNumbersTone, { value: string; label: string; lin
 
 /**
  * The company's fixed figures. `row` is four columns with dividers (Home, desktop).
- * `panel` is a 2 by 2 grid (Home on a phone; About will use it later). The values
+ * `panel` is a 2 by 2 grid (Home on a phone, and the About page). The values
  * count up once, and show their final text immediately when reduced motion is on.
  */
 export function CompanyNumbers({
   layout,
   tone = "onDark",
+  stretch = false,
   className,
 }: {
   layout: CompanyNumbersLayout;
   tone?: CompanyNumbersTone;
+  /** Panel only: fill the height of the block beside it and centre each figure. */
+  stretch?: boolean;
   className?: string;
 }) {
   const styles = toneStyles[tone];
+  const fill = stretch && layout === "panel";
   return (
     <ul
       data-layout={layout}
       className={cx(
         "m-0 grid list-none p-0",
         layout === "row" ? "grid-cols-4 border-t" : "grid-cols-2",
+        fill && "h-full grid-rows-2",
         styles.line,
         className,
       )}
@@ -44,6 +49,7 @@ export function CompanyNumbers({
             layout === "row" && index > 0 && "border-l",
             layout === "panel" && index % 2 === 1 && "border-l",
             layout === "panel" && index < 2 && "border-b",
+            fill && "flex flex-col justify-center",
             styles.line,
           )}
         >
