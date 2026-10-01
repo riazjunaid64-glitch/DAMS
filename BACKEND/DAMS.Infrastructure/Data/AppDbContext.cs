@@ -442,7 +442,6 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
                 entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
                 entity.Property(c => c.Description).HasMaxLength(1000);
-                entity.Property(c => c.AllowedFileTypes).IsRequired().HasMaxLength(100);
                 entity.Property(c => c.CreatedByName).HasMaxLength(200);
                 entity.Property(c => c.RowVersion).IsRowVersion();
 
@@ -467,7 +466,8 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(r => r.Name).IsRequired().HasMaxLength(150);
                 entity.Property(r => r.Description).HasMaxLength(1000);
-                entity.Property(r => r.AllowedFileTypes).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.NotNeededReason).HasMaxLength(500);
+                entity.Property(r => r.NotNeededByName).HasMaxLength(200);
                 entity.Property(r => r.Status).HasConversion<int>();
                 entity.Property(r => r.LastActionByName).HasMaxLength(200);
                 entity.Property(r => r.RowVersion).IsRowVersion();
@@ -498,9 +498,6 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(v => v.OriginalFileName).IsRequired().HasMaxLength(255);
                 entity.Property(v => v.ContentType).IsRequired().HasMaxLength(100);
                 entity.Property(v => v.UploadedByName).HasMaxLength(200);
-                entity.Property(v => v.ReviewedByName).HasMaxLength(200);
-                entity.Property(v => v.ReviewReason).HasMaxLength(2000);
-                entity.Property(v => v.ReviewStatus).HasConversion<int>();
                 entity.Property(v => v.RowVersion).IsRowVersion();
 
                 entity.HasIndex(v => new { v.RequirementId, v.VersionNumber }).IsUnique();
@@ -1862,8 +1859,6 @@ namespace DAMS.Infrastructure.Data
             Code = code,
             IsRequiredByDefault = required,
             DisplayOrder = order,
-            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
-            MaxFileSizeBytes = 10 * 1024 * 1024,
             IsActive = true,
             AssignToNewCustomers = true,
             CreatedAt = createdAt

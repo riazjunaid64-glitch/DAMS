@@ -2,7 +2,7 @@ import { useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { cx } from "./cx.ts";
 import { FieldShell } from "./FieldShell.tsx";
 import { IconClose, IconCheck, IconFile, IconImage, IconUpload } from "./icons.tsx";
-import { PROOF_ACCEPT, formatFileSize, isImageName, proofFileError } from "./proofFile.ts";
+import { PROOF_RULE, fileRuleError, formatFileSize, isImageName, type FileRule } from "./proofFile.ts";
 import { useIsPhone } from "./useMediaQuery.ts";
 
 export type AttachProofFile = {
@@ -15,8 +15,12 @@ export type AttachProofFile = {
 };
 
 export type AttachProofProps = {
-  /** Field label; "(optional)" is always added — proof never blocks saving. */
+  /** Field label; "(optional)" is added unless the field is `required` — proof never blocks saving. */
   label?: ReactNode;
+  /** Marks the field required (a * instead of "(optional)"), for a document that must be chosen. */
+  required?: boolean;
+  /** The types and size accepted; proof by default (PDF, image, Word or Excel, up to 15 MB). */
+  rule?: FileRule;
   /** The current file, if any. */
   file: AttachProofFile | null;
   /** A file that passed the type and size check. */
@@ -37,10 +41,10 @@ const cardIcon = "flex size-10 shrink-0 items-center justify-center rounded-lg b
 /**
  * The one "Attach proof" upload field: a dashed drop zone (tap-to-upload on a phone), then a file
  * card while uploading and once uploaded, or a red zone when the file is refused. One file. The type
- * and size are checked here, before anything is sent: PDF, image, Word or Excel, up to 15 MB. A
- * phone's own picker offers the camera, the gallery and files.
+ * and size are checked here, before anything is sent: PDF, image, Word or Excel, up to 15 MB by
+ * default, or whatever a `rule` says (customer documents). A phone's own picker offers the camera, the gallery and files.
  */
-export function AttachProof({ label = "Proof", file, onPick, onRemove, progress, error, disabled = false, id, className }: AttachProofProps) {
+export function AttachProof({ label = "Proof", required = false, rule = PROOF_RULE, file, onPick, onRemove, progress, error, disabled = false, id, className }: AttachProofProps) {
   const autoId = useId();
   const inputId = id ?? `ap-${autoId}`;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -52,7 +56,7 @@ export function AttachProof({ label = "Proof", file, onPick, onRemove, progress,
 
   const choose = (picked: File | undefined) => {
     if (!picked) return;
-    const message = proofFileError(picked);
+    const message = fileRuleError(picked, rule);
     if (inputRef.current) inputRef.current.value = "";
     if (message) {
       setRefusal(message);
@@ -76,7 +80,7 @@ export function AttachProof({ label = "Proof", file, onPick, onRemove, progress,
     if (!disabled) choose(event.dataTransfer.files[0]);
   };
 
-  const fieldLabel = (
+  const fieldLabel = required ? label : (
     <>
       {label} <span className="font-normal normal-case tracking-normal text-ink-faint">(optional)</span>
     </>
@@ -85,12 +89,12 @@ export function AttachProof({ label = "Proof", file, onPick, onRemove, progress,
   const percent = Math.min(100, Math.max(0, Math.round(progress ?? 0)));
 
   return (
-    <FieldShell as="fieldset" label={fieldLabel} className={className}>
+    <FieldShell as="fieldset" label={fieldLabel} required={required} className={className}>
       <input
         ref={inputRef}
         id={inputId}
         type="file"
-        accept={PROOF_ACCEPT}
+        accept={rule.accept}
         disabled={disabled}
         className="sr-only"
         tabIndex={-1}
@@ -168,7 +172,7 @@ export function AttachProof({ label = "Proof", file, onPick, onRemove, progress,
           {problem ? (
             <span role="alert" className="text-small font-bold text-danger">{problem}</span>
           ) : (
-            <span className="text-small text-ink-muted">PDF, image, Word or Excel · up to 15 MB</span>
+            <span className="text-small text-ink-muted">{rule.hint}</span>
           )}
         </button>
       )}

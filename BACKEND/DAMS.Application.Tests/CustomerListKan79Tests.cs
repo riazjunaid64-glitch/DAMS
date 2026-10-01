@@ -37,8 +37,8 @@ public sealed class CustomerListKan79Tests
                      .ToListAsync())
         {
             requirement.Status = requirement.CustomerId == complete.Id
-                ? CustomerDocumentStatus.Approved
-                : CustomerDocumentStatus.Missing;
+                ? CustomerDocumentStatus.Uploaded
+                : CustomerDocumentStatus.Needed;
             requirement.IsRequired = true;
         }
         if (!await h.Db.CustomerDocumentRequirements.AnyAsync(r => r.CustomerId == needing.Id))
@@ -48,7 +48,7 @@ public sealed class CustomerListKan79Tests
                 CustomerId = needing.Id,
                 Name = "CNIC copy",
                 IsRequired = true,
-                Status = CustomerDocumentStatus.Missing,
+                Status = CustomerDocumentStatus.Needed,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             });

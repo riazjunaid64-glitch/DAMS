@@ -48,18 +48,12 @@ public static class CustomerIdentityNormalizer
 }
 
 /// <summary>
-/// "Documents needed" until KAN-82: required docs whose status is still Missing, Requested,
-/// Rejected, ReplacementRequired, Expired or Postponed.
+/// "Documents needed": required documents whose status is still Needed.
 /// </summary>
 public static class CustomerDocumentsNeeded
 {
     public static bool IsNeeded(CustomerDocumentStatus status) =>
-        status is CustomerDocumentStatus.Missing
-            or CustomerDocumentStatus.Requested
-            or CustomerDocumentStatus.Rejected
-            or CustomerDocumentStatus.ReplacementRequired
-            or CustomerDocumentStatus.Expired
-            or CustomerDocumentStatus.Postponed;
+        status == CustomerDocumentStatus.Needed;
 
     public static int Count(IEnumerable<Domain.Entities.CustomerDocumentRequirement> requirements) =>
         requirements.Count(r => r.IsRequired && IsNeeded(r.Status));

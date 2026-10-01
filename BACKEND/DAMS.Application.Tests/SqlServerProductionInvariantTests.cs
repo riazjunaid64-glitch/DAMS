@@ -132,7 +132,6 @@ public sealed class SqlServerProductionInvariantTests
                 new CreateCustomerDocumentCategoryDto
                 {
                     Name = "Atomic category", Code = "atomic_sql", IsRequiredByDefault = true,
-                    AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024 * 1024,
                     AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
                 }, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
         }
@@ -5650,7 +5649,6 @@ public sealed class SqlServerProductionInvariantTests
             var category = await documents.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
             {
                 Name = "Retry probe proof", Code = "retry_probe_proof", IsRequiredByDefault = true,
-                AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024 * 1024,
                 AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
                 SelectedCustomerIds = [customer.Id]
             }, actor);
@@ -5665,7 +5663,7 @@ public sealed class SqlServerProductionInvariantTests
                 {
                     Content = new MemoryStream(ProbePdf), FileName = "probe.pdf", Length = ProbePdf.LongLength
                 }, actor);
-            Assert.Equal(CustomerDocumentStatus.UnderReview, uploaded.Status);
+            Assert.Equal(CustomerDocumentStatus.Uploaded, uploaded.Status);
             Assert.Single(await db.CustomerDocumentVersions.AsNoTracking()
                 .Where(v => v.RequirementId == requirement.Id && v.IsCurrent).ToListAsync());
         }

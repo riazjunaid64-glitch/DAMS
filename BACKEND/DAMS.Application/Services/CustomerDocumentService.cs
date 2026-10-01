@@ -17,7 +17,7 @@ namespace DAMS.Application.Services
 {
     public class CustomerDocumentService : ICustomerDocumentService
     {
-        public const long MaxFileSize = 25 * 1024 * 1024;
+        public const long MaxFileSize = 10 * 1024 * 1024;
         public const long MaxRequestSize = MaxFileSize + (512 * 1024);
         private const int AssignmentBatchSize = 500;
         private const int HistoryPreviewSize = 100;
@@ -40,6 +40,8 @@ namespace DAMS.Application.Services
                 PerformedByName = a.PerformedByName,
                 OccurredAt = a.OccurredAt
             };
+        private const int NotNeededReasonMaxLength = 500;
+        private const string OtherCategoryCode = "other";
         private static readonly HashSet<string> SupportedTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             ".pdf", ".jpg", ".jpeg", ".png"
@@ -84,11 +86,8 @@ namespace DAMS.Application.Services
                 Description = row.Category.Description,
                 IsRequiredByDefault = row.Category.IsRequiredByDefault,
                 DisplayOrder = row.Category.DisplayOrder,
-                AllowedFileTypes = SplitTypes(row.Category.AllowedFileTypes),
-                MaxFileSizeBytes = row.Category.MaxFileSizeBytes,
                 IsActive = row.Category.IsActive,
                 AssignToNewCustomers = row.Category.AssignToNewCustomers,
-                DefaultDueDays = row.Category.DefaultDueDays,
                 UsageCount = row.UsageCount,
                 CreatedAt = row.Category.CreatedAt,
                 UpdatedAt = row.Category.UpdatedAt,
@@ -101,8 +100,7 @@ namespace DAMS.Application.Services
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
-            var values = ValidateCategory(dto.Name, dto.Code, dto.Description, dto.AllowedFileTypes,
-                dto.MaxFileSizeBytes, dto.DefaultDueDays);
+            var values = ValidateCategory(dto.Name, dto.Code, dto.Description);
 
             if (await _context.CustomerDocumentCategories.AnyAsync(c => c.Code == values.Code, cancellationToken))
                 throw new InvalidOperationException($"A document category with code '{values.Code}' already exists.");
@@ -126,11 +124,8 @@ namespace DAMS.Application.Services
                     Description = values.Description,
                     IsRequiredByDefault = dto.IsRequiredByDefault,
                     DisplayOrder = dto.DisplayOrder,
-                    AllowedFileTypes = values.AllowedTypes,
-                    MaxFileSizeBytes = dto.MaxFileSizeBytes,
                     IsActive = true,
                     AssignToNewCustomers = dto.AssignmentMode == CustomerDocumentAssignmentMode.NewCustomersOnly,
-                    DefaultDueDays = dto.DefaultDueDays,
                     CreatedByUserId = actor.UserId,
                     CreatedByName = actor.DisplayName,
                     CreatedAt = now
@@ -178,8 +173,7 @@ namespace DAMS.Application.Services
                 ?? throw new KeyNotFoundException("Document category not found.");
             ApplyConcurrencyToken(category, dto.ConcurrencyToken);
 
-            var values = ValidateCategory(dto.Name, dto.Code, dto.Description, dto.AllowedFileTypes,
-                dto.MaxFileSizeBytes, dto.DefaultDueDays);
+            var values = ValidateCategory(dto.Name, dto.Code, dto.Description);
             var used = await _context.CustomerDocumentRequirements.AnyAsync(r => r.CategoryId == id, cancellationToken);
             if (used && !string.Equals(category.Code, values.Code, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("A category code cannot change after the category has been assigned.");
@@ -195,11 +189,8 @@ namespace DAMS.Application.Services
             category.Description = values.Description;
             category.IsRequiredByDefault = dto.IsRequiredByDefault;
             category.DisplayOrder = dto.DisplayOrder;
-            category.AllowedFileTypes = values.AllowedTypes;
-            category.MaxFileSizeBytes = dto.MaxFileSizeBytes;
             category.IsActive = dto.IsActive;
             category.AssignToNewCustomers = dto.IsActive && dto.AssignToNewCustomers;
-            category.DefaultDueDays = dto.DefaultDueDays;
             category.UpdatedAt = DateTime.UtcNow;
             var changeSummary = DiffSnapshots(before, CategorySnapshot(category));
 
@@ -343,12 +334,25 @@ namespace DAMS.Application.Services
                 .AsSplitQuery()
                 .ToListAsync(cancellationToken);
 
+            var visible = requirements.Where(IsVisible).ToList();
+            var takenCategoryIds = requirements
+                .Where(r => r.CategoryId != null && IsVisible(r))
+                .Select(r => r.CategoryId!.Value)
+                .ToHashSet();
+            var available = await _context.CustomerDocumentCategories.AsNoTracking()
+                .Where(c => c.IsActive && !c.IsRequiredByDefault && c.Code != OtherCategoryCode)
+                .OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
+                .Select(c => new CustomerDocumentTypeOptionDto { CategoryId = c.Id, Name = c.Name })
+                .ToListAsync(cancellationToken);
+
             return new CustomerDocumentChecklistDto
             {
                 CustomerId = customer.Id,
                 CustomerName = customer.FullName,
-                Summary = CustomerDocumentCompletion.Calculate(requirements),
-                Requirements = requirements.Select(MapRequirement).ToList()
+                StillNeeded = visible.Count(r => r.IsRequired && r.Status == CustomerDocumentStatus.Needed),
+                Done = visible.Count(r => r.Status != CustomerDocumentStatus.Needed),
+                Requirements = visible.Select(MapRequirement).ToList(),
+                AvailableTypes = available.Where(a => !takenCategoryIds.Contains(a.CategoryId)).ToList()
             };
         }
 
@@ -403,100 +407,103 @@ namespace DAMS.Application.Services
             };
         }
 
-        public async Task<CustomerDocumentRequirementDto> AddRequirementAsync(
+        public async Task<CustomerDocumentRequirementDto> AddDocumentAsync(
             int customerId,
-            AddCustomerDocumentRequirementDto dto,
+            int? categoryId,
+            string? name,
+            CustomerDocumentUpload upload,
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
-            var customer = await _context.Customers.FirstOrDefaultAsync(c => c.Id == customerId, cancellationToken)
-                ?? throw new KeyNotFoundException("Customer not found.");
+            var customerExists = await _context.Customers.AsNoTracking()
+                .AnyAsync(c => c.Id == customerId, cancellationToken);
+            if (!customerExists)
+                throw new KeyNotFoundException("Customer not found.");
 
-            if (dto.CategoryId.HasValue)
+            string? customName = null;
+            string documentName;
+            if (categoryId.HasValue)
             {
-                var category = await _context.CustomerDocumentCategories
-                    .FirstOrDefaultAsync(c => c.Id == dto.CategoryId.Value, cancellationToken)
-                    ?? throw new KeyNotFoundException("Document category not found.");
+                var category = await _context.CustomerDocumentCategories.AsNoTracking()
+                    .SingleOrDefaultAsync(c => c.Id == categoryId.Value, cancellationToken)
+                    ?? throw new KeyNotFoundException("Document type not found.");
                 if (!category.IsActive)
-                    throw new InvalidOperationException("An inactive category cannot be assigned.");
-                return await AddRequirementFromCategoryAsync(customer, category, dto.IsRequired, dto.DueDate, actor, cancellationToken);
+                    throw new InvalidOperationException("That document type is no longer available.");
+                documentName = category.Name;
+            }
+            else
+            {
+                customName = CleanRequired(name, 150, "Document name");
+                documentName = customName;
             }
 
-            if (string.IsNullOrWhiteSpace(dto.Name))
-                throw new InvalidOperationException("A custom requirement name is required.");
-
-            if (dto.SaveAsGlobalCategory)
-            {
-                if (string.IsNullOrWhiteSpace(dto.GlobalCategoryCode))
-                    throw new InvalidOperationException("A stable category code is required when saving globally.");
-
-                var selected = dto.SelectedCustomerIds.ToList();
-                if (dto.GlobalAssignmentMode == CustomerDocumentAssignmentMode.SelectedCustomers && !selected.Contains(customerId))
-                    selected.Add(customerId);
-
-                var category = await CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
-                {
-                    Name = dto.Name,
-                    Code = dto.GlobalCategoryCode,
-                    Description = dto.Description,
-                    IsRequiredByDefault = dto.IsRequired,
-                    DisplayOrder = 1000,
-                    AllowedFileTypes = dto.AllowedFileTypes,
-                    MaxFileSizeBytes = dto.MaxFileSizeBytes,
-                    AssignmentMode = dto.GlobalAssignmentMode,
-                    SelectedCustomerIds = selected
-                }, actor, cancellationToken);
-
-                var existing = await _context.CustomerDocumentRequirements
-                    .AsNoTracking()
-                    .AnyAsync(r => r.CustomerId == customerId && r.CategoryId == category.Id, cancellationToken);
-                if (existing)
-                    return await LoadRequirementAsync(customerId, await RequirementIdAsync(customerId, category.Id, cancellationToken), cancellationToken);
-
-                customer = await _context.Customers.FirstAsync(c => c.Id == customerId, cancellationToken);
-                var trackedCategory = await _context.CustomerDocumentCategories.FindAsync([category.Id], cancellationToken)
-                    ?? throw new KeyNotFoundException("Document category not found.");
-                return await AddRequirementFromCategoryAsync(customer, trackedCategory, dto.IsRequired, dto.DueDate, actor, cancellationToken);
-            }
-
-            var customName = CleanRequired(dto.Name, 150, "Requirement name");
-            if (await _context.CustomerDocumentRequirements.AnyAsync(
-                    r => r.CustomerId == customerId && r.CategoryId == null && r.Name == customName,
-                    cancellationToken))
-                throw new InvalidOperationException("This customer already has a custom requirement with that name.");
-
-            var types = NormalizeAllowedTypes(dto.AllowedFileTypes);
-            ValidateMaxFileSize(dto.MaxFileSizeBytes);
-            var now = DateTime.UtcNow;
-            var requirement = new CustomerDocumentRequirement
-            {
-                Customer = customer,
-                CustomerId = customer.Id,
-                Name = customName,
-                Description = CleanOptional(dto.Description, 1000),
-                IsRequired = dto.IsRequired,
-                DisplayOrder = 1000,
-                AllowedFileTypes = types,
-                MaxFileSizeBytes = dto.MaxFileSizeBytes,
-                Status = CustomerDocumentStatus.Missing,
-                DueDate = dto.DueDate,
-                LastActionByUserId = actor.UserId,
-                LastActionByName = actor.DisplayName,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-            _context.CustomerDocumentRequirements.Add(requirement);
-            RecordAudit(CustomerDocumentAction.RequirementCreated, actor, customer: customer,
-                requirement: requirement, newStatus: requirement.Status, notes: "One-customer custom requirement created.");
+            var validated = ValidateFile(upload);
+            var storedFileName = await _storage.SaveAsync(upload.Content, validated.Extension, cancellationToken);
+            var committed = false;
+            var attempt = 0;
+            int requirementId = 0;
             try
             {
-                await _context.SaveChangesAsync(cancellationToken);
+                await ExecuteResilientlyAsync(async () =>
+                {
+                    if (attempt++ > 0) _context.ChangeTracker.Clear();
+                    await using var transaction = await BeginSerializableAsync(cancellationToken);
+                    var customer = await _context.Customers.SingleAsync(c => c.Id == customerId, cancellationToken);
+                    var rows = await _context.CustomerDocumentRequirements
+                        .Include(r => r.Category)
+                        .Include(r => r.Versions)
+                        .Where(r => r.CustomerId == customerId)
+                        .ToListAsync(cancellationToken);
+
+                    // A type that exists only as a quiet row (not asked, no file) is brought to life;
+                    // one the customer can already see is a duplicate.
+                    var existing = categoryId.HasValue
+                        ? rows.SingleOrDefault(r => r.CategoryId == categoryId.Value)
+                        : rows.FirstOrDefault(r => string.Equals(r.Name, documentName, StringComparison.OrdinalIgnoreCase));
+                    if (existing != null && IsVisible(existing))
+                        throw new CustomerDocumentConflictException("This customer already has that document.");
+
+                    var now = DateTime.UtcNow;
+                    var requirement = existing;
+                    var previous = existing?.Status;
+                    if (requirement == null)
+                    {
+                        requirement = new CustomerDocumentRequirement
+                        {
+                            Customer = customer,
+                            CustomerId = customer.Id,
+                            Name = documentName,
+                            IsRequired = false,
+                            DisplayOrder = 1000,
+                            Status = CustomerDocumentStatus.Needed,
+                            CreatedAt = now
+                        };
+                        _context.CustomerDocumentRequirements.Add(requirement);
+                    }
+                    var version = AttachFile(requirement, storedFileName, validated, actor, now);
+                    RecordAudit(CustomerDocumentAction.DocumentAdded, actor, customer, requirement,
+                        requirement.Category, version, previous, requirement.Status,
+                        $"{documentName} added with a file.");
+                    try
+                    {
+                        await SaveWithConcurrencyMessageAsync(cancellationToken);
+                    }
+                    catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+                    {
+                        throw new CustomerDocumentConflictException("This customer already has that document.", ex);
+                    }
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                    requirementId = requirement.Id;
+                    committed = true;
+                });
+                return await LoadRequirementAsync(customerId, requirementId, cancellationToken);
             }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            finally
             {
-                throw new InvalidOperationException("This customer already has a custom requirement with that name.", ex);
+                if (!committed)
+                    await SafeDeleteAsync(storedFileName);
             }
-            return await LoadRequirementAsync(customerId, requirement.Id, cancellationToken);
         }
 
         public async Task<CustomerDocumentRequirementDto> UploadAsync(
@@ -507,15 +514,11 @@ namespace DAMS.Application.Services
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
-            var metadata = await _context.CustomerDocumentRequirements.AsNoTracking()
-                .Where(r => r.Id == requirementId && r.CustomerId == customerId)
-                .Select(r => new { r.AllowedFileTypes, r.MaxFileSizeBytes })
-                .SingleOrDefaultAsync(cancellationToken)
-                ?? throw new KeyNotFoundException("Document requirement not found.");
+            if (!await _context.CustomerDocumentRequirements.AsNoTracking()
+                    .AnyAsync(r => r.Id == requirementId && r.CustomerId == customerId, cancellationToken))
+                throw new KeyNotFoundException("Document requirement not found.");
 
-            var validated = UploadedFileValidator.Validate(upload.Content, upload.FileName, upload.Length, metadata.MaxFileSizeBytes);
-            if (!SplitTypes(metadata.AllowedFileTypes).Contains(validated.Extension, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException($"This requirement accepts only {metadata.AllowedFileTypes} files.");
+            var validated = ValidateFile(upload);
 
             // Written to storage once, outside the retriable unit below: a retry that re-saved it
             // would leave the first copy orphaned with nothing pointing at it.
@@ -532,36 +535,14 @@ namespace DAMS.Application.Services
                     await using var transaction = await BeginSerializableAsync(cancellationToken);
                     var requirement = await LoadRequirementForWriteAsync(customerId, requirementId, cancellationToken);
                     ApplyConcurrencyToken(requirement, concurrencyToken);
-                    EnsureUploadAllowed(requirement.Status);
 
-                    var current = requirement.Versions.SingleOrDefault(v => v.IsCurrent);
-                    if (current != null)
-                        current.IsCurrent = false;
-
-                    var now = DateTime.UtcNow;
-                    var version = new CustomerDocumentVersion
-                    {
-                        Requirement = requirement,
-                        RequirementId = requirement.Id,
-                        VersionNumber = requirement.Versions.Count == 0 ? 1 : requirement.Versions.Max(v => v.VersionNumber) + 1,
-                        IsCurrent = true,
-                        StoredFileName = storedFileName,
-                        OriginalFileName = validated.OriginalFileName,
-                        ContentType = validated.ContentType,
-                        FileSize = validated.FileSize,
-                        UploadedByUserId = actor.UserId,
-                        UploadedByName = actor.DisplayName,
-                        UploadedAt = now,
-                        ReviewStatus = CustomerDocumentVersionStatus.UnderReview
-                    };
+                    var hadFile = requirement.Versions.Any(v => v.IsCurrent);
                     var previous = requirement.Status;
-                    requirement.Status = CustomerDocumentStatus.UnderReview;
-                    requirement.PostponedUntil = null;
-                    Touch(requirement, actor, now);
-                    _context.CustomerDocumentVersions.Add(version);
-                    RecordAudit(current == null ? CustomerDocumentAction.FileUploaded : CustomerDocumentAction.ReplacementUploaded,
+                    var version = AttachFile(requirement, storedFileName, validated, actor, DateTime.UtcNow);
+                    RecordAudit(hadFile ? CustomerDocumentAction.ReplacementUploaded : CustomerDocumentAction.FileUploaded,
                         actor, requirement.Customer, requirement, requirement.Category, version,
-                        previous, requirement.Status, current == null ? "Document uploaded for review." : "A new document version was uploaded for review.");
+                        previous, requirement.Status,
+                        hadFile ? "The file was replaced; the old file is kept." : "Document uploaded.");
 
                     await SaveWithConcurrencyMessageAsync(cancellationToken);
                     if (transaction != null)
@@ -579,116 +560,59 @@ namespace DAMS.Application.Services
             }
         }
 
-        public async Task<CustomerDocumentRequirementDto> ChangeStatusAsync(
+        public async Task<CustomerDocumentRequirementDto> MarkNotNeededAsync(
             int customerId,
             int requirementId,
-            CustomerDocumentStatusChangeDto dto,
+            NotNeededDocumentDto dto,
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
+            var reason = CleanRequired(dto.Reason, NotNeededReasonMaxLength, "A reason");
             var requirement = await LoadRequirementForWriteAsync(customerId, requirementId, cancellationToken);
             ApplyConcurrencyToken(requirement, dto.ConcurrencyToken);
-            var previous = requirement.Status;
-            var currentVersion = requirement.Versions.SingleOrDefault(v => v.IsCurrent);
-            var reason = CleanOptional(dto.Reason, 2000);
+            if (requirement.Status != CustomerDocumentStatus.Needed)
+                throw new InvalidOperationException("Only a document that is still needed can be marked not needed.");
+
             var now = DateTime.UtcNow;
-            CustomerDocumentAction action;
-
-            switch (dto.Status)
-            {
-                case CustomerDocumentStatus.Requested:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.Missing, CustomerDocumentStatus.Postponed);
-                    action = CustomerDocumentAction.Requested;
-                    requirement.PostponedUntil = null;
-                    break;
-                case CustomerDocumentStatus.Approved:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.UnderReview);
-                    currentVersion = RequireCurrentVersion(currentVersion);
-                    ApplyReview(currentVersion, CustomerDocumentVersionStatus.Approved, actor, now, reason);
-                    action = CustomerDocumentAction.Approved;
-                    break;
-                case CustomerDocumentStatus.Rejected:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.UnderReview);
-                    reason = RequireReason(reason, "A rejection reason is required.");
-                    currentVersion = RequireCurrentVersion(currentVersion);
-                    ApplyReview(currentVersion, CustomerDocumentVersionStatus.Rejected, actor, now, reason);
-                    action = CustomerDocumentAction.Rejected;
-                    break;
-                case CustomerDocumentStatus.ReplacementRequired:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.UnderReview, CustomerDocumentStatus.Rejected,
-                        CustomerDocumentStatus.Approved, CustomerDocumentStatus.Expired);
-                    reason = RequireReason(reason, "A replacement reason is required.");
-                    // A rejected version keeps its original rejection decision and reason.
-                    // The later replacement request is a requirement-level audit event.
-                    if (currentVersion != null && previous != CustomerDocumentStatus.Rejected)
-                        ApplyReview(currentVersion, CustomerDocumentVersionStatus.ReplacementRequired, actor, now, reason);
-                    action = CustomerDocumentAction.ReplacementRequested;
-                    break;
-                case CustomerDocumentStatus.Postponed:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.Missing, CustomerDocumentStatus.Requested,
-                        CustomerDocumentStatus.Rejected, CustomerDocumentStatus.ReplacementRequired, CustomerDocumentStatus.Expired);
-                    reason = RequireReason(reason, "A postponement reason is required.");
-                    if (dto.PostponedUntil.HasValue && dto.PostponedUntil.Value <= now)
-                        throw new InvalidOperationException("The collection date must be in the future.");
-                    requirement.PostponedUntil = dto.PostponedUntil;
-                    action = CustomerDocumentAction.Postponed;
-                    break;
-                case CustomerDocumentStatus.Waived:
-                    EnsureOverrideAllowed(previous);
-                    reason = RequireReason(reason, "A waiver reason is required.");
-                    requirement.PostponedUntil = null;
-                    action = CustomerDocumentAction.Waived;
-                    break;
-                case CustomerDocumentStatus.NotApplicable:
-                    EnsureOverrideAllowed(previous);
-                    reason = RequireReason(reason, "A not-applicable reason is required.");
-                    requirement.PostponedUntil = null;
-                    action = CustomerDocumentAction.MarkedNotApplicable;
-                    break;
-                case CustomerDocumentStatus.Expired:
-                    EnsureCurrentIs(previous, CustomerDocumentStatus.Approved);
-                    reason = RequireReason(reason, "An expiry reason is required.");
-                    action = CustomerDocumentAction.MarkedExpired;
-                    break;
-                default:
-                    throw new InvalidOperationException("That document status cannot be selected directly.");
-            }
-
-            requirement.Status = dto.Status;
+            requirement.Status = CustomerDocumentStatus.NotNeeded;
+            requirement.NotNeededReason = reason;
+            requirement.NotNeededByUserId = actor.UserId;
+            requirement.NotNeededByName = actor.DisplayName;
+            requirement.NotNeededAt = now;
             Touch(requirement, actor, now);
-            RecordAudit(action, actor, requirement.Customer, requirement, requirement.Category, currentVersion,
-                previous, requirement.Status, reason);
+            RecordAudit(CustomerDocumentAction.MarkedNotNeeded, actor, requirement.Customer, requirement,
+                requirement.Category, previousStatus: CustomerDocumentStatus.Needed,
+                newStatus: CustomerDocumentStatus.NotNeeded, notes: reason);
             await SaveWithConcurrencyMessageAsync(cancellationToken);
             return await LoadRequirementAsync(customerId, requirementId, cancellationToken);
         }
 
-        public async Task<CustomerDocumentRequirementDto> ChangeDueDateAsync(
-            int customerId,
-            int requirementId,
-            CustomerDocumentDueDateDto dto,
-            CustomerDocumentActor actor,
-            CancellationToken cancellationToken = default)
-        {
-            var requirement = await LoadRequirementForWriteAsync(customerId, requirementId, cancellationToken);
-            ApplyConcurrencyToken(requirement, dto.ConcurrencyToken);
-            var oldDate = requirement.DueDate;
-            requirement.DueDate = dto.DueDate;
-            Touch(requirement, actor, DateTime.UtcNow);
-            var notes = $"Due date changed from {FormatDate(oldDate)} to {FormatDate(dto.DueDate)}.";
-            if (!string.IsNullOrWhiteSpace(dto.Reason))
-                notes += $" {CleanOptional(dto.Reason, 1500)}";
-            RecordAudit(CustomerDocumentAction.DueDateChanged, actor, requirement.Customer, requirement,
-                requirement.Category, notes: notes);
-            await SaveWithConcurrencyMessageAsync(cancellationToken);
-            return await LoadRequirementAsync(customerId, requirementId, cancellationToken);
-        }
-
-        public async Task<CustomerDocumentDownload> DownloadAsync(
+        public Task<CustomerDocumentDownload> DownloadAsync(
             int customerId,
             int requirementId,
             int versionId,
             CustomerDocumentActor actor,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            ReleaseFileAsync(customerId, requirementId, versionId, actor, CustomerDocumentAction.FileDownloaded,
+                "downloaded", cancellationToken);
+
+        public Task<CustomerDocumentDownload> ViewAsync(
+            int customerId,
+            int requirementId,
+            int versionId,
+            CustomerDocumentActor actor,
+            CancellationToken cancellationToken = default) =>
+            ReleaseFileAsync(customerId, requirementId, versionId, actor, CustomerDocumentAction.FileViewed,
+                "viewed", cancellationToken);
+
+        private async Task<CustomerDocumentDownload> ReleaseFileAsync(
+            int customerId,
+            int requirementId,
+            int versionId,
+            CustomerDocumentActor actor,
+            CustomerDocumentAction action,
+            string verb,
+            CancellationToken cancellationToken)
         {
             var version = await _context.CustomerDocumentVersions
                 .Include(v => v.Requirement).ThenInclude(r => r.Customer)
@@ -702,22 +626,22 @@ namespace DAMS.Application.Services
             if (content == null)
             {
                 _logger.LogError("Customer document version {VersionId} is missing its private stored file.", version.Id);
-                throw new FileNotFoundException("The stored document is unavailable. Ask an administrator to upload a replacement.");
+                throw new FileNotFoundException("The stored document is unavailable. Upload the file again.");
             }
 
             // Fail closed: a private identity document must never be released without a durable
-            // download record. If the audit write fails, dispose the opened stream and surface the
+            // access record. If the audit write fails, dispose the opened stream and surface the
             // error rather than serving an unlogged access to a sensitive file.
             try
             {
-                RecordAudit(CustomerDocumentAction.FileDownloaded, actor, version.Requirement.Customer,
+                RecordAudit(action, actor, version.Requirement.Customer,
                     version.Requirement, version.Requirement.Category, version,
-                    notes: $"Version {version.VersionNumber} downloaded.");
+                    notes: $"File {version.VersionNumber} {verb}.");
                 await _context.SaveChangesAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Blocked a customer document download because its audit record could not be saved for version {VersionId}.", version.Id);
+                _logger.LogError(ex, "Blocked a customer document release because its audit record could not be saved for version {VersionId}.", version.Id);
                 await content.DisposeAsync();
                 throw;
             }
@@ -728,37 +652,6 @@ namespace DAMS.Application.Services
                 FileName = version.OriginalFileName,
                 ContentType = version.ContentType
             };
-        }
-
-        private async Task<CustomerDocumentRequirementDto> AddRequirementFromCategoryAsync(
-            Customer customer,
-            CustomerDocumentCategory category,
-            bool required,
-            DateTime? dueDate,
-            CustomerDocumentActor actor,
-            CancellationToken cancellationToken)
-        {
-            if (await _context.CustomerDocumentRequirements
-                .AnyAsync(r => r.CustomerId == customer.Id && r.CategoryId == category.Id, cancellationToken))
-                throw new InvalidOperationException("This customer already has that document requirement.");
-
-            var now = DateTime.UtcNow;
-            var requirement = CustomerDocumentAssignment.FromCategory(customer, category, actor, now);
-            requirement.IsRequired = required;
-            if (dueDate.HasValue)
-                requirement.DueDate = dueDate;
-            _context.CustomerDocumentRequirements.Add(requirement);
-            RecordAudit(CustomerDocumentAction.CategoryAssigned, actor, customer, requirement, category,
-                newStatus: CustomerDocumentStatus.Missing, notes: "Category assigned to this customer.");
-            try
-            {
-                await _context.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-            {
-                throw new InvalidOperationException("This customer already has that document requirement.", ex);
-            }
-            return await LoadRequirementAsync(customer.Id, requirement.Id, cancellationToken);
         }
 
         private async Task<int> AssignBatchAsync(
@@ -782,7 +675,7 @@ namespace DAMS.Application.Services
                 var requirement = CustomerDocumentAssignment.FromCategory(customer, category, actor, now);
                 _context.CustomerDocumentRequirements.Add(requirement);
                 RecordAudit(CustomerDocumentAction.CategoryAssigned, actor, customer, requirement, category,
-                    newStatus: CustomerDocumentStatus.Missing, notes: "Assigned by a confirmed bulk action.");
+                    newStatus: CustomerDocumentStatus.Needed, notes: "Assigned by a confirmed bulk action.");
                 count++;
             }
             if (count > 0)
@@ -841,17 +734,14 @@ namespace DAMS.Application.Services
             {
                 Id = requirement.Id,
                 CategoryId = requirement.CategoryId,
-                CategoryCode = requirement.Category?.Code,
-                CategoryIsActive = requirement.Category?.IsActive ?? false,
                 Name = requirement.Name,
                 Description = requirement.Description,
                 IsRequired = requirement.IsRequired,
                 DisplayOrder = requirement.DisplayOrder,
-                AllowedFileTypes = SplitTypes(requirement.AllowedFileTypes),
-                MaxFileSizeBytes = requirement.MaxFileSizeBytes,
                 Status = requirement.Status,
-                DueDate = requirement.DueDate,
-                PostponedUntil = requirement.PostponedUntil,
+                NotNeededReason = requirement.NotNeededReason,
+                NotNeededByName = requirement.NotNeededByName,
+                NotNeededAt = requirement.NotNeededAt,
                 LastActionByName = requirement.LastActionByName,
                 UpdatedAt = requirement.UpdatedAt,
                 ConcurrencyToken = Convert.ToBase64String(requirement.RowVersion),
@@ -870,52 +760,56 @@ namespace DAMS.Application.Services
             ContentType = version.ContentType,
             FileSize = version.FileSize,
             UploadedByName = version.UploadedByName,
-            UploadedAt = version.UploadedAt,
-            ReviewStatus = version.ReviewStatus,
-            ReviewedByName = version.ReviewedByName,
-            ReviewedAt = version.ReviewedAt,
-            ReviewReason = version.ReviewReason
+            UploadedAt = version.UploadedAt
         };
 
-        private static void EnsureUploadAllowed(CustomerDocumentStatus status)
+        /// <summary>A document shows on the customer's checklist when it was asked from them, has a file, or was set aside.</summary>
+        private static bool IsVisible(CustomerDocumentRequirement requirement) =>
+            requirement.IsRequired
+            || requirement.Status != CustomerDocumentStatus.Needed
+            || requirement.Versions.Count > 0;
+
+        private static ValidatedUpload ValidateFile(CustomerDocumentUpload upload)
         {
-            if (status is not (CustomerDocumentStatus.Missing
-                or CustomerDocumentStatus.Requested
-                or CustomerDocumentStatus.Rejected
-                or CustomerDocumentStatus.ReplacementRequired
-                or CustomerDocumentStatus.Postponed
-                or CustomerDocumentStatus.Expired
-                or CustomerDocumentStatus.Approved))
-                throw new InvalidOperationException($"A document cannot be uploaded while the requirement is {status}.");
+            var validated = UploadedFileValidator.Validate(upload.Content, upload.FileName, upload.Length, MaxFileSize);
+            if (!SupportedTypes.Contains(validated.Extension))
+                throw new InvalidOperationException("Choose a PDF, JPG or PNG file.");
+            return validated;
         }
 
-        private static void EnsureOverrideAllowed(CustomerDocumentStatus current)
-        {
-            if (current is CustomerDocumentStatus.Approved or CustomerDocumentStatus.Waived or CustomerDocumentStatus.NotApplicable)
-                throw new InvalidOperationException($"A {current} requirement cannot be overridden without first creating a new requirement.");
-        }
-
-        private static void EnsureCurrentIs(CustomerDocumentStatus current, params CustomerDocumentStatus[] allowed)
-        {
-            if (!allowed.Contains(current))
-                throw new InvalidOperationException($"The requested status change is not allowed from {current}.");
-        }
-
-        private static CustomerDocumentVersion RequireCurrentVersion(CustomerDocumentVersion? version) =>
-            version ?? throw new InvalidOperationException("The requirement has no current uploaded version to review.");
-
-        private static void ApplyReview(
-            CustomerDocumentVersion version,
-            CustomerDocumentVersionStatus status,
+        /// <summary>Makes the new file the current one (the previous file stays as an older file) and marks the document Uploaded.</summary>
+        private CustomerDocumentVersion AttachFile(
+            CustomerDocumentRequirement requirement,
+            string storedFileName,
+            ValidatedUpload validated,
             CustomerDocumentActor actor,
-            DateTime now,
-            string? reason)
+            DateTime now)
         {
-            version.ReviewStatus = status;
-            version.ReviewedByUserId = actor.UserId;
-            version.ReviewedByName = actor.DisplayName;
-            version.ReviewedAt = now;
-            version.ReviewReason = reason;
+            var current = requirement.Versions.SingleOrDefault(v => v.IsCurrent);
+            if (current != null)
+                current.IsCurrent = false;
+
+            var version = new CustomerDocumentVersion
+            {
+                Requirement = requirement,
+                VersionNumber = requirement.Versions.Count == 0 ? 1 : requirement.Versions.Max(v => v.VersionNumber) + 1,
+                IsCurrent = true,
+                StoredFileName = storedFileName,
+                OriginalFileName = validated.OriginalFileName,
+                ContentType = validated.ContentType,
+                FileSize = validated.FileSize,
+                UploadedByUserId = actor.UserId,
+                UploadedByName = actor.DisplayName,
+                UploadedAt = now
+            };
+            requirement.Status = CustomerDocumentStatus.Uploaded;
+            requirement.NotNeededReason = null;
+            requirement.NotNeededByUserId = null;
+            requirement.NotNeededByName = null;
+            requirement.NotNeededAt = null;
+            Touch(requirement, actor, now);
+            _context.CustomerDocumentVersions.Add(version);
+            return version;
         }
 
         private void ApplyConcurrencyToken(CustomerDocumentRequirement requirement, string token) =>
@@ -1015,11 +909,8 @@ namespace DAMS.Application.Services
             ("Description", c => c.Description),
             ("IsRequiredByDefault", c => c.IsRequiredByDefault.ToString()),
             ("DisplayOrder", c => c.DisplayOrder.ToString()),
-            ("AllowedFileTypes", c => c.AllowedFileTypes),
-            ("MaxFileSizeBytes", c => c.MaxFileSizeBytes.ToString()),
             ("IsActive", c => c.IsActive.ToString()),
             ("AssignToNewCustomers", c => c.AssignToNewCustomers.ToString()),
-            ("DefaultDueDays", c => c.DefaultDueDays?.ToString()),
         };
 
         private static List<(string Label, string? Value)> CategorySnapshot(CustomerDocumentCategory c) =>
@@ -1043,43 +934,16 @@ namespace DAMS.Application.Services
             requirement.UpdatedAt = now;
         }
 
-        private static (string Name, string Code, string? Description, string AllowedTypes) ValidateCategory(
+        private static (string Name, string Code, string? Description) ValidateCategory(
             string name,
             string code,
-            string? description,
-            IEnumerable<string> allowedTypes,
-            long maxFileSize,
-            int? defaultDueDays)
+            string? description)
         {
             var normalizedCode = CleanRequired(code, 80, "Category code").ToLowerInvariant();
             if (!Regex.IsMatch(normalizedCode, "^[a-z0-9][a-z0-9_-]*$", RegexOptions.CultureInvariant))
                 throw new InvalidOperationException("Category code may contain lowercase letters, numbers, underscores, and hyphens only.");
-            ValidateMaxFileSize(maxFileSize);
-            if (defaultDueDays is <= 0 or > 3650)
-                throw new InvalidOperationException("Default due period must be between 1 and 3650 days.");
-            return (CleanRequired(name, 150, "Category name"), normalizedCode,
-                CleanOptional(description, 1000), NormalizeAllowedTypes(allowedTypes));
+            return (CleanRequired(name, 150, "Category name"), normalizedCode, CleanOptional(description, 1000));
         }
-
-        private static void ValidateMaxFileSize(long maxFileSize)
-        {
-            if (maxFileSize is < 1 or > MaxFileSize)
-                throw new InvalidOperationException("Maximum file size must be between 1 byte and 25 MB.");
-        }
-
-        private static string NormalizeAllowedTypes(IEnumerable<string>? values)
-        {
-            var types = (values ?? []).Select(v => v.Trim().ToLowerInvariant())
-                .Select(v => v.StartsWith('.') ? v : "." + v)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (types.Count == 0 || types.Any(t => !SupportedTypes.Contains(t)))
-                throw new InvalidOperationException("Allowed file types must be one or more of PDF, JPG, JPEG, and PNG.");
-            return string.Join(',', types);
-        }
-
-        private static List<string> SplitTypes(string types) =>
-            types.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
         private static void ValidateAssignment(CustomerDocumentAssignmentMode mode, List<int>? selected)
         {
@@ -1090,9 +954,6 @@ namespace DAMS.Application.Services
             if ((selected?.Distinct().Count() ?? 0) > 5000)
                 throw new InvalidOperationException("Select at most 5000 customers in one action.");
         }
-
-        private static string RequireReason(string? value, string message) =>
-            string.IsNullOrWhiteSpace(value) ? throw new InvalidOperationException(message) : value;
 
         private static string CleanRequired(string? value, int maxLength, string label)
         {
@@ -1109,8 +970,6 @@ namespace DAMS.Application.Services
                 return null;
             return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
         }
-
-        private static string FormatDate(DateTime? date) => date?.ToString("yyyy-MM-dd") ?? "not set";
 
         private static bool IsUniqueViolation(DbUpdateException exception) =>
             exception.InnerException is SqlException { Number: 2601 or 2627 };
