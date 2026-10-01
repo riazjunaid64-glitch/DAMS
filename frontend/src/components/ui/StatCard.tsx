@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cx } from "./cx.ts";
 import type { StatusTone } from "./statusTone.ts";
 
@@ -11,6 +11,8 @@ const labelTone: Record<StatusTone, string> = {
   gold: "text-gold-text",
 };
 
+export type StatCardState = "ready" | "loading" | "error";
+
 export type StatCardProps = {
   label: ReactNode;
   value: ReactNode;
@@ -18,25 +20,90 @@ export type StatCardProps = {
   tone?: StatusTone;
   /** Used as a filter and currently applied: navy border, pressed state. */
   selected?: boolean;
-  /** Makes the card a button (e.g. apply its filter). */
+  /** Soft gold tint for a card that needs attention. Uses the same tokens as a gold Notice. */
+  highlight?: boolean;
+  /** Small grey line under the number, e.g. "As of today". */
+  note?: ReactNode;
+  /**
+   * Loading draws a grey block instead of the number; error draws an em dash. Neither is
+   * clickable. A page that does not have a number yet must pass one of these — never "Rs 0".
+   */
+  state?: StatCardState;
+  /** Makes the card a button (e.g. apply its filter). Ignored while loading or in error. */
   onClick?: () => void;
   className?: string;
 };
 
-/** Label + big number. Clickable when it acts as a filter. */
-export function StatCard({ label, value, tone = "grey", selected = false, onClick, className }: StatCardProps) {
+const VALUE_SIZE = 26;
+
+/**
+ * The full amount on one line. When it is wider than the card (a long figure on a phone), the
+ * type shrinks until it fits. It is never wrapped or clipped.
+ */
+function FittedValue({ children }: { children: ReactNode }) {
+  const outerRef = useRef<HTMLSpanElement>(null);
+  const innerRef = useRef<HTMLSpanElement>(null);
+  const [size, setSize] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!outer || !inner) return;
+    const fit = () => {
+      const available = outer.clientWidth;
+      if (available <= 0) return;
+      const rendered = parseFloat(getComputedStyle(inner).fontSize) || VALUE_SIZE;
+      const natural = inner.scrollWidth * (VALUE_SIZE / rendered);
+      // Floor so the line fits inside the card. A rounded-up size would be clipped.
+      const next = natural > available ? Math.floor(((VALUE_SIZE * available) / natural) * 10) / 10 : null;
+      setSize((current) => {
+        if (next == null) return current == null ? current : null;
+        if (current != null && Math.abs(current - next) < 0.05) return current;
+        return next;
+      });
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(outer);
+    return () => observer.disconnect();
+  }, [children]);
+
+  return (
+    <span ref={outerRef} className="mt-0.5 block w-full min-w-0">
+      <span
+        ref={innerRef}
+        className="block whitespace-nowrap font-extrabold leading-tight tabular-nums text-ink"
+        style={{ fontSize: size ?? VALUE_SIZE }}
+      >
+        {children}
+      </span>
+    </span>
+  );
+}
+
+/** Label + big number. Clickable when it acts as a filter and the number is ready. */
+export function StatCard({ label, value, tone = "grey", selected = false, highlight = false, note, state = "ready", onClick, className }: StatCardProps) {
+  const interactive = Boolean(onClick) && state === "ready";
   const body = (
     <>
       <span className={cx("block text-small font-bold", labelTone[tone])}>{label}</span>
-      <span className="mt-0.5 block text-[26px] font-extrabold leading-tight tabular-nums text-ink">{value}</span>
+      {state === "loading" ? (
+        <span aria-hidden="true" className="mt-1.5 block h-7 w-24 animate-pulse rounded bg-track" />
+      ) : state === "error" ? (
+        <span className="mt-0.5 block text-[26px] font-extrabold leading-tight text-ink">—</span>
+      ) : (
+        <FittedValue>{value}</FittedValue>
+      )}
+      {state !== "loading" && note && <span className="mt-0.5 block text-small text-ink-muted">{note}</span>}
     </>
   );
   const frame = cx(
-    "block w-full rounded-card border bg-card px-4 py-3.5 text-left font-ui md:px-5",
-    selected ? "border-primary ring-1 ring-primary" : "border-line",
+    "block w-full min-w-0 rounded-card border px-4 py-3.5 text-left font-ui md:px-5",
+    highlight ? "bg-gold-soft" : "bg-card",
+    selected && state === "ready" ? "border-primary ring-1 ring-primary" : highlight ? "border-gold-line" : "border-line",
     className,
   );
-  return onClick ? (
+  return interactive ? (
     <button
       type="button"
       aria-pressed={selected}
@@ -46,7 +113,7 @@ export function StatCard({ label, value, tone = "grey", selected = false, onClic
       {body}
     </button>
   ) : (
-    <div className={frame}>{body}</div>
+    <div className={frame} aria-busy={state === "loading" || undefined}>{body}</div>
   );
 }
 

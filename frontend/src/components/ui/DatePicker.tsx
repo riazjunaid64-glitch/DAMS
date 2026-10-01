@@ -179,7 +179,7 @@ export function DatePicker({
     </>
   );
 
-  if (isFilter) return <div className={cx("relative min-w-[190px] font-ui", className)}>{picker}</div>;
+  if (isFilter) return <div className={cx("relative min-w-0 font-ui", className)}>{picker}</div>;
 
   return (
     <FieldShell

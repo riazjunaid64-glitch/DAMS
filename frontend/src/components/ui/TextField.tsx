@@ -41,18 +41,20 @@ export function TextField({ ref, label, required, helper, error, prefix, suffix,
 }
 
 export type NumberFieldProps = Omit<TextFieldProps, "value" | "onChange" | "type" | "defaultValue"> & {
-  /** The raw number as typed, without separators ("1000000.5"). */
+  /** The raw number as typed, without separators ("1000000.5", or "-1200000" when negatives are allowed). */
   value: string;
   onChange: (value: string) => void;
   /** Digits allowed after the point; 0 for whole numbers. */
   decimals?: number;
+  /** Keeps one leading minus ("-1,200,000"). Off by default, so other fields still refuse a minus. */
+  allowNegative?: boolean;
 };
 
 /**
  * A number shown with thousands separators ("1,000,000") while the caller keeps the raw string.
  * The value is never parsed or rounded here, so amounts stay exact.
  */
-export function NumberField({ value, onChange, decimals = 2, ...rest }: NumberFieldProps) {
+export function NumberField({ value, onChange, decimals = 2, allowNegative = false, ...rest }: NumberFieldProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const caret = useRef<number | null>(null);
   const shown = groupThousands(value);
@@ -68,13 +70,13 @@ export function NumberField({ value, onChange, decimals = 2, ...rest }: NumberFi
     <TextField
       {...rest}
       ref={inputRef}
-      inputMode={decimals > 0 ? "decimal" : "numeric"}
+      inputMode={allowNegative ? "text" : decimals > 0 ? "decimal" : "numeric"}
       value={shown}
       onChange={(event) => {
         const { value: typed, selectionStart } = event.target;
         const before = typed.slice(0, selectionStart ?? typed.length);
-        caret.current = cleanNumber(before, decimals).length;
-        onChange(cleanNumber(typed, decimals));
+        caret.current = cleanNumber(before, decimals, allowNegative).length;
+        onChange(cleanNumber(typed, decimals, allowNegative));
       }}
     />
   );

@@ -15,10 +15,14 @@ import {
   EmptyState,
   FilterBar,
   IconAlert,
+  IconArrowDown,
   IconArrowRight,
+  IconArrowUp,
   IconCircle,
+  IconDownload,
   IconFilter,
   IconInbox,
+  IconPaperclip,
   IconPlus,
   InfoCard,
   KeyValueGrid,
@@ -43,8 +47,11 @@ import {
   Toggle,
   useToast,
   type FilterValues,
+  type PeriodPreset,
   type Photo,
 } from "../components/ui";
+import { buildPeriodRange } from "../lib/financePeriods.ts";
+import { usePagedList } from "../lib/usePagedList.ts";
 
 /*
  * Internal preview of the shared component library with dummy data, like the design package's
@@ -164,6 +171,14 @@ function ButtonSection() {
             <Button iconOnly variant="outline" icon={<IconFilter size={18} />} aria-label="Filters" />
           </div>
         </Sample>
+        <Sample label="Download, up, down, paperclip">
+          <div className="flex items-center gap-3 text-ink">
+            <IconDownload size={24} />
+            <IconArrowUp size={24} />
+            <IconArrowDown size={24} />
+            <IconPaperclip size={24} />
+          </div>
+        </Sample>
       </div>
       <div className={row}>
         <Sample label="Small 34"><Button size="sm">Button</Button></Sample>
@@ -227,7 +242,47 @@ function SearchSection() {
           onAdd={() => {}}
         />
       </Sample>
+      <Sample label="Date range and Period — five filters on one line; Reset only when one is set">
+        <PeriodFilterSample />
+      </Sample>
+      <Sample label="Financial year still loading">
+        <LoadingYearSample />
+      </Sample>
     </Section>
+  );
+}
+
+const PERIOD_NOW = new Date(2026, 6, 15);
+const periodRangeFor = (preset: Exclude<PeriodPreset, "custom">) => buildPeriodRange(preset, 7, PERIOD_NOW);
+
+function PeriodFilterSample() {
+  const [search, setSearch] = useState("");
+  const [values, setValues] = useState<FilterValues>({ from: "", to: "", status: "", type: "" });
+  return (
+    <FilterBar
+      search={{ value: search, onSearch: setSearch, placeholder: "Search" }}
+      filters={[
+        { type: "period", key: "period", fromKey: "from", toKey: "to", rangeFor: periodRangeFor, financialYear: "ready" },
+        { type: "dateRange", fromKey: "from", toKey: "to", max: "2026-09-29" },
+        { type: "select", key: "status", label: "Status", options: OPTIONS.slice(0, 3) },
+        { type: "select", key: "type", label: "Type", options: OPTIONS.slice(0, 3) },
+      ]}
+      values={values}
+      onChange={(changes) => setValues((current) => ({ ...current, ...changes }))}
+      onReset={() => { setSearch(""); setValues({ from: "", to: "", status: "", type: "" }); }}
+    />
+  );
+}
+
+function LoadingYearSample() {
+  const [values, setValues] = useState<FilterValues>({ from: "", to: "" });
+  return (
+    <FilterBar
+      filters={[{ type: "period", key: "period", fromKey: "from", toKey: "to", rangeFor: periodRangeFor, financialYear: "loading" }]}
+      values={values}
+      onChange={(changes) => setValues((current) => ({ ...current, ...changes }))}
+      onReset={() => setValues({ from: "", to: "" })}
+    />
   );
 }
 
@@ -243,8 +298,27 @@ function PaginationSection() {
           <Sample label="Desktop · middle page"><Pagination page={middle} onPageChange={setMiddle} totalCount={200} /></Sample>
         </div>
         <Sample label="Phone · load more"><LoadMore shown={shown} total={200} onLoadMore={() => setShown((n) => Math.min(n + 20, 200))} /></Sample>
+        <Sample label="Paged list hook — numbers on desktop, Load more on a phone"><PagedListSample /></Sample>
       </div>
     </Section>
+  );
+}
+
+function PagedListSample() {
+  const list = usePagedList({
+    queryKey: "preview",
+    fetchPage: async ({ skip, take }) => {
+      const totalCount = 64;
+      const items = Array.from({ length: Math.min(take, Math.max(0, totalCount - skip)) }, (_, index) => ({ id: skip + index + 1 }));
+      return { items, totalCount, hasMore: skip + items.length < totalCount };
+    },
+  });
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="m-0 text-small text-ink-muted">{list.loading && list.rows.length === 0 ? "Loading…" : `Rows ${list.rows.length ? `${list.rows[0]!.id}–${list.rows[list.rows.length - 1]!.id}` : "none"}`}</p>
+      <div className="hidden md:block"><Pagination {...list.pagination} itemLabel="entries" /></div>
+      <div className="md:hidden"><LoadMore {...list.loadMoreBar} /></div>
+    </div>
   );
 }
 
@@ -281,8 +355,32 @@ function AttachProofStates() {
       <AttachProof file={null} error="That file is over 15 MB. Choose a smaller one." onPick={() => {}} />
       <AttachProof file={{ name: "transfer-slip.jpg", size: 1000 }} progress={60} onPick={() => {}} onRemove={() => {}} />
       <AttachProof file={{ name: "transfer-slip-from-the-bank-on-the-first-of-the-month.jpg", size: 240 * 1024, uploaded: true, onOpen: () => {} }} onPick={() => {}} onRemove={() => {}} />
+      <SavedProofSample />
     </>
   );
+}
+
+function SavedProofSample() {
+  return (
+    <AttachProof
+      label="Saved proof"
+      file={{
+        name: "development-charges-receipt.pdf",
+        size: 220 * 1024,
+        uploaded: true,
+        onOpen: () => {},
+        onDownload: () => {},
+      }}
+      onPick={() => {}}
+      onReplace={() => {}}
+      onPendingRemove={() => {}}
+    />
+  );
+}
+
+function NegativeAmountSample() {
+  const [value, setValue] = useState("-1200000");
+  return <NumberField label="Opening balance" prefix="Rs" allowNegative value={value} onChange={setValue} decimals={0} />;
 }
 
 function FieldsSection() {
@@ -303,6 +401,7 @@ function FieldsSection() {
         <TextField label="Label" defaultValue="Dummy value" disabled />
         <NumberField label="Amount" prefix="Rs" value={amount} onChange={setAmount} />
         <NumberField label="Size" suffix="sq ft" value={size} onChange={setSize} decimals={0} />
+        <NegativeAmountSample />
         <DatePickerStates />
         <TimePickerStates />
         <TextArea label="Notes" placeholder="Write something…" className="sm:col-span-2" />
@@ -347,6 +446,10 @@ function StatSection() {
         <Sample label="Stat card"><StatCard label="Label" value={100} /></Sample>
         <Sample label="Stat card · selected (acts as filter)"><StatCard label="Label" value={100} selected={selected} onClick={() => setSelected((v) => !v)} /></Sample>
         <Sample label="Coloured label"><StatCard label="Label" value={60} tone="green" /></Sample>
+        <Sample label="Note"><StatCard label="Balance" value="Rs 12,450,000" note="As of today" /></Sample>
+        <Sample label="Highlight"><StatCard label="Needs attention" value="Rs 80,000" highlight note="As of today" /></Sample>
+        <Sample label="Loading"><StatCard label="Balance" value="Rs 0" state="loading" /></Sample>
+        <Sample label="Error"><StatCard label="Balance" value="Rs 0" state="error" note="As of today" /></Sample>
         <Sample label="Info card (highlight)"><InfoCard highlight label="Label" value="Main value" detail="Small detail" /></Sample>
         <Sample label="Info card"><InfoCard label="Label" value="Main value" detail="Small detail" /></Sample>
       </div>
@@ -379,6 +482,7 @@ function CardSection() {
         </Sample>
         <Sample label="List card (tap to open, no button)">
           <ListCard reference="Item ID" status="Available" title="Item title" detail="Detail · Detail" value="Main value" onClick={() => {}} />
+          <ListCard reference="Item ID" status="Available" title="Selected item" detail="Navy border" value="Main value" selected onClick={() => {}} />
         </Sample>
       </div>
       <Sample label="Table (desktop lists)">
@@ -397,7 +501,61 @@ function CardSection() {
           phoneCard={(r) => <ListCard reference={`#${r.id}`} status={r.status} title={r.name} detail={r.sub} value={r.a} onClick={() => {}} />}
         />
       </Sample>
+      <Sample label="Group, subtotal and total">
+        <GroupedTable />
+      </Sample>
+      <Sample label="Loading — placeholders, then the rows stay on a refresh">
+        <LoadingTable />
+      </Sample>
     </Section>
+  );
+}
+
+type GroupRow = { id: string; kind?: "group" | "subtotal" | "total"; name: string; amount: string };
+
+const GROUP_ROWS: GroupRow[] = [
+  { id: "g", kind: "group", name: "Cash and bank", amount: "" },
+  { id: "1", name: "Petty cash", amount: "Rs 12,000" },
+  { id: "s", kind: "subtotal", name: "Subtotal", amount: "Rs 12,000" },
+  { id: "t", kind: "total", name: "Total", amount: "Rs 12,000" },
+];
+
+function GroupedTable() {
+  return (
+    <DataTable
+      rows={GROUP_ROWS}
+      rowKey={(row) => row.id}
+      columns={[
+        { key: "name", header: "Name", render: (row) => row.name },
+        { key: "amount", header: "Amount", align: "right", render: (row) => row.amount },
+      ]}
+      phoneCard={(row) => <ListCard title={row.name} value={row.amount} />}
+    />
+  );
+}
+
+function LoadingTable() {
+  const [mode, setMode] = useState<"loading" | "ready" | "refresh">("loading");
+  return (
+    <div className="flex flex-col gap-3">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setMode((current) => current === "loading" ? "ready" : current === "ready" ? "refresh" : "ready")}
+      >
+        {mode === "loading" ? "Show rows" : mode === "ready" ? "Refresh" : "Done"}
+      </Button>
+      <DataTable
+        loading={mode !== "ready"}
+        rows={mode === "loading" ? [] : GROUP_ROWS}
+        rowKey={(row) => row.id}
+        columns={[
+          { key: "name", header: "Name", render: (row) => row.name },
+          { key: "amount", header: "Amount", align: "right", render: (row) => row.amount },
+        ]}
+        phoneCard={(row) => <ListCard title={row.name} value={row.amount} />}
+      />
+    </div>
   );
 }
 

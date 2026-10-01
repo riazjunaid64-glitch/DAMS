@@ -19,6 +19,14 @@ describe("cleanNumber", () => {
     expect(cleanNumber("0", 2)).toBe("0");
     expect(cleanNumber("0.5", 2)).toBe("0.5");
   });
+  it("refuses a minus unless the field asks for one", () => {
+    expect(cleanNumber("-1200000", 0)).toBe("1200000");
+    expect(cleanNumber("-1,200,000", 0, true)).toBe("-1200000");
+    expect(cleanNumber("-", 2, true)).toBe("-");
+    expect(cleanNumber("--12", 0, true)).toBe("-12");
+    expect(cleanNumber("12-3", 0, true)).toBe("123");
+    expect(cleanNumber("-0.5", 2, true)).toBe("-0.5");
+  });
 });
 
 describe("groupThousands", () => {
@@ -27,6 +35,8 @@ describe("groupThousands", () => {
     expect(groupThousands("1234.5")).toBe("1,234.5");
     expect(groupThousands("999")).toBe("999");
     expect(groupThousands("")).toBe("");
+    expect(groupThousands("-1200000")).toBe("-1,200,000");
+    expect(groupThousands("-")).toBe("-");
   });
 });
 
@@ -36,5 +46,7 @@ describe("caretAfter", () => {
     expect(caretAfter("1,000", 1)).toBe(1);
     expect(caretAfter("1,000", 0)).toBe(0);
     expect(caretAfter("1,000", 9)).toBe(5);
+    expect(caretAfter("-1,200,000", 5)).toBe(6);
+    expect(caretAfter("-", 1)).toBe(1);
   });
 });

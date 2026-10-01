@@ -17,7 +17,9 @@ export { Dropdown, type DropdownOption, type DropdownProps } from "./Dropdown.ts
 
 // 04 Search bar
 export { SearchBar, type SearchBarProps } from "./SearchBar.tsx";
-export { FilterBar, type FilterBarProps, type FilterDef, type FilterValues } from "./FilterBar.tsx";
+export { FilterBar, type FilterBarProps, type FilterDef, type FilterValues, type FinancialYearStatus, type PeriodPreset, type PeriodRange } from "./FilterBar.tsx";
+export { activeFilterCount } from "./filterCount.ts";
+export { financeRangeError } from "./dateRange.ts";
 
 // 05 Pagination
 export { Pagination, LoadMore, type PaginationProps, type LoadMoreProps } from "./Pagination.tsx";
@@ -38,11 +40,11 @@ export { StatusBadge, type StatusBadgeProps } from "./StatusBadge.tsx";
 export { statusTone, statusLabel, type StatusTone } from "./statusTone.ts";
 
 // 08 Stat / info card
-export { StatCard, InfoCard, StatSummary, type StatCardProps, type InfoCardProps, type StatSummaryProps } from "./StatCard.tsx";
+export { StatCard, InfoCard, StatSummary, type StatCardProps, type StatCardState, type InfoCardProps, type StatSummaryProps } from "./StatCard.tsx";
 
 // 09 Card, list card, table
 export { Card, KeyValueGrid, ListCard, type CardProps, type KeyValueItem, type ListCardProps } from "./Card.tsx";
-export { DataTable, type DataTableColumn, type DataTableProps } from "./DataTable.tsx";
+export { DataTable, type DataTableColumn, type DataTableProps, type DataTableRowKind } from "./DataTable.tsx";
 
 // 10 Tabs
 export { Tabs, type TabItem, type TabsProps } from "./Tabs.tsx";

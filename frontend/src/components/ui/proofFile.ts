@@ -63,3 +63,19 @@ export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/** "PDF", "Photo", "Word" or "Excel" — the word shown beside the size on a saved file. */
+export function proofKindLabel(name: string): string {
+  const ext = extensionOf(name);
+  if (ext === ".pdf") return "PDF";
+  if (IMAGE_EXTENSIONS.includes(ext)) return "Photo";
+  if (ext === ".doc" || ext === ".docx") return "Word";
+  if (ext === ".xls" || ext === ".xlsx") return "Excel";
+  return "File";
+}
+
+/** "PDF · 220 KB", "Photo · 1.2 MB". The kind alone when the size is unknown. */
+export function proofFileDetail(name: string, size?: number): string {
+  const kind = proofKindLabel(name);
+  return size === undefined ? kind : `${kind} · ${formatFileSize(size)}`;
+}

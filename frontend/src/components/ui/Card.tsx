@@ -62,13 +62,16 @@ export type ListCardProps = {
   to?: string;
   /** …or runs this. */
   onClick?: () => void;
+  /** Navy border, the same selected treatment as StatCard. For a phone list item that is open beside the list. */
+  selected?: boolean;
   className?: string;
 };
 
 /** A list item as a card; the whole card is the tap target (no Details button). */
-export function ListCard({ reference, status, badge, title, detail, value, to, onClick, className }: ListCardProps) {
+export function ListCard({ reference, status, badge, title, detail, value, to, onClick, selected = false, className }: ListCardProps) {
   const frame = cx(
-    "block w-full rounded-card border border-line bg-card p-4 text-left font-ui text-ink no-underline transition-colors",
+    "block w-full rounded-card border bg-card p-4 text-left font-ui text-ink no-underline transition-colors",
+    selected ? "border-primary ring-1 ring-primary" : "border-line",
     (to || onClick) && "cursor-pointer hover:border-ink-faint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
     className,
   );
@@ -85,7 +88,7 @@ export function ListCard({ reference, status, badge, title, detail, value, to, o
       {value && <span className="mt-3 block border-t border-line-soft pt-2.5 text-body font-extrabold text-ink">{value}</span>}
     </>
   );
-  if (to) return <Link to={to} className={frame}>{body}</Link>;
-  if (onClick) return <button type="button" onClick={onClick} className={frame}>{body}</button>;
-  return <div className={frame}>{body}</div>;
+  if (to) return <Link to={to} aria-current={selected ? "true" : undefined} className={frame}>{body}</Link>;
+  if (onClick) return <button type="button" aria-pressed={selected} onClick={onClick} className={frame}>{body}</button>;
+  return <div className={frame} aria-current={selected ? "true" : undefined}>{body}</div>;
 }
