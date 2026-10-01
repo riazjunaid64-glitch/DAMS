@@ -15,14 +15,18 @@ namespace DAMS.Application.Services
             CustomerDocumentActor? actor,
             CancellationToken cancellationToken = default)
         {
-            var existingCategoryIds = await context.CustomerDocumentRequirements
-                .Where(r => r.CustomerId == customer.Id && r.CategoryId != null)
-                .Select(r => r.CategoryId!.Value)
-                .ToListAsync(cancellationToken);
-            var existing = existingCategoryIds.ToHashSet();
+            if (customer.Status == CustomerStatus.Blocked)
+                return;
+
+            var existing = customer.Id == 0
+                ? []
+                : (await context.CustomerDocumentRequirements
+                    .Where(r => r.CustomerId == customer.Id && r.CategoryId != null)
+                    .Select(r => r.CategoryId!.Value)
+                    .ToListAsync(cancellationToken)).ToHashSet();
             var categories = await context.CustomerDocumentCategories
-                .Where(c => c.IsActive && c.AssignToNewCustomers && !existing.Contains(c.Id))
-                .OrderBy(c => c.DisplayOrder)
+                .Where(c => c.AsksEveryCustomer && !c.IsHidden && !c.IsOther && !existing.Contains(c.Id))
+                .OrderBy(c => c.Id)
                 .ToListAsync(cancellationToken);
 
             var now = DateTime.UtcNow;
@@ -67,9 +71,9 @@ namespace DAMS.Application.Services
             Category = category,
             CategoryId = category.Id,
             Name = category.Name,
-            Description = category.Description,
-            IsRequired = category.IsRequiredByDefault,
-            DisplayOrder = category.DisplayOrder,
+            IsRequired = true,
+            DisplayOrder = category.Id,
+            IsSuppressed = false,
             Status = CustomerDocumentStatus.Needed,
             LastActionByUserId = actor?.UserId,
             LastActionByName = actor?.DisplayName ?? "System",

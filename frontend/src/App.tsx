@@ -203,8 +203,9 @@ function App() {
             <Route path="/application-form" element={<ApplicationFormPage user={user} />} />
             <Route path="/receipt/:bookingId/:paymentId" element={<ReceiptPage user={user} />} />
             <Route path="/customers" element={<CustomersPage user={user} />} />
+            <Route path="/customers/document-setup" element={<CustomerDocumentCategoriesPage user={user} />} />
             <Route path="/customers/:id" element={<CustomerDetailPage user={user} />} />
-            <Route path="/customer-document-categories" element={<CustomerDocumentCategoriesPage user={user} />} />
+            <Route path="/customer-document-categories" element={<Navigate to="/customers/document-setup" replace />} />
             <Route path="/employees" element={<EmployeesPage user={user} />} />
             <Route path="/employees/:id" element={<EmployeeDetailPage user={user} />} />
             <Route path="/finance" element={<FinanceDashboardPage user={user} />} />

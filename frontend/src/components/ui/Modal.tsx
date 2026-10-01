@@ -22,6 +22,8 @@ export type ModalProps = {
   cancelLabel?: ReactNode;
   /** Replaces the generated footer; `null` removes it. */
   footer?: ReactNode;
+  /** Sits on the left of Cancel and the primary button. On a phone it stacks under them. */
+  footerLeading?: ReactNode;
   /** Blocks closing while work is in flight. */
   busy?: boolean;
 };

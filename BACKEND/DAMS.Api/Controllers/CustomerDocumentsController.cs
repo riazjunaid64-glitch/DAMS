@@ -3,6 +3,7 @@ using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDocumentDtos;
 using DAMS.Application.Interfaces;
 using DAMS.Application.Services;
+using DAMS.Api.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +13,7 @@ namespace DAMS.Api.Controllers
 {
     [ApiController]
     [Route("api/customer-documents")]
-    [Authorize(Roles = AppRoles.AdminOrAccountant)]
+    [Authorize(Policy = DamsPolicies.Customers)]
     public class CustomerDocumentsController : ControllerBase
     {
         private readonly ICustomerDocumentService _documents;
@@ -23,24 +24,24 @@ namespace DAMS.Api.Controllers
         }
 
         [HttpGet("categories")]
-        public Task<IActionResult> GetCategories([FromQuery] bool includeInactive = false, CancellationToken cancellationToken = default) =>
-            RunAsync(() => _documents.GetCategoriesAsync(includeInactive, cancellationToken));
+        public Task<IActionResult> GetSetup(CancellationToken cancellationToken = default) =>
+            RunAsync(() => _documents.GetSetupAsync(cancellationToken));
 
         [HttpPost("categories")]
-        public Task<IActionResult> CreateCategory([FromBody] CreateCustomerDocumentCategoryDto dto, CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.CreateCategoryAsync(dto, Actor(), cancellationToken));
+        public Task<IActionResult> CreateDocument([FromBody] SaveDocumentNameDto dto, CancellationToken cancellationToken) =>
+            RunAsync(() => _documents.CreateDocumentAsync(dto, Actor(), cancellationToken));
 
         [HttpPut("categories/{id:int}")]
-        public Task<IActionResult> UpdateCategory(int id, [FromBody] UpdateCustomerDocumentCategoryDto dto, CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.UpdateCategoryAsync(id, dto, Actor(), cancellationToken));
+        public Task<IActionResult> RenameDocument(int id, [FromBody] SaveDocumentNameDto dto, CancellationToken cancellationToken) =>
+            RunAsync(() => _documents.RenameDocumentAsync(id, dto, Actor(), cancellationToken));
 
         [HttpDelete("categories/{id:int}")]
-        public async Task<IActionResult> DeleteCategory(int id, CancellationToken cancellationToken)
+        public async Task<IActionResult> RemoveDocument(int id, CancellationToken cancellationToken)
         {
             try
             {
-                await _documents.DeleteCategoryAsync(id, Actor(), cancellationToken);
-                return Ok(new { message = "Document category deleted." });
+                await _documents.RemoveDocumentAsync(id, Actor(), cancellationToken);
+                return Ok(new { message = "Document removed." });
             }
             catch (Exception ex) when (IsExpected(ex))
             {
@@ -48,9 +49,9 @@ namespace DAMS.Api.Controllers
             }
         }
 
-        [HttpPost("categories/{id:int}/assign")]
-        public Task<IActionResult> AssignCategory(int id, [FromBody] AssignCustomerDocumentCategoryDto dto, CancellationToken cancellationToken) =>
-            RunAsync(() => _documents.AssignCategoryAsync(id, dto, Actor(), cancellationToken));
+        [HttpPut("categories/{id:int}/ask-every-customer")]
+        public Task<IActionResult> SetAsksEveryCustomer(int id, [FromBody] AskEveryCustomerDto dto, CancellationToken cancellationToken) =>
+            RunAsync(() => _documents.SetAsksEveryCustomerAsync(id, dto.AsksEveryCustomer, Actor(), cancellationToken));
 
         [HttpGet("customers/{customerId:int}")]
         public Task<IActionResult> GetChecklist(int customerId, CancellationToken cancellationToken) =>

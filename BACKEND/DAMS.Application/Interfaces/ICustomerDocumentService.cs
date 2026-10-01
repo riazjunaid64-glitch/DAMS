@@ -6,11 +6,11 @@ namespace DAMS.Application.Interfaces
 {
     public interface ICustomerDocumentService
     {
-        Task<List<CustomerDocumentCategoryDto>> GetCategoriesAsync(bool includeInactive, CancellationToken cancellationToken = default);
-        Task<CustomerDocumentCategoryDto> CreateCategoryAsync(CreateCustomerDocumentCategoryDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
-        Task<CustomerDocumentCategoryDto> UpdateCategoryAsync(int id, UpdateCustomerDocumentCategoryDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
-        Task DeleteCategoryAsync(int id, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
-        Task<CustomerDocumentAssignmentResultDto> AssignCategoryAsync(int id, AssignCustomerDocumentCategoryDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
+        Task<DocumentSetupListDto> GetSetupAsync(CancellationToken cancellationToken = default);
+        Task<DocumentSetupItemDto> CreateDocumentAsync(SaveDocumentNameDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
+        Task<DocumentSetupItemDto> RenameDocumentAsync(int id, SaveDocumentNameDto dto, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
+        Task RemoveDocumentAsync(int id, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
+        Task<DocumentSetupItemDto> SetAsksEveryCustomerAsync(int id, bool asksEveryCustomer, CustomerDocumentActor actor, CancellationToken cancellationToken = default);
         Task<CustomerDocumentChecklistDto> GetChecklistAsync(int customerId, CancellationToken cancellationToken = default);
         Task<PagedResult<CustomerDocumentAuditDto>> GetHistoryAsync(int customerId, int? beforeId, int take, CancellationToken cancellationToken = default);
         Task<PagedResult<CustomerDocumentVersionDto>> GetVersionsAsync(int customerId, int requirementId,

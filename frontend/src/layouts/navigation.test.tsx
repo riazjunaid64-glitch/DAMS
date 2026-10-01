@@ -30,6 +30,7 @@ describe("navigationFor", () => {
     for (const role of ["Admin", "Accountant", "Sales manager", "Sales employee", "Client"]) {
       expect(labels(role)).not.toContain("Document setup");
       expect(items(role).map((item) => item.to)).not.toContain("/customer-document-categories");
+      expect(items(role).map((item) => item.to)).not.toContain("/customers/document-setup");
     }
   });
 });

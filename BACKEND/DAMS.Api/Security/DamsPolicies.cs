@@ -1,3 +1,5 @@
+using System.Security.Claims;
+using DAMS.Application.Common;
 using DAMS.Application.Services;
 using Microsoft.AspNetCore.Authorization;
 
@@ -18,12 +20,24 @@ namespace DAMS.Api.Security
         /// </summary>
         public const string VerifiedClient = "VerifiedClient";
 
+        /// <summary>Admin and Accountant, via the customers capability. Not a role-name check at the controller.</summary>
+        public const string Customers = "customers";
+
         public static void AddDamsPolicies(this AuthorizationOptions options)
         {
             options.AddPolicy(VerifiedClient, policy => policy
                 .RequireAuthenticatedUser()
                 .RequireRole("Client")
                 .RequireClaim(TokenService.EmailVerifiedClaimType, "true"));
+
+            options.AddPolicy(Customers, policy => policy
+                .RequireAuthenticatedUser()
+                .RequireAssertion(context =>
+                {
+                    var roles = context.User.FindAll(ClaimTypes.Role).Select(claim => claim.Value)
+                        .Concat(context.User.FindAll("role").Select(claim => claim.Value));
+                    return roles.Any(role => AppCapabilities.Can(role, AppCapabilities.Customers));
+                }));
         }
     }
 }

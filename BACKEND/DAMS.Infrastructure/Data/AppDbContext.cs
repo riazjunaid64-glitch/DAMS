@@ -440,26 +440,23 @@ namespace DAMS.Infrastructure.Data
             modelBuilder.Entity<CustomerDocumentCategory>(entity =>
             {
                 entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
-                entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
-                entity.Property(c => c.Description).HasMaxLength(1000);
                 entity.Property(c => c.CreatedByName).HasMaxLength(200);
                 entity.Property(c => c.RowVersion).IsRowVersion();
 
-                entity.HasIndex(c => c.Code).IsUnique();
-                entity.HasIndex(c => new { c.IsActive, c.DisplayOrder });
-                entity.HasIndex(c => c.AssignToNewCustomers);
+                entity.HasIndex(c => c.Name).IsUnique();
+                entity.HasIndex(c => c.AsksEveryCustomer);
 
                 var seededAt = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc);
                 entity.HasData(
-                    SeedDocumentCategory(1, "CNIC Front", "cnic_front", true, 10, seededAt),
-                    SeedDocumentCategory(2, "CNIC Back", "cnic_back", true, 20, seededAt),
-                    SeedDocumentCategory(3, "Customer Photograph", "customer_photo", true, 30, seededAt),
-                    SeedDocumentCategory(4, "Proof of Address", "proof_of_address", false, 40, seededAt),
-                    SeedDocumentCategory(5, "Passport", "passport", false, 50, seededAt),
-                    SeedDocumentCategory(6, "Next-of-Kin CNIC", "next_of_kin_cnic", false, 60, seededAt),
-                    SeedDocumentCategory(7, "Signature Specimen", "signature_specimen", false, 70, seededAt),
-                    SeedDocumentCategory(8, "Tax Document", "tax_document", false, 80, seededAt),
-                    SeedDocumentCategory(9, "Other", "other", false, 90, seededAt));
+                    SeedDocumentCategory(1, "CNIC Front", asksEveryCustomer: true, seededAt),
+                    SeedDocumentCategory(2, "CNIC Back", asksEveryCustomer: true, seededAt),
+                    SeedDocumentCategory(3, "Customer Photograph", asksEveryCustomer: true, seededAt),
+                    SeedDocumentCategory(4, "Proof of Address", asksEveryCustomer: false, seededAt),
+                    SeedDocumentCategory(5, "Passport", asksEveryCustomer: false, seededAt),
+                    SeedDocumentCategory(6, "Next-of-Kin CNIC", asksEveryCustomer: false, seededAt),
+                    SeedDocumentCategory(7, "Signature Specimen", asksEveryCustomer: false, seededAt),
+                    SeedDocumentCategory(8, "Tax Document", asksEveryCustomer: false, seededAt),
+                    SeedDocumentCategory(9, "Other", asksEveryCustomer: false, seededAt, isOther: true));
             });
 
             modelBuilder.Entity<CustomerDocumentRequirement>(entity =>
@@ -1852,15 +1849,12 @@ namespace DAMS.Infrastructure.Data
                 e.State is EntityState.Added or EntityState.Deleted or EntityState.Modified);
 
         private static CustomerDocumentCategory SeedDocumentCategory(
-            int id, string name, string code, bool required, int order, DateTime createdAt) => new()
+            int id, string name, bool asksEveryCustomer, DateTime createdAt, bool isOther = false) => new()
         {
             Id = id,
             Name = name,
-            Code = code,
-            IsRequiredByDefault = required,
-            DisplayOrder = order,
-            IsActive = true,
-            AssignToNewCustomers = true,
+            AsksEveryCustomer = asksEveryCustomer,
+            IsOther = isOther,
             CreatedAt = createdAt
         };
 

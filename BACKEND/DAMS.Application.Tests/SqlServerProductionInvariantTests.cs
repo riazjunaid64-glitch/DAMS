@@ -129,18 +129,17 @@ public sealed class SqlServerProductionInvariantTests
         {
             var documents = new CustomerDocumentService(failing, new NullPrivateStorage(),
                 NullLogger<CustomerDocumentService>.Instance);
-            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.CreateCategoryAsync(
-                new CreateCustomerDocumentCategoryDto
-                {
-                    Name = "Atomic category", Code = "atomic_sql", IsRequiredByDefault = true,
-                    AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
-                }, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
+            var created = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Atomic category" },
+                new CustomerDocumentActor(Actor.UserId, Actor.DisplayName));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.SetAsksEveryCustomerAsync(
+                created.Id, true, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
         }
         await using (var verify = new AppDbContext(options))
         {
-            Assert.False(await verify.CustomerDocumentCategories.AnyAsync(c => c.Code == "atomic_sql"));
-            Assert.False(await verify.CustomerDocumentRequirements.AnyAsync(r => r.Category != null
-                && r.Category.Code == "atomic_sql"));
+            var category = await verify.CustomerDocumentCategories.SingleAsync(c => c.Name == "Atomic category");
+            Assert.False(category.AsksEveryCustomer);
+            Assert.False(await verify.CustomerDocumentRequirements.AnyAsync(r => r.CategoryId == category.Id));
 
             verify.BookingCommissions.Add(Commission(bookingId, partnerId, BookingCommissionStatus.Pending, 100m));
             await verify.SaveChangesAsync();
@@ -5647,14 +5646,11 @@ public sealed class SqlServerProductionInvariantTests
             var documents = new CustomerDocumentService(db, new NullPrivateStorage(),
                 NullLogger<CustomerDocumentService>.Instance);
             var actor = new CustomerDocumentActor(Actor.UserId, Actor.DisplayName);
-            var category = await documents.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
-            {
-                Name = "Retry probe proof", Code = "retry_probe_proof", IsRequiredByDefault = true,
-                AssignmentMode = CustomerDocumentAssignmentMode.SelectedCustomers,
-                SelectedCustomerIds = [customer.Id]
-            }, actor);
+            var category = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Retry probe proof" }, actor);
+            await documents.SetAsksEveryCustomerAsync(category.Id, true, actor);
 
-            // Assignment ran inside the create, so the requirement exists.
+            // The switch created the Needed copy.
             var requirement = await db.CustomerDocumentRequirements.AsNoTracking()
                 .SingleAsync(r => r.CategoryId == category.Id && r.CustomerId == customer.Id);
 
@@ -7653,6 +7649,132 @@ public sealed class SqlServerProductionInvariantTests
     }
 
     [SqlServerFact]
+    public async Task DocumentSetup_SwitchStartsOnOnlyForActiveRequired_AndOtherIsMarked()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20261001010833_CustomerDocumentsThreeStatuses");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES (N'Doc Setup', N'03001112233', 0, 0, '2020-01-01');
+                DECLARE @c int = SCOPE_IDENTITY();
+                INSERT INTO [CustomerDocumentRequirements]
+                    ([CustomerId], [Name], [IsRequired], [DisplayOrder], [Status], [CreatedAt], [UpdatedAt])
+                VALUES (@c, N'Kept', 1, 1, 0, '2020-01-01', '2020-01-01');
+
+                INSERT INTO [CustomerDocumentCategories]
+                    ([Name], [Code], [IsRequiredByDefault], [DisplayOrder], [IsActive], [AssignToNewCustomers], [CreatedAt])
+                VALUES
+                    (N'Active required', N'active_required', 1, 200, 1, 0, '2020-01-01'),
+                    (N'Active optional', N'active_optional', 0, 210, 1, 1, '2020-01-01'),
+                    (N'Inactive required', N'inactive_required', 1, 220, 0, 1, '2020-01-01'),
+                    (N'Twin', N'twin_a', 0, 230, 1, 0, '2020-01-01'),
+                    (N'Twin', N'twin_b', 0, 240, 1, 0, '2020-01-01'),
+                    (N'Twin (2)', N'twin_c', 0, 250, 1, 0, '2020-01-01');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.CustomerDocumentCategories.AsNoTracking().ToDictionaryAsync(c => c.Name);
+            Assert.True(rows["CNIC Front"].AsksEveryCustomer);
+            Assert.False(rows["CNIC Front"].IsOther);
+            Assert.False(rows["Passport"].AsksEveryCustomer);
+            Assert.True(rows["Other"].IsOther);
+            Assert.False(rows["Other"].AsksEveryCustomer);
+            Assert.True(rows["Active required"].AsksEveryCustomer);
+            Assert.False(rows["Active required"].IsHidden);
+            Assert.False(rows["Active optional"].AsksEveryCustomer);
+            Assert.False(rows["Inactive required"].AsksEveryCustomer);
+            Assert.False(rows["Inactive required"].IsHidden);
+            Assert.False(rows["Twin"].AsksEveryCustomer);
+            // The second Twin cannot become "Twin (2)": that name is already taken, so it moves to "Twin (3)".
+            Assert.True(rows.ContainsKey("Twin (2)"));
+            Assert.True(rows.ContainsKey("Twin (3)"));
+            Assert.Equal(3, rows.Keys.Count(name => name == "Twin" || name.StartsWith("Twin (", StringComparison.Ordinal)));
+
+            var kept = await db.CustomerDocumentRequirements.AsNoTracking().SingleAsync(r => r.Name == "Kept");
+            Assert.False(kept.IsSuppressed);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task RemoveUsedDocument_RollsBackEveryBatch_WhenALaterBatchFails()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int categoryId;
+        await using (var db = new AppDbContext(options))
+        {
+            var documents = new CustomerDocumentService(db, new NullPrivateStorage(),
+                NullLogger<CustomerDocumentService>.Instance);
+            var created = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Bulk passport" },
+                new CustomerDocumentActor(Actor.UserId, Actor.DisplayName));
+            categoryId = created.Id;
+
+            // 501 copies is one past the 500-row withdraw batch, so the second save is a later batch.
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                ;WITH [nums] AS (
+                    SELECT TOP (501) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [n]
+                    FROM sys.all_objects AS [a] CROSS JOIN sys.all_objects AS [b]
+                )
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                SELECT CONCAT(N'Remove ', [n]), CONCAT(N'0400', RIGHT(CONCAT(N'000000', [n]), 6)), 0, 0, '2020-01-01'
+                FROM [nums];
+
+                INSERT INTO [CustomerDocumentRequirements]
+                    ([CustomerId], [CategoryId], [Name], [IsRequired], [DisplayOrder], [Status], [CreatedAt], [UpdatedAt])
+                SELECT [c].[Id], {categoryId}, N'Bulk passport', 1, 1, 0, '2020-01-01', '2020-01-01'
+                FROM [Customers] AS [c]
+                WHERE [c].[FullName] LIKE N'Remove %';
+                """);
+        }
+
+        var interceptor = new FailLaterRemoveBatchInterceptor();
+        await using (var failing = new AppDbContext(Options(database.ConnectionString, interceptor)))
+        {
+            var documents = new CustomerDocumentService(failing, new NullPrivateStorage(),
+                NullLogger<CustomerDocumentService>.Instance);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.RemoveDocumentAsync(
+                categoryId, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
+            Assert.True(interceptor.FailedOnLaterBatch);
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var category = await verify.CustomerDocumentCategories.SingleAsync(c => c.Id == categoryId);
+            Assert.False(category.IsHidden);
+            Assert.False(category.AsksEveryCustomer);
+            var copies = await verify.CustomerDocumentRequirements.AsNoTracking()
+                .Where(r => r.CategoryId == categoryId)
+                .ToListAsync();
+            Assert.Equal(501, copies.Count);
+            Assert.All(copies, copy =>
+            {
+                Assert.False(copy.IsSuppressed);
+                Assert.True(copy.IsRequired);
+            });
+            Assert.False(await verify.CustomerDocumentAuditEntries.AnyAsync(a =>
+                a.CategoryId == categoryId
+                && a.Action == CustomerDocumentAction.CategoryDeactivated));
+            Assert.False(await verify.CustomerDocumentAuditEntries.AnyAsync(a =>
+                a.Notes != null && a.Notes.Contains("Removed. Customers who already have a file keep it.")));
+        }
+    }
+
+    [SqlServerFact]
     public async Task CreateCustomer_WithTheSamePhoneInParallel_CreatesOneCustomer()
     {
         await using var database = await SqlTestDatabase.CreateAsync();
@@ -7680,6 +7802,66 @@ public sealed class SqlServerProductionInvariantTests
         Assert.Single(results, created => created);
         await using var verify = new AppDbContext(options);
         Assert.Equal(1, await verify.Customers.CountAsync(c => c.NormalizedPhone == "3005550001"));
+    }
+
+    [SqlServerFact]
+    public async Task CreateCustomer_AfterATransientFailure_RetriesToOneCustomerWithDocumentDefaults()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        await using (var db = new AppDbContext(Options(database.ConnectionString)))
+            await db.Database.MigrateAsync();
+
+        // The first customer insert fails with an error the strategy is told to retry. The
+        // rolled-back attempt's customer and document rows stay tracked unless the retry drops
+        // them, and the second save would then insert a second customer.
+        var transient = new FailOnceTransientlyOnCustomerInsert();
+        var retrying = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlServer(database.ConnectionString, sql => sql.EnableRetryOnFailure(
+                3, TimeSpan.FromMilliseconds(10), [FailOnceTransientlyOnCustomerInsert.ErrorNumber]))
+            .AddInterceptors(transient)
+            .Options;
+
+        int customerId;
+        await using (var db = new AppDbContext(retrying))
+        {
+            var created = await new CustomerService(db).CreateCustomerAsync(
+                new CreateCustomerDto { FullName = "Retried customer", Phone = "0300-5550099" },
+                Actor.UserId, Actor.DisplayName);
+
+            Assert.True(transient.Failed);
+            customerId = created.Id;
+            var trackedCustomer = Assert.Single(db.ChangeTracker.Entries<Customer>());
+            Assert.Equal(customerId, trackedCustomer.Entity.Id);
+            Assert.Equal(EntityState.Unchanged, trackedCustomer.State);
+            Assert.DoesNotContain(db.ChangeTracker.Entries(), entry => entry.State == EntityState.Added);
+
+            var trackedRequirements = db.ChangeTracker.Entries<CustomerDocumentRequirement>()
+                .Select(entry => entry.Entity).ToList();
+            Assert.Equal(3, trackedRequirements.Count);
+            Assert.All(trackedRequirements, requirement =>
+            {
+                Assert.Equal(customerId, requirement.CustomerId);
+                Assert.Equal(EntityState.Unchanged, db.Entry(requirement).State);
+            });
+            Assert.Equal(3, db.ChangeTracker.Entries<CustomerDocumentAuditEntry>().Count());
+        }
+
+        await using (var verify = new AppDbContext(Options(database.ConnectionString)))
+        {
+            Assert.Equal(1, await verify.Customers.CountAsync());
+            var customer = await verify.Customers.SingleAsync();
+            Assert.Equal(customerId, customer.Id);
+            Assert.Equal("3005550099", customer.NormalizedPhone);
+
+            var requirements = await verify.CustomerDocumentRequirements.AsNoTracking()
+                .OrderBy(r => r.CategoryId)
+                .ToListAsync();
+            Assert.Equal(new[] { "CNIC Front", "CNIC Back", "Customer Photograph" },
+                requirements.Select(r => r.Name).ToArray());
+            Assert.All(requirements, requirement => Assert.Equal(customerId, requirement.CustomerId));
+            Assert.Equal(3, requirements.Select(r => r.CategoryId).Distinct().Count());
+            Assert.Equal(3, await verify.CustomerDocumentAuditEntries.CountAsync(a => a.CustomerId == customerId));
+        }
     }
 
     [SqlServerFact]
@@ -7760,6 +7942,38 @@ public sealed class SqlServerProductionInvariantTests
         await using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@id", id);
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    /// <summary>Turns the first customer insert into a SQL error the test's execution strategy is
+    /// told to treat as transient — a deadlock victim, in effect. The retry's insert is left alone.</summary>
+    private sealed class FailOnceTransientlyOnCustomerInsert : DbCommandInterceptor
+    {
+        public const int ErrorNumber = 50001;
+        public bool Failed { get; private set; }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            FailFirstCustomerInsert(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            FailFirstCustomerInsert(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void FailFirstCustomerInsert(DbCommand command)
+        {
+            if (!Failed && command.CommandText.Contains("INSERT INTO [Customers]", StringComparison.Ordinal))
+            {
+                Failed = true;
+                command.CommandText = $"THROW {ErrorNumber}, 'Simulated transient failure.', 1;";
+            }
+        }
     }
 
     /// <summary>Turns the first command that writes a lead's final reference into a SQL error the
@@ -7869,6 +8083,42 @@ public sealed class SqlServerProductionInvariantTests
             if (context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
                     .Any(entry => entry.State == EntityState.Added) == true)
                 throw new InvalidOperationException("Simulated SQL assignment persistence failure.");
+        }
+    }
+
+    /// <summary>
+    /// Lets the first withdraw batch save, then fails the next one. Inside a transaction the first
+    /// batch is uncommitted, so the failure rolls the hide and every copy back.
+    /// </summary>
+    private sealed class FailLaterRemoveBatchInterceptor : SaveChangesInterceptor
+    {
+        private int _withdrawSaves;
+        public bool FailedOnLaterBatch { get; private set; }
+
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            FailOnLaterBatch(eventData.Context);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            FailOnLaterBatch(eventData.Context);
+            return ValueTask.FromResult(result);
+        }
+
+        private void FailOnLaterBatch(DbContext? context)
+        {
+            var withdrawing = context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
+                .Any(entry => entry.State == EntityState.Modified && entry.Entity.IsSuppressed) == true;
+            if (!withdrawing)
+                return;
+            _withdrawSaves++;
+            if (_withdrawSaves < 2)
+                return;
+            FailedOnLaterBatch = true;
+            throw new InvalidOperationException("Simulated failure in a later remove batch.");
         }
     }
 

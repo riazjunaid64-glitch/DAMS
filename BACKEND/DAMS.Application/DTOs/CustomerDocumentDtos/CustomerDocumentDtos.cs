@@ -3,56 +3,28 @@ using System.ComponentModel.DataAnnotations;
 
 namespace DAMS.Application.DTOs.CustomerDocumentDtos
 {
-    public class CustomerDocumentCategoryDto
+    /// <summary>Document setup: the list, in fixed order, plus how many customers a switch would reach.</summary>
+    public class DocumentSetupListDto
+    {
+        public int NonBlockedCustomerCount { get; set; }
+        public List<DocumentSetupItemDto> Documents { get; set; } = [];
+    }
+
+    public class DocumentSetupItemDto
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
-        public string Code { get; set; } = string.Empty;
-        public string? Description { get; set; }
-        public bool IsRequiredByDefault { get; set; }
-        public int DisplayOrder { get; set; }
-        public bool IsActive { get; set; }
-        public bool AssignToNewCustomers { get; set; }
-        public int UsageCount { get; set; }
-        public DateTime CreatedAt { get; set; }
-        public DateTime? UpdatedAt { get; set; }
-        public string ConcurrencyToken { get; set; } = string.Empty;
+        public bool AsksEveryCustomer { get; set; }
     }
 
-    public class CreateCustomerDocumentCategoryDto
+    public class SaveDocumentNameDto
     {
         [Required, MaxLength(150)] public string Name { get; set; } = string.Empty;
-        [Required, MaxLength(80)] public string Code { get; set; } = string.Empty;
-        [MaxLength(1000)] public string? Description { get; set; }
-        public bool IsRequiredByDefault { get; set; }
-        [Range(0, 100000)] public int DisplayOrder { get; set; } = 100;
-        public CustomerDocumentAssignmentMode AssignmentMode { get; set; }
-        public List<int> SelectedCustomerIds { get; set; } = [];
     }
 
-    public class UpdateCustomerDocumentCategoryDto
+    public class AskEveryCustomerDto
     {
-        [Required, MaxLength(150)] public string Name { get; set; } = string.Empty;
-        [Required, MaxLength(80)] public string Code { get; set; } = string.Empty;
-        [MaxLength(1000)] public string? Description { get; set; }
-        public bool IsRequiredByDefault { get; set; }
-        [Range(0, 100000)] public int DisplayOrder { get; set; }
-        public bool IsActive { get; set; }
-        public bool AssignToNewCustomers { get; set; }
-        [Required] public string ConcurrencyToken { get; set; } = string.Empty;
-    }
-
-    public class AssignCustomerDocumentCategoryDto
-    {
-        public CustomerDocumentAssignmentMode AssignmentMode { get; set; }
-        public List<int> SelectedCustomerIds { get; set; } = [];
-    }
-
-    public class CustomerDocumentAssignmentResultDto
-    {
-        public int EligibleCustomers { get; set; }
-        public int AssignedCustomers { get; set; }
-        public int AlreadyAssignedCustomers { get; set; }
+        public bool AsksEveryCustomer { get; set; }
     }
 
     public class NotNeededDocumentDto

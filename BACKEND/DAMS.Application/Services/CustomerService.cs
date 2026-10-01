@@ -4,6 +4,7 @@ using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using DAMS.Application.Common;
 using Microsoft.Extensions.Logging;
@@ -39,21 +40,12 @@ namespace DAMS.Application.Services
                 await EnsureUniquePhoneAndCnicAsync(dto.Phone, dto.CNIC, excludeCustomerId: null);
                 var created = BuildCustomer(dto, createdByUserId);
                 _context.Customers.Add(created);
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch
-                {
-                    _context.Entry(created).State = EntityState.Detached;
-                    throw;
-                }
+                await SaveNewCustomerWithDocumentsAsync(created,
+                    createdByUserId.HasValue
+                        ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
+                        : null);
                 return created;
             });
-            await TryAssignDefaultDocumentsAsync(customer,
-                createdByUserId.HasValue
-                    ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
-                    : null);
 
             return await BuildResponseAsync(customer);
         }
@@ -93,8 +85,25 @@ namespace DAMS.Application.Services
         {
             if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
                 return await work();
+            return await ExecuteRetryingSerializableAsync(work);
+        }
+
+        /// <summary>
+        /// The strategy retries this delegate on the same context. A failed save leaves the customer
+        /// and document rows it added still tracked, and the next save would insert them again beside
+        /// the retry's own rows. Only what this attempt tracked is dropped, so a caller's earlier
+        /// entities stay.
+        /// </summary>
+        private async Task<T> ExecuteRetryingSerializableAsync<T>(Func<Task<T>> work)
+        {
+            var attempt = 0;
+            HashSet<object>? trackedBefore = null;
             return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
+                if (attempt++ > 0)
+                    DetachEntitiesTrackedSince(trackedBefore);
+                trackedBefore = _context.ChangeTracker.Entries().Select(entry => entry.Entity).ToHashSet();
+
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 var result = await work();
                 await transaction.CommitAsync();
@@ -291,16 +300,9 @@ namespace DAMS.Application.Services
             {
                 // Wrapped in an execution strategy because the DbContext has retry-on-failure
                 // enabled, which is incompatible with a bare BeginTransactionAsync.
-                var strategy = _context.Database.CreateExecutionStrategy();
-                return await strategy.ExecuteAsync(async () =>
-                {
-                    await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-                    var resolution = await FindOrCreateCustomerCoreAsync(
-                        fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
-                        fatherName, dateOfBirth, nationality, occupation, whatsapp);
-                    await transaction.CommitAsync();
-                    return resolution;
-                });
+                return await ExecuteRetryingSerializableAsync(() => FindOrCreateCustomerCoreAsync(
+                    fullName, phone, cnic, email, address, source, sourceNotes, createdByUserId,
+                    fatherName, dateOfBirth, nationality, occupation, whatsapp));
             }
 
             return await FindOrCreateCustomerCoreAsync(
@@ -412,8 +414,7 @@ namespace DAMS.Application.Services
             ApplyPhone(customer, phone);
 
             _context.Customers.Add(customer);
-            await _context.SaveChangesAsync();
-            await TryAssignDefaultDocumentsAsync(customer, null);
+            await SaveNewCustomerWithDocumentsAsync(customer, null);
 
             return new CustomerResolution(customer.Id, WasCreated: true);
         }
@@ -497,34 +498,166 @@ namespace DAMS.Application.Services
             return query;
         }
 
-        private async Task TryAssignDefaultDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
+        /// <summary>
+        /// Writes the customer and the documents whose switch is on in one save. If the document
+        /// rows cannot be written and the transaction is still usable, the customer is saved alone
+        /// and the background job fills the gap. A deadlock, any other transient failure, or an
+        /// aborted transaction is left for <see cref="RunSerializableAsync"/> to retry; saving
+        /// again on that transaction is what raised "Cannot issue SAVE TRANSACTION when there is
+        /// no active transaction."
+        /// </summary>
+        private async Task SaveNewCustomerWithDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
         {
+            var prepared = false;
             try
             {
-                await CustomerDocumentAssignment.ReconcileCustomerAsync(_context, customer, actor);
+                await CustomerDocumentAssignment.AddDefaultsForNewCustomerAsync(_context, customer, actor);
+                prepared = true;
+                await _context.SaveChangesAsync();
+                return;
+            }
+            catch (Exception ex) when (CanSaveCustomerWithoutDocuments(ex))
+            {
+                if (prepared)
+                    DetachAdvisoryDocuments(customer);
+                _logger.LogWarning(ex, prepared
+                    ? "Customer was created without its document defaults; reconciliation will retry."
+                    : "Document defaults could not be prepared; the customer is saved without them.");
+            }
+
+            try
+            {
                 await _context.SaveChangesAsync();
             }
-            catch (Exception ex)
+            catch
             {
-                // Documents are advisory. A missing table during a rolling deployment, a transient
-                // database failure, or an assignment conflict must never turn a committed customer
-                // (and therefore a booking) into a failed core workflow. Remove failed tracked rows so
-                // the scoped context can safely continue; the reconciliation worker retries later.
-                var advisoryEntries = _context.ChangeTracker.Entries()
-                             .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
-                             .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
-                             .ToList();
-                var failedRequirements = advisoryEntries.Select(e => e.Entity)
-                    .OfType<CustomerDocumentRequirement>().ToList();
-                foreach (var entry in advisoryEntries)
-                    entry.State = EntityState.Detached;
-                foreach (var requirement in failedRequirements)
-                    customer.DocumentRequirements.Remove(requirement);
-
-                _logger.LogWarning(ex,
-                    "Customer {CustomerId} was created without its advisory document defaults; reconciliation will retry.",
-                    customer.Id);
+                _context.Entry(customer).State = EntityState.Detached;
+                throw;
             }
+        }
+
+        /// <summary>
+        /// True only for a document failure that left this transaction committable. Transient SQL
+        /// errors are the execution strategy's to retry, and a transaction SQL Server has already
+        /// aborted cannot take another save.
+        /// </summary>
+        private bool CanSaveCustomerWithoutDocuments(Exception exception)
+        {
+            if (IsTransientDatabaseFailure(exception))
+                return false;
+            return TransactionRemainsUsable();
+        }
+
+        private bool IsTransientDatabaseFailure(Exception exception)
+        {
+            if (!_context.Database.IsRelational())
+                return false;
+
+            // The same rule the context's retrying strategy uses, including error numbers it was
+            // told to add. ShouldRetryOn is the supported extension point for that rule.
+            var configured = _context.Database.CreateExecutionStrategy() as SqlServerRetryingExecutionStrategy;
+            var probe = new TransientFailureProbe(_context, configured?.AdditionalErrorNumbers?.ToArray());
+            for (var current = exception; current != null; current = current.InnerException)
+            {
+                if (probe.IsTransient(current))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>Drops entities this attempt started tracking, and unhooks them from anything that stays.</summary>
+        private void DetachEntitiesTrackedSince(HashSet<object>? alreadyTracked)
+        {
+            var created = _context.ChangeTracker.Entries()
+                .Where(entry => alreadyTracked == null || !alreadyTracked.Contains(entry.Entity))
+                .Select(entry => entry.Entity)
+                .ToList();
+            if (created.Count == 0)
+                return;
+
+            var dropping = created.ToHashSet();
+            foreach (var audit in created.OfType<CustomerDocumentAuditEntry>())
+            {
+                if (audit.Requirement != null && !dropping.Contains(audit.Requirement))
+                    audit.Requirement.AuditEntries.Remove(audit);
+            }
+            foreach (var requirement in created.OfType<CustomerDocumentRequirement>())
+            {
+                if (requirement.Customer != null && !dropping.Contains(requirement.Customer))
+                    requirement.Customer.DocumentRequirements.Remove(requirement);
+                if (requirement.Category != null && !dropping.Contains(requirement.Category))
+                    requirement.Category.Requirements.Remove(requirement);
+            }
+
+            foreach (var entity in created.OfType<CustomerDocumentAuditEntry>())
+                Detach(entity);
+            foreach (var entity in created.OfType<CustomerDocumentRequirement>())
+                Detach(entity);
+            foreach (var entity in created.OfType<Customer>())
+                Detach(entity);
+            foreach (var entity in created)
+                Detach(entity);
+        }
+
+        private void Detach(object entity)
+        {
+            var entry = _context.Entry(entity);
+            if (entry.State != EntityState.Detached)
+                entry.State = EntityState.Detached;
+        }
+
+        /// <summary>
+        /// <see cref="SqlServerRetryingExecutionStrategy.ShouldRetryOn"/> is protected. This is how
+        /// a failure the strategy would retry is recognised without the internal detector.
+        /// </summary>
+        private sealed class TransientFailureProbe : SqlServerRetryingExecutionStrategy
+        {
+            public TransientFailureProbe(DbContext context, IEnumerable<int>? additionalErrorNumbers)
+                : base(context, 1, TimeSpan.Zero, additionalErrorNumbers ?? [])
+            {
+            }
+
+            public bool IsTransient(Exception exception) => ShouldRetryOn(exception);
+        }
+
+        /// <summary>
+        /// Asks SQL Server directly. Going through EF would try to take a savepoint, which is the
+        /// command that fails once the transaction is already gone.
+        /// </summary>
+        private bool TransactionRemainsUsable()
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction == null)
+                return true;
+
+            try
+            {
+                var connection = _context.Database.GetDbConnection();
+                if (connection.State != ConnectionState.Open)
+                    return false;
+                using var command = connection.CreateCommand();
+                command.Transaction = _context.Database.CurrentTransaction.GetDbTransaction();
+                command.CommandText = "SELECT XACT_STATE()";
+                // 1 is committable. 0 means no transaction, -1 means it can only be rolled back.
+                return Convert.ToInt32(command.ExecuteScalar()) == 1;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void DetachAdvisoryDocuments(Customer customer)
+        {
+            var advisoryEntries = _context.ChangeTracker.Entries()
+                .Where(e => e.Entity is CustomerDocumentRequirement or CustomerDocumentAuditEntry)
+                .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                .ToList();
+            var failedRequirements = advisoryEntries.Select(e => e.Entity)
+                .OfType<CustomerDocumentRequirement>().ToList();
+            foreach (var entry in advisoryEntries)
+                entry.State = EntityState.Detached;
+            foreach (var requirement in failedRequirements)
+                customer.DocumentRequirements.Remove(requirement);
         }
 
         private static void EnsureWeakMatchDoesNotConflict(
