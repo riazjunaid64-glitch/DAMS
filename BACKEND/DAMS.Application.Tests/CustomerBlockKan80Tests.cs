@@ -15,7 +15,7 @@ public sealed class CustomerBlockKan80Tests
     {
         var created = await new CustomerService(h.Db).CreateCustomerAsync(new CreateCustomerDto
         {
-            FullName = name, Phone = phone, CNIC = cnic, Source = CustomerSource.WalkIn
+            FullName = name, Phone = phone, CNIC = cnic
         }, h.AdminUserId);
         return created.Id;
     }
@@ -125,7 +125,7 @@ public sealed class CustomerBlockKan80Tests
         {
             FullName = "Usman Tariq", Phone = "03334412987", FatherName = "Tariq Mehmood", Whatsapp = "03334412987",
             DateOfBirth = new DateTime(1988, 3, 14), Nationality = "Pakistani", Occupation = "Business owner",
-            Notes = "Prefers calls after 5 pm.", Source = CustomerSource.WalkIn
+            Notes = "Prefers calls after 5 pm."
         }, h.AdminUserId);
         await service.BlockCustomerAsync(created.Id, "Cheque bounced twice", h.AdminUserId);
 

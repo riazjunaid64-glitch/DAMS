@@ -314,11 +314,18 @@ describe("Edit", () => {
 describe("on a phone", () => {
   beforeEach(() => phone(true));
 
+  it("starts the header card with a Back button that goes to the list", async () => {
+    show();
+    await screen.findByRole("heading", { name: "Usman Tariq" });
+    fireEvent.click(screen.getByRole("button", { name: "Back to Customers" }));
+    expect(screen.getByTestId("where").textContent).toBe("/customers");
+  });
+
   it("has New booking and ⋯, whose sheet holds Edit details and Block customer", async () => {
     show();
     await screen.findByRole("heading", { name: "Usman Tariq" });
     expect(screen.getByRole("button", { name: "New booking" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Back to Customers" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to Customers" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More actions" }));
     const sheet = await screen.findByRole("dialog");
     expect(within(sheet).getByText("Edit details")).toBeTruthy();

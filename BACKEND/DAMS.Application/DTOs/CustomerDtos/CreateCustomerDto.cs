@@ -41,12 +41,6 @@ namespace DAMS.Application.DTOs.CustomerDtos
         [StringLength(500)]
         public string? Address { get; set; }
 
-        /// <summary>
-        /// Not asked on the New customer screen; Walk-in is stored for customers created there.
-        /// Callers that still send a source (tests, older clients) keep it.
-        /// </summary>
-        public CustomerSource Source { get; set; } = CustomerSource.WalkIn;
-
         [StringLength(500)]
         public string? SourceNotes { get; set; }
 

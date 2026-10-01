@@ -32,8 +32,34 @@ namespace DAMS.Application.Services
             int? createdByUserId,
             string? createdByName = null)
         {
-            await EnsureUniquePhoneAndCnicAsync(dto.Phone, dto.CNIC, excludeCustomerId: null);
+            // The duplicate check and the insert are one serializable unit, so two requests with the same
+            // phone or CNIC cannot both pass the check; the loser gets the same 409 as any duplicate.
+            var customer = await RunSerializableAsync(async () =>
+            {
+                await EnsureUniquePhoneAndCnicAsync(dto.Phone, dto.CNIC, excludeCustomerId: null);
+                var created = BuildCustomer(dto, createdByUserId);
+                _context.Customers.Add(created);
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch
+                {
+                    _context.Entry(created).State = EntityState.Detached;
+                    throw;
+                }
+                return created;
+            });
+            await TryAssignDefaultDocumentsAsync(customer,
+                createdByUserId.HasValue
+                    ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
+                    : null);
 
+            return await BuildResponseAsync(customer);
+        }
+
+        private static Customer BuildCustomer(CreateCustomerDto dto, int? createdByUserId)
+        {
             var customer = new Customer
             {
                 FullName = dto.FullName.Trim(),
@@ -45,7 +71,8 @@ namespace DAMS.Application.Services
                 Nationality = string.IsNullOrWhiteSpace(dto.Nationality) ? null : dto.Nationality.Trim(),
                 Occupation = string.IsNullOrWhiteSpace(dto.Occupation) ? null : dto.Occupation.Trim(),
                 Whatsapp = string.IsNullOrWhiteSpace(dto.Whatsapp) ? null : dto.Whatsapp.Trim(),
-                Source = dto.Source,
+                // Customers created here are always walk-ins; the caller does not choose.
+                Source = CustomerSource.WalkIn,
                 SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim(),
                 Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim(),
                 Status = CustomerStatus.Active,
@@ -53,15 +80,26 @@ namespace DAMS.Application.Services
                 CreatedAt = DateTime.UtcNow
             };
             ApplyPhone(customer, dto.Phone);
+            return customer;
+        }
 
-            _context.Customers.Add(customer);
-            await _context.SaveChangesAsync();
-            await TryAssignDefaultDocumentsAsync(customer,
-                createdByUserId.HasValue
-                    ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
-                    : null);
-
-            return await BuildResponseAsync(customer);
+        /// <summary>
+        /// Runs one unit under Serializable isolation through the retrying execution strategy (a bare
+        /// transaction is refused when retry-on-failure is on). A deadlock between two racers is
+        /// retried, and the retry then sees the winner's row. In-memory databases and callers that
+        /// already hold a transaction run it as is.
+        /// </summary>
+        private async Task<T> RunSerializableAsync<T>(Func<Task<T>> work)
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction != null)
+                return await work();
+            return await _context.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                var result = await work();
+                await transaction.CommitAsync();
+                return result;
+            });
         }
 
         public async Task<CustomerResponseDto?> GetCustomerByIdAsync(int id)
@@ -83,33 +121,29 @@ namespace DAMS.Application.Services
             var query = ApplyListFilters(_context.Customers.AsNoTracking(), filter);
 
             // Summary follows search (and any legacy source/status filters) but not the card filter.
-            var matchedIds = await query.Select(c => c.Id).ToListAsync();
-            var totalCustomers = matchedIds.Count;
+            // Counts and the page are all computed in SQL; only the requested page is read.
+            var totalCustomers = await query.CountAsync();
+            var needing = query.Where(c => _context.CustomerDocumentRequirements.Any(r =>
+                r.CustomerId == c.Id && r.IsRequired && r.Status == CustomerDocumentStatus.Needed));
+            var documentsNeededCount = await needing.CountAsync();
 
-            var neededByCustomer = totalCustomers == 0
-                ? new Dictionary<int, int>()
-                : await LoadDocumentsNeededByCustomerAsync(matchedIds);
-
-            var documentsNeededCount = neededByCustomer.Count(kv => kv.Value > 0);
-
-            IEnumerable<int> listIds = matchedIds;
-            if (filter.DocumentsNeededOnly)
-                listIds = matchedIds.Where(id => neededByCustomer.GetValueOrDefault(id) > 0);
-
-            var filteredIds = listIds.ToList();
-            var totalCount = filteredIds.Count;
+            var listQuery = filter.DocumentsNeededOnly ? needing : query;
+            var totalCount = filter.DocumentsNeededOnly ? documentsNeededCount : totalCustomers;
 
             var page = filter.Page < 1 ? 1 : filter.Page;
             var pageSize = filter.PageSize is < 1 or > 100 ? 20 : filter.PageSize;
 
             // Newest first; page after the card filter so summaries stay stable when a card is clicked.
-            var pageIds = await _context.Customers.AsNoTracking()
-                .Where(c => filteredIds.Contains(c.Id))
-                .OrderByDescending(c => c.CreatedAt)
+            var pageIds = await listQuery
+                .OrderByDescending(c => c.CreatedAt).ThenByDescending(c => c.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .Select(c => c.Id)
                 .ToListAsync();
+
+            var neededByCustomer = pageIds.Count == 0
+                ? new Dictionary<int, int>()
+                : await LoadDocumentsNeededByCustomerAsync(pageIds);
 
             var pageCustomers = pageIds.Count == 0
                 ? []

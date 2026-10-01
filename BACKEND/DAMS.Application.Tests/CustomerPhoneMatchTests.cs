@@ -243,8 +243,7 @@ public sealed class CustomerPhoneMatchTests
         var created = await service.CreateCustomerAsync(new CreateCustomerDto
         {
             FullName = "Amina Shah",
-            Phone = "03001234567",
-            Source = CustomerSource.WalkIn
+            Phone = "03001234567"
         }, h.AdminUserId);
 
         await service.UpdateCustomerAsync(created.Id, new UpdateCustomerDto { Phone = "+92 300 9998887" });

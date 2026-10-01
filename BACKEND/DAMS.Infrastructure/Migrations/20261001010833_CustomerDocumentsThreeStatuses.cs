@@ -11,19 +11,6 @@ namespace DAMS.Infrastructure.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // Old statuses: 0 Missing, 1 Requested, 2 Received, 3 UnderReview, 4 Approved, 5 Rejected,
-            // 6 ReplacementRequired, 7 Postponed, 8 Waived, 9 NotApplicable, 10 Expired.
-            // New: 0 Needed, 1 Uploaded, 2 Not needed. One statement so no row is remapped twice.
-            // The postponed date column becomes "not needed at", so it is reset first. The
-            // append-only audit rows are left as they were written.
-            migrationBuilder.Sql(@"
-UPDATE CustomerDocumentRequirements
-SET PostponedUntil = CASE WHEN Status IN (8, 9) THEN UpdatedAt ELSE NULL END,
-    Status = CASE
-        WHEN Status IN (2, 3, 4) THEN 1
-        WHEN Status IN (8, 9) THEN 2
-        ELSE 0 END;");
-
             migrationBuilder.DropColumn(
                 name: "ReviewReason",
                 table: "CustomerDocumentVersions");
@@ -92,6 +79,55 @@ SET PostponedUntil = CASE WHEN Status IN (8, 9) THEN UpdatedAt ELSE NULL END,
                 type: "nvarchar(500)",
                 maxLength: 500,
                 nullable: true);
+
+            // Old statuses: 0 Missing, 1 Requested, 2 Received, 3 UnderReview, 4 Approved, 5 Rejected,
+            // 6 ReplacementRequired, 7 Postponed, 8 Waived, 9 NotApplicable, 10 Expired.
+            // New: 0 Needed, 1 Uploaded, 2 Not needed.
+            //
+            // 1. The old postponed date was renamed to "not needed at": clear it for every row that is
+            //    not going to be Not needed.
+            migrationBuilder.Sql(@"
+UPDATE CustomerDocumentRequirements SET NotNeededAt = NULL WHERE Status NOT IN (8, 9);");
+
+            // 2. Waived and Not applicable become Not needed and keep what was said and by whom: the
+            //    reason, person and time come from the latest Waived / Not applicable audit row
+            //    (actions 9 and 10), falling back to the row's last change time.
+            migrationBuilder.Sql(@"
+UPDATE r
+SET NotNeededReason = LEFT(a.Notes, 500),
+    NotNeededByUserId = a.PerformedByUserId,
+    NotNeededByName = a.PerformedByName,
+    NotNeededAt = COALESCE(a.OccurredAt, r.UpdatedAt)
+FROM CustomerDocumentRequirements r
+OUTER APPLY (
+    SELECT TOP 1 Notes, PerformedByUserId, PerformedByName, OccurredAt
+    FROM CustomerDocumentAuditEntries
+    WHERE RequirementId = r.Id AND Action IN (9, 10)
+    ORDER BY Id DESC) a
+WHERE r.Status IN (8, 9);");
+
+            // 3. Remap the statuses in one statement per table so no row is remapped twice. The audit
+            //    rows keep their Action (Approved, Rejected, Postponed ...) and Notes, which say what
+            //    happened; only the status numbers move to the new meaning, so no old number is read
+            //    as a different new status.
+            migrationBuilder.Sql(@"
+UPDATE CustomerDocumentRequirements
+SET Status = CASE
+    WHEN Status IN (2, 3, 4) THEN 1
+    WHEN Status IN (8, 9) THEN 2
+    ELSE 0 END;");
+            migrationBuilder.Sql(@"
+UPDATE CustomerDocumentAuditEntries
+SET PreviousStatus = CASE
+        WHEN PreviousStatus IS NULL THEN NULL
+        WHEN PreviousStatus IN (2, 3, 4) THEN 1
+        WHEN PreviousStatus IN (8, 9) THEN 2
+        ELSE 0 END,
+    NewStatus = CASE
+        WHEN NewStatus IS NULL THEN NULL
+        WHEN NewStatus IN (2, 3, 4) THEN 1
+        WHEN NewStatus IN (8, 9) THEN 2
+        ELSE 0 END;");
         }
 
         /// <inheritdoc />
@@ -100,6 +136,10 @@ SET PostponedUntil = CASE WHEN Status IN (8, 9) THEN UpdatedAt ELSE NULL END,
             migrationBuilder.Sql(@"
 UPDATE CustomerDocumentRequirements
 SET Status = CASE WHEN Status = 1 THEN 4 WHEN Status = 2 THEN 8 ELSE 0 END;");
+            migrationBuilder.Sql(@"
+UPDATE CustomerDocumentAuditEntries
+SET PreviousStatus = CASE WHEN PreviousStatus IS NULL THEN NULL WHEN PreviousStatus = 1 THEN 4 WHEN PreviousStatus = 2 THEN 8 ELSE 0 END,
+    NewStatus = CASE WHEN NewStatus IS NULL THEN NULL WHEN NewStatus = 1 THEN 4 WHEN NewStatus = 2 THEN 8 ELSE 0 END;");
 
             migrationBuilder.DropColumn(
                 name: "NotNeededByName",

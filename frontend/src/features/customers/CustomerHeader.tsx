@@ -64,7 +64,7 @@ export function CustomerHeader({ customer, onBack, onEdit, onBlock, onUnblock, o
   return (
     <header className="rounded-card border border-line bg-card p-4 font-ui md:p-5">
       <div className="flex items-start gap-4">
-        {!isPhone && <Button iconOnly variant="outline" icon={<IconChevronLeft size={18} />} aria-label="Back to Customers" onClick={onBack} />}
+        <Button iconOnly variant="outline" icon={<IconChevronLeft size={18} />} aria-label="Back to Customers" onClick={onBack} />
         <PageHeader
           className="min-w-0 flex-1 md:items-start"
           title={customer.fullName}

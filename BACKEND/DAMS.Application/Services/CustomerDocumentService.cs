@@ -340,7 +340,8 @@ namespace DAMS.Application.Services
                 .Select(r => r.CategoryId!.Value)
                 .ToHashSet();
             var available = await _context.CustomerDocumentCategories.AsNoTracking()
-                .Where(c => c.IsActive && !c.IsRequiredByDefault && c.Code != OtherCategoryCode)
+                // "Asked from every customer" is a category that is both required and handed to every new customer.
+                .Where(c => c.IsActive && !(c.IsRequiredByDefault && c.AssignToNewCustomers) && c.Code != OtherCategoryCode)
                 .OrderBy(c => c.DisplayOrder).ThenBy(c => c.Name)
                 .Select(c => new CustomerDocumentTypeOptionDto { CategoryId = c.Id, Name = c.Name })
                 .ToListAsync(cancellationToken);

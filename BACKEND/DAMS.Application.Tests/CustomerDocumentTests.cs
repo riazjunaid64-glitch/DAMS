@@ -168,6 +168,42 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
+    public async Task AvailableTypes_ExcludeOnlyTypesAskedFromEveryCustomer()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await Customer(db, "Type Customer");
+        // Required but handed out manually: not asked from every customer, so it can be added.
+        db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
+        {
+            Name = "Manual Required", Code = "manual_required", IsActive = true, IsRequiredByDefault = true,
+            AssignToNewCustomers = false, DisplayOrder = 5, CreatedAt = DateTime.UtcNow
+        });
+        // Optional and handed to every new customer: still quiet, so it can be added too.
+        var cnic = await db.CustomerDocumentCategories.SingleAsync(c => c.Code == "cnic_front");
+        await db.SaveChangesAsync();
+
+        var types = (await service.GetChecklistAsync(customer.Id)).AvailableTypes.Select(t => t.Name).ToList();
+
+        Assert.Contains("Manual Required", types);
+        Assert.Contains("Passport", types);
+        Assert.DoesNotContain(cnic.Name, types);
+        Assert.DoesNotContain("Other", types);
+    }
+
+    [Fact]
+    public async Task CustomerCreatedThroughTheService_IsAlwaysAWalkIn()
+    {
+        await using var db = Context();
+        var created = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
+        {
+            FullName = "Walk In Person", Phone = "03005550123"
+        }, Admin.UserId, Admin.DisplayName);
+
+        Assert.Equal(CustomerSource.WalkIn, (await db.Customers.AsNoTracking().SingleAsync(c => c.Id == created.Id)).Source);
+    }
+
+    [Fact]
     public async Task AddDocument_CreatesAnUploadedCustomDocument_AndRefusesADuplicateName()
     {
         await using var db = Context();
@@ -534,7 +570,7 @@ public sealed class CustomerDocumentTests
         var customers = new CustomerService(db, NullLogger<CustomerService>.Instance);
         var created = await customers.CreateCustomerAsync(new CreateCustomerDto
         {
-            FullName = "Core Workflow Customer", Phone = "03001234567", Source = CustomerSource.WalkIn
+            FullName = "Core Workflow Customer", Phone = "03001234567"
         }, Admin.UserId, Admin.DisplayName);
 
         Assert.True(created.Id > 0);
