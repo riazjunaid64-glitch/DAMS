@@ -7674,7 +7674,8 @@ public sealed class SqlServerProductionInvariantTests
                     (N'Active optional', N'active_optional', 0, 210, 1, 1, '2020-01-01'),
                     (N'Inactive required', N'inactive_required', 1, 220, 0, 1, '2020-01-01'),
                     (N'Twin', N'twin_a', 0, 230, 1, 0, '2020-01-01'),
-                    (N'Twin', N'twin_b', 0, 240, 1, 0, '2020-01-01');
+                    (N'Twin', N'twin_b', 0, 240, 1, 0, '2020-01-01'),
+                    (N'Twin (2)', N'twin_c', 0, 250, 1, 0, '2020-01-01');
                 """);
         }
 
@@ -7695,10 +7696,81 @@ public sealed class SqlServerProductionInvariantTests
             Assert.False(rows["Inactive required"].AsksEveryCustomer);
             Assert.False(rows["Inactive required"].IsHidden);
             Assert.False(rows["Twin"].AsksEveryCustomer);
-            Assert.Contains(rows.Keys, name => name.StartsWith("Twin (", StringComparison.Ordinal));
+            // The second Twin cannot become "Twin (2)": that name is already taken, so it moves to "Twin (3)".
+            Assert.True(rows.ContainsKey("Twin (2)"));
+            Assert.True(rows.ContainsKey("Twin (3)"));
+            Assert.Equal(3, rows.Keys.Count(name => name == "Twin" || name.StartsWith("Twin (", StringComparison.Ordinal)));
 
             var kept = await db.CustomerDocumentRequirements.AsNoTracking().SingleAsync(r => r.Name == "Kept");
             Assert.False(kept.IsSuppressed);
+        }
+    }
+
+    [SqlServerFact]
+    public async Task RemoveUsedDocument_RollsBackEveryBatch_WhenALaterBatchFails()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        int categoryId;
+        await using (var db = new AppDbContext(options))
+        {
+            var documents = new CustomerDocumentService(db, new NullPrivateStorage(),
+                NullLogger<CustomerDocumentService>.Instance);
+            var created = await documents.CreateDocumentAsync(
+                new SaveDocumentNameDto { Name = "Bulk passport" },
+                new CustomerDocumentActor(Actor.UserId, Actor.DisplayName));
+            categoryId = created.Id;
+
+            // 501 copies is one past the 500-row withdraw batch, so the second save is a later batch.
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                ;WITH [nums] AS (
+                    SELECT TOP (501) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS [n]
+                    FROM sys.all_objects AS [a] CROSS JOIN sys.all_objects AS [b]
+                )
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                SELECT CONCAT(N'Remove ', [n]), CONCAT(N'0400', RIGHT(CONCAT(N'000000', [n]), 6)), 0, 0, '2020-01-01'
+                FROM [nums];
+
+                INSERT INTO [CustomerDocumentRequirements]
+                    ([CustomerId], [CategoryId], [Name], [IsRequired], [DisplayOrder], [Status], [CreatedAt], [UpdatedAt])
+                SELECT [c].[Id], {categoryId}, N'Bulk passport', 1, 1, 0, '2020-01-01', '2020-01-01'
+                FROM [Customers] AS [c]
+                WHERE [c].[FullName] LIKE N'Remove %';
+                """);
+        }
+
+        var interceptor = new FailLaterRemoveBatchInterceptor();
+        await using (var failing = new AppDbContext(Options(database.ConnectionString, interceptor)))
+        {
+            var documents = new CustomerDocumentService(failing, new NullPrivateStorage(),
+                NullLogger<CustomerDocumentService>.Instance);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => documents.RemoveDocumentAsync(
+                categoryId, new CustomerDocumentActor(Actor.UserId, Actor.DisplayName)));
+            Assert.True(interceptor.FailedOnLaterBatch);
+        }
+
+        await using (var verify = new AppDbContext(options))
+        {
+            var category = await verify.CustomerDocumentCategories.SingleAsync(c => c.Id == categoryId);
+            Assert.False(category.IsHidden);
+            Assert.False(category.AsksEveryCustomer);
+            var copies = await verify.CustomerDocumentRequirements.AsNoTracking()
+                .Where(r => r.CategoryId == categoryId)
+                .ToListAsync();
+            Assert.Equal(501, copies.Count);
+            Assert.All(copies, copy =>
+            {
+                Assert.False(copy.IsSuppressed);
+                Assert.True(copy.IsRequired);
+            });
+            Assert.False(await verify.CustomerDocumentAuditEntries.AnyAsync(a =>
+                a.CategoryId == categoryId
+                && a.Action == CustomerDocumentAction.CategoryDeactivated));
+            Assert.False(await verify.CustomerDocumentAuditEntries.AnyAsync(a =>
+                a.Notes != null && a.Notes.Contains("Removed. Customers who already have a file keep it.")));
         }
     }
 
@@ -7919,6 +7991,42 @@ public sealed class SqlServerProductionInvariantTests
             if (context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
                     .Any(entry => entry.State == EntityState.Added) == true)
                 throw new InvalidOperationException("Simulated SQL assignment persistence failure.");
+        }
+    }
+
+    /// <summary>
+    /// Lets the first withdraw batch save, then fails the next one. Inside a transaction the first
+    /// batch is uncommitted, so the failure rolls the hide and every copy back.
+    /// </summary>
+    private sealed class FailLaterRemoveBatchInterceptor : SaveChangesInterceptor
+    {
+        private int _withdrawSaves;
+        public bool FailedOnLaterBatch { get; private set; }
+
+        public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            FailOnLaterBatch(eventData.Context);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            FailOnLaterBatch(eventData.Context);
+            return ValueTask.FromResult(result);
+        }
+
+        private void FailOnLaterBatch(DbContext? context)
+        {
+            var withdrawing = context?.ChangeTracker.Entries<CustomerDocumentRequirement>()
+                .Any(entry => entry.State == EntityState.Modified && entry.Entity.IsSuppressed) == true;
+            if (!withdrawing)
+                return;
+            _withdrawSaves++;
+            if (_withdrawSaves < 2)
+                return;
+            FailedOnLaterBatch = true;
+            throw new InvalidOperationException("Simulated failure in a later remove batch.");
         }
     }
 

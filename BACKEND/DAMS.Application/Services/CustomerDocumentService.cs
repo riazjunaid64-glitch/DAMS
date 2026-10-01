@@ -179,25 +179,44 @@ namespace DAMS.Application.Services
             CustomerDocumentActor actor,
             CancellationToken cancellationToken = default)
         {
-            var category = await EditableCategoryAsync(id, cancellationToken);
-            var used = await _context.CustomerDocumentRequirements
-                .AnyAsync(r => r.CategoryId == id, cancellationToken);
-            if (!used)
+            await ExecuteResilientlyAsync(async () =>
             {
-                var description = $"Unused document '{category.Name}' deleted.";
-                _context.CustomerDocumentCategories.Remove(category);
-                RecordAudit(CustomerDocumentAction.CategoryDeleted, actor, notes: description);
-                await _context.SaveChangesAsync(cancellationToken);
-                return;
-            }
+                _context.ChangeTracker.Clear();
+                var category = await EditableCategoryAsync(id, cancellationToken);
+                var used = await _context.CustomerDocumentRequirements
+                    .AnyAsync(r => r.CategoryId == id, cancellationToken);
+                if (!used)
+                {
+                    var description = $"Unused document '{category.Name}' deleted.";
+                    _context.CustomerDocumentCategories.Remove(category);
+                    RecordAudit(CustomerDocumentAction.CategoryDeleted, actor, notes: description);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    return;
+                }
 
-            category.IsHidden = true;
-            category.AsksEveryCustomer = false;
-            category.UpdatedAt = DateTime.UtcNow;
-            await WithdrawCopiesWithoutFilesAsync(category, actor, "Removed. Customers who already have a file keep it.", cancellationToken);
-            RecordAudit(CustomerDocumentAction.CategoryDeactivated, actor, category: category,
-                notes: $"Document '{category.Name}' removed. Customers who already have a file keep it.");
-            await _context.SaveChangesAsync(cancellationToken);
+                // Hide, withdraw every batch, and the audit commit together. A later batch must not
+                // leave the document hidden, or a retry is rejected and the remaining copies stay visible.
+                await using var transaction = await BeginSerializableAsync(cancellationToken);
+                try
+                {
+                    category.IsHidden = true;
+                    category.AsksEveryCustomer = false;
+                    category.UpdatedAt = DateTime.UtcNow;
+                    await WithdrawCopiesWithoutFilesAsync(category, actor,
+                        "Removed. Customers who already have a file keep it.", cancellationToken);
+                    RecordAudit(CustomerDocumentAction.CategoryDeactivated, actor, category: category,
+                        notes: $"Document '{category.Name}' removed. Customers who already have a file keep it.");
+                    await _context.SaveChangesAsync(cancellationToken);
+                    if (transaction != null)
+                        await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    if (transaction != null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    throw;
+                }
+            });
         }
 
         public async Task<DocumentSetupItemDto> SetAsksEveryCustomerAsync(

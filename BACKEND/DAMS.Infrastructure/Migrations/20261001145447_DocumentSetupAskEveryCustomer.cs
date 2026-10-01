@@ -46,15 +46,37 @@ namespace DAMS.Infrastructure.Migrations
                     [IsOther] = CASE WHEN [Code] = N'other' THEN 1 ELSE 0 END,
                     [IsHidden] = 0;
 
-                ;WITH [ranked] AS (
-                    SELECT [Id], ROW_NUMBER() OVER (PARTITION BY LOWER([Name]) ORDER BY [Id]) AS [n]
-                    FROM [CustomerDocumentCategories]
-                )
-                UPDATE [c]
-                SET [Name] = LEFT([c].[Name], 144) + N' (' + CONVERT(nvarchar(6), [r].[n]) + N')'
-                FROM [CustomerDocumentCategories] AS [c]
-                INNER JOIN [ranked] AS [r] ON [r].[Id] = [c].[Id]
-                WHERE [r].[n] > 1;
+                -- The first row of each name stays. Every other copy takes the next free "name (n)",
+                -- checked against the whole table. "Twin", "Twin", "Twin (2)" becomes "Twin", "Twin (3)", "Twin (2)".
+                DECLARE [duplicates] CURSOR LOCAL FAST_FORWARD FOR
+                    SELECT [c].[Id], [c].[Name]
+                    FROM [CustomerDocumentCategories] AS [c]
+                    WHERE [c].[Id] NOT IN (
+                        SELECT MIN([Id]) FROM [CustomerDocumentCategories] GROUP BY LOWER([Name])
+                    )
+                    ORDER BY [c].[Id];
+
+                DECLARE @id int, @base nvarchar(150), @candidate nvarchar(150), @n int;
+                OPEN [duplicates];
+                FETCH NEXT FROM [duplicates] INTO @id, @base;
+                WHILE @@FETCH_STATUS = 0
+                BEGIN
+                    SET @n = 2;
+                    WHILE 1 = 1
+                    BEGIN
+                        SET @candidate = LEFT(@base, 141) + N' (' + CONVERT(nvarchar(6), @n) + N')';
+                        IF NOT EXISTS (
+                            SELECT 1 FROM [CustomerDocumentCategories]
+                            WHERE [Id] <> @id AND LOWER([Name]) = LOWER(@candidate)
+                        )
+                            BREAK;
+                        SET @n = @n + 1;
+                    END
+                    UPDATE [CustomerDocumentCategories] SET [Name] = @candidate WHERE [Id] = @id;
+                    FETCH NEXT FROM [duplicates] INTO @id, @base;
+                END
+                CLOSE [duplicates];
+                DEALLOCATE [duplicates];
                 """);
 
             migrationBuilder.DropIndex(
