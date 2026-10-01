@@ -15,6 +15,7 @@ import {
   EmptyState,
   FilterBar,
   IconAlert,
+  IconArrowRight,
   IconCircle,
   IconFilter,
   IconInbox,
@@ -169,6 +170,10 @@ function ButtonSection() {
         <Sample label="Medium 40"><Button size="md">Button</Button></Sample>
         <Sample label="Large 48 (phone)"><Button size="lg">Button</Button></Sample>
         <Sample label="Full width (phone)" className="w-80"><Button size="lg" fullWidth>Button</Button></Sample>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 rounded-card bg-primary p-4">
+        <Button variant="gold" to="/projects">Explore projects <IconArrowRight size={16} /></Button>
+        <Button variant="light" to="/contact">Contact us</Button>
       </div>
     </Section>
   );

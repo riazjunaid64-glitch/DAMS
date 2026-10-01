@@ -32,6 +32,7 @@ export const IconClose = icon(<path d="M18 6 6 18M6 6l12 12" />, 2);
 export const IconChevronDown = icon(<path d="m6 9 6 6 6-6" />, 2.2);
 export const IconChevronLeft = icon(<path d="m15 18-6-6 6-6" />, 2.2);
 export const IconChevronRight = icon(<path d="m9 18 6-6-6-6" />, 2.2);
+export const IconArrowRight = icon(<path d="M5 12h14M13 6l6 6-6 6" />, 2.2);
 export const IconCheck = icon(<path d="m5 12 4.5 4.5L19 7" />, 2.2);
 export const IconPlus = icon(<path d="M12 5v14M5 12h14" />, 2.2);
 export const IconFilter = icon(<path d="M4 7h16M7 12h10M10 17h4" />, 2);
