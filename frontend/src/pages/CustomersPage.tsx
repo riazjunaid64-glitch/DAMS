@@ -28,11 +28,11 @@ import { DEFAULT_PAGE_SIZE } from "../components/ui/pageItems.ts";
 import { can } from "../features/access/permissions.ts";
 import { formatPhone } from "../features/bookings/format.ts";
 import { CustomerForm, type CustomerFormErrors } from "../features/customers/CustomerForm.tsx";
-import { duplicateFieldError } from "../features/customers/duplicateFieldError.tsx";
+import { conflictErrors, type ConflictBody } from "../features/customers/duplicateFieldError.tsx";
 import {
   customerFormErrors,
+  customerPayload,
   emptyCustomerForm,
-  type CustomerFormValues,
 } from "../features/customers/customerForm.ts";
 import { apiJson } from "../features/leads/leadApi.ts";
 import { api } from "../api/api.ts";
@@ -62,13 +62,6 @@ interface CustomerList {
 const FILTER_KEYS = ["search", "documentsNeededOnly"] as const;
 
 type Loaded<T> = { query: string; data: T };
-
-type ConflictBody = {
-  message?: string;
-  field?: string;
-  existingCustomerId?: number;
-  existingCustomerName?: string;
-};
 
 export default function CustomersPage({ user }: Props) {
   if (!user || !can(user.role, "customers")) {
@@ -475,21 +468,16 @@ function NewCustomerModal({
       const response = await api("/api/Customer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payloadFromForm(values)),
+        body: JSON.stringify({ ...customerPayload(values), source: "WalkIn" }),
       });
       const body = (await response.json().catch(() => ({}))) as ConflictBody & { id?: number };
-      if (response.status === 409 && body.field && body.existingCustomerId && body.existingCustomerName) {
-        const field = body.field === "phone" ? "mobile" : body.field === "cnic" ? "cnic" : null;
-        if (field) {
-          setErrors({
-            [field]: duplicateFieldError(body.existingCustomerName, () => {
-              onClose();
-              navigate(`/customers/${body.existingCustomerId}`);
-            }),
-          });
-        } else {
-          setFormError(body.message ?? "This customer already exists.");
-        }
+      if (response.status === 409) {
+        const conflict = conflictErrors(body, (existingId) => {
+          onClose();
+          navigate(`/customers/${existingId}`);
+        });
+        setErrors(conflict ?? {});
+        if (!conflict) setFormError(body.message ?? "This customer already exists.");
         return;
       }
       if (!response.ok) {
@@ -526,25 +514,4 @@ function NewCustomerModal({
       <CustomerForm values={values} errors={errors} onChange={setValues} showNotes disabled={saving} />
     </Modal>
   );
-}
-
-function payloadFromForm(values: CustomerFormValues) {
-  const text = (value: string) => {
-    const trimmed = value.trim();
-    return trimmed === "" ? null : trimmed;
-  };
-  return {
-    fullName: values.fullName.trim(),
-    fatherName: text(values.guardianName),
-    phone: values.mobile.trim(),
-    cnic: text(values.cnic),
-    email: text(values.email),
-    whatsapp: text(values.whatsapp),
-    dateOfBirth: text(values.dob),
-    nationality: text(values.nationality),
-    occupation: text(values.occupation),
-    address: text(values.address),
-    notes: text(values.notes),
-    source: "WalkIn",
-  };
 }

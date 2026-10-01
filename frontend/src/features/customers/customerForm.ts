@@ -51,3 +51,65 @@ export function customerFormErrors(values: CustomerFormValues): Partial<Record<C
   if (badMobile(values.whatsapp)) errors.whatsapp = MOBILE_ERROR;
   return errors;
 }
+
+/** The server's customer, as far as the Edit form and the customer page read it. */
+export interface CustomerDetail {
+  id: number;
+  fullName: string;
+  fatherName?: string | null;
+  phone: string;
+  cnic?: string | null;
+  email?: string | null;
+  address?: string | null;
+  dateOfBirth?: string | null;
+  nationality?: string | null;
+  occupation?: string | null;
+  whatsapp?: string | null;
+  notes?: string | null;
+  status: string;
+  blockedReason?: string | null;
+  blockedByName?: string | null;
+  blockedAt?: string | null;
+  bookingsCount: number;
+  createdAt: string;
+  /** Required documents still Needed. */
+  documentsNeeded: number;
+}
+
+/** The Edit form, filled with what the customer has now. */
+export function formFromCustomer(customer: CustomerDetail): CustomerFormValues {
+  return {
+    fullName: customer.fullName ?? "",
+    guardianName: customer.fatherName ?? "",
+    mobile: customer.phone ?? "",
+    cnic: customer.cnic ?? "",
+    email: customer.email ?? "",
+    whatsapp: customer.whatsapp ?? "",
+    dob: customer.dateOfBirth?.slice(0, 10) ?? "",
+    nationality: customer.nationality ?? "",
+    occupation: customer.occupation ?? "",
+    address: customer.address ?? "",
+    notes: customer.notes ?? "",
+  };
+}
+
+/** What New customer and Edit customer send. A blank field is sent as null, which clears it on Edit. */
+export function customerPayload(values: CustomerFormValues) {
+  const text = (value: string) => {
+    const trimmed = value.trim();
+    return trimmed === "" ? null : trimmed;
+  };
+  return {
+    fullName: values.fullName.trim(),
+    fatherName: text(values.guardianName),
+    phone: values.mobile.trim(),
+    cnic: text(values.cnic),
+    email: text(values.email),
+    whatsapp: text(values.whatsapp),
+    dateOfBirth: text(values.dob),
+    nationality: text(values.nationality),
+    occupation: text(values.occupation),
+    address: text(values.address),
+    notes: text(values.notes),
+  };
+}

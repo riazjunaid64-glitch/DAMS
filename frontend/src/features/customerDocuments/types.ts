@@ -73,8 +73,6 @@ export interface DocumentChecklist {
   customerName: string;
   summary: DocumentSummary;
   requirements: DocumentRequirement[];
-  history: DocumentAudit[];
-  hasMoreHistory: boolean;
 }
 
 export interface DocumentAuditPage {

@@ -1,5 +1,4 @@
 using DAMS.Domain.Enums;
-using DAMS.Application.DTOs.CustomerDocumentDtos;
 
 namespace DAMS.Application.DTOs.CustomerDtos
 {
@@ -33,6 +32,13 @@ namespace DAMS.Application.DTOs.CustomerDtos
 
         public CustomerStatus Status { get; set; }
 
+        /// <summary>Why the customer is blocked; null while Active.</summary>
+        public string? BlockedReason { get; set; }
+
+        public string? BlockedByName { get; set; }
+
+        public DateTime? BlockedAt { get; set; }
+
         public int? UserId { get; set; }
 
         public string? Notes { get; set; }
@@ -43,6 +49,7 @@ namespace DAMS.Application.DTOs.CustomerDtos
 
         public DateTime? UpdatedAt { get; set; }
 
-        public CustomerDocumentSummaryDto DocumentSummary { get; set; } = new();
+        /// <summary>Required documents still Needed — the number the page header badge shows.</summary>
+        public int DocumentsNeeded { get; set; }
     }
 }

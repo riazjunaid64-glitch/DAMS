@@ -38,8 +38,7 @@ public sealed class CustomerDocumentTests
         Assert.Equal(8, requirements.Count);
         Assert.DoesNotContain(requirements, r => r.CategoryId == inactive.Id);
         Assert.All(requirements, r => Assert.Equal(CustomerDocumentStatus.Missing, r.Status));
-        Assert.Equal(3, customer.DocumentSummary.RequiredTotal);
-        Assert.Equal(3, customer.DocumentSummary.Missing);
+        Assert.Equal(3, customer.DocumentsNeeded);
     }
 
     [Fact]
@@ -265,8 +264,10 @@ public sealed class CustomerDocumentTests
         Assert.Equal(2, checklist.Summary.CompletedRequired);
         Assert.Equal(1, checklist.Summary.Postponed);
         Assert.False(checklist.Summary.IsComplete);
-        Assert.Contains(checklist.History, a => a.Action == CustomerDocumentAction.Waived);
-        Assert.Contains(checklist.History, a => a.Action == CustomerDocumentAction.MarkedNotApplicable);
+        // The change log is no longer part of the checklist; it is served by the paged history call.
+        var history = (await service.GetHistoryAsync(customer.Id, null, 50)).Items;
+        Assert.Contains(history, a => a.Action == CustomerDocumentAction.Waived);
+        Assert.Contains(history, a => a.Action == CustomerDocumentAction.MarkedNotApplicable);
     }
 
     [Fact]

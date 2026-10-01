@@ -41,6 +41,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
         public DbSet<BookingTermsHistory> BookingTermsHistories { get; set; }
         public DbSet<InstallmentPlanAttempt> InstallmentPlanAttempts { get; set; }
+        public DbSet<CustomerStatusLog> CustomerStatusLogs { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -415,6 +416,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Address).HasMaxLength(500);
                 entity.Property(c => c.SourceNotes).HasMaxLength(500);
                 entity.Property(c => c.Notes).HasMaxLength(1000);
+                entity.Property(c => c.BlockedReason).HasMaxLength(500);
                 entity.Property(c => c.Nationality).HasMaxLength(100);
                 entity.Property(c => c.Occupation).HasMaxLength(150);
                 entity.Property(c => c.Whatsapp).HasMaxLength(50);
@@ -712,6 +714,18 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.Booking)
                       .WithMany()
                       .HasForeignKey(a => a.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerStatusLog>(entity =>
+            {
+                entity.Property(l => l.Action).HasConversion<int>();
+                entity.Property(l => l.Reason).HasMaxLength(500);
+                entity.HasIndex(l => new { l.CustomerId, l.At });
+
+                entity.HasOne(l => l.Customer)
+                      .WithMany()
+                      .HasForeignKey(l => l.CustomerId)
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -1721,6 +1735,9 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<BookingTermsHistory>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking terms history is append-only.");
+            if (ChangeTracker.Entries<CustomerStatusLog>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Customer status log is append-only.");
             if (ChangeTracker.Entries<InstallmentPlanAttempt>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Installment plan attempts are append-only.");

@@ -6854,11 +6854,15 @@ public sealed class SqlServerProductionInvariantTests
     private static Task AddLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NULL
             ALTER TABLE [Customers] ADD [NormalizedPhone] nvarchar(50) NULL;
+        IF COL_LENGTH(N'[Customers]', N'BlockedReason') IS NULL
+            ALTER TABLE [Customers] ADD [BlockedReason] nvarchar(500) NULL, [BlockedAt] datetime2 NULL, [BlockedByUserId] int NULL;
         """);
 
     private static Task DropLaterCustomerColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
         IF COL_LENGTH(N'[Customers]', N'NormalizedPhone') IS NOT NULL
             ALTER TABLE [Customers] DROP COLUMN [NormalizedPhone];
+        IF COL_LENGTH(N'[Customers]', N'BlockedReason') IS NOT NULL
+            ALTER TABLE [Customers] DROP COLUMN [BlockedReason], [BlockedAt], [BlockedByUserId];
         """);
 
     private static Task DropLaterLeadColumnsAsync(string connectionString) => ExecuteAsync(connectionString, """
@@ -7540,6 +7544,37 @@ public sealed class SqlServerProductionInvariantTests
     private static decimal PayableLine(DTOs.FinanceDtos.BalanceSheetDto sheet) =>
         sheet.LiabilityGroups.SelectMany(g => g.Lines)
             .Where(l => l.Name == "Commission Payable").Sum(l => l.Amount);
+
+    [SqlServerFact]
+    public async Task InactiveCustomers_BecomeActive_AndBlockedOnesStayBlocked()
+    {
+        await using var database = await SqlTestDatabase.CreateAsync();
+        var options = Options(database.ConnectionString);
+
+        await using (var db = new AppDbContext(options))
+            await db.GetService<IMigrator>().MigrateAsync("20260930141646_AddInstallmentPlanAttempts");
+
+        await using (var db = new AppDbContext(options))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                INSERT INTO [Customers] ([FullName], [Phone], [Source], [Status], [CreatedAt])
+                VALUES (N'Active', N'03001110001', 0, 0, '2020-01-01'),
+                       (N'Inactive', N'03001110002', 0, 1, '2020-01-01'),
+                       (N'Blocked', N'03001110003', 0, 2, '2020-01-01');
+                """);
+        }
+
+        await using (var db = new AppDbContext(options))
+            await db.Database.MigrateAsync();
+
+        await using (var db = new AppDbContext(options))
+        {
+            var rows = await db.Customers.AsNoTracking().ToDictionaryAsync(c => c.FullName, c => c.Status);
+            Assert.Equal(CustomerStatus.Active, rows["Active"]);
+            Assert.Equal(CustomerStatus.Active, rows["Inactive"]);
+            Assert.Equal(CustomerStatus.Blocked, rows["Blocked"]);
+        }
+    }
 
     [SqlServerFact]
     public async Task CustomerNormalizedPhoneBackfill_StoresTheNationalNumber()

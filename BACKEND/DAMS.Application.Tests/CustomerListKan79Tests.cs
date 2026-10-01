@@ -204,7 +204,7 @@ public sealed class CustomerListKan79Tests
             Phone = "03001110005",
             Source = CustomerSource.WalkIn
         }, h.AdminUserId);
-        await service.UpdateCustomerAsync(created.Id, new UpdateCustomerDto { Status = CustomerStatus.Blocked });
+        await service.BlockCustomerAsync(created.Id, "Cheque bounced twice", h.AdminUserId);
 
         var list = await service.GetCustomersAsync(new CustomerFilterDto());
         var row = Assert.Single(list.Items);

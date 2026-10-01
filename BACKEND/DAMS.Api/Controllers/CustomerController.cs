@@ -106,6 +106,33 @@ namespace DAMS.Api.Controllers
             }
         }
 
+        /// <summary>Stops new bookings for a customer. Existing bookings are untouched.</summary>
+        [HttpPost("{id:int}/block")]
+        public async Task<IActionResult> Block(int id, [FromBody] BlockCustomerDto dto)
+        {
+            try
+            {
+                return Ok(await _customerService.BlockCustomerAsync(id, dto.Reason, GetUserId()));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{id:int}/unblock")]
+        public async Task<IActionResult> Unblock(int id)
+        {
+            try
+            {
+                return Ok(await _customerService.UnblockCustomerAsync(id, GetUserId()));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
         // ── Account ownership ───────────────────────────────────────────────────────
         //
         // The claim flow, in the one form DAMS can actually deliver today. The story's preferred

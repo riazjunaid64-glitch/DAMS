@@ -13,6 +13,12 @@ namespace DAMS.Application.Interfaces
 
         Task<CustomerResponseDto> UpdateCustomerAsync(int id, UpdateCustomerDto dto);
 
+        /// <summary>Stops new bookings for the customer. The reason is required and kept with who and when.</summary>
+        Task<CustomerResponseDto> BlockCustomerAsync(int id, string reason, int? byUserId);
+
+        /// <summary>Allows new bookings again and clears the block fields; the log keeps what was recorded.</summary>
+        Task<CustomerResponseDto> UnblockCustomerAsync(int id, int? byUserId);
+
         /// <summary>
         /// Finds an existing customer (by CNIC, then phone, then email) or creates a new one.
         /// Used by booking, booking-request approval and lead conversion. The result states

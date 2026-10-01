@@ -1,7 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
 using DAMS.Application.Common;
-using DAMS.Domain.Enums;
 
 namespace DAMS.Application.DTOs.CustomerDtos
 {
@@ -14,7 +13,10 @@ namespace DAMS.Application.DTOs.CustomerDtos
         private string? _cnic;
         private string? _email;
         private string? _address;
-        private CustomerStatus _status;
+        private string? _whatsapp;
+        private DateTime? _dateOfBirth;
+        private string? _nationality;
+        private string? _occupation;
         private string? _sourceNotes;
         private string? _notes;
 
@@ -38,7 +40,17 @@ namespace DAMS.Application.DTOs.CustomerDtos
         [StringLength(500)]
         public string? Address { get => _address; set { _provided.Add(nameof(Address)); _address = value; } }
 
-        public CustomerStatus Status { get => _status; set { _provided.Add(nameof(Status)); _status = value; } }
+        [StringLength(50)]
+        public string? Whatsapp { get => _whatsapp; set { _provided.Add(nameof(Whatsapp)); _whatsapp = value; } }
+
+        public DateTime? DateOfBirth { get => _dateOfBirth; set { _provided.Add(nameof(DateOfBirth)); _dateOfBirth = value; } }
+
+        [StringLength(100)]
+        public string? Nationality { get => _nationality; set { _provided.Add(nameof(Nationality)); _nationality = value; } }
+
+        [StringLength(150)]
+        public string? Occupation { get => _occupation; set { _provided.Add(nameof(Occupation)); _occupation = value; } }
+
 
         [StringLength(500)]
         public string? SourceNotes { get => _sourceNotes; set { _provided.Add(nameof(SourceNotes)); _sourceNotes = value; } }

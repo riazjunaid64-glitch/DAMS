@@ -61,7 +61,7 @@ namespace DAMS.Application.Services
                     ? new CustomerDocumentActor(createdByUserId.Value, createdByName ?? "Admin")
                     : null);
 
-            return Map(customer, 0, CustomerDocumentCompletion.Calculate(customer.DocumentRequirements));
+            return await BuildResponseAsync(customer);
         }
 
         public async Task<CustomerResponseDto?> GetCustomerByIdAsync(int id)
@@ -73,12 +73,7 @@ namespace DAMS.Application.Services
             if (customer == null)
                 return null;
 
-            var bookingsCount = await _context.Bookings.CountAsync(b => b.CustomerId == id);
-            var requirements = await _context.CustomerDocumentRequirements
-                .AsNoTracking()
-                .Where(r => r.CustomerId == id)
-                .ToListAsync();
-            return Map(customer, bookingsCount, CustomerDocumentCompletion.Calculate(requirements));
+            return await BuildResponseAsync(customer);
         }
 
         private const int MinCnicSearchDigits = 5;
@@ -177,7 +172,10 @@ namespace DAMS.Application.Services
             if (dto.WasProvided(nameof(dto.CNIC))) customer.CNIC = string.IsNullOrWhiteSpace(dto.CNIC) ? null : dto.CNIC.Trim();
             if (dto.WasProvided(nameof(dto.Email))) customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim().ToLowerInvariant();
             if (dto.WasProvided(nameof(dto.Address))) customer.Address = string.IsNullOrWhiteSpace(dto.Address) ? null : dto.Address.Trim();
-            if (dto.WasProvided(nameof(dto.Status))) customer.Status = dto.Status;
+            if (dto.WasProvided(nameof(dto.Whatsapp))) customer.Whatsapp = string.IsNullOrWhiteSpace(dto.Whatsapp) ? null : dto.Whatsapp.Trim();
+            if (dto.WasProvided(nameof(dto.DateOfBirth))) customer.DateOfBirth = dto.DateOfBirth;
+            if (dto.WasProvided(nameof(dto.Nationality))) customer.Nationality = string.IsNullOrWhiteSpace(dto.Nationality) ? null : dto.Nationality.Trim();
+            if (dto.WasProvided(nameof(dto.Occupation))) customer.Occupation = string.IsNullOrWhiteSpace(dto.Occupation) ? null : dto.Occupation.Trim();
             if (dto.WasProvided(nameof(dto.SourceNotes))) customer.SourceNotes = string.IsNullOrWhiteSpace(dto.SourceNotes) ? null : dto.SourceNotes.Trim();
             if (dto.WasProvided(nameof(dto.Notes))) customer.Notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
             customer.UpdatedAt = DateTime.UtcNow;
@@ -189,11 +187,55 @@ namespace DAMS.Application.Services
 
             await _context.SaveChangesAsync();
 
-            var bookingsCount = await _context.Bookings.CountAsync(b => b.CustomerId == id);
-            var requirements = await _context.CustomerDocumentRequirements.AsNoTracking()
-                .Where(r => r.CustomerId == id)
-                .ToListAsync();
-            return Map(customer, bookingsCount, CustomerDocumentCompletion.Calculate(requirements));
+            return await BuildResponseAsync(customer);
+        }
+
+        public async Task<CustomerResponseDto> BlockCustomerAsync(int id, string reason, int? byUserId)
+        {
+            var trimmed = reason?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                throw new InvalidOperationException("Enter the reason for blocking this customer.");
+            if (trimmed.Length > 500)
+                throw new InvalidOperationException("The reason can be at most 500 characters.");
+
+            var customer = await _context.Customers.FirstOrDefaultAsync(c => c.Id == id)
+                ?? throw new InvalidOperationException("Customer not found.");
+            if (customer.Status == CustomerStatus.Blocked)
+                throw new InvalidOperationException("This customer is already blocked.");
+
+            var now = DateTime.UtcNow;
+            customer.Status = CustomerStatus.Blocked;
+            customer.BlockedReason = trimmed;
+            customer.BlockedAt = now;
+            customer.BlockedByUserId = byUserId;
+            customer.UpdatedAt = now;
+            _context.CustomerStatusLogs.Add(new CustomerStatusLog
+            {
+                CustomerId = id, Action = CustomerStatusAction.Blocked, Reason = trimmed, ByUserId = byUserId, At = now
+            });
+            await _context.SaveChangesAsync();
+            return await BuildResponseAsync(customer);
+        }
+
+        public async Task<CustomerResponseDto> UnblockCustomerAsync(int id, int? byUserId)
+        {
+            var customer = await _context.Customers.FirstOrDefaultAsync(c => c.Id == id)
+                ?? throw new InvalidOperationException("Customer not found.");
+            if (customer.Status != CustomerStatus.Blocked)
+                throw new InvalidOperationException("This customer is not blocked.");
+
+            var now = DateTime.UtcNow;
+            customer.Status = CustomerStatus.Active;
+            customer.BlockedReason = null;
+            customer.BlockedAt = null;
+            customer.BlockedByUserId = null;
+            customer.UpdatedAt = now;
+            _context.CustomerStatusLogs.Add(new CustomerStatusLog
+            {
+                CustomerId = id, Action = CustomerStatusAction.Unblocked, ByUserId = byUserId, At = now
+            });
+            await _context.SaveChangesAsync();
+            return await BuildResponseAsync(customer);
         }
 
         public async Task<CustomerResolution> FindOrCreateCustomerAsync(
@@ -496,11 +538,17 @@ namespace DAMS.Application.Services
             return trimmed.StartsWith('+') ? "+" + digits : digits;
         }
 
-        private static CustomerResponseDto Map(
-            Customer c,
-            int bookingsCount,
-            DAMS.Application.DTOs.CustomerDocumentDtos.CustomerDocumentSummaryDto? documentSummary = null)
+        private async Task<CustomerResponseDto> BuildResponseAsync(Customer c)
         {
+            var bookingsCount = await _context.Bookings.CountAsync(b => b.CustomerId == c.Id);
+            var needed = (await LoadDocumentsNeededByCustomerAsync([c.Id])).GetValueOrDefault(c.Id);
+            var blockedByName = c.BlockedByUserId.HasValue
+                ? await _context.Users.AsNoTracking()
+                    .Where(u => u.UserId == c.BlockedByUserId.Value)
+                    .Select(u => u.FullName)
+                    .FirstOrDefaultAsync()
+                : null;
+
             return new CustomerResponseDto
             {
                 Id = c.Id,
@@ -517,12 +565,15 @@ namespace DAMS.Application.Services
                 Source = c.Source,
                 SourceNotes = c.SourceNotes,
                 Status = c.Status,
+                BlockedReason = c.BlockedReason,
+                BlockedByName = blockedByName,
+                BlockedAt = c.BlockedAt,
                 UserId = c.UserId,
                 Notes = c.Notes,
                 BookingsCount = bookingsCount,
                 CreatedAt = c.CreatedAt,
                 UpdatedAt = c.UpdatedAt,
-                DocumentSummary = documentSummary ?? CustomerDocumentCompletion.Calculate([])
+                DocumentsNeeded = needed
             };
         }
     }

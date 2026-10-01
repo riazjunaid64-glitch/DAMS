@@ -343,29 +343,12 @@ namespace DAMS.Application.Services
                 .AsSplitQuery()
                 .ToListAsync(cancellationToken);
 
-            // Load only a bounded preview of the newest audit rows; the full log is served by the
-            // paged history endpoint so a long-lived customer cannot force an unbounded read here.
-            // Ordered by Id (a monotonic surrogate matching insertion/time order) so "load more" can
-            // continue from the last previewed Id with a stable keyset cursor.
-            var history = await _context.CustomerDocumentAuditEntries
-                .AsNoTracking()
-                .Where(a => a.CustomerId == customerId)
-                .OrderByDescending(a => a.Id)
-                .Select(AuditProjection)
-                .Take(HistoryPreviewSize + 1)
-                .ToListAsync(cancellationToken);
-            var hasMoreHistory = history.Count > HistoryPreviewSize;
-            if (hasMoreHistory)
-                history.RemoveAt(history.Count - 1);
-
             return new CustomerDocumentChecklistDto
             {
                 CustomerId = customer.Id,
                 CustomerName = customer.FullName,
                 Summary = CustomerDocumentCompletion.Calculate(requirements),
-                Requirements = requirements.Select(MapRequirement).ToList(),
-                History = history,
-                HasMoreHistory = hasMoreHistory
+                Requirements = requirements.Select(MapRequirement).ToList()
             };
         }
 
