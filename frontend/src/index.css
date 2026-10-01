@@ -2194,206 +2194,30 @@ h1, h2, h3, h4, h5, h6 {
   }
 }
 
-/* ══════════════════════════════════════════════════════════════
-   DARK HOMEPAGE
-   ══════════════════════════════════════════════════════════════ */
-.dash-home {
-  padding: 0.9rem;
-  max-width: none;
-  margin: 0;
+/* Website motion. Plays once. Hover only on a fine pointer at desktop width.
+   Reduced motion keeps the final state and skips the animation. */
+@keyframes web-fade-up {
+  from { opacity: 0; transform: translateY(0.75rem); }
+  to { opacity: 1; transform: none; }
 }
-@media (min-width: 768px) { .dash-home { padding: 1.1rem; } }
-
-/* Hero + stats occupy the first screen */
-.dash-top {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-height: calc(100vh - var(--app-topbar-h) - 1.8rem);
-  min-height: calc(100dvh - var(--app-topbar-h) - 1.8rem);
+.web-fade-up {
+  animation: web-fade-up 0.55s ease-out both;
 }
-
-/* Hero */
-.dash-hero {
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--app-border);
-  flex: 1;
-  min-height: 300px;
-  display: flex;
-  align-items: center;
+@media (hover: hover) and (pointer: fine) and (min-width: 768px) {
+  .web-lift { transition: transform 0.2s ease; }
+  .web-lift:hover { transform: translateY(-0.25rem); }
+  .web-photo { transition: transform 0.45s ease; }
+  .group:hover .web-photo { transform: scale(1.04); }
 }
-.dash-hero__bg { position: absolute; inset: 0; }
-.dash-hero__bg img { width: 100%; height: 100%; object-fit: cover; }
-.dash-hero__overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, rgba(15,13,9,0.92) 0%, rgba(15,13,9,0.7) 45%, rgba(15,13,9,0.15) 100%);
-}
-.dash-hero__inner {
-  position: relative;
-  z-index: 1;
-  padding: 2.5rem;
-  max-width: 560px;
-}
-.dash-hero__brand {
-  margin: 0 0 0.5rem;
-  font-family: "Bebas Neue", "Raleway", serif;
-  font-size: clamp(2.5rem, 5vw, 3.75rem);
-  line-height: 1;
-  letter-spacing: 0.12em;
-  color: var(--gold-bright);
-  text-transform: uppercase;
-}
-.dash-hero__sub {
-  margin: 0 0 1.5rem;
-  font-size: 0.95rem;
-  line-height: 1.6;
-  color: #d8d2c4;
-  max-width: 380px;
-}
-.dash-btn-gold {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.7rem 1.5rem;
-  border: 1px solid var(--gold);
-  border-radius: 9999px;
-  background: transparent;
-  color: var(--gold-bright);
-  font-size: 0.85rem;
-  font-weight: 600;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-.dash-btn-gold:hover { background: var(--gold); color: #1a1710; }
-
-/* Stats */
-.dash-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-}
-@media (min-width: 768px) { .dash-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.dash-stat {
-  padding: 1.25rem 1.35rem;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--app-border);
-  background: var(--app-surface);
-  text-align: center;
-}
-.dash-stat__value {
-  margin: 0;
-  font-family: "Bebas Neue", "Raleway", sans-serif;
-  font-size: 2rem;
-  letter-spacing: 0.03em;
-  color: var(--gold-bright);
-  line-height: 1;
-}
-.dash-stat__label {
-  margin: 0.5rem 0 0;
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--app-text-muted);
-}
-
-/* Section heading */
-.dash-section-head {
-  margin: 2.25rem 0 1.15rem;
-  font-family: "Bebas Neue", "Raleway", sans-serif;
-  font-size: 1.5rem;
-  letter-spacing: 0.05em;
-  color: var(--app-text);
-  text-transform: uppercase;
-}
-
-/* Featured projects grid */
-.dash-proj-grid {
-  display: grid;
-  grid-template-columns: repeat(1, minmax(0, 1fr));
-  gap: 1.15rem;
-}
-@media (min-width: 640px) { .dash-proj-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (min-width: 1100px) { .dash-proj-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-
-.dash-proj {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--app-border);
-  background: var(--app-surface);
-  text-decoration: none;
-  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-}
-.dash-proj:hover {
-  transform: translateY(-3px);
-  border-color: var(--gold);
-  box-shadow: 0 14px 34px rgba(0,0,0,0.4);
-}
-.dash-proj__thumb {
-  position: relative;
-  aspect-ratio: 16 / 10;
-  overflow: hidden;
-  background: #2a2620;
-}
-.dash-proj__thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.35s ease; }
-.dash-proj:hover .dash-proj__thumb img { transform: scale(1.05); }
-.dash-proj__badge {
-  position: absolute;
-  top: 0.75rem;
-  left: 0.75rem;
-  padding: 0.28rem 0.7rem;
-  border-radius: 9999px;
-  background: rgba(15,13,9,0.82);
-  border: 1px solid var(--app-border);
-  color: var(--gold-bright);
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.dash-proj__body { padding: 1rem 1.1rem 0.5rem; flex: 1; }
-.dash-proj__title {
-  margin: 0 0 0.35rem;
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: var(--app-text);
-}
-.dash-proj__meta {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin: 0;
-  font-size: 0.8rem;
-  color: var(--app-text-muted);
-}
-.dash-proj__meta svg { color: var(--gold); flex-shrink: 0; }
-.dash-proj__foot { padding: 0.9rem 1.1rem 1.1rem; }
-.dash-proj__cta {
-  display: block;
-  width: 100%;
-  padding: 0.55rem;
-  border: 1px solid var(--gold);
-  border-radius: 9999px;
-  background: transparent;
-  color: var(--gold-bright);
-  font-size: 0.8rem;
-  font-weight: 600;
-  text-align: center;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-.dash-proj:hover .dash-proj__cta { background: var(--gold); color: #1a1710; }
-
-.dash-empty {
-  padding: 3rem 1rem;
-  text-align: center;
-  color: var(--app-text-muted);
-  border: 1px dashed var(--app-border);
-  border-radius: var(--radius-lg);
+@media (prefers-reduced-motion: reduce) {
+  .web-fade-up { animation: none; }
+  .web-lift,
+  .web-lift:hover,
+  .web-photo,
+  .group:hover .web-photo {
+    transition: none;
+    transform: none;
+  }
 }
 
 /* Dark footer */
