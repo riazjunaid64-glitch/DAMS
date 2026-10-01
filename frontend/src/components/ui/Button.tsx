@@ -19,6 +19,10 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   loading?: boolean;
   /** Renders a link with the same look, for the website pages. */
   to?: string;
+  /** External address with the same look. In-app routes stay on `to`. */
+  href?: string;
+  target?: string;
+  rel?: string;
 };
 
 const variantClass: Record<ButtonVariant, string> = {
@@ -63,6 +67,9 @@ export function Button({
   disabled,
   type = "button",
   to,
+  href,
+  target,
+  rel,
   className,
   children,
   ...rest
@@ -77,7 +84,7 @@ export function Button({
     "disabled:cursor-not-allowed",
     disabledClass[variant],
     fullWidth && "w-full",
-    to && "no-underline",
+    (to || href) && "no-underline",
     className,
   );
   const content = (
@@ -88,6 +95,9 @@ export function Button({
   );
   if (to) {
     return <Link to={to} className={classes}>{content}</Link>;
+  }
+  if (href) {
+    return <a href={href} target={target} rel={rel} className={classes}>{content}</a>;
   }
   return (
     <button
