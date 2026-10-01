@@ -3,7 +3,10 @@ using DAMS.Application.Interfaces;
 using DAMS.Domain.Entities;
 using DAMS.Domain.Enums;
 using DAMS.Infrastructure.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.SqlServer.Storage.Internal;
+using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 using DAMS.Application.Common;
 using Microsoft.Extensions.Logging;
@@ -489,7 +492,11 @@ namespace DAMS.Application.Services
 
         /// <summary>
         /// Writes the customer and the documents whose switch is on in one save. If the document
-        /// rows cannot be written, the customer is still saved and the background job fills the gap.
+        /// rows cannot be written and the transaction is still usable, the customer is saved alone
+        /// and the background job fills the gap. A deadlock, any other transient failure, or an
+        /// aborted transaction is left for <see cref="RunSerializableAsync"/> to retry; saving
+        /// again on that transaction is what raised "Cannot issue SAVE TRANSACTION when there is
+        /// no active transaction."
         /// </summary>
         private async Task SaveNewCustomerWithDocumentsAsync(Customer customer, CustomerDocumentActor? actor)
         {
@@ -501,16 +508,13 @@ namespace DAMS.Application.Services
                 await _context.SaveChangesAsync();
                 return;
             }
-            catch (Exception ex) when (prepared)
+            catch (Exception ex) when (CanSaveCustomerWithoutDocuments(ex))
             {
-                DetachAdvisoryDocuments(customer);
-                _logger.LogWarning(ex,
-                    "Customer was created without its document defaults; reconciliation will retry.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Document defaults could not be prepared; the customer is saved without them.");
+                if (prepared)
+                    DetachAdvisoryDocuments(customer);
+                _logger.LogWarning(ex, prepared
+                    ? "Customer was created without its document defaults; reconciliation will retry."
+                    : "Document defaults could not be prepared; the customer is saved without them.");
             }
 
             try
@@ -521,6 +525,59 @@ namespace DAMS.Application.Services
             {
                 _context.Entry(customer).State = EntityState.Detached;
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// True only for a document failure that left this transaction committable. Transient SQL
+        /// errors are the execution strategy's to retry, and a transaction SQL Server has already
+        /// aborted cannot take another save.
+        /// </summary>
+        private bool CanSaveCustomerWithoutDocuments(Exception exception)
+        {
+            if (IsTransientDatabaseFailure(exception))
+                return false;
+            return TransactionRemainsUsable();
+        }
+
+        private static bool IsTransientDatabaseFailure(Exception exception)
+        {
+            for (var current = exception; current != null; current = current.InnerException)
+            {
+                if (current is TimeoutException)
+                    return true;
+                // The strategy's own list, so a failure it would retry is not swallowed here.
+#pragma warning disable EF1001
+                if (current is SqlException sql && SqlServerTransientExceptionDetector.ShouldRetryOn(sql))
+                    return true;
+#pragma warning restore EF1001
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Asks SQL Server directly. Going through EF would try to take a savepoint, which is the
+        /// command that fails once the transaction is already gone.
+        /// </summary>
+        private bool TransactionRemainsUsable()
+        {
+            if (!_context.Database.IsRelational() || _context.Database.CurrentTransaction == null)
+                return true;
+
+            try
+            {
+                var connection = _context.Database.GetDbConnection();
+                if (connection.State != ConnectionState.Open)
+                    return false;
+                using var command = connection.CreateCommand();
+                command.Transaction = _context.Database.CurrentTransaction.GetDbTransaction();
+                command.CommandText = "SELECT XACT_STATE()";
+                // 1 is committable. 0 means no transaction, -1 means it can only be rolled back.
+                return Convert.ToInt32(command.ExecuteScalar()) == 1;
+            }
+            catch
+            {
+                return false;
             }
         }
 

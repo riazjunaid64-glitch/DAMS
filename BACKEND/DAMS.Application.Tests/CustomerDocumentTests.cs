@@ -474,6 +474,33 @@ public sealed class CustomerDocumentTests
         Assert.Single(await db.CustomerDocumentRequirements.Where(row => row.CustomerId == created.Id).ToListAsync());
     }
 
+    [Fact]
+    public async Task Reconciliation_SurfacesWriteFailuresThatAreNotADuplicateRace()
+    {
+        await using var db = Context();
+        db.CustomerDocumentCategories.RemoveRange(await db.CustomerDocumentCategories.ToListAsync());
+        db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
+        {
+            Name = "Default identity", AsksEveryCustomer = true, CreatedAt = DateTime.UtcNow
+        });
+        db.Customers.Add(new Customer
+        {
+            FullName = "Needs docs", Phone = "03007654321", Status = CustomerStatus.Active, CreatedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        db.SavingChanges += (_, _) =>
+        {
+            if (db.ChangeTracker.Entries<CustomerDocumentRequirement>().Any(entry => entry.State == EntityState.Added))
+                throw new DbUpdateException("The document row could not be stored.", new InvalidOperationException("Foreign key rejected the row."));
+        };
+
+        var reconciler = new CustomerDocumentReconciliationService(db,
+            NullLogger<CustomerDocumentReconciliationService>.Instance);
+        var error = await Assert.ThrowsAsync<DbUpdateException>(() => reconciler.ReconcileBatchAsync());
+        Assert.Contains("could not be stored", error.Message);
+    }
+
     private static AppDbContext Context()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
