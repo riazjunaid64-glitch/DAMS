@@ -1,3 +1,4 @@
+using DAMS.Application.Common;
 using DAMS.Application.DTOs.CustomerDtos;
 using DAMS.Application.DTOs.LeadDtos;
 using DAMS.Application.Services;
@@ -283,15 +284,21 @@ public sealed class CustomerPhoneMatchTests
         Assert.Null(ambiguous.Match);
     }
 
+    // Written straight to the table, like rows that already exist: creating a customer now refuses a
+    // phone another customer holds, but older data can still have two customers on one number.
     private static async Task<int> SeedCustomerAsync(LeadTestHarness h, string name, string phone, string? email)
     {
-        var created = await new CustomerService(h.Db).CreateCustomerAsync(new CreateCustomerDto
+        var customer = new Customer
         {
             FullName = name,
             Phone = phone,
+            NormalizedPhone = LeadContactNormalizer.NormalizePhoneOrNull(phone),
             Email = email,
-            Source = CustomerSource.WalkIn
-        }, h.AdminUserId);
-        return created.Id;
+            Source = CustomerSource.WalkIn,
+            CreatedByUserId = h.AdminUserId
+        };
+        h.Db.Customers.Add(customer);
+        await h.Db.SaveChangesAsync();
+        return customer.Id;
     }
 }

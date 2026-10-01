@@ -27,7 +27,8 @@ import {
 import { DEFAULT_PAGE_SIZE } from "../components/ui/pageItems.ts";
 import { can } from "../features/access/permissions.ts";
 import { formatPhone } from "../features/bookings/format.ts";
-import { CustomerForm, duplicateFieldError, type CustomerFormErrors } from "../features/customers/CustomerForm.tsx";
+import { CustomerForm, type CustomerFormErrors } from "../features/customers/CustomerForm.tsx";
+import { duplicateFieldError } from "../features/customers/duplicateFieldError.tsx";
 import {
   customerFormErrors,
   emptyCustomerForm,

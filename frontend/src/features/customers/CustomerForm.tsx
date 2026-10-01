@@ -17,18 +17,6 @@ type Props = {
   disabled?: boolean;
 };
 
-/** "Already used by Usman Tariq. Open customer" under the clashing field. */
-export function duplicateFieldError(name: string, onOpen: () => void): ReactNode {
-  return (
-    <>
-      Already used by {name}.{" "}
-      <button type="button" className="font-extrabold underline" onClick={onOpen}>
-        Open customer
-      </button>
-    </>
-  );
-}
-
 /**
  * One customer form for New customer, Edit customer and New booking step 2. Field order,
  * placeholders and checks stay aligned with the application form (KAN-77 / KAN-79).

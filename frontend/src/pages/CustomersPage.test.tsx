@@ -104,7 +104,7 @@ describe("Customers list (KAN-79)", () => {
   });
 
   it("opens New customer and posts Walk-in with all fields", async () => {
-    respond = (url, init) => {
+    respond = (_url, init) => {
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
         expect(body.source).toBe("WalkIn");
