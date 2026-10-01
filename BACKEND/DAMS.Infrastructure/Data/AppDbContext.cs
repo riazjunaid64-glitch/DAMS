@@ -41,6 +41,7 @@ namespace DAMS.Infrastructure.Data
         public DbSet<BookingSaleRecognition> BookingSaleRecognitions { get; set; }
         public DbSet<BookingTermsHistory> BookingTermsHistories { get; set; }
         public DbSet<InstallmentPlanAttempt> InstallmentPlanAttempts { get; set; }
+        public DbSet<CustomerStatusLog> CustomerStatusLogs { get; set; }
         public DbSet<BookingCancellationSettlement> BookingCancellationSettlements { get; set; }
         public DbSet<BookingCancellationRefund> BookingCancellationRefunds { get; set; }
         public DbSet<Employee> Employees { get; set; }
@@ -415,6 +416,7 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Address).HasMaxLength(500);
                 entity.Property(c => c.SourceNotes).HasMaxLength(500);
                 entity.Property(c => c.Notes).HasMaxLength(1000);
+                entity.Property(c => c.BlockedReason).HasMaxLength(500);
                 entity.Property(c => c.Nationality).HasMaxLength(100);
                 entity.Property(c => c.Occupation).HasMaxLength(150);
                 entity.Property(c => c.Whatsapp).HasMaxLength(50);
@@ -440,7 +442,6 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(c => c.Name).IsRequired().HasMaxLength(150);
                 entity.Property(c => c.Code).IsRequired().HasMaxLength(80);
                 entity.Property(c => c.Description).HasMaxLength(1000);
-                entity.Property(c => c.AllowedFileTypes).IsRequired().HasMaxLength(100);
                 entity.Property(c => c.CreatedByName).HasMaxLength(200);
                 entity.Property(c => c.RowVersion).IsRowVersion();
 
@@ -465,7 +466,8 @@ namespace DAMS.Infrastructure.Data
             {
                 entity.Property(r => r.Name).IsRequired().HasMaxLength(150);
                 entity.Property(r => r.Description).HasMaxLength(1000);
-                entity.Property(r => r.AllowedFileTypes).IsRequired().HasMaxLength(100);
+                entity.Property(r => r.NotNeededReason).HasMaxLength(500);
+                entity.Property(r => r.NotNeededByName).HasMaxLength(200);
                 entity.Property(r => r.Status).HasConversion<int>();
                 entity.Property(r => r.LastActionByName).HasMaxLength(200);
                 entity.Property(r => r.RowVersion).IsRowVersion();
@@ -496,9 +498,6 @@ namespace DAMS.Infrastructure.Data
                 entity.Property(v => v.OriginalFileName).IsRequired().HasMaxLength(255);
                 entity.Property(v => v.ContentType).IsRequired().HasMaxLength(100);
                 entity.Property(v => v.UploadedByName).HasMaxLength(200);
-                entity.Property(v => v.ReviewedByName).HasMaxLength(200);
-                entity.Property(v => v.ReviewReason).HasMaxLength(2000);
-                entity.Property(v => v.ReviewStatus).HasConversion<int>();
                 entity.Property(v => v.RowVersion).IsRowVersion();
 
                 entity.HasIndex(v => new { v.RequirementId, v.VersionNumber }).IsUnique();
@@ -712,6 +711,18 @@ namespace DAMS.Infrastructure.Data
                 entity.HasOne(a => a.Booking)
                       .WithMany()
                       .HasForeignKey(a => a.BookingId)
+                      .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<CustomerStatusLog>(entity =>
+            {
+                entity.Property(l => l.Action).HasConversion<int>();
+                entity.Property(l => l.Reason).HasMaxLength(500);
+                entity.HasIndex(l => new { l.CustomerId, l.At });
+
+                entity.HasOne(l => l.Customer)
+                      .WithMany()
+                      .HasForeignKey(l => l.CustomerId)
                       .OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -1721,6 +1732,9 @@ namespace DAMS.Infrastructure.Data
             if (ChangeTracker.Entries<BookingTermsHistory>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Booking terms history is append-only.");
+            if (ChangeTracker.Entries<CustomerStatusLog>()
+                .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
+                throw new InvalidOperationException("Customer status log is append-only.");
             if (ChangeTracker.Entries<InstallmentPlanAttempt>()
                 .Any(e => e.State is EntityState.Modified or EntityState.Deleted))
                 throw new InvalidOperationException("Installment plan attempts are append-only.");
@@ -1845,8 +1859,6 @@ namespace DAMS.Infrastructure.Data
             Code = code,
             IsRequiredByDefault = required,
             DisplayOrder = order,
-            AllowedFileTypes = ".pdf,.jpg,.jpeg,.png",
-            MaxFileSizeBytes = 10 * 1024 * 1024,
             IsActive = true,
             AssignToNewCustomers = true,
             CreatedAt = createdAt

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api/api.ts";
-import { Avatar, ChoiceChips, DatePicker, IconCheck, SearchBar, TextArea, TextField, cx } from "../../components/ui";
-import { pakistanToday } from "../../lib/financePeriods.ts";
-import { PLACEHOLDERS } from "../../utils/validation.ts";
+import { Avatar, ChoiceChips, IconCheck, SearchBar, cx } from "../../components/ui";
+import { CustomerForm } from "../customers/CustomerForm.tsx";
 import { parseCustomers, searchIsUsable, type PickerCustomer } from "./customers.ts";
 import { customerLine, type BookingDraft, type DraftErrors } from "./draft.ts";
 
@@ -104,22 +103,42 @@ export function CustomerStep({ draft, errors, onChange }: Props) {
         <ExistingCustomer draft={draft} errors={errors} onChange={onChange} />
       ) : (
         <div className="flex flex-col gap-4">
-          <TextField label="Full name" required maxLength={200} error={errors.fullName} value={draft.fullName} onChange={(event) => set({ fullName: event.target.value })} />
-          <TextField label="S/O, W/O, D/O" maxLength={200} value={draft.guardianName} onChange={(event) => set({ guardianName: event.target.value })} />
-          <div className="grid gap-4 md:grid-cols-2">
-            <TextField label="Mobile" required type="tel" placeholder="0300 1234567" maxLength={50} error={errors.mobile} value={draft.mobile} onChange={(event) => set({ mobile: event.target.value })} />
-            <TextField label="CNIC / NICOP / Passport" placeholder={PLACEHOLDERS.cnic} maxLength={50} error={errors.cnic} value={draft.cnic} onChange={(event) => set({ cnic: event.target.value })} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <TextField label="Email" type="email" placeholder={PLACEHOLDERS.email} maxLength={200} error={errors.email} value={draft.email} onChange={(event) => set({ email: event.target.value })} />
-            <TextField label="WhatsApp" type="tel" placeholder="Same as mobile if blank" maxLength={50} error={errors.whatsapp} value={draft.whatsapp} onChange={(event) => set({ whatsapp: event.target.value })} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            <DatePicker label="Date of birth" max={pakistanToday()} value={draft.dob} onChange={(dob) => set({ dob })} />
-            <TextField label="Nationality" maxLength={100} value={draft.nationality} onChange={(event) => set({ nationality: event.target.value })} />
-            <TextField label="Occupation" maxLength={150} value={draft.occupation} onChange={(event) => set({ occupation: event.target.value })} />
-          </div>
-          <TextArea label="Mailing address" rows={2} maxLength={500} value={draft.address} onChange={(event) => set({ address: event.target.value })} />
+          <CustomerForm
+            values={{
+              fullName: draft.fullName,
+              guardianName: draft.guardianName,
+              mobile: draft.mobile,
+              cnic: draft.cnic,
+              email: draft.email,
+              whatsapp: draft.whatsapp,
+              dob: draft.dob,
+              nationality: draft.nationality,
+              occupation: draft.occupation,
+              address: draft.address,
+              notes: "",
+            }}
+            errors={{
+              fullName: errors.fullName,
+              mobile: errors.mobile,
+              cnic: errors.cnic,
+              email: errors.email,
+              whatsapp: errors.whatsapp,
+            }}
+            onChange={(next) =>
+              set({
+                fullName: next.fullName,
+                guardianName: next.guardianName,
+                mobile: next.mobile,
+                cnic: next.cnic,
+                email: next.email,
+                whatsapp: next.whatsapp,
+                dob: next.dob,
+                nationality: next.nationality,
+                occupation: next.occupation,
+                address: next.address,
+              })
+            }
+          />
         </div>
       )}
     </div>

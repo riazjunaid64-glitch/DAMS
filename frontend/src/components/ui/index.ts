@@ -29,7 +29,7 @@ export { TextField, NumberField, type TextFieldProps, type NumberFieldProps } fr
 export { DatePicker, type DatePickerProps } from "./DatePicker.tsx";
 export { TimePicker, type TimePickerProps } from "./TimePicker.tsx";
 export { AttachProof, type AttachProofFile, type AttachProofProps } from "./AttachProof.tsx";
-export { PROOF_MAX_BYTES, PROOF_TOO_LARGE, PROOF_WRONG_TYPE, formatFileSize, proofFileError } from "./proofFile.ts";
+export { PROOF_MAX_BYTES, PROOF_TOO_LARGE, PROOF_WRONG_TYPE, formatFileSize, proofFileError, fileRuleError, type FileRule } from "./proofFile.ts";
 export { TextArea, type TextAreaProps } from "./TextArea.tsx";
 export { ChoiceChips, RadioGroup, Checkbox, Toggle } from "./Choice.tsx";
 

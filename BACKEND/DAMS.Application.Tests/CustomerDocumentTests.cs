@@ -37,9 +37,8 @@ public sealed class CustomerDocumentTests
         var requirements = await db.CustomerDocumentRequirements.Where(r => r.CustomerId == customer.Id).ToListAsync();
         Assert.Equal(8, requirements.Count);
         Assert.DoesNotContain(requirements, r => r.CategoryId == inactive.Id);
-        Assert.All(requirements, r => Assert.Equal(CustomerDocumentStatus.Missing, r.Status));
-        Assert.Equal(3, customer.DocumentSummary.RequiredTotal);
-        Assert.Equal(3, customer.DocumentSummary.Missing);
+        Assert.All(requirements, r => Assert.Equal(CustomerDocumentStatus.Needed, r.Status));
+        Assert.Equal(3, customer.DocumentsNeeded);
     }
 
     [Fact]
@@ -68,8 +67,6 @@ public sealed class CustomerDocumentTests
                 Code = "changed_code",
                 IsRequiredByDefault = true,
                 DisplayOrder = 100,
-                AllowedFileTypes = [".pdf"],
-                MaxFileSizeBytes = 1024 * 1024,
                 IsActive = false,
                 ConcurrencyToken = category.ConcurrencyToken
             }, Admin));
@@ -89,8 +86,6 @@ public sealed class CustomerDocumentTests
             Code = category.Code,
             IsRequiredByDefault = false,
             DisplayOrder = 42,
-            AllowedFileTypes = [".pdf"],
-            MaxFileSizeBytes = category.MaxFileSizeBytes,
             IsActive = true,
             ConcurrencyToken = category.ConcurrencyToken
         }, Admin);
@@ -138,8 +133,6 @@ public sealed class CustomerDocumentTests
             Name = "Existing Population Check",
             Code = "existing_population_check",
             IsRequiredByDefault = true,
-            AllowedFileTypes = [".pdf"],
-            MaxFileSizeBytes = 1024 * 1024,
             AssignmentMode = CustomerDocumentAssignmentMode.AllActiveCustomers
         }, Admin);
 
@@ -155,136 +148,175 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
-    public async Task CustomRequirement_CanStayLocal_OrBecomeGlobal()
+    public async Task Checklist_ShowsAskedDocumentsAndFiles_AndOffersTheOtherTypes()
     {
         await using var db = Context();
         var service = Service(db);
-        var customer = await Customer(db, "Overseas Customer");
-
-        var local = await service.AddRequirementAsync(customer.Id, new AddCustomerDocumentRequirementDto
+        var customer = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
         {
-            Name = "Overseas Income Declaration",
-            IsRequired = true,
-            AllowedFileTypes = ["pdf"]
-        }, Admin);
-        Assert.Null(local.CategoryId);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.AddRequirementAsync(customer.Id,
-            new AddCustomerDocumentRequirementDto
-            {
-                Name = "Overseas Income Declaration",
-                IsRequired = true,
-                AllowedFileTypes = [".pdf"]
-            }, Admin));
+            FullName = "Ali Khan", Phone = "0300-1234567"
+        }, Admin.UserId, Admin.DisplayName);
 
-        var global = await service.AddRequirementAsync(customer.Id, new AddCustomerDocumentRequirementDto
-        {
-            Name = "Residency Evidence",
-            GlobalCategoryCode = "residency_evidence",
-            SaveAsGlobalCategory = true,
-            IsRequired = true,
-            AllowedFileTypes = [".pdf", ".png"],
-            GlobalAssignmentMode = CustomerDocumentAssignmentMode.None
-        }, Admin);
-        Assert.NotNull(global.CategoryId);
-        Assert.True(await db.CustomerDocumentCategories.AnyAsync(c => c.Code == "residency_evidence"));
+        var checklist = await service.GetChecklistAsync(customer.Id);
+
+        Assert.Equal(["CNIC Front", "CNIC Back", "Customer Photograph"], checklist.Requirements.Select(r => r.Name));
+        Assert.Equal(3, checklist.StillNeeded);
+        Assert.Equal(0, checklist.Done);
+        // Passport and the other optional types are offered; "Other" is the Name box, not a type.
+        Assert.Equal(["Proof of Address", "Passport", "Next-of-Kin CNIC", "Signature Specimen", "Tax Document"],
+            checklist.AvailableTypes.Select(t => t.Name));
     }
 
     [Fact]
-    public async Task UploadReviewAndReplacement_PreserveEveryVersion_AndOneCurrent()
+    public async Task AvailableTypes_ExcludeOnlyTypesAskedFromEveryCustomer()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await Customer(db, "Type Customer");
+        // Required but handed out manually: not asked from every customer, so it can be added.
+        db.CustomerDocumentCategories.Add(new CustomerDocumentCategory
+        {
+            Name = "Manual Required", Code = "manual_required", IsActive = true, IsRequiredByDefault = true,
+            AssignToNewCustomers = false, DisplayOrder = 5, CreatedAt = DateTime.UtcNow
+        });
+        // Optional and handed to every new customer: still quiet, so it can be added too.
+        var cnic = await db.CustomerDocumentCategories.SingleAsync(c => c.Code == "cnic_front");
+        await db.SaveChangesAsync();
+
+        var types = (await service.GetChecklistAsync(customer.Id)).AvailableTypes.Select(t => t.Name).ToList();
+
+        Assert.Contains("Manual Required", types);
+        Assert.Contains("Passport", types);
+        Assert.DoesNotContain(cnic.Name, types);
+        Assert.DoesNotContain("Other", types);
+    }
+
+    [Fact]
+    public async Task CustomerCreatedThroughTheService_IsAlwaysAWalkIn()
+    {
+        await using var db = Context();
+        var created = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
+        {
+            FullName = "Walk In Person", Phone = "03005550123"
+        }, Admin.UserId, Admin.DisplayName);
+
+        Assert.Equal(CustomerSource.WalkIn, (await db.Customers.AsNoTracking().SingleAsync(c => c.Id == created.Id)).Source);
+    }
+
+    [Fact]
+    public async Task AddDocument_CreatesAnUploadedCustomDocument_AndRefusesADuplicateName()
+    {
+        await using var db = Context();
+        var storage = new MemoryStorage();
+        var service = Service(db, storage);
+        var customer = await Customer(db, "Overseas Customer");
+
+        var added = await service.AddDocumentAsync(customer.Id, null, "  Residency Evidence ", Pdf("res.pdf"), Admin);
+
+        Assert.Null(added.CategoryId);
+        Assert.Equal("Residency Evidence", added.Name);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, added.Status);
+        Assert.False(added.IsRequired);
+        Assert.Equal("res.pdf", added.LatestVersion!.OriginalFileName);
+        Assert.Single(storage.Files);
+        Assert.Contains(await db.CustomerDocumentAuditEntries.ToListAsync(),
+            a => a.Action == CustomerDocumentAction.DocumentAdded && a.NewStatus == CustomerDocumentStatus.Uploaded);
+
+        await Assert.ThrowsAsync<CustomerDocumentConflictException>(() =>
+            service.AddDocumentAsync(customer.Id, null, "residency evidence", Pdf("again.pdf"), Admin));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AddDocumentAsync(customer.Id, null, "   ", Pdf("blank.pdf"), Admin));
+        Assert.Single(storage.Files);
+    }
+
+    [Fact]
+    public async Task AddDocument_OfAType_ReusesItsQuietRow_AndTheTypeStopsBeingOffered()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await new CustomerService(db).CreateCustomerAsync(new CreateCustomerDto
+        {
+            FullName = "Sara Ahmed", Phone = "0300-7654321"
+        }, Admin.UserId, Admin.DisplayName);
+        var passport = await db.CustomerDocumentCategories.AsNoTracking().SingleAsync(c => c.Code == "passport");
+        var quiet = await db.CustomerDocumentRequirements.AsNoTracking()
+            .SingleAsync(r => r.CustomerId == customer.Id && r.CategoryId == passport.Id);
+
+        var added = await service.AddDocumentAsync(customer.Id, passport.Id, null, Png("passport.png"), Admin);
+
+        Assert.Equal(quiet.Id, added.Id);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, added.Status);
+        var checklist = await service.GetChecklistAsync(customer.Id);
+        Assert.Contains(checklist.Requirements, r => r.Id == quiet.Id);
+        Assert.DoesNotContain(checklist.AvailableTypes, t => t.CategoryId == passport.Id);
+        Assert.Equal(1, checklist.Done);
+        await Assert.ThrowsAsync<CustomerDocumentConflictException>(() =>
+            service.AddDocumentAsync(customer.Id, passport.Id, null, Png("again.png"), Admin));
+    }
+
+    [Fact]
+    public async Task UploadAndReplacement_KeepEveryFile_AndOneCurrent()
     {
         await using var db = Context();
         var storage = new MemoryStorage();
         var service = Service(db, storage);
         var customer = await Customer(db, "Versioned Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, new AddCustomerDocumentRequirementDto
-        {
-            Name = "Identity Scan", IsRequired = true, AllowedFileTypes = [".pdf"]
-        }, Admin);
+        var requirement = await Custom(service, db, customer.Id, "Identity Scan");
 
         requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken,
             Pdf("../identity.pdf"), Admin);
-        Assert.Equal(CustomerDocumentStatus.UnderReview, requirement.Status);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, requirement.Status);
         Assert.Equal("identity.pdf", requirement.LatestVersion!.OriginalFileName);
 
-        requirement = await service.ChangeStatusAsync(customer.Id, requirement.Id, new CustomerDocumentStatusChangeDto
-        {
-            Status = CustomerDocumentStatus.Rejected,
-            Reason = "Image is unclear",
-            ConcurrencyToken = requirement.ConcurrencyToken
-        }, Admin);
-        requirement = await service.ChangeStatusAsync(customer.Id, requirement.Id, new CustomerDocumentStatusChangeDto
-        {
-            Status = CustomerDocumentStatus.ReplacementRequired,
-            Reason = "Upload a clearer scan",
-            ConcurrencyToken = requirement.ConcurrencyToken
-        }, Admin);
         requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken,
-            Pdf("identity-v2.pdf"), Admin);
-        requirement = await service.ChangeStatusAsync(customer.Id, requirement.Id, new CustomerDocumentStatusChangeDto
-        {
-            Status = CustomerDocumentStatus.Approved,
-            ConcurrencyToken = requirement.ConcurrencyToken
-        }, Admin);
+            Png("identity-v2.png"), Admin);
 
-        Assert.Equal(CustomerDocumentStatus.Approved, requirement.Status);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, requirement.Status);
         Assert.Equal(2, requirement.Versions.Count);
         Assert.Single(requirement.Versions, v => v.IsCurrent);
-        Assert.Contains(requirement.Versions, v => v.VersionNumber == 1
-                                                   && v.ReviewStatus == CustomerDocumentVersionStatus.Rejected
-                                                   && v.ReviewReason == "Image is unclear");
-        Assert.Contains(requirement.Versions, v => v.VersionNumber == 2
-                                                   && v.ReviewStatus == CustomerDocumentVersionStatus.Approved);
+        Assert.Equal("identity-v2.png", requirement.LatestVersion!.OriginalFileName);
+        Assert.Contains(requirement.Versions, v => v.VersionNumber == 1 && !v.IsCurrent);
         Assert.Equal(2, storage.Files.Count);
+        var actions = await db.CustomerDocumentAuditEntries.Select(a => a.Action).ToListAsync();
+        Assert.Contains(CustomerDocumentAction.FileUploaded, actions);
+        Assert.Contains(CustomerDocumentAction.ReplacementUploaded, actions);
     }
 
     [Fact]
-    public async Task Overrides_RequireReasons_AndUseCanonicalCompletionRules()
+    public async Task NotNeeded_RequiresAReason_OnlyFromNeeded_AndLeavesTheDocumentDone()
     {
         await using var db = Context();
         var service = Service(db);
         var customer = await Customer(db, "Override Customer");
-        var waived = await service.AddRequirementAsync(customer.Id, Custom("Waived Item"), Admin);
-        var notApplicable = await service.AddRequirementAsync(customer.Id, Custom("N/A Item"), Admin);
-        var postponed = await service.AddRequirementAsync(customer.Id, Custom("Later Item"), Admin);
+        var item = await Custom(service, db, customer.Id, "Overseas Income Declaration");
+        var other = await Custom(service, db, customer.Id, "Utility Bill");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ChangeStatusAsync(customer.Id, waived.Id,
-            new CustomerDocumentStatusChangeDto { Status = CustomerDocumentStatus.Waived, ConcurrencyToken = waived.ConcurrencyToken }, Admin));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.MarkNotNeededAsync(customer.Id, item.Id,
+            new NotNeededDocumentDto { Reason = "  ", ConcurrencyToken = item.ConcurrencyToken }, Admin));
 
-        waived = await Change(service, customer.Id, waived, CustomerDocumentStatus.Waived, "Approved exception");
-        notApplicable = await Change(service, customer.Id, notApplicable, CustomerDocumentStatus.NotApplicable, "Customer is not overseas");
-        postponed = await service.ChangeStatusAsync(customer.Id, postponed.Id, new CustomerDocumentStatusChangeDto
-        {
-            Status = CustomerDocumentStatus.Postponed,
-            Reason = "Bring at next visit",
-            PostponedUntil = DateTime.UtcNow.AddDays(7),
-            ConcurrencyToken = postponed.ConcurrencyToken
-        }, Admin);
+        item = await service.MarkNotNeededAsync(customer.Id, item.Id,
+            new NotNeededDocumentDto { Reason = " Customer is not overseas ", ConcurrencyToken = item.ConcurrencyToken }, Admin);
+        Assert.Equal(CustomerDocumentStatus.NotNeeded, item.Status);
+        Assert.Equal("Customer is not overseas", item.NotNeededReason);
+        Assert.Equal(Admin.DisplayName, item.NotNeededByName);
+        Assert.NotNull(item.NotNeededAt);
 
         var checklist = await service.GetChecklistAsync(customer.Id);
-        Assert.Equal(3, checklist.Summary.RequiredTotal);
-        Assert.Equal(2, checklist.Summary.CompletedRequired);
-        Assert.Equal(1, checklist.Summary.Postponed);
-        Assert.False(checklist.Summary.IsComplete);
-        Assert.Contains(checklist.History, a => a.Action == CustomerDocumentAction.Waived);
-        Assert.Contains(checklist.History, a => a.Action == CustomerDocumentAction.MarkedNotApplicable);
-    }
+        Assert.Equal(1, checklist.StillNeeded);
+        Assert.Equal(1, checklist.Done);
+        Assert.Equal(1, (await new CustomerService(db).GetCustomerByIdAsync(customer.Id))!.DocumentsNeeded);
 
-    [Fact]
-    public void Completion_PostponedCollectionDate_ReturnsRequirementToAttention()
-    {
-        var summary = CustomerDocumentCompletion.Calculate([
-            new CustomerDocumentRequirement
-            {
-                IsRequired = true,
-                Status = CustomerDocumentStatus.Postponed,
-                PostponedUntil = DateTime.UtcNow.AddMinutes(-1)
-            }
-        ]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.MarkNotNeededAsync(customer.Id, item.Id,
+            new NotNeededDocumentDto { Reason = "Again", ConcurrencyToken = item.ConcurrencyToken }, Admin));
+        var audit = Assert.Single(await db.CustomerDocumentAuditEntries
+            .Where(a => a.Action == CustomerDocumentAction.MarkedNotNeeded).ToListAsync());
+        Assert.Equal("Customer is not overseas", audit.Notes);
 
-        Assert.Equal(1, summary.Postponed);
-        Assert.Equal(1, summary.PostponedDue);
-        Assert.Equal("1 postponed due", summary.Label);
-        Assert.False(summary.IsComplete);
+        // Uploading a file later brings it back as Uploaded and clears the reason.
+        item = await service.UploadAsync(customer.Id, item.Id, item.ConcurrencyToken, Pdf("declaration.pdf"), Admin);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, item.Status);
+        Assert.Null(item.NotNeededReason);
+        Assert.NotEqual(other.Id, item.Id);
     }
 
     [Fact]
@@ -293,36 +325,31 @@ public sealed class CustomerDocumentTests
         await using var db = Context();
         var service = Service(db);
         var customer = await Customer(db, "Validation Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, new AddCustomerDocumentRequirementDto
-        {
-            Name = "PDF only", IsRequired = true, AllowedFileTypes = [".pdf"], MaxFileSizeBytes = 1024
-        }, Admin);
+        var requirement = await Custom(service, db, customer.Id, "PDF only");
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadAsync(customer.Id, requirement.Id,
             requirement.ConcurrencyToken, Upload("empty.pdf", []), Admin));
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadAsync(customer.Id, requirement.Id,
-            requirement.ConcurrencyToken, Upload("large.pdf", new byte[1025]), Admin));
+            requirement.ConcurrencyToken, Upload("large.pdf", new byte[CustomerDocumentService.MaxFileSize + 1]), Admin));
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadAsync(customer.Id, requirement.Id,
             requirement.ConcurrencyToken, Upload("fake.pdf", Encoding.ASCII.GetBytes("not a pdf")), Admin));
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.UploadAsync(customer.Id, requirement.Id,
-            requirement.ConcurrencyToken, Png("photo.png"), Admin));
+            requirement.ConcurrencyToken, Upload("sheet.xlsx", Encoding.ASCII.GetBytes("PK\u0003\u0004")), Admin));
+        Assert.False(await db.CustomerDocumentVersions.AnyAsync());
     }
 
     [Fact]
-    public async Task ValidPngUpload_Succeeds_WhenCategoryAllowsImages()
+    public async Task ValidPngUpload_Succeeds_ForEveryDocument()
     {
         await using var db = Context();
         var service = Service(db);
         var customer = await Customer(db, "Image Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, new AddCustomerDocumentRequirementDto
-        {
-            Name = "Photograph", IsRequired = true, AllowedFileTypes = [".png"]
-        }, Admin);
+        var requirement = await Custom(service, db, customer.Id, "Photograph");
 
         requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken,
             Png("photo.png"), Admin);
         Assert.Equal("image/png", requirement.LatestVersion!.ContentType);
-        Assert.Equal(CustomerDocumentStatus.UnderReview, requirement.Status);
+        Assert.Equal(CustomerDocumentStatus.Uploaded, requirement.Status);
     }
 
     [Fact]
@@ -332,7 +359,7 @@ public sealed class CustomerDocumentTests
         var storage = new MemoryStorage { FailSaves = true };
         var service = Service(db, storage);
         var customer = await Customer(db, "Failure Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Failure Evidence"), Admin);
+        var requirement = await Custom(service, db, customer.Id, "Failure Evidence");
 
         await Assert.ThrowsAsync<IOException>(() => service.UploadAsync(customer.Id, requirement.Id,
             requirement.ConcurrencyToken, Pdf("failure.pdf"), Admin));
@@ -344,7 +371,7 @@ public sealed class CustomerDocumentTests
         db.ChangeTracker.Clear();
         db.Database.EnsureCreated();
         customer = await Customer(db, "Database Failure Customer");
-        requirement = await service.AddRequirementAsync(customer.Id, Custom("Database Failure Evidence"), Admin);
+        requirement = await Custom(service, db, customer.Id, "Database Failure Evidence");
         db.SavingChanges += (_, _) => throw new DbUpdateException("Simulated database write failure.");
 
         await Assert.ThrowsAsync<DbUpdateException>(() => service.UploadAsync(customer.Id, requirement.Id,
@@ -359,7 +386,7 @@ public sealed class CustomerDocumentTests
         var service = Service(db);
         var owner = await Customer(db, "Owner");
         var other = await Customer(db, "Other");
-        var requirement = await service.AddRequirementAsync(owner.Id, Custom("Private Identity"), Admin);
+        var requirement = await Custom(service, db, owner.Id, "Private Identity");
         requirement = await service.UploadAsync(owner.Id, requirement.Id, requirement.ConcurrencyToken, Pdf("private.pdf"), Admin);
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() => service.DownloadAsync(other.Id, requirement.Id,
@@ -397,7 +424,7 @@ public sealed class CustomerDocumentTests
         var storage = new MemoryStorage();
         var service = Service(db, storage);
         var customer = await Customer(db, "Audited Download Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Sensitive ID"), Admin);
+        var requirement = await Custom(service, db, customer.Id, "Sensitive ID");
         requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken, Pdf("id.pdf"), Admin);
 
         // A private identity document must never be released without a durable download record: if the
@@ -409,6 +436,30 @@ public sealed class CustomerDocumentTests
     }
 
     [Fact]
+    public async Task View_ReturnsTheFile_AndRecordsWhoOpenedIt_ButFailsClosedWithoutTheRecord()
+    {
+        await using var db = Context();
+        var service = Service(db);
+        var customer = await Customer(db, "Viewed Customer");
+        var requirement = await Custom(service, db, customer.Id, "Sensitive ID");
+        requirement = await service.UploadAsync(customer.Id, requirement.Id, requirement.ConcurrencyToken, Pdf("id.pdf"), Admin);
+        var other = await Customer(db, "Someone Else");
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.ViewAsync(other.Id, requirement.Id,
+            requirement.LatestVersion!.Id, Admin));
+        var view = await service.ViewAsync(customer.Id, requirement.Id, requirement.LatestVersion!.Id, Admin);
+        Assert.Equal("application/pdf", view.ContentType);
+        await view.Content.DisposeAsync();
+        var audit = Assert.Single(await db.CustomerDocumentAuditEntries
+            .Where(a => a.Action == CustomerDocumentAction.FileViewed).ToListAsync());
+        Assert.Equal(Admin.DisplayName, audit.PerformedByName);
+
+        db.SavingChanges += (_, _) => throw new DbUpdateException("Simulated audit write failure.");
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.ViewAsync(customer.Id, requirement.Id,
+            requirement.LatestVersion!.Id, Admin));
+    }
+
+    [Fact]
     public async Task CategoryUpdate_WithLongValues_PreservesFullBeforeAfter_WithoutTruncation()
     {
         await using var db = Context();
@@ -416,15 +467,14 @@ public sealed class CustomerDocumentTests
         var category = await service.CreateCategoryAsync(new CreateCustomerDocumentCategoryDto
         {
             Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true,
-            Description = new string('a', 1000), AllowedFileTypes = [".pdf"],
-            MaxFileSizeBytes = 1024 * 1024, AssignmentMode = CustomerDocumentAssignmentMode.None
+            Description = new string('a', 1000), AssignmentMode = CustomerDocumentAssignmentMode.None
         }, Admin);
 
         // The before -> after diff of the two 1,000-char descriptions exceeds the old 2,000-char cap.
         await service.UpdateCategoryAsync(category.Id, new UpdateCustomerDocumentCategoryDto
         {
             Name = "Long Detail", Code = "long_detail", IsRequiredByDefault = true, DisplayOrder = category.DisplayOrder,
-            Description = new string('b', 1000), AllowedFileTypes = [".pdf"], MaxFileSizeBytes = category.MaxFileSizeBytes,
+            Description = new string('b', 1000),
             IsActive = true, ConcurrencyToken = category.ConcurrencyToken
         }, Admin);
 
@@ -442,15 +492,14 @@ public sealed class CustomerDocumentTests
         await using var db = Context();
         var service = Service(db);
         var customer = await Customer(db, "Heavy Versions Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Frequently Replaced"), Admin);
+        var requirement = await Custom(service, db, customer.Id, "Frequently Replaced");
         // Seed more versions than the preview bound directly; a full replacement cycle each would be noise.
         for (var i = 1; i <= 25; i++)
             db.CustomerDocumentVersions.Add(new CustomerDocumentVersion
             {
                 RequirementId = requirement.Id, VersionNumber = i, IsCurrent = i == 25,
                 StoredFileName = $"stored-{i}.pdf", OriginalFileName = $"v{i}.pdf",
-                ContentType = "application/pdf", FileSize = 10, UploadedByName = "Admin", UploadedAt = DateTime.UtcNow,
-                ReviewStatus = CustomerDocumentVersionStatus.UnderReview
+                ContentType = "application/pdf", FileSize = 10, UploadedByName = "Admin", UploadedAt = DateTime.UtcNow
             });
         await db.SaveChangesAsync();
 
@@ -467,14 +516,14 @@ public sealed class CustomerDocumentTests
         await using var db = Context();
         var service = Service(db);
         var customer = await Customer(db, "Paged Versions Customer");
-        var requirement = await service.AddRequirementAsync(customer.Id, Custom("Long-lived document"), Admin);
+        var requirement = await Custom(service, db, customer.Id, "Long-lived document");
         for (var i = 1; i <= 47; i++)
             db.CustomerDocumentVersions.Add(new CustomerDocumentVersion
             {
                 RequirementId = requirement.Id, VersionNumber = i, IsCurrent = i == 47,
                 StoredFileName = $"stored-{i}.pdf", OriginalFileName = $"v{i}.pdf",
                 ContentType = "application/pdf", FileSize = 10, UploadedByName = "Admin",
-                UploadedAt = DateTime.UtcNow.AddMinutes(i), ReviewStatus = CustomerDocumentVersionStatus.UnderReview
+                UploadedAt = DateTime.UtcNow.AddMinutes(i)
             });
         await db.SaveChangesAsync();
 
@@ -507,7 +556,7 @@ public sealed class CustomerDocumentTests
         {
             Name = "Default identity", Code = "default_identity", IsActive = true,
             AssignToNewCustomers = true, IsRequiredByDefault = true, DisplayOrder = 1,
-            AllowedFileTypes = ".pdf", MaxFileSizeBytes = 1024 * 1024, CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow
         });
         await db.SaveChangesAsync();
 
@@ -521,7 +570,7 @@ public sealed class CustomerDocumentTests
         var customers = new CustomerService(db, NullLogger<CustomerService>.Instance);
         var created = await customers.CreateCustomerAsync(new CreateCustomerDto
         {
-            FullName = "Core Workflow Customer", Phone = "03001234567", Source = CustomerSource.WalkIn
+            FullName = "Core Workflow Customer", Phone = "03001234567"
         }, Admin.UserId, Admin.DisplayName);
 
         Assert.True(created.Id > 0);
@@ -556,18 +605,22 @@ public sealed class CustomerDocumentTests
         Name = code.Replace('_', ' '),
         Code = code,
         IsRequiredByDefault = true,
-        AllowedFileTypes = [".pdf"],
-        MaxFileSizeBytes = 1024 * 1024,
         AssignmentMode = CustomerDocumentAssignmentMode.None
     };
 
-    private static AddCustomerDocumentRequirementDto Custom(string name) => new()
+    /// <summary>A document asked from the customer: a custom required row with no file yet.</summary>
+    private static async Task<CustomerDocumentRequirementDto> Custom(
+        CustomerDocumentService service, AppDbContext db, int customerId, string name, bool required = true)
     {
-        Name = name,
-        IsRequired = true,
-        AllowedFileTypes = [".pdf"],
-        MaxFileSizeBytes = 1024 * 1024
-    };
+        var row = new CustomerDocumentRequirement
+        {
+            CustomerId = customerId, Name = name, IsRequired = required, DisplayOrder = 1000
+        };
+        db.CustomerDocumentRequirements.Add(row);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        return (await service.GetChecklistAsync(customerId)).Requirements.Single(r => r.Id == row.Id);
+    }
 
     private static async Task<Customer> Customer(AppDbContext db, string name)
     {
@@ -589,18 +642,6 @@ public sealed class CustomerDocumentTests
         Length = bytes.LongLength,
         Content = new MemoryStream(bytes)
     };
-
-    private static Task<CustomerDocumentRequirementDto> Change(
-        CustomerDocumentService service,
-        int customerId,
-        CustomerDocumentRequirementDto requirement,
-        CustomerDocumentStatus status,
-        string reason) => service.ChangeStatusAsync(customerId, requirement.Id, new CustomerDocumentStatusChangeDto
-    {
-        Status = status,
-        Reason = reason,
-        ConcurrencyToken = requirement.ConcurrencyToken
-    }, Admin);
 
     private sealed class MemoryStorage : ICustomerDocumentStorage
     {

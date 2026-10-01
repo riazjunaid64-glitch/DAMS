@@ -25,4 +25,11 @@ describe("navigationFor", () => {
     expect(labels("Sales manager")).not.toContain("Bookings");
     expect(labels("Sales employee")).not.toContain("Bookings");
   });
+
+  it("never shows Document setup in the side menu (entry is on the Customers page)", () => {
+    for (const role of ["Admin", "Accountant", "Sales manager", "Sales employee", "Client"]) {
+      expect(labels(role)).not.toContain("Document setup");
+      expect(items(role).map((item) => item.to)).not.toContain("/customer-document-categories");
+    }
+  });
 });

@@ -38,6 +38,14 @@ namespace DAMS.Domain.Entities
 
         public CustomerStatus Status { get; set; } = CustomerStatus.Active;
 
+        // Why, when and by whom the customer is blocked. All null while Active: unblocking clears
+        // them here and keeps the history in CustomerStatusLog.
+        public string? BlockedReason { get; set; }
+
+        public DateTime? BlockedAt { get; set; }
+
+        public int? BlockedByUserId { get; set; }
+
         // Optional link to a login account. A customer may exist without one.
         public int? UserId { get; set; }
 

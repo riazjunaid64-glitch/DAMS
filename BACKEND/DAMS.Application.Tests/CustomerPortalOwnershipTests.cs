@@ -141,8 +141,7 @@ public sealed class CustomerPortalOwnershipTests
         {
             FullName = "Aisha Ahmed",
             Phone = "03001110001",
-            Email = "brand.new.address@example.com",
-            Status = CustomerStatus.Active
+            Email = "brand.new.address@example.com"
         });
         h.Db.ChangeTracker.Clear();
 

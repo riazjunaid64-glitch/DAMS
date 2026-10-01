@@ -111,4 +111,19 @@ describe("AttachProof", () => {
     expect((screen.getByRole("button") as HTMLButtonElement).disabled).toBe(true);
     expect(input().disabled).toBe(true);
   });
+
+  it("takes another rule and shows a * instead of (optional) when required", () => {
+    const rule = { extensions: [".pdf", ".png"], maxBytes: 10 * 1024 * 1024, accept: ".pdf,.png", hint: "PDF or PNG · up to 10 MB", tooLarge: "Over 10 MB.", wrongType: "Use PDF or PNG.", empty: "Empty." };
+    const onPick = vi.fn();
+    render(<AttachProof label="File" required rule={rule} file={null} onPick={onPick} />);
+    expect(screen.queryByText("(optional)")).toBeNull();
+    expect(screen.getByText("PDF or PNG · up to 10 MB")).toBeTruthy();
+    expect(input().accept).toBe(".pdf,.png");
+    fireEvent.change(input(), { target: { files: [fileOf("scan.docx", 100)] } });
+    expect(screen.getByText("Use PDF or PNG.")).toBeTruthy();
+    expect(onPick).not.toHaveBeenCalled();
+    const ok = fileOf("scan.png", 100);
+    fireEvent.change(input(), { target: { files: [ok] } });
+    expect(onPick).toHaveBeenCalledWith(ok);
+  });
 });

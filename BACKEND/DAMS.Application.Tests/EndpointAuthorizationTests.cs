@@ -168,6 +168,7 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
     public static IEnumerable<object[]> AdminOnlyDownloads() => new[]
     {
         new object[] { "/api/customer-documents/customers/1/requirements/1/versions/1/file" },
+        new object[] { "/api/customer-documents/customers/1/requirements/1/versions/1/view" },
         new object[] { "/api/finance/commissions-rebates/evidence/1/file" },
     };
 
@@ -232,11 +233,11 @@ public sealed class EndpointAuthorizationTests : IClassFixture<EndpointAuthoriza
             R("GET", "/api/customer-documents/customers/1"),
             R("GET", "/api/customer-documents/customers/1/history"),
             R("GET", "/api/customer-documents/customers/1/requirements/1/versions"),
-            R("POST", "/api/customer-documents/customers/1/requirements"),
+            R("POST", "/api/customer-documents/customers/1/documents", true),
             R("POST", "/api/customer-documents/customers/1/requirements/1/upload", true),
-            R("POST", "/api/customer-documents/customers/1/requirements/1/status"),
-            R("PUT", "/api/customer-documents/customers/1/requirements/1/due-date"),
+            R("POST", "/api/customer-documents/customers/1/requirements/1/not-needed"),
             R("GET", "/api/customer-documents/customers/1/requirements/1/versions/1/file"),
+            R("GET", "/api/customer-documents/customers/1/requirements/1/versions/1/view"),
             R("GET", "/api/finance/commissions-rebates/summary"),
             R("GET", "/api/finance/commissions-rebates/partners"),
             R("POST", "/api/finance/commissions-rebates/partners"),

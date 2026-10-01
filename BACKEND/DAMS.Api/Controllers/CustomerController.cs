@@ -34,6 +34,16 @@ namespace DAMS.Api.Controllers
                     User.FindFirstValue(ClaimTypes.Name));
                 return Ok(result);
             }
+            catch (CustomerConflictException ex)
+            {
+                return Conflict(new
+                {
+                    message = ex.Message,
+                    field = ex.Field,
+                    existingCustomerId = ex.ExistingCustomerId,
+                    existingCustomerName = ex.ExistingCustomerName
+                });
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { message = ex.Message });
@@ -45,6 +55,7 @@ namespace DAMS.Api.Controllers
             [FromQuery] CustomerSource? source,
             [FromQuery] CustomerStatus? status,
             [FromQuery] string? search,
+            [FromQuery] bool documentsNeededOnly = false,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20)
         {
@@ -53,6 +64,7 @@ namespace DAMS.Api.Controllers
                 Source = source,
                 Status = status,
                 SearchTerm = search,
+                DocumentsNeededOnly = documentsNeededOnly,
                 Page = page,
                 PageSize = pageSize
             };
@@ -77,6 +89,43 @@ namespace DAMS.Api.Controllers
             {
                 var result = await _customerService.UpdateCustomerAsync(id, dto);
                 return Ok(result);
+            }
+            catch (CustomerConflictException ex)
+            {
+                return Conflict(new
+                {
+                    message = ex.Message,
+                    field = ex.Field,
+                    existingCustomerId = ex.ExistingCustomerId,
+                    existingCustomerName = ex.ExistingCustomerName
+                });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        /// <summary>Stops new bookings for a customer. Existing bookings are untouched.</summary>
+        [HttpPost("{id:int}/block")]
+        public async Task<IActionResult> Block(int id, [FromBody] BlockCustomerDto dto)
+        {
+            try
+            {
+                return Ok(await _customerService.BlockCustomerAsync(id, dto.Reason, GetUserId()));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("{id:int}/unblock")]
+        public async Task<IActionResult> Unblock(int id)
+        {
+            try
+            {
+                return Ok(await _customerService.UnblockCustomerAsync(id, GetUserId()));
             }
             catch (InvalidOperationException ex)
             {

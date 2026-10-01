@@ -43,6 +43,15 @@ describe("booking statuses", () => {
   });
 });
 
+describe("customer document statuses", () => {
+  it("colours Blocked, Needed, Uploaded and Not needed", () => {
+    expect(statusTone("Blocked")).toBe("red");
+    expect(statusTone("Needed")).toBe("orange");
+    expect(statusTone("Uploaded")).toBe("green");
+    expect(statusTone("Not needed")).toBe("grey");
+  });
+});
+
 describe("statusLabel", () => {
   it("turns codes into sentence case", () => {
     expect(statusLabel("InProgress")).toBe("In progress");
